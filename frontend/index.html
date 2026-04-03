@@ -1,0 +1,702 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mygnoscan</title>
+<style>
+:root {
+  --bg: #0a0a0a;
+  --bg2: #141414;
+  --bg3: #1e1e1e;
+  --fg: #e0e0e0;
+  --fg2: #888;
+  --accent: #4ecdc4;
+  --accent2: #ff6b6b;
+  --green: #51cf66;
+  --red: #ff6b6b;
+  --border: #2a2a2a;
+  --mono: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: var(--mono);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 14px;
+  line-height: 1.6;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.container { max-width: 1200px; margin: 0 auto; padding: 0 20px; }
+header {
+  border-bottom: 1px solid var(--border);
+  padding: 16px 0;
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  z-index: 100;
+}
+header .container { display: flex; align-items: center; gap: 24px; }
+.logo { font-size: 18px; font-weight: bold; color: var(--accent); cursor: pointer; }
+nav { display: flex; gap: 16px; }
+nav a { color: var(--fg2); font-size: 13px; cursor: pointer; }
+nav a:hover, nav a.active { color: var(--accent); text-decoration: none; }
+.search-box { margin-left: auto; position: relative; }
+.search-box input {
+  background: var(--bg2); border: 1px solid var(--border); color: var(--fg);
+  padding: 6px 12px; border-radius: 4px; font-family: var(--mono);
+  font-size: 13px; width: 280px; outline: none;
+}
+.search-box input:focus { border-color: var(--accent); }
+#search-results {
+  position: absolute; top: 100%; left: 0; right: 0;
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 4px;
+  margin-top: 4px; max-height: 300px; overflow-y: auto; display: none;
+}
+#search-results.open { display: block; }
+.stats-bar {
+  display: flex; gap: 24px; padding: 16px 0;
+  border-bottom: 1px solid var(--border); flex-wrap: wrap;
+}
+.stat { display: flex; flex-direction: column; }
+.stat .label { font-size: 11px; color: var(--fg2); text-transform: uppercase; letter-spacing: 1px; }
+.stat .value { font-size: 20px; font-weight: bold; color: var(--accent); }
+main { padding: 20px 0; }
+.section { margin-bottom: 32px; }
+.section-title {
+  font-size: 14px; color: var(--fg2); text-transform: uppercase;
+  letter-spacing: 1px; margin-bottom: 12px; padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+table { width: 100%; border-collapse: collapse; }
+th {
+  text-align: left; font-size: 11px; color: var(--fg2);
+  text-transform: uppercase; letter-spacing: 1px; padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+td { padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
+tr:hover { background: var(--bg2); }
+.truncate { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.badge {
+  display: inline-block; padding: 2px 8px; border-radius: 3px;
+  font-size: 11px; font-weight: bold;
+}
+.badge-realm { background: rgba(78, 205, 196, 0.15); color: var(--accent); }
+.badge-pkg { background: rgba(255, 107, 107, 0.15); color: var(--accent2); }
+.badge-ok { background: rgba(81, 207, 102, 0.15); color: var(--green); }
+.badge-fail { background: rgba(255, 107, 107, 0.15); color: var(--red); }
+.tabs {
+  display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 16px;
+}
+.tab {
+  padding: 8px 16px; cursor: pointer; color: var(--fg2); font-size: 13px;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.tab:hover { color: var(--fg); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+pre {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 4px;
+  padding: 16px; overflow-x: auto; font-size: 13px; line-height: 1.5;
+}
+#dep-graph {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 4px; min-height: 400px;
+}
+.view { display: none; }
+.view.active { display: block; }
+@media (max-width: 768px) {
+  .stats-bar { gap: 12px; }
+  .stat .value { font-size: 16px; }
+  .search-box input { width: 180px; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="container">
+    <span class="logo" onclick="showView('home')">mygnoscan</span>
+    <nav>
+      <a onclick="showView('home')" id="nav-home" class="active">home</a>
+      <a onclick="showView('realms')" id="nav-realms">realms</a>
+      <a onclick="showView('packages')" id="nav-packages">packages</a>
+      <a onclick="showView('txs')" id="nav-txs">txs</a>
+    </nav>
+    <div class="search-box">
+      <input type="text" id="search-input" placeholder="search realms, packages, addresses...">
+      <div id="search-results"></div>
+    </div>
+  </div>
+</header>
+
+<div class="container">
+  <div class="view active" id="view-home">
+    <div class="stats-bar" id="stats-bar">
+      <div class="stat"><span class="label">realms</span><span class="value" id="stat-realms">-</span></div>
+      <div class="stat"><span class="label">packages</span><span class="value" id="stat-packages">-</span></div>
+      <div class="stat"><span class="label">calls</span><span class="value" id="stat-calls">-</span></div>
+      <div class="stat"><span class="label">msg_runs</span><span class="value" id="stat-msgruns">-</span></div>
+      <div class="stat"><span class="label">unique callers</span><span class="value" id="stat-callers">-</span></div>
+      <div class="stat"><span class="label">block height</span><span class="value" id="stat-block">-</span></div>
+    </div>
+    <main>
+      <div class="section">
+        <div class="section-title">recent activity</div>
+        <table><thead><tr><th>block</th><th>type</th><th>detail</th><th>status</th></tr></thead>
+        <tbody id="recent-txs"></tbody></table>
+      </div>
+      <div class="section">
+        <div class="section-title">latest realms</div>
+        <table><thead><tr><th>path</th><th>name</th><th>creator</th><th>files</th></tr></thead>
+        <tbody id="latest-realms"></tbody></table>
+      </div>
+    </main>
+  </div>
+
+  <div class="view" id="view-realms">
+    <main><div class="section"><div class="section-title">all realms</div>
+    <table><thead><tr><th>path</th><th>name</th><th>creator</th><th>block</th><th>files</th></tr></thead>
+    <tbody id="realms-list"></tbody></table></div></main>
+  </div>
+
+  <div class="view" id="view-packages">
+    <main><div class="section"><div class="section-title">all packages</div>
+    <table><thead><tr><th>path</th><th>name</th><th>creator</th><th>block</th><th>files</th></tr></thead>
+    <tbody id="packages-list"></tbody></table></div></main>
+  </div>
+
+  <div class="view" id="view-txs">
+    <main><div class="section"><div class="section-title">recent transactions</div>
+    <table><thead><tr><th>hash</th><th>block</th><th>type</th><th>detail</th><th>status</th></tr></thead>
+    <tbody id="txs-list"></tbody></table></div></main>
+  </div>
+
+  <div class="view" id="view-realm-detail">
+    <main>
+      <div id="realm-header"></div>
+      <div class="tabs" id="realm-tabs"></div>
+      <div class="tab-content active" id="tab-info"></div>
+      <div class="tab-content" id="tab-source"></div>
+      <div class="tab-content" id="tab-calls"></div>
+      <div class="tab-content" id="tab-deps"></div>
+      <div class="tab-content" id="tab-graph"><div id="dep-graph"></div></div>
+    </main>
+  </div>
+
+  <div class="view" id="view-tx-detail">
+    <main><div id="tx-detail-content"></div></main>
+  </div>
+</div>
+
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script>
+// --- Safe DOM helpers ---
+function el(tag, attrs, ...children) {
+  const e = document.createElement(tag);
+  if (attrs) for (const [k, v] of Object.entries(attrs)) {
+    if (k === 'onclick') e.addEventListener('click', v);
+    else if (k === 'className') e.className = v;
+    else if (k === 'style' && typeof v === 'object') Object.assign(e.style, v);
+    else e.setAttribute(k, v);
+  }
+  for (const c of children) {
+    if (typeof c === 'string') e.appendChild(document.createTextNode(c));
+    else if (c) e.appendChild(c);
+  }
+  return e;
+}
+
+function clear(id) { const e = document.getElementById(id); e.textContent = ''; return e; }
+
+function badge(type, text) {
+  return el('span', { className: 'badge badge-' + type }, text);
+}
+
+function link(text, onclick) {
+  const a = el('a', { href: '#' }, text);
+  a.addEventListener('click', (e) => { e.preventDefault(); onclick(); });
+  return a;
+}
+
+function shortAddr(addr) { return (!addr || addr.length <= 16) ? (addr || '') : addr.slice(0, 10) + '...' + addr.slice(-6); }
+function shortHash(hash) { return (!hash) ? '' : hash.slice(0, 10) + '...'; }
+
+function statusBadge(success) { return success ? badge('ok', 'ok') : badge('fail', 'fail'); }
+function typeBadge(typename) {
+  const map = { MsgAddPackage: ['pkg', 'deploy'], MsgCall: ['realm', 'call'], MsgRun: ['ok', 'run'], BankMsgSend: ['fail', 'send'] };
+  const [cls, text] = map[typename] || ['', typename || 'unknown'];
+  return badge(cls, text);
+}
+
+function txDetail(msg) {
+  const v = msg?.value;
+  if (!v) return '';
+  switch (v.__typename) {
+    case 'MsgAddPackage': return v.package?.path || '';
+    case 'MsgCall': return v.pkg_path + '::' + v.func;
+    case 'MsgRun': return 'run by ' + shortAddr(v.caller);
+    case 'BankMsgSend': return shortAddr(v.from_address) + ' > ' + shortAddr(v.to_address);
+    default: return '';
+  }
+}
+
+// --- API ---
+async function api(path) {
+  const resp = await fetch('/api/' + path);
+  if (!resp.ok) throw new Error(await resp.text());
+  return resp.json();
+}
+
+// --- Nav ---
+function showView(view, data) {
+  document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+  document.querySelectorAll('nav a').forEach(a => a.classList.remove('active'));
+  const ve = document.getElementById('view-' + view);
+  if (ve) ve.classList.add('active');
+  const nav = document.getElementById('nav-' + view);
+  if (nav) nav.classList.add('active');
+  window.location.hash = view === 'home' ? '' : (view === 'realm-detail' ? 'realm/' + (data||'').replace('gno.land/','') : view === 'tx-detail' ? 'tx/' + data : view);
+  switch (view) {
+    case 'home': loadHome(); break;
+    case 'realms': loadRealms(); break;
+    case 'packages': loadPackages(); break;
+    case 'txs': loadTxs(); break;
+    case 'realm-detail': loadRealmDetail(data); break;
+    case 'tx-detail': loadTxDetail(data); break;
+  }
+}
+
+// --- Loaders ---
+async function loadHome() {
+  try {
+    const [stats, realms, txs] = await Promise.all([api('stats'), api('realms?limit=10'), api('txs')]);
+    document.getElementById('stat-realms').textContent = stats.total_realms;
+    document.getElementById('stat-packages').textContent = stats.total_packages;
+    document.getElementById('stat-calls').textContent = stats.total_calls;
+    document.getElementById('stat-msgruns').textContent = stats.total_msg_runs;
+    document.getElementById('stat-callers').textContent = stats.unique_callers;
+    document.getElementById('stat-block').textContent = stats.latest_block.toLocaleString();
+
+    const tbody = clear('latest-realms');
+    for (const r of (realms || [])) {
+      const tr = el('tr', {},
+        el('td', {}, link(r.path, () => showView('realm-detail', r.path))),
+        el('td', {}, r.name),
+        el('td', { className: 'truncate' }, shortAddr(r.creator)),
+        el('td', {}, String(r.num_files))
+      );
+      tbody.appendChild(tr);
+    }
+
+    const txBody = clear('recent-txs');
+    for (const tx of (txs || []).slice(0, 20)) {
+      const msg = tx.messages?.[0];
+      const detail = txDetail(msg);
+      const tr = el('tr', {},
+        el('td', {}, String(tx.block_height)),
+        el('td', {}, typeBadge(msg?.value?.__typename)),
+        el('td', { className: 'truncate' }, link(detail, () => showView('tx-detail', tx.hash))),
+        el('td', {}, statusBadge(tx.success))
+      );
+      txBody.appendChild(tr);
+    }
+  } catch (err) { console.error('load home:', err); }
+}
+
+async function loadRealms() {
+  try {
+    const realms = await api('realms?limit=200');
+    const tbody = clear('realms-list');
+    for (const r of (realms || [])) {
+      tbody.appendChild(el('tr', {},
+        el('td', {}, link(r.path, () => showView('realm-detail', r.path))),
+        el('td', {}, r.name), el('td', { className: 'truncate' }, shortAddr(r.creator)),
+        el('td', {}, String(r.block_height)), el('td', {}, String(r.num_files))
+      ));
+    }
+  } catch (err) { console.error(err); }
+}
+
+async function loadPackages() {
+  try {
+    const pkgs = await api('packages?limit=200');
+    const tbody = clear('packages-list');
+    for (const p of (pkgs || [])) {
+      tbody.appendChild(el('tr', {},
+        el('td', {}, link(p.path, () => showView('realm-detail', p.path))),
+        el('td', {}, p.name), el('td', { className: 'truncate' }, shortAddr(p.creator)),
+        el('td', {}, String(p.block_height)), el('td', {}, String(p.num_files))
+      ));
+    }
+  } catch (err) { console.error(err); }
+}
+
+async function loadTxs() {
+  try {
+    const txs = await api('txs');
+    const tbody = clear('txs-list');
+    for (const tx of (txs || [])) {
+      const msg = tx.messages?.[0];
+      tbody.appendChild(el('tr', {},
+        el('td', {}, link(shortHash(tx.hash), () => showView('tx-detail', tx.hash))),
+        el('td', {}, String(tx.block_height)),
+        el('td', {}, typeBadge(msg?.value?.__typename)),
+        el('td', { className: 'truncate' }, txDetail(msg)),
+        el('td', {}, statusBadge(tx.success))
+      ));
+    }
+  } catch (err) { console.error(err); }
+}
+
+async function loadRealmDetail(path) {
+  const header = clear('realm-header');
+  header.appendChild(el('div', { style: { padding: '20px', color: 'var(--fg2)' } }, 'loading...'));
+  try {
+    const detail = await api('realm/' + path.replace('gno.land/', ''));
+    header.textContent = '';
+    header.appendChild(el('h2', { style: { margin: '16px 0 8px' } }, detail.path));
+    const meta = el('div', { style: { color: 'var(--fg2)', marginBottom: '16px' } },
+      detail.is_realm ? badge('realm', 'realm') : badge('pkg', 'package'));
+    meta.append(' deployed by ');
+    meta.appendChild(el('span', {}, shortAddr(detail.creator)));
+    meta.append(' at block ' + detail.block_height + ' \u00b7 ' + detail.num_files + ' files \u00b7 ' + detail.call_count + ' calls');
+    header.appendChild(meta);
+
+    // Tabs
+    const tabs = clear('realm-tabs');
+    const tabNames = ['info', 'source', 'calls', 'deps', 'graph'];
+    tabNames.forEach((name, i) => {
+      const tab = el('div', { className: 'tab' + (i === 0 ? ' active' : ''), onclick: () => switchTab(name, tab) }, name);
+      tabs.appendChild(tab);
+    });
+
+    // Info
+    const info = clear('tab-info');
+    info.classList.add('active');
+    const tbl = el('table');
+    const rows = [
+      ['path', detail.path], ['name', detail.name], ['creator', detail.creator],
+    ];
+    for (const [label, val] of rows) {
+      tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, label), el('td', {}, val)));
+    }
+    // tx link
+    const txRow = el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'tx'));
+    const txTd = el('td', {}, link(shortHash(detail.tx_hash), () => showView('tx-detail', detail.tx_hash)));
+    txRow.appendChild(txTd);
+    tbl.appendChild(txRow);
+    // imports
+    const impRow = el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'imports'));
+    const impTd = el('td');
+    for (const imp of (detail.imports || [])) {
+      impTd.appendChild(link(imp, () => showView('realm-detail', imp)));
+      impTd.appendChild(el('br'));
+    }
+    if (!(detail.imports || []).length) impTd.textContent = 'none';
+    impRow.appendChild(impTd);
+    tbl.appendChild(impRow);
+    // dependents
+    const depRow = el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'dependents'));
+    const depTd = el('td');
+    for (const dep of (detail.dependents || [])) {
+      depTd.appendChild(link(dep, () => showView('realm-detail', dep)));
+      depTd.appendChild(el('br'));
+    }
+    if (!(detail.dependents || []).length) depTd.textContent = 'none';
+    depRow.appendChild(depTd);
+    tbl.appendChild(depRow);
+    // msgrun refs
+    tbl.appendChild(el('tr', {},
+      el('td', { style: { color: 'var(--fg2)' } }, 'msgrun refs'),
+      el('td', {}, (detail.msgrun_refs || []).length + ' references')
+    ));
+    info.appendChild(tbl);
+
+    // Source
+    const src = clear('tab-source');
+    src.classList.remove('active');
+    for (const f of (detail.files || [])) {
+      src.appendChild(el('div', { style: { marginBottom: '16px' } },
+        el('div', { style: { color: 'var(--accent)', marginBottom: '4px', fontSize: '12px' } }, f.name),
+        el('pre', {}, f.body)
+      ));
+    }
+
+    // Calls
+    const calls = clear('tab-calls');
+    calls.classList.remove('active');
+    const callTbl = el('table');
+    callTbl.appendChild(el('thead', {}, el('tr', {},
+      el('th', {}, 'block'), el('th', {}, 'caller'), el('th', {}, 'function'), el('th', {}, 'status'), el('th', {}, 'tx')
+    )));
+    const callBody = el('tbody');
+    for (const c of (detail.recent_calls || [])) {
+      callBody.appendChild(el('tr', {},
+        el('td', {}, String(c.block_height)),
+        el('td', { className: 'truncate' }, shortAddr(c.caller)),
+        el('td', {}, c.func_name),
+        el('td', {}, statusBadge(c.success)),
+        el('td', {}, link(shortHash(c.tx_hash), () => showView('tx-detail', c.tx_hash)))
+      ));
+    }
+    callTbl.appendChild(callBody);
+    calls.appendChild(callTbl);
+
+    // Deps
+    const depsEl = clear('tab-deps');
+    depsEl.classList.remove('active');
+    const depsPath = path.replace('gno.land/', '');
+    const [imports, dependents] = await Promise.all([
+      api('deps/' + depsPath), api('deps/' + depsPath + '?dir=dependents')
+    ]);
+    const grid = el('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' } });
+    grid.appendChild(buildDepTree('imports (what this uses)', imports, path));
+    grid.appendChild(buildDepTree('dependents (what uses this)', dependents, path));
+    depsEl.appendChild(grid);
+
+    // Graph
+    document.getElementById('tab-graph').classList.remove('active');
+    renderDepGraph(imports, dependents, path);
+
+  } catch (err) {
+    header.textContent = '';
+    header.appendChild(el('p', { style: { color: 'var(--red)', padding: '20px' } }, 'Error: ' + err.message));
+  }
+}
+
+function buildDepTree(title, graph, root) {
+  const div = el('div');
+  div.appendChild(el('div', { className: 'section-title' }, title));
+  const entries = Object.entries(graph || {});
+  if (!entries.length) { div.appendChild(el('div', { style: { color: 'var(--fg2)' } }, 'none')); return div; }
+  for (const [pkg, deps] of entries) {
+    const item = el('div', { style: { marginBottom: '8px' } });
+    const a = link(pkg, () => showView('realm-detail', pkg));
+    if (pkg === root) a.style.fontWeight = 'bold';
+    item.appendChild(a);
+    if ((deps || []).length) {
+      const sub = el('div', { style: { paddingLeft: '16px', color: 'var(--fg2)', fontSize: '12px' } });
+      sub.append('\u2192 ');
+      deps.forEach((d, i) => {
+        if (i > 0) sub.append(', ');
+        sub.appendChild(link(d.split('/').slice(-1)[0], () => showView('realm-detail', d)));
+      });
+      item.appendChild(sub);
+    }
+    div.appendChild(item);
+  }
+  return div;
+}
+
+async function loadTxDetail(hash) {
+  const container = clear('tx-detail-content');
+  try {
+    const tx = await api('tx/' + hash);
+    container.appendChild(el('h2', { style: { margin: '16px 0 8px' } }, 'Transaction'));
+    const tbl = el('table');
+    const rows = [
+      ['hash', tx.hash], ['block', String(tx.block_height)],
+      ['gas', tx.gas_used + ' / ' + tx.gas_wanted],
+      ['fee', (tx.gas_fee?.amount || 0) + ' ' + (tx.gas_fee?.denom || '')],
+      ['memo', tx.memo || '-'],
+    ];
+    for (const [label, val] of rows) {
+      tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, label), el('td', {}, val)));
+    }
+    const statusRow = el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'status'));
+    statusRow.appendChild(el('td', {}, statusBadge(tx.success)));
+    tbl.appendChild(statusRow);
+    if (tx.response?.error) {
+      tbl.appendChild(el('tr', {},
+        el('td', { style: { color: 'var(--fg2)' } }, 'error'),
+        el('td', { style: { color: 'var(--red)' } }, tx.response.error)
+      ));
+    }
+    container.appendChild(tbl);
+
+    container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } },
+      'messages (' + (tx.messages?.length || 0) + ')'));
+    for (const [i, msg] of (tx.messages || []).entries()) {
+      container.appendChild(renderMessageEl(msg, i));
+    }
+
+    if (tx.response?.events?.length) {
+      container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'events'));
+      for (const ev of tx.response.events) {
+        const evEl = el('div', { style: { marginBottom: '8px', padding: '8px', background: 'var(--bg2)', borderRadius: '4px' } });
+        evEl.appendChild(badge('realm', ev.type || ev.__typename || 'event'));
+        if (ev.pkg_path) { evEl.append(' '); evEl.appendChild(link(ev.pkg_path, () => showView('realm-detail', ev.pkg_path))); }
+        for (const a of (ev.attrs || [])) {
+          const attrEl = el('div', { style: { paddingLeft: '16px', fontSize: '12px' } });
+          attrEl.appendChild(el('span', { style: { color: 'var(--fg2)' } }, a.key + ': '));
+          attrEl.append(a.value);
+          evEl.appendChild(attrEl);
+        }
+        container.appendChild(evEl);
+      }
+    }
+  } catch (err) {
+    container.appendChild(el('p', { style: { color: 'var(--red)', padding: '20px' } }, 'Error: ' + err.message));
+  }
+}
+
+function renderMessageEl(msg, index) {
+  const v = msg.value;
+  const div = el('div', { style: { marginBottom: '16px', background: 'var(--bg2)', borderRadius: '4px', padding: '12px' } });
+  const header = el('div', { style: { marginBottom: '8px' } });
+  header.appendChild(typeBadge(v.__typename));
+  header.append(' #' + index);
+  div.appendChild(header);
+
+  const tbl = el('table');
+  const addRow = (label, content) => {
+    const td = el('td');
+    if (typeof content === 'string') td.textContent = content;
+    else td.appendChild(content);
+    tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, label), td));
+  };
+
+  switch (v.__typename) {
+    case 'MsgAddPackage':
+      addRow('creator', v.creator);
+      addRow('package', link(v.package?.path || '', () => showView('realm-detail', v.package?.path)));
+      addRow('files', (v.package?.files || []).map(f => f.name).join(', '));
+      break;
+    case 'MsgCall':
+      addRow('caller', v.caller);
+      addRow('realm', link(v.pkg_path, () => showView('realm-detail', v.pkg_path)));
+      addRow('function', v.func);
+      addRow('args', (v.args || []).join(', ') || '-');
+      break;
+    case 'MsgRun':
+      addRow('caller', v.caller);
+      addRow('files', (v.package?.files || []).map(f => f.name).join(', '));
+      break;
+    case 'BankMsgSend':
+      addRow('from', v.from_address);
+      addRow('to', v.to_address);
+      addRow('amount', v.amount);
+      break;
+    default:
+      addRow('raw', JSON.stringify(v, null, 2));
+  }
+  div.appendChild(tbl);
+  return div;
+}
+
+function switchTab(name, tabEl) {
+  document.querySelectorAll('#realm-tabs .tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  if (tabEl) tabEl.classList.add('active');
+  document.getElementById('tab-' + name).classList.add('active');
+}
+
+// --- D3 Dep Graph ---
+function renderDepGraph(imports, dependents, centerPath) {
+  const container = document.getElementById('dep-graph');
+  container.textContent = '';
+  const nodes = new Map();
+  const links = [];
+  nodes.set(centerPath, { id: centerPath, group: 'center' });
+  for (const [pkg, deps] of Object.entries(imports || {})) {
+    if (!nodes.has(pkg)) nodes.set(pkg, { id: pkg, group: 'import' });
+    for (const dep of deps || []) {
+      if (!nodes.has(dep)) nodes.set(dep, { id: dep, group: 'import' });
+      links.push({ source: pkg, target: dep, type: 'imports' });
+    }
+  }
+  for (const [pkg, deps] of Object.entries(dependents || {})) {
+    if (!nodes.has(pkg)) nodes.set(pkg, { id: pkg, group: 'dependent' });
+    for (const dep of deps || []) {
+      if (!nodes.has(dep)) nodes.set(dep, { id: dep, group: 'dependent' });
+      links.push({ source: pkg, target: dep, type: 'dependent' });
+    }
+  }
+  const nodeArr = Array.from(nodes.values());
+  if (nodeArr.length <= 1) {
+    container.appendChild(el('div', { style: { padding: '40px', textAlign: 'center', color: 'var(--fg2)' } }, 'no dependencies to visualize'));
+    return;
+  }
+  const width = container.clientWidth || 800, height = 400;
+  const svg = d3.select(container).append('svg').attr('width', width).attr('height', height);
+  svg.append('defs').append('marker').attr('id', 'arrow').attr('viewBox', '0 -5 10 10')
+    .attr('refX', 20).attr('refY', 0).attr('markerWidth', 6).attr('markerHeight', 6).attr('orient', 'auto')
+    .append('path').attr('d', 'M0,-5L10,0L0,5').attr('fill', '#555');
+  const sim = d3.forceSimulation(nodeArr)
+    .force('link', d3.forceLink(links).id(d => d.id).distance(120))
+    .force('charge', d3.forceManyBody().strength(-300))
+    .force('center', d3.forceCenter(width / 2, height / 2))
+    .force('collision', d3.forceCollide().radius(30));
+  const linkEl = svg.append('g').selectAll('line').data(links).join('line')
+    .attr('stroke', d => d.type === 'imports' ? '#4ecdc4' : '#ff6b6b')
+    .attr('stroke-opacity', 0.6).attr('stroke-width', 1.5).attr('marker-end', 'url(#arrow)');
+  const nodeEl = svg.append('g').selectAll('circle').data(nodeArr).join('circle')
+    .attr('r', d => d.group === 'center' ? 10 : 6)
+    .attr('fill', d => d.group === 'center' ? '#4ecdc4' : d.group === 'import' ? '#51cf66' : '#ff6b6b')
+    .attr('stroke', '#000').attr('stroke-width', 1)
+    .style('cursor', 'pointer')
+    .on('click', (e, d) => showView('realm-detail', d.id))
+    .call(d3.drag()
+      .on('start', (e, d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+      .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; })
+      .on('end', (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }));
+  const labelEl = svg.append('g').selectAll('text').data(nodeArr).join('text')
+    .text(d => d.id.split('/').slice(-2).join('/')).attr('font-size', 10).attr('fill', '#ccc').attr('dx', 12).attr('dy', 4);
+  sim.on('tick', () => {
+    linkEl.attr('x1', d => d.source.x).attr('y1', d => d.source.y).attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+    nodeEl.attr('cx', d => d.x).attr('cy', d => d.y);
+    labelEl.attr('x', d => d.x).attr('y', d => d.y);
+  });
+}
+
+// --- Search ---
+let searchTimeout;
+document.getElementById('search-input').addEventListener('input', function() {
+  clearTimeout(searchTimeout);
+  const q = this.value;
+  const results = document.getElementById('search-results');
+  if (q.length < 2) { results.classList.remove('open'); return; }
+  searchTimeout = setTimeout(async () => {
+    try {
+      const data = await api('search?q=' + encodeURIComponent(q));
+      results.textContent = '';
+      if (!data || !data.length) {
+        const item = el('div', { style: { padding: '8px 12px' } }, 'no results');
+        results.appendChild(item);
+      } else {
+        for (const r of data) {
+          const item = el('div', { style: { padding: '8px 12px', cursor: 'pointer', borderBottom: '1px solid var(--border)' } });
+          item.appendChild(el('div', { style: { fontSize: '13px' } }, r.path));
+          item.appendChild(el('div', { style: { fontSize: '11px', color: 'var(--fg2)' } },
+            (r.is_realm ? 'realm' : 'package') + ' \u00b7 ' + shortAddr(r.creator)));
+          item.addEventListener('click', () => { results.classList.remove('open'); showView('realm-detail', r.path); });
+          item.addEventListener('mouseover', () => item.style.background = 'var(--bg3)');
+          item.addEventListener('mouseout', () => item.style.background = '');
+          results.appendChild(item);
+        }
+      }
+      results.classList.add('open');
+    } catch (err) { results.classList.remove('open'); }
+  }, 200);
+});
+
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.search-box')) document.getElementById('search-results').classList.remove('open');
+});
+
+// --- Hash routing ---
+function handleHash() {
+  const hash = window.location.hash.slice(1);
+  if (!hash) { showView('home'); return; }
+  if (hash.startsWith('realm/')) showView('realm-detail', 'gno.land/' + hash.slice(6));
+  else if (hash.startsWith('tx/')) showView('tx-detail', hash.slice(3));
+  else showView(hash);
+}
+window.addEventListener('hashchange', handleHash);
+if (window.location.hash) handleHash(); else loadHome();
+</script>
+</body>
+</html>
