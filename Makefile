@@ -1,10 +1,13 @@
-.PHONY: test run install dev
+.PHONY: test run install dev build
+
+build:
+	CGO_ENABLED=0 go build -o mygnoscan .
 
 run:
-	go run .
+	CGO_ENABLED=0 go run .
 
 install:
-	go install .
+	CGO_ENABLED=0 go install .
 
 test:
 	go test ./...
