@@ -303,9 +303,9 @@ function route() {
   else if (path === '/govdao') { view = 'govdao'; }
   else if (path === '/events') { view = 'events'; }
   else if (path.startsWith('/realm/')) { view = 'realm-detail'; data = 'gno.land/' + path.slice(7); }
-  const urlTab = new URLSearchParams(window.location.search).get('tab');
   else if (path.startsWith('/tx/')) { view = 'tx-detail'; data = decodeURIComponent(path.slice(4)); }
   else if (path.startsWith('/address/')) { view = 'address-detail'; data = path.slice(9); }
+  const urlTab = new URLSearchParams(window.location.search).get('tab');
 
   const ve = document.getElementById('view-' + view);
   if (ve) ve.classList.add('active');
