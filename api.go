@@ -98,7 +98,7 @@ func (a *API) HandleTx(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) HandleTxs(w http.ResponseWriter, r *http.Request) {
-	txs, err := a.client.GetRecentTransactions(r.Context())
+	txs, err := a.client.GetRecentTransactions(r.Context(), 1000)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return

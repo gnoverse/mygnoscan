@@ -64,7 +64,7 @@ func (s *Syncer) syncPackages(ctx context.Context) error {
 }
 
 func (s *Syncer) syncCalls(ctx context.Context) error {
-	txs, err := s.client.GetRecentTransactions(ctx)
+	txs, err := s.client.GetRecentTransactions(ctx, 999999)
 	if err != nil {
 		return err
 	}
