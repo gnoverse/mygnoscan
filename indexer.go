@@ -165,6 +165,61 @@ type EventAttr struct {
 	Value string `json:"value"`
 }
 
+// Light fields for list views — no file bodies
+const txFieldsLight = `
+	hash
+	success
+	block_height
+	gas_wanted
+	gas_used
+	gas_fee { amount denom }
+	memo
+	messages {
+		typeUrl
+		route
+		value {
+			__typename
+			... on MsgAddPackage {
+				creator
+				package { name path files { name } }
+				send
+			}
+			... on MsgCall {
+				caller
+				send
+				pkg_path
+				func
+				args
+			}
+			... on MsgRun {
+				caller
+				send
+				package { name path files { name } }
+			}
+			... on BankMsgSend {
+				from_address
+				to_address
+				amount
+			}
+		}
+	}
+	response {
+		log
+		info
+		error
+		data
+		events {
+			__typename
+			... on GnoEvent {
+				type
+				pkg_path
+				attrs { key value }
+			}
+		}
+	}
+`
+
+// Full fields including file bodies — for single tx detail and sync
 const txFields = `
 	hash
 	success
@@ -243,7 +298,7 @@ func (c *IndexerClient) GetRecentTransactions(ctx context.Context) ([]Transactio
 			where: {}
 			order: { heightAndIndex: DESC }
 		) { %s }
-	}`, txFields)
+	}`, txFieldsLight)
 	err := c.query(ctx, q, nil, &result)
 	return result.GetTransactions, err
 }
@@ -258,7 +313,7 @@ func (c *IndexerClient) GetTransactionsByPkgPath(ctx context.Context, pkgPath st
 			where: { messages: { value: { MsgCall: { pkg_path: { eq: "%s" } } } } }
 			order: { heightAndIndex: DESC }
 		) { %s }
-	}`, pkgPath, txFields)
+	}`, pkgPath, txFieldsLight)
 	err := c.query(ctx, q, nil, &result)
 	return result.GetTransactions, err
 }
@@ -311,7 +366,7 @@ func (c *IndexerClient) GetTransactionsByAddress(ctx context.Context, addr strin
 			}
 			order: { heightAndIndex: DESC }
 		) { %s }
-	}`, addr, addr, addr, addr, addr, txFields)
+	}`, addr, addr, addr, addr, addr, txFieldsLight)
 	err := c.query(ctx, q, nil, &result)
 	return result.GetTransactions, err
 }
@@ -409,7 +464,7 @@ func (c *IndexerClient) GetTransactionsByRealmFunc(ctx context.Context, pkgPath,
 			where: { messages: { value: { MsgCall: { pkg_path: { eq: "%s" }, func: { eq: "%s" } } } } }
 			order: { heightAndIndex: DESC }
 		) { %s }
-	}`, pkgPath, funcName, txFields)
+	}`, pkgPath, funcName, txFieldsLight)
 	err := c.query(ctx, q, nil, &result)
 	return result.GetTransactions, err
 }
@@ -424,7 +479,7 @@ func (c *IndexerClient) GetRecentTransactionsWithEvents(ctx context.Context) ([]
 			where: { response: { events: { GnoEvent: {} } } }
 			order: { heightAndIndex: DESC }
 		) { %s }
-	}`, txFields)
+	}`, txFieldsLight)
 	err := c.query(ctx, q, nil, &result)
 	return result.GetTransactions, err
 }
@@ -439,7 +494,7 @@ func (c *IndexerClient) GetEventsByPkgPath(ctx context.Context, pkgPath string) 
 			where: { response: { events: { GnoEvent: { pkg_path: { eq: "%s" } } } } }
 			order: { heightAndIndex: DESC }
 		) { %s }
-	}`, pkgPath, txFields)
+	}`, pkgPath, txFieldsLight)
 	err := c.query(ctx, q, nil, &result)
 	return result.GetTransactions, err
 }
@@ -454,7 +509,7 @@ func (c *IndexerClient) GetGovDAOTransactions(ctx context.Context) ([]Transactio
 			where: { messages: { value: { MsgCall: { pkg_path: { like: "%%govdao%%"} } } } }
 			order: { heightAndIndex: DESC }
 		) { %s }
-	}`, txFields)
+	}`, txFieldsLight)
 	err := c.query(ctx, q, nil, &result)
 	return result.GetTransactions, err
 }
