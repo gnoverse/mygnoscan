@@ -98,12 +98,30 @@ func run() error {
 	mux.HandleFunc("GET /api/accounts", api.HandleAccounts)
 	mux.HandleFunc("GET /api/govdao", api.HandleGovDAO)
 
-	// Frontend
+	// Frontend: SPA handler serves index.html for all non-API routes
 	frontendSub, err := fs.Sub(frontendFS, "frontend")
 	if err != nil {
 		return fmt.Errorf("frontend fs: %w", err)
 	}
-	mux.Handle("GET /", http.FileServer(http.FS(frontendSub)))
+	staticFS := http.FileServer(http.FS(frontendSub))
+	indexHTML, err := fs.ReadFile(frontendFS, "frontend/index.html")
+	if err != nil {
+		return fmt.Errorf("read index.html: %w", err)
+	}
+	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+		// Try serving static file first (css, js, images)
+		if r.URL.Path != "/" {
+			f, err := frontendSub.Open(r.URL.Path[1:]) // strip leading /
+			if err == nil {
+				f.Close()
+				staticFS.ServeHTTP(w, r)
+				return
+			}
+		}
+		// Serve index.html for all other routes (SPA)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(indexHTML)
+	})
 
 	srv := &http.Server{
 		Addr:         *listenAddr,

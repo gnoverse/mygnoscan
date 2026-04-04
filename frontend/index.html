@@ -38,7 +38,7 @@ main { padding: 20px 0; }
 .section-title { font-size: 14px; color: var(--fg2); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
 table { width: 100%; border-collapse: collapse; }
 th { text-align: left; font-size: 11px; color: var(--fg2); text-transform: uppercase; letter-spacing: 1px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
-td { padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
+td { padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 13px; word-break: break-all; }
 tr:hover { background: var(--bg2); }
 .truncate { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .badge { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: bold; }
@@ -57,23 +57,40 @@ pre { background: var(--bg2); border: 1px solid var(--border); border-radius: 4p
 .view { display: none; }
 .view.active { display: block; }
 .card { background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; padding: 12px; margin-bottom: 8px; }
+.block-ctx { color: var(--fg2); font-size: 12px; }
+/* Skeleton loading */
+.skeleton { background: var(--bg3); border-radius: 4px; animation: pulse 1.5s ease-in-out infinite; }
+.skeleton-line { height: 16px; margin-bottom: 12px; }
+.skeleton-line:nth-child(1) { width: 80%; }
+.skeleton-line:nth-child(2) { width: 60%; }
+.skeleton-line:nth-child(3) { width: 70%; }
+.skeleton-line:nth-child(4) { width: 50%; }
+.skeleton-line:nth-child(5) { width: 65%; }
+@keyframes pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 0.8; } }
+.skeleton-row td { padding: 12px; }
+.skeleton-cell { height: 14px; background: var(--bg3); border-radius: 3px; animation: pulse 1.5s ease-in-out infinite; }
+/* Raw JSON toggle */
+.raw-toggle { cursor: pointer; color: var(--fg2); font-size: 12px; margin-top: 12px; user-select: none; }
+.raw-toggle:hover { color: var(--accent); }
+.raw-content { display: none; margin-top: 8px; }
+.raw-content.open { display: block; }
 @media (max-width: 768px) { .stats-bar { gap: 12px; } .stat .value { font-size: 16px; } .search-box input { width: 160px; } nav { gap: 8px; } }
 </style>
 </head>
 <body>
 <header>
   <div class="container">
-    <span class="logo" onclick="showView('home')">mygnoscan</span>
+    <span class="logo" onclick="navigate('/')">mygnoscan</span>
     <nav>
-      <a onclick="showView('home')" id="nav-home" class="active">home</a>
-      <a onclick="showView('realms')" id="nav-realms">realms</a>
-      <a onclick="showView('packages')" id="nav-packages">packages</a>
-      <a onclick="showView('txs')" id="nav-txs">txs</a>
-      <a onclick="showView('blocks')" id="nav-blocks">blocks</a>
-      <a onclick="showView('accounts')" id="nav-accounts">accounts</a>
-      <a onclick="showView('tokens')" id="nav-tokens">tokens</a>
-      <a onclick="showView('validators')" id="nav-validators">validators</a>
-      <a onclick="showView('govdao')" id="nav-govdao">govdao</a>
+      <a onclick="navigate('/')" id="nav-home" class="active">home</a>
+      <a onclick="navigate('/realms')" id="nav-realms">realms</a>
+      <a onclick="navigate('/packages')" id="nav-packages">packages</a>
+      <a onclick="navigate('/txs')" id="nav-txs">txs</a>
+      <a onclick="navigate('/blocks')" id="nav-blocks">blocks</a>
+      <a onclick="navigate('/accounts')" id="nav-accounts">accounts</a>
+      <a onclick="navigate('/tokens')" id="nav-tokens">tokens</a>
+      <a onclick="navigate('/validators')" id="nav-validators">validators</a>
+      <a onclick="navigate('/govdao')" id="nav-govdao">govdao</a>
     </nav>
     <div class="search-box">
       <input type="text" id="search-input" placeholder="search...">
@@ -146,11 +163,46 @@ function clear(id) { const e = document.getElementById(id); e.textContent = ''; 
 function badge(type, text) { return el('span', { className: 'badge badge-' + type }, text); }
 function link(text, onclick) { const a = el('a', { href: '#' }, text); a.addEventListener('click', (e) => { e.preventDefault(); onclick(); }); return a; }
 function shortAddr(addr) { return (!addr || addr.length <= 16) ? (addr || '') : addr.slice(0, 10) + '...' + addr.slice(-6); }
-function shortHash(hash) { return (!hash) ? '' : hash.slice(0, 12) + '...'; }
 function statusBadge(s) { return s ? badge('ok', 'ok') : badge('fail', 'fail'); }
+function fmtNum(n) { return typeof n === 'number' ? n.toLocaleString() : String(n); }
+// Skeleton loading placeholders
+function skeletonRows(tbody, cols, rows) {
+  for (let i = 0; i < rows; i++) {
+    const tr = el('tr', { className: 'skeleton-row' });
+    for (let j = 0; j < cols; j++) {
+      const td = el('td');
+      const cell = el('div', { className: 'skeleton skeleton-cell', style: { width: (40 + Math.random() * 50) + '%' } });
+      td.appendChild(cell); tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+}
+function skeletonBlock(container) {
+  for (let i = 0; i < 5; i++) container.appendChild(el('div', { className: 'skeleton skeleton-line' }));
+}
+// Raw JSON collapsible
+function rawJsonToggle(data) {
+  const wrapper = el('div');
+  const toggle = el('div', { className: 'raw-toggle' }, '\u25b6 raw json');
+  const content = el('div', { className: 'raw-content' }, el('pre', {}, JSON.stringify(data, null, 2)));
+  toggle.addEventListener('click', () => {
+    content.classList.toggle('open');
+    toggle.textContent = content.classList.contains('open') ? '\u25bc raw json' : '\u25b6 raw json';
+  });
+  wrapper.appendChild(toggle); wrapper.appendChild(content);
+  return wrapper;
+}
 function typeBadge(t) {
   const m = { MsgAddPackage: ['pkg', 'deploy'], MsgCall: ['realm', 'call'], MsgRun: ['ok', 'run'], BankMsgSend: ['fail', 'send'] };
   const [c, x] = m[t] || ['', t || '?']; return badge(c, x);
+}
+// tx link with block context: "hash (genesis)" or "hash (block N)"
+function txLink(hash, blockHeight) {
+  const span = el('span');
+  span.appendChild(link(hash, () => navigate('/tx/' + encodeURIComponent(hash))));
+  const ctx = blockHeight === 0 ? ' (genesis)' : ' (block ' + blockHeight + ')';
+  span.appendChild(el('span', { className: 'block-ctx' }, ctx));
+  return span;
 }
 function txDetail(msg) {
   const v = msg?.value; if (!v) return '';
@@ -168,24 +220,41 @@ function timeAgo(t) {
   if (s < 60) return s + 's ago'; if (s < 3600) return Math.floor(s/60) + 'm ago';
   if (s < 86400) return Math.floor(s/3600) + 'h ago'; return Math.floor(s/86400) + 'd ago';
 }
+function blockLabel(h) { return h === 0 ? 'genesis' : String(h); }
 
 async function api(path) { const r = await fetch('/api/' + path); if (!r.ok) throw new Error(await r.text()); return r.json(); }
 
-// --- Navigation ---
-function showView(view, data) {
+// --- Navigation (History API) ---
+function navigate(path, replace) {
+  if (replace) history.replaceState(null, '', path);
+  else history.pushState(null, '', path);
+  route();
+}
+
+function route() {
+  const path = window.location.pathname;
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.querySelectorAll('nav a').forEach(a => a.classList.remove('active'));
+
+  let view = 'home', data = null;
+  if (path === '/' || path === '') { view = 'home'; }
+  else if (path === '/realms') { view = 'realms'; }
+  else if (path === '/packages') { view = 'packages'; }
+  else if (path === '/txs') { view = 'txs'; }
+  else if (path === '/blocks') { view = 'blocks'; }
+  else if (path === '/accounts') { view = 'accounts'; }
+  else if (path === '/tokens') { view = 'tokens'; }
+  else if (path === '/validators') { view = 'validators'; }
+  else if (path === '/govdao') { view = 'govdao'; }
+  else if (path.startsWith('/realm/')) { view = 'realm-detail'; data = 'gno.land/' + path.slice(7); }
+  else if (path.startsWith('/tx/')) { view = 'tx-detail'; data = decodeURIComponent(path.slice(4)); }
+  else if (path.startsWith('/address/')) { view = 'address-detail'; data = path.slice(9); }
+
   const ve = document.getElementById('view-' + view);
   if (ve) ve.classList.add('active');
   const nav = document.getElementById('nav-' + view);
   if (nav) nav.classList.add('active');
-  // Update hash for bookmarkability
-  let hash = view;
-  if (view === 'realm-detail') hash = 'realm/' + (data || '').replace('gno.land/', '');
-  else if (view === 'tx-detail') hash = 'tx/' + (data || '');
-  else if (view === 'address-detail') hash = 'address/' + (data || '');
-  else if (view === 'home') hash = '';
-  window.location.hash = hash;
+
   switch (view) {
     case 'home': loadHome(); break;
     case 'realms': loadRealms(); break;
@@ -204,18 +273,21 @@ function showView(view, data) {
 
 // --- Loaders ---
 async function loadHome() {
+  // Show skeletons
+  skeletonRows(clear('recent-txs'), 4, 8);
+  skeletonRows(clear('latest-realms'), 4, 5);
   try {
     const [stats, realms, txs] = await Promise.all([api('stats'), api('realms?limit=10'), api('txs')]);
-    document.getElementById('stat-realms').textContent = stats.total_realms;
-    document.getElementById('stat-packages').textContent = stats.total_packages;
-    document.getElementById('stat-calls').textContent = stats.total_calls;
-    document.getElementById('stat-msgruns').textContent = stats.total_msg_runs;
-    document.getElementById('stat-callers').textContent = stats.unique_callers;
-    document.getElementById('stat-block').textContent = stats.latest_block.toLocaleString();
+    document.getElementById('stat-realms').textContent = fmtNum(stats.total_realms);
+    document.getElementById('stat-packages').textContent = fmtNum(stats.total_packages);
+    document.getElementById('stat-calls').textContent = fmtNum(stats.total_calls);
+    document.getElementById('stat-msgruns').textContent = fmtNum(stats.total_msg_runs);
+    document.getElementById('stat-callers').textContent = fmtNum(stats.unique_callers);
+    document.getElementById('stat-block').textContent = fmtNum(stats.latest_block);
     const tbody = clear('latest-realms');
     for (const r of (realms || [])) {
       tbody.appendChild(el('tr', {},
-        el('td', {}, link(r.path, () => showView('realm-detail', r.path))),
+        el('td', {}, link(r.path, () => navigate('/realm/' + r.path.replace('gno.land/', '')))),
         el('td', {}, r.name), el('td', { className: 'truncate' }, shortAddr(r.creator)),
         el('td', {}, String(r.num_files))
       ));
@@ -224,9 +296,9 @@ async function loadHome() {
     for (const tx of (txs || []).slice(0, 20)) {
       const msg = tx.messages?.[0];
       txBody.appendChild(el('tr', {},
-        el('td', {}, link(String(tx.block_height), () => showView('blocks'))),
+        el('td', {}, link(blockLabel(tx.block_height), () => navigate('/blocks'))),
         el('td', {}, typeBadge(msg?.value?.__typename)),
-        el('td', { className: 'truncate' }, link(txDetail(msg), () => showView('tx-detail', tx.hash))),
+        el('td', {}, link(txDetail(msg), () => navigate('/tx/' + encodeURIComponent(tx.hash)))),
         el('td', {}, statusBadge(tx.success))
       ));
     }
@@ -234,44 +306,47 @@ async function loadHome() {
 }
 
 async function loadRealms() {
+  skeletonRows(clear('realms-list'), 5, 10);
   try {
     const data = await api('realms?limit=200');
     const tbody = clear('realms-list');
     for (const r of (data || [])) {
       tbody.appendChild(el('tr', {},
-        el('td', {}, link(r.path, () => showView('realm-detail', r.path))),
-        el('td', {}, r.name), el('td', { className: 'truncate' }, link(shortAddr(r.creator), () => showView('address-detail', r.creator))),
-        el('td', {}, String(r.block_height)), el('td', {}, String(r.num_files))
+        el('td', {}, link(r.path, () => navigate('/realm/' + r.path.replace('gno.land/', '')))),
+        el('td', {}, r.name), el('td', { className: 'truncate' }, link(shortAddr(r.creator), () => navigate('/address/' + r.creator))),
+        el('td', {}, blockLabel(r.block_height)), el('td', {}, String(r.num_files))
       ));
     }
   } catch (err) { console.error(err); }
 }
 
 async function loadPackages() {
+  skeletonRows(clear('packages-list'), 5, 10);
   try {
     const data = await api('packages?limit=200');
     const tbody = clear('packages-list');
     for (const p of (data || [])) {
       tbody.appendChild(el('tr', {},
-        el('td', {}, link(p.path, () => showView('realm-detail', p.path))),
-        el('td', {}, p.name), el('td', { className: 'truncate' }, link(shortAddr(p.creator), () => showView('address-detail', p.creator))),
-        el('td', {}, String(p.block_height)), el('td', {}, String(p.num_files))
+        el('td', {}, link(p.path, () => navigate('/realm/' + p.path.replace('gno.land/', '')))),
+        el('td', {}, p.name), el('td', { className: 'truncate' }, link(shortAddr(p.creator), () => navigate('/address/' + p.creator))),
+        el('td', {}, blockLabel(p.block_height)), el('td', {}, String(p.num_files))
       ));
     }
   } catch (err) { console.error(err); }
 }
 
 async function loadTxs() {
+  skeletonRows(clear('txs-list'), 5, 10);
   try {
     const data = await api('txs');
     const tbody = clear('txs-list');
     for (const tx of (data || [])) {
       const msg = tx.messages?.[0];
       tbody.appendChild(el('tr', {},
-        el('td', {}, link(shortHash(tx.hash), () => showView('tx-detail', tx.hash))),
-        el('td', {}, String(tx.block_height)),
+        el('td', {}, txLink(tx.hash, tx.block_height)),
+        el('td', {}, blockLabel(tx.block_height)),
         el('td', {}, typeBadge(msg?.value?.__typename)),
-        el('td', { className: 'truncate' }, txDetail(msg)),
+        el('td', {}, txDetail(msg)),
         el('td', {}, statusBadge(tx.success))
       ));
     }
@@ -279,6 +354,7 @@ async function loadTxs() {
 }
 
 async function loadBlocks() {
+  skeletonRows(clear('blocks-list'), 5, 10);
   try {
     const data = await api('blocks?limit=50');
     const tbody = clear('blocks-list');
@@ -288,20 +364,21 @@ async function loadBlocks() {
         el('td', {}, timeAgo(b.time)),
         el('td', {}, String(b.num_txs)),
         el('td', { className: 'truncate' }, shortAddr(b.proposer_address_raw)),
-        el('td', { className: 'truncate' }, shortHash(b.hash))
+        el('td', {}, b.hash)
       ));
     }
   } catch (err) { console.error(err); }
 }
 
 async function loadAccounts() {
+  skeletonRows(clear('accounts-list'), 5, 10);
   try {
     const data = await api('accounts');
     const tbody = clear('accounts-list');
     for (const a of (data || [])) {
       const total = a.call_count + a.deploy_count + a.msgrun_count;
       tbody.appendChild(el('tr', {},
-        el('td', {}, link(shortAddr(a.address), () => showView('address-detail', a.address))),
+        el('td', {}, link(a.address, () => navigate('/address/' + a.address))),
         el('td', {}, String(a.call_count)),
         el('td', {}, String(a.deploy_count)),
         el('td', {}, String(a.msgrun_count)),
@@ -317,9 +394,9 @@ async function loadTokens() {
     const tbody = clear('tokens-list');
     for (const t of (data || [])) {
       tbody.appendChild(el('tr', {},
-        el('td', {}, link(t.path, () => showView('realm-detail', t.path))),
+        el('td', {}, link(t.path, () => navigate('/realm/' + t.path.replace('gno.land/', '')))),
         el('td', {}, t.name),
-        el('td', { className: 'truncate' }, link(shortAddr(t.creator), () => showView('address-detail', t.creator))),
+        el('td', { className: 'truncate' }, link(shortAddr(t.creator), () => navigate('/address/' + t.creator))),
         el('td', {}, String(t.call_count))
       ));
     }
@@ -338,16 +415,14 @@ async function loadValidators() {
       return;
     }
     const tbl = el('table');
-    tbl.appendChild(el('thead', {}, el('tr', {},
-      el('th', {}, 'block'), el('th', {}, 'caller'), el('th', {}, 'function'), el('th', {}, 'args'), el('th', {}, 'status')
-    )));
+    tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'caller'), el('th', {}, 'function'), el('th', {}, 'args'), el('th', {}, 'status'))));
     const tbody = el('tbody');
     for (const tx of data) {
       for (const msg of tx.messages) {
         if (msg.value.__typename === 'MsgCall') {
           tbody.appendChild(el('tr', {},
-            el('td', {}, link(String(tx.block_height), () => showView('tx-detail', tx.hash))),
-            el('td', { className: 'truncate' }, link(shortAddr(msg.value.caller), () => showView('address-detail', msg.value.caller))),
+            el('td', {}, link(blockLabel(tx.block_height), () => navigate('/tx/' + encodeURIComponent(tx.hash)))),
+            el('td', { className: 'truncate' }, link(shortAddr(msg.value.caller), () => navigate('/address/' + msg.value.caller))),
             el('td', {}, msg.value.func),
             el('td', { className: 'truncate' }, (msg.value.args || []).slice(0, 2).join(', ')),
             el('td', {}, statusBadge(tx.success))
@@ -355,8 +430,7 @@ async function loadValidators() {
         }
       }
     }
-    tbl.appendChild(tbody);
-    container.appendChild(tbl);
+    tbl.appendChild(tbody); container.appendChild(tbl);
   } catch (err) { console.error(err); }
 }
 
@@ -372,11 +446,11 @@ async function loadGovDAO() {
       for (const msg of tx.messages) {
         if (msg.value.__typename === 'MsgCall') {
           tbody.appendChild(el('tr', {},
-            el('td', {}, String(tx.block_height)),
-            el('td', { className: 'truncate' }, link(shortAddr(msg.value.caller), () => showView('address-detail', msg.value.caller))),
+            el('td', {}, blockLabel(tx.block_height)),
+            el('td', { className: 'truncate' }, link(shortAddr(msg.value.caller), () => navigate('/address/' + msg.value.caller))),
             el('td', {}, msg.value.pkg_path + '::' + msg.value.func),
             el('td', {}, statusBadge(tx.success)),
-            el('td', {}, link(shortHash(tx.hash), () => showView('tx-detail', tx.hash)))
+            el('td', {}, txLink(tx.hash, tx.block_height))
           ));
         }
       }
@@ -386,7 +460,7 @@ async function loadGovDAO() {
 
 async function loadRealmDetail(path) {
   const header = clear('realm-header');
-  header.appendChild(el('div', { style: { padding: '20px', color: 'var(--fg2)' } }, 'loading...'));
+  skeletonBlock(header);
   try {
     const detail = await api('realm/' + path.replace('gno.land/', ''));
     header.textContent = '';
@@ -394,8 +468,8 @@ async function loadRealmDetail(path) {
     const meta = el('div', { style: { color: 'var(--fg2)', marginBottom: '16px' } },
       detail.is_realm ? badge('realm', 'realm') : badge('pkg', 'package'));
     meta.append(' deployed by ');
-    meta.appendChild(link(shortAddr(detail.creator), () => showView('address-detail', detail.creator)));
-    meta.append(' at block ' + detail.block_height + ' \u00b7 ' + detail.num_files + ' files \u00b7 ' + detail.call_count + ' calls');
+    meta.appendChild(link(shortAddr(detail.creator), () => navigate('/address/' + detail.creator)));
+    meta.append(' at ' + blockLabel(detail.block_height) + ' \u00b7 ' + detail.num_files + ' files \u00b7 ' + detail.call_count + ' calls');
     header.appendChild(meta);
     const tabs = clear('realm-tabs');
     const tabNames = ['info', 'source', 'calls', 'deps', 'graph'];
@@ -409,21 +483,23 @@ async function loadRealmDetail(path) {
     for (const [l, v] of [['path', detail.path], ['name', detail.name], ['creator', detail.creator]]) {
       tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, l), el('td', {}, v)));
     }
+    // tx with block context
     const txRow = el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'tx'));
-    txRow.appendChild(el('td', {}, link(shortHash(detail.tx_hash), () => showView('tx-detail', detail.tx_hash))));
+    txRow.appendChild(el('td', {}, txLink(detail.tx_hash, detail.block_height)));
     tbl.appendChild(txRow);
     const impRow = el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'imports'));
     const impTd = el('td');
-    for (const imp of (detail.imports || [])) { impTd.appendChild(link(imp, () => showView('realm-detail', imp))); impTd.appendChild(el('br')); }
+    for (const imp of (detail.imports || [])) { impTd.appendChild(link(imp, () => navigate('/realm/' + imp.replace('gno.land/', '')))); impTd.appendChild(el('br')); }
     if (!(detail.imports || []).length) impTd.textContent = 'none';
     impRow.appendChild(impTd); tbl.appendChild(impRow);
     const depRow = el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'dependents'));
     const depTd = el('td');
-    for (const dep of (detail.dependents || [])) { depTd.appendChild(link(dep, () => showView('realm-detail', dep))); depTd.appendChild(el('br')); }
+    for (const dep of (detail.dependents || [])) { depTd.appendChild(link(dep, () => navigate('/realm/' + dep.replace('gno.land/', '')))); depTd.appendChild(el('br')); }
     if (!(detail.dependents || []).length) depTd.textContent = 'none';
     depRow.appendChild(depTd); tbl.appendChild(depRow);
-    tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'msgrun refs'), el('td', {}, (detail.msgrun_refs || []).length + ' references')));
+    tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'msgrun refs'), el('td', {}, fmtNum((detail.msgrun_refs || []).length) + ' references')));
     info.appendChild(tbl);
+    info.appendChild(rawJsonToggle(detail));
     // Source
     const src = clear('tab-source'); src.classList.remove('active');
     for (const f of (detail.files || [])) {
@@ -438,10 +514,10 @@ async function loadRealmDetail(path) {
     const callBody = el('tbody');
     for (const c of (detail.recent_calls || [])) {
       callBody.appendChild(el('tr', {},
-        el('td', {}, String(c.block_height)),
-        el('td', { className: 'truncate' }, link(shortAddr(c.caller), () => showView('address-detail', c.caller))),
+        el('td', {}, blockLabel(c.block_height)),
+        el('td', { className: 'truncate' }, link(shortAddr(c.caller), () => navigate('/address/' + c.caller))),
         el('td', {}, c.func_name), el('td', {}, statusBadge(c.success)),
-        el('td', {}, link(shortHash(c.tx_hash), () => showView('tx-detail', c.tx_hash)))
+        el('td', {}, txLink(c.tx_hash, c.block_height))
       ));
     }
     callTbl.appendChild(callBody); calls.appendChild(callTbl);
@@ -468,13 +544,13 @@ function buildDepTree(title, graph, root) {
   if (!entries.length) { div.appendChild(el('div', { style: { color: 'var(--fg2)' } }, 'none')); return div; }
   for (const [pkg, deps] of entries) {
     const item = el('div', { style: { marginBottom: '8px' } });
-    const a = link(pkg, () => showView('realm-detail', pkg));
+    const a = link(pkg, () => navigate('/realm/' + pkg.replace('gno.land/', '')));
     if (pkg === root) a.style.fontWeight = 'bold';
     item.appendChild(a);
     if ((deps || []).length) {
       const sub = el('div', { style: { paddingLeft: '16px', color: 'var(--fg2)', fontSize: '12px' } });
       sub.append('\u2192 ');
-      deps.forEach((d, i) => { if (i > 0) sub.append(', '); sub.appendChild(link(d.split('/').slice(-1)[0], () => showView('realm-detail', d))); });
+      deps.forEach((d, i) => { if (i > 0) sub.append(', '); sub.appendChild(link(d.split('/').slice(-1)[0], () => navigate('/realm/' + d.replace('gno.land/', '')))); });
       item.appendChild(sub);
     }
     div.appendChild(item);
@@ -484,13 +560,17 @@ function buildDepTree(title, graph, root) {
 
 async function loadTxDetail(hash) {
   const container = clear('tx-detail-content');
+  skeletonBlock(container);
   try {
     const tx = await api('tx/' + encodeURIComponent(hash));
+    container.textContent = '';
     container.appendChild(el('h2', { style: { margin: '16px 0 8px' } }, 'Transaction'));
     const tbl = el('table');
-    for (const [l, v] of [['hash', tx.hash], ['block', String(tx.block_height)], ['gas', tx.gas_used + ' / ' + tx.gas_wanted], ['fee', (tx.gas_fee?.amount || 0) + ' ' + (tx.gas_fee?.denom || '')], ['memo', tx.memo || '-']]) {
-      tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, l), el('td', {}, v)));
-    }
+    tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'hash'), el('td', {}, tx.hash)));
+    tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'block'), el('td', {}, blockLabel(tx.block_height))));
+    tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'gas'), el('td', {}, fmtNum(tx.gas_used) + ' / ' + fmtNum(tx.gas_wanted))));
+    tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'fee'), el('td', {}, fmtNum(tx.gas_fee?.amount || 0) + ' ' + (tx.gas_fee?.denom || ''))));
+    tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'memo'), el('td', {}, tx.memo || '-')));
     const sr = el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'status'));
     sr.appendChild(el('td', {}, statusBadge(tx.success))); tbl.appendChild(sr);
     if (tx.response?.error) tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'error'), el('td', { style: { color: 'var(--red)' } }, tx.response.error)));
@@ -502,7 +582,7 @@ async function loadTxDetail(hash) {
       for (const ev of tx.response.events) {
         const evEl = el('div', { className: 'card' });
         evEl.appendChild(badge('realm', ev.type || ev.__typename || 'event'));
-        if (ev.pkg_path) { evEl.append(' '); evEl.appendChild(link(ev.pkg_path, () => showView('realm-detail', ev.pkg_path))); }
+        if (ev.pkg_path) { evEl.append(' '); evEl.appendChild(link(ev.pkg_path, () => navigate('/realm/' + ev.pkg_path.replace('gno.land/', '')))); }
         for (const a of (ev.attrs || [])) {
           const ae = el('div', { style: { paddingLeft: '16px', fontSize: '12px' } });
           ae.appendChild(el('span', { style: { color: 'var(--fg2)' } }, a.key + ': ')); ae.append(a.value); evEl.appendChild(ae);
@@ -510,21 +590,24 @@ async function loadTxDetail(hash) {
         container.appendChild(evEl);
       }
     }
-  } catch (err) { container.appendChild(el('p', { style: { color: 'var(--red)', padding: '20px' } }, 'Error: ' + err.message)); }
+    container.appendChild(rawJsonToggle(tx));
+  } catch (err) { container.textContent = ''; container.appendChild(el('p', { style: { color: 'var(--red)', padding: '20px' } }, 'Error: ' + err.message)); }
 }
 
 async function loadAddressDetail(addr) {
   const container = clear('address-detail-content');
-  container.appendChild(el('h2', { style: { margin: '16px 0 8px' } }, 'Address'));
-  container.appendChild(el('div', { style: { color: 'var(--fg2)', marginBottom: '16px', wordBreak: 'break-all' } }, addr));
+  skeletonBlock(container);
   try {
+    container.textContent = '';
+    container.appendChild(el('h2', { style: { margin: '16px 0 8px' } }, 'Address'));
+    container.appendChild(el('div', { style: { color: 'var(--fg2)', marginBottom: '16px', wordBreak: 'break-all' } }, addr));
     const data = await api('address/' + addr);
     if ((data.packages || []).length) {
       container.appendChild(el('div', { className: 'section-title' }, 'deployed packages (' + data.packages.length + ')'));
       const ptbl = el('table');
       for (const p of data.packages) {
         ptbl.appendChild(el('tr', {},
-          el('td', {}, link(p.path, () => showView('realm-detail', p.path))),
+          el('td', {}, link(p.path, () => navigate('/realm/' + p.path.replace('gno.land/', '')))),
           el('td', {}, p.name), el('td', {}, p.is_realm ? 'realm' : 'package')
         ));
       }
@@ -532,14 +615,14 @@ async function loadAddressDetail(addr) {
     }
     container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'transactions (' + (data.transactions || []).length + ')'));
     const tbl = el('table');
-    tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'type'), el('th', {}, 'detail'), el('th', {}, 'status'))));
+    tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'tx'), el('th', {}, 'type'), el('th', {}, 'detail'), el('th', {}, 'status'))));
     const tbody = el('tbody');
     for (const tx of (data.transactions || [])) {
       const msg = tx.messages?.[0];
       tbody.appendChild(el('tr', {},
-        el('td', {}, link(String(tx.block_height), () => showView('tx-detail', tx.hash))),
+        el('td', {}, txLink(tx.hash, tx.block_height)),
         el('td', {}, typeBadge(msg?.value?.__typename)),
-        el('td', { className: 'truncate' }, txDetail(msg)),
+        el('td', {}, txDetail(msg)),
         el('td', {}, statusBadge(tx.success))
       ));
     }
@@ -558,19 +641,19 @@ function renderMessageEl(msg, index) {
   };
   switch (v.__typename) {
     case 'MsgAddPackage':
-      addRow('creator', link(v.creator, () => showView('address-detail', v.creator)));
-      addRow('package', link(v.package?.path || '', () => showView('realm-detail', v.package?.path)));
+      addRow('creator', link(v.creator, () => navigate('/address/' + v.creator)));
+      addRow('package', link(v.package?.path || '', () => navigate('/realm/' + (v.package?.path || '').replace('gno.land/', ''))));
       addRow('files', (v.package?.files || []).map(f => f.name).join(', ')); break;
     case 'MsgCall':
-      addRow('caller', link(v.caller, () => showView('address-detail', v.caller)));
-      addRow('realm', link(v.pkg_path, () => showView('realm-detail', v.pkg_path)));
+      addRow('caller', link(v.caller, () => navigate('/address/' + v.caller)));
+      addRow('realm', link(v.pkg_path, () => navigate('/realm/' + v.pkg_path.replace('gno.land/', ''))));
       addRow('function', v.func); addRow('args', (v.args || []).join(', ') || '-'); break;
     case 'MsgRun':
-      addRow('caller', link(v.caller, () => showView('address-detail', v.caller)));
+      addRow('caller', link(v.caller, () => navigate('/address/' + v.caller)));
       addRow('files', (v.package?.files || []).map(f => f.name).join(', ')); break;
     case 'BankMsgSend':
-      addRow('from', link(v.from_address, () => showView('address-detail', v.from_address)));
-      addRow('to', link(v.to_address, () => showView('address-detail', v.to_address)));
+      addRow('from', link(v.from_address, () => navigate('/address/' + v.from_address)));
+      addRow('to', link(v.to_address, () => navigate('/address/' + v.to_address)));
       addRow('amount', v.amount); break;
     default: addRow('raw', JSON.stringify(v, null, 2));
   }
@@ -604,7 +687,7 @@ function renderDepGraph(imports, dependents, centerPath) {
   svg.append('defs').append('marker').attr('id', 'arrow').attr('viewBox', '0 -5 10 10').attr('refX', 20).attr('refY', 0).attr('markerWidth', 6).attr('markerHeight', 6).attr('orient', 'auto').append('path').attr('d', 'M0,-5L10,0L0,5').attr('fill', '#555');
   const sim = d3.forceSimulation(nodeArr).force('link', d3.forceLink(links).id(d => d.id).distance(120)).force('charge', d3.forceManyBody().strength(-300)).force('center', d3.forceCenter(width/2, height/2)).force('collision', d3.forceCollide().radius(30));
   const linkEl = svg.append('g').selectAll('line').data(links).join('line').attr('stroke', d => d.type === 'imports' ? '#4ecdc4' : '#ff6b6b').attr('stroke-opacity', 0.6).attr('stroke-width', 1.5).attr('marker-end', 'url(#arrow)');
-  const nodeEl = svg.append('g').selectAll('circle').data(nodeArr).join('circle').attr('r', d => d.group === 'center' ? 10 : 6).attr('fill', d => d.group === 'center' ? '#4ecdc4' : d.group === 'import' ? '#51cf66' : '#ff6b6b').attr('stroke', '#000').attr('stroke-width', 1).style('cursor', 'pointer').on('click', (e, d) => showView('realm-detail', d.id)).call(d3.drag().on('start', (e, d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; }).on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; }).on('end', (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }));
+  const nodeEl = svg.append('g').selectAll('circle').data(nodeArr).join('circle').attr('r', d => d.group === 'center' ? 10 : 6).attr('fill', d => d.group === 'center' ? '#4ecdc4' : d.group === 'import' ? '#51cf66' : '#ff6b6b').attr('stroke', '#000').attr('stroke-width', 1).style('cursor', 'pointer').on('click', (e, d) => navigate('/realm/' + d.id.replace('gno.land/', ''))).call(d3.drag().on('start', (e, d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; }).on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; }).on('end', (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }));
   const labelEl = svg.append('g').selectAll('text').data(nodeArr).join('text').text(d => d.id.split('/').slice(-2).join('/')).attr('font-size', 10).attr('fill', '#ccc').attr('dx', 12).attr('dy', 4);
   sim.on('tick', () => { linkEl.attr('x1', d => d.source.x).attr('y1', d => d.source.y).attr('x2', d => d.target.x).attr('y2', d => d.target.y); nodeEl.attr('cx', d => d.x).attr('cy', d => d.y); labelEl.attr('x', d => d.x).attr('y', d => d.y); });
 }
@@ -625,7 +708,7 @@ document.getElementById('search-input').addEventListener('input', function() {
         const item = el('div', { style: { padding: '8px 12px', cursor: 'pointer', borderBottom: '1px solid var(--border)' } });
         item.appendChild(el('div', { style: { fontSize: '13px' } }, r.path));
         item.appendChild(el('div', { style: { fontSize: '11px', color: 'var(--fg2)' } }, (r.is_realm ? 'realm' : 'package') + ' \u00b7 ' + shortAddr(r.creator)));
-        item.addEventListener('click', () => { results.classList.remove('open'); showView('realm-detail', r.path); });
+        item.addEventListener('click', () => { results.classList.remove('open'); navigate('/realm/' + r.path.replace('gno.land/', '')); });
         item.addEventListener('mouseover', () => item.style.background = 'var(--bg3)');
         item.addEventListener('mouseout', () => item.style.background = '');
         results.appendChild(item);
@@ -636,17 +719,9 @@ document.getElementById('search-input').addEventListener('input', function() {
 });
 document.addEventListener('click', (e) => { if (!e.target.closest('.search-box')) document.getElementById('search-results').classList.remove('open'); });
 
-// --- Hash routing ---
-function handleHash() {
-  const hash = window.location.hash.slice(1);
-  if (!hash) { showView('home'); return; }
-  if (hash.startsWith('realm/')) showView('realm-detail', 'gno.land/' + hash.slice(6));
-  else if (hash.startsWith('tx/')) showView('tx-detail', hash.slice(3));
-  else if (hash.startsWith('address/')) showView('address-detail', hash.slice(8));
-  else showView(hash);
-}
-window.addEventListener('hashchange', handleHash);
-if (window.location.hash) handleHash(); else loadHome();
+// --- Routing ---
+window.addEventListener('popstate', route);
+route();
 </script>
 </body>
 </html>

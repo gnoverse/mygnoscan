@@ -297,6 +297,7 @@ func (c *IndexerClient) GetTransactionsByAddress(ctx context.Context, addr strin
 							_or: {
 								MsgCall: { caller: { eq: "%s" } }
 								MsgAddPackage: { creator: { eq: "%s" } }
+								MsgRun: { caller: { eq: "%s" } }
 								BankMsgSend: {
 									_or: {
 										from_address: { eq: "%s" }
@@ -310,7 +311,7 @@ func (c *IndexerClient) GetTransactionsByAddress(ctx context.Context, addr strin
 			}
 			order: { heightAndIndex: DESC }
 		) { %s }
-	}`, addr, addr, addr, addr, txFields)
+	}`, addr, addr, addr, addr, addr, txFields)
 	err := c.query(ctx, q, nil, &result)
 	return result.GetTransactions, err
 }
