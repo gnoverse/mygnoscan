@@ -235,6 +235,20 @@ type MsgRunInfo struct {
 	Success     bool   `json:"success"`
 }
 
+func (d *DB) CountPackages(realmOnly bool) (int, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	q := `SELECT COUNT(*) FROM packages`
+	if realmOnly {
+		q += ` WHERE is_realm = 1`
+	} else {
+		q += ` WHERE is_realm = 0`
+	}
+	var count int
+	err := d.db.QueryRow(q).Scan(&count)
+	return count, err
+}
+
 // ListPackages returns all packages, optionally filtered.
 func (d *DB) ListPackages(realmOnly bool, limit, offset int) ([]PackageInfo, error) {
 	d.mu.RLock()

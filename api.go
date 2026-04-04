@@ -56,7 +56,8 @@ func (a *API) HandleRealms(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err.Error(), 500)
 		return
 	}
-	jsonResponse(w, realms)
+	total, _ := a.db.CountPackages(true)
+	jsonResponse(w, map[string]any{"items": realms, "total": total})
 }
 
 func (a *API) HandlePackages(w http.ResponseWriter, r *http.Request) {
@@ -71,7 +72,8 @@ func (a *API) HandlePackages(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err.Error(), 500)
 		return
 	}
-	jsonResponse(w, pkgs)
+	total, _ := a.db.CountPackages(false)
+	jsonResponse(w, map[string]any{"items": pkgs, "total": total})
 }
 
 func (a *API) HandleRealm(w http.ResponseWriter, r *http.Request) {
@@ -98,12 +100,28 @@ func (a *API) HandleTx(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) HandleTxs(w http.ResponseWriter, r *http.Request) {
-	txs, err := a.client.GetRecentTransactions(r.Context(), 100)
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	if limit == 0 {
+		limit = 50
+	}
+	txs, err := a.client.GetRecentTransactions(r.Context(), 0)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
 	}
-	jsonResponse(w, txs)
+	total := len(txs)
+	if offset > total {
+		offset = total
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	jsonResponse(w, map[string]any{
+		"items": txs[offset:end],
+		"total": total,
+	})
 }
 
 func (a *API) HandleAddress(w http.ResponseWriter, r *http.Request) {

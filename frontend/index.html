@@ -74,6 +74,12 @@ pre { background: var(--bg2); border: 1px solid var(--border); border-radius: 4p
 .raw-toggle:hover { color: var(--accent); }
 .raw-content { display: none; margin-top: 8px; }
 .raw-content.open { display: block; }
+/* Pager */
+.pager { display: flex; gap: 8px; align-items: center; margin-top: 16px; padding: 12px 0; }
+.pager-btn { background: var(--bg2); border: 1px solid var(--border); color: var(--fg); padding: 6px 14px; border-radius: 4px; font-family: var(--mono); font-size: 13px; cursor: pointer; }
+.pager-btn:hover { border-color: var(--accent); color: var(--accent); }
+.pager-btn:disabled { opacity: 0.3; cursor: default; border-color: var(--border); color: var(--fg2); }
+.pager-info { color: var(--fg2); font-size: 12px; }
 /* Address highlight on hover */
 [data-addr].addr-highlight { background: rgba(78, 205, 196, 0.2); border-radius: 2px; }
 @media (max-width: 768px) { .stats-bar { gap: 12px; } .stat .value { font-size: 16px; } .search-box input { width: 160px; } nav { gap: 8px; } }
@@ -169,20 +175,10 @@ function clear(id) { const e = document.getElementById(id); e.textContent = ''; 
 function badge(type, text) { return el('span', { className: 'badge badge-' + type }, text); }
 function link(text, onclick) { const a = el('a', { href: '#' }, text); a.addEventListener('click', (e) => { e.preventDefault(); onclick(); }); return a; }
 const KNOWN_ADDRS = {
-  'g1edq4dugw0sgat4zxcw9xardvuydqf6cgleuc8p': 'genesis_deployer',
-  'g1manfred47kzduec920z88wfr64ylksmdcedlf5': 'manfred',
-  'g1r929wt2qplfawe4lvqv9zuwfdcz4vxdun7qh8l': 'r929',
-  'g16jpf0puufcpcjkph5nxueec8etpcldz7zwgydq': 'jp16',
-  'g1jg8mtutu9khhfwc4nxmuhcpftf0pajdhfvsqf5': 'jae',
-  'g1plf3fmy0h4395jcxxh63g7mzeypr06f9yrdk4d': 'plf3',
-  'g1m0rgan0rla00ygmdmp55f5m0unvsvknluyg2a4': 'morgan',
-  'g1g73v2anukg4ej7axwqpthsatzrxjsh0wk797da': 'g73v',
-  'g1778y2yphxs2wpuaflsy5y9qwcd4gttn4g5yjx5': '778y',
-  'g1g3lsfxhvaqgdv4ccemwpnms4fv6t3aq3p5z6u7': 'g3ls',
-  'g1ker4vvggvsyatexxn3hkthp2hu80pkhrwmuczr': 'gnocore_val',
-  'g1lyejwwmxef5tn8nx69saykmgm8rlr4xq9yeh3z': 'lye_j',
-  'g125em6arxsnj49vx35f0n0z34putv5ty3376fg5': '125e',
-  'g1x0ytm7qt4l80djl2n05mz9v0u285vwz03rktf9': 'x0yt',
+  'g1edq4dugw0sgat4zxcw9xardvuydqf6cgleuc8p': '@genesis_deployer',
+  'g1manfred47kzduec920z88wfr64ylksmdcedlf5': '@moul',
+  'g1m0rgan0rla00ygmdmp55f5m0unvsvknluyg2a4': '@morgan',
+  'g148583t5x66zs6p90ehad6l4qefeyaf54s69wql': '@faucet',
 };
 function addrLabel(addr) { return KNOWN_ADDRS[addr] || ''; }
 function shortAddr(addr) {
@@ -221,6 +217,20 @@ function skeletonBlock(container) {
   for (let i = 0; i < 5; i++) container.appendChild(el('div', { className: 'skeleton skeleton-line' }));
 }
 // Raw JSON collapsible
+const PAGE_SIZE = 50;
+function pager(container, page, total, onPage) {
+  const totalPages = Math.ceil(total / PAGE_SIZE);
+  if (totalPages <= 1) return;
+  const div = el('div', { className: 'pager' });
+  const prev = el('button', { className: 'pager-btn', onclick: () => onPage(page - 1) }, '\u2190 prev');
+  if (page <= 0) prev.disabled = true;
+  const next = el('button', { className: 'pager-btn', onclick: () => onPage(page + 1) }, 'next \u2192');
+  if (page >= totalPages - 1) next.disabled = true;
+  div.appendChild(prev);
+  div.appendChild(el('span', { className: 'pager-info' }, 'page ' + (page + 1) + ' / ' + totalPages + ' (' + fmtNum(total) + ' items)'));
+  div.appendChild(next);
+  container.appendChild(div);
+}
 function rawJsonToggle(data) {
   const wrapper = el('div');
   const toggle = el('div', { className: 'raw-toggle' }, '\u25b6 raw json');
@@ -331,11 +341,10 @@ function route() {
 
 // --- Loaders ---
 async function loadHome() {
-  // Show skeletons
   skeletonRows(clear('recent-txs'), 4, 8);
   skeletonRows(clear('latest-realms'), 4, 5);
   try {
-    const [stats, realms, txs] = await Promise.all([api('stats'), api('realms?limit=10'), api('txs')]);
+    const [stats, realmsData, txsData] = await Promise.all([api('stats'), api('realms?limit=10'), api('txs?limit=20')]);
     document.getElementById('stat-realms').textContent = fmtNum(stats.total_realms);
     document.getElementById('stat-packages').textContent = fmtNum(stats.total_packages);
     document.getElementById('stat-calls').textContent = fmtNum(stats.total_calls);
@@ -343,7 +352,7 @@ async function loadHome() {
     document.getElementById('stat-callers').textContent = fmtNum(stats.unique_callers);
     document.getElementById('stat-block').textContent = fmtNum(stats.latest_block);
     const tbody = clear('latest-realms');
-    for (const r of (realms || [])) {
+    for (const r of (realmsData.items || [])) {
       tbody.appendChild(el('tr', {},
         el('td', {}, link(r.path, () => navigate('/realm/' + r.path.replace('gno.land/', '')))),
         el('td', {}, r.name), el('td', { className: 'truncate' }, shortAddr(r.creator)),
@@ -351,7 +360,7 @@ async function loadHome() {
       ));
     }
     const txBody = clear('recent-txs');
-    for (const tx of (txs || []).slice(0, 20)) {
+    for (const tx of (txsData.items || [])) {
       const msg = tx.messages?.[0];
       txBody.appendChild(el('tr', {},
         el('td', {}, link(blockLabel(tx.block_height), () => navigate('/blocks'))),
@@ -363,44 +372,59 @@ async function loadHome() {
   } catch (err) { console.error('home:', err); }
 }
 
-async function loadRealms() {
-  skeletonRows(clear('realms-list'), 5, 10);
+async function loadRealms(page) {
+  page = page || 0;
+  const section = document.querySelector('#view-realms .section');
+  const tbody = clear('realms-list');
+  skeletonRows(tbody, 5, 10);
+  // Remove old pager
+  section.querySelectorAll('.pager').forEach(p => p.remove());
   try {
-    const data = await api('realms?limit=200');
-    const tbody = clear('realms-list');
-    for (const r of (data || [])) {
-      tbody.appendChild(el('tr', {},
+    const data = await api('realms?limit=' + PAGE_SIZE + '&offset=' + (page * PAGE_SIZE));
+    const list = clear('realms-list');
+    for (const r of (data.items || [])) {
+      list.appendChild(el('tr', {},
         el('td', {}, link(r.path, () => navigate('/realm/' + r.path.replace('gno.land/', '')))),
         el('td', {}, r.name), el('td', { className: 'truncate' }, addrLink(r.creator)),
         el('td', {}, blockLink(r.block_height)), el('td', {}, String(r.num_files))
       ));
     }
+    pager(section, page, data.total || 0, loadRealms);
   } catch (err) { console.error(err); }
 }
 
-async function loadPackages() {
-  skeletonRows(clear('packages-list'), 5, 10);
+async function loadPackages(page) {
+  page = page || 0;
+  const section = document.querySelector('#view-packages .section');
+  const tbody = clear('packages-list');
+  skeletonRows(tbody, 5, 10);
+  section.querySelectorAll('.pager').forEach(p => p.remove());
   try {
-    const data = await api('packages?limit=200');
-    const tbody = clear('packages-list');
-    for (const p of (data || [])) {
-      tbody.appendChild(el('tr', {},
+    const data = await api('packages?limit=' + PAGE_SIZE + '&offset=' + (page * PAGE_SIZE));
+    const list = clear('packages-list');
+    for (const p of (data.items || [])) {
+      list.appendChild(el('tr', {},
         el('td', {}, link(p.path, () => navigate('/realm/' + p.path.replace('gno.land/', '')))),
         el('td', {}, p.name), el('td', { className: 'truncate' }, addrLink(p.creator)),
         el('td', {}, blockLink(p.block_height)), el('td', {}, String(p.num_files))
       ));
     }
+    pager(section, page, data.total || 0, loadPackages);
   } catch (err) { console.error(err); }
 }
 
-async function loadTxs() {
-  skeletonRows(clear('txs-list'), 5, 10);
+async function loadTxs(page) {
+  page = page || 0;
+  const section = document.querySelector('#view-txs .section');
+  const tbody = clear('txs-list');
+  skeletonRows(tbody, 5, 10);
+  section.querySelectorAll('.pager').forEach(p => p.remove());
   try {
-    const data = await api('txs');
-    const tbody = clear('txs-list');
-    for (const tx of (data || [])) {
+    const data = await api('txs?limit=' + PAGE_SIZE + '&offset=' + (page * PAGE_SIZE));
+    const list = clear('txs-list');
+    for (const tx of (data.items || [])) {
       const msg = tx.messages?.[0];
-      tbody.appendChild(el('tr', {},
+      list.appendChild(el('tr', {},
         el('td', {}, txLink(tx.hash, tx.block_height)),
         el('td', {}, blockLink(tx.block_height)),
         el('td', {}, typeBadge(msg?.value?.__typename)),
@@ -408,6 +432,7 @@ async function loadTxs() {
         el('td', {}, statusBadge(tx.success))
       ));
     }
+    pager(section, page, data.total || 0, loadTxs);
   } catch (err) { console.error(err); }
 }
 
@@ -421,7 +446,7 @@ async function loadBlocks() {
         el('td', {}, String(b.height)),
         el('td', {}, timeAgo(b.time)),
         el('td', {}, String(b.num_txs)),
-        el('td', { className: 'truncate' }, shortAddr(b.proposer_address_raw)),
+        el('td', { className: 'truncate' }, addrLink(b.proposer_address_raw)),
         el('td', {}, b.hash)
       ));
     }
