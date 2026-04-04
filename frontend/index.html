@@ -137,6 +137,7 @@ pre { background: var(--bg2); border: 1px solid var(--border); border-radius: 4p
     <div class="tab-content active" id="tab-info"></div>
     <div class="tab-content" id="tab-source"></div>
     <div class="tab-content" id="tab-calls"></div>
+    <div class="tab-content" id="tab-events"></div>
     <div class="tab-content" id="tab-deps"></div>
     <div class="tab-content" id="tab-graph"><div id="dep-graph"></div></div>
   </main></div>
@@ -472,7 +473,7 @@ async function loadRealmDetail(path) {
     meta.append(' at ' + blockLabel(detail.block_height) + ' \u00b7 ' + detail.num_files + ' files \u00b7 ' + detail.call_count + ' calls');
     header.appendChild(meta);
     const tabs = clear('realm-tabs');
-    const tabNames = ['info', 'source', 'calls', 'deps', 'graph'];
+    const tabNames = ['info', 'source', 'calls', 'events', 'deps', 'graph'];
     tabNames.forEach((name, i) => {
       const tab = el('div', { className: 'tab' + (i === 0 ? ' active' : ''), onclick: () => switchTab(name, tab) }, name);
       tabs.appendChild(tab);
@@ -507,20 +508,71 @@ async function loadRealmDetail(path) {
         el('div', { style: { color: 'var(--accent)', marginBottom: '4px', fontSize: '12px' } }, f.name),
         el('pre', {}, f.body)));
     }
-    // Calls
+    // Calls + MsgRuns that import this realm
     const calls = clear('tab-calls'); calls.classList.remove('active');
-    const callTbl = el('table');
-    callTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'caller'), el('th', {}, 'function'), el('th', {}, 'status'), el('th', {}, 'tx'))));
-    const callBody = el('tbody');
-    for (const c of (detail.recent_calls || [])) {
-      callBody.appendChild(el('tr', {},
-        el('td', {}, blockLabel(c.block_height)),
-        el('td', { className: 'truncate' }, link(shortAddr(c.caller), () => navigate('/address/' + c.caller))),
-        el('td', {}, c.func_name), el('td', {}, statusBadge(c.success)),
-        el('td', {}, txLink(c.tx_hash, c.block_height))
-      ));
+    // Direct calls section
+    if ((detail.recent_calls || []).length) {
+      calls.appendChild(el('div', { className: 'section-title' }, 'direct calls (' + fmtNum(detail.call_count) + ' total)'));
+      const callTbl = el('table');
+      callTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'caller'), el('th', {}, 'function'), el('th', {}, 'status'), el('th', {}, 'tx'))));
+      const callBody = el('tbody');
+      for (const c of (detail.recent_calls || [])) {
+        callBody.appendChild(el('tr', {},
+          el('td', {}, blockLabel(c.block_height)),
+          el('td', { className: 'truncate' }, link(shortAddr(c.caller), () => navigate('/address/' + c.caller))),
+          el('td', {}, c.func_name), el('td', {}, statusBadge(c.success)),
+          el('td', {}, txLink(c.tx_hash, c.block_height))
+        ));
+      }
+      callTbl.appendChild(callBody); calls.appendChild(callTbl);
+    } else {
+      calls.appendChild(el('div', { style: { color: 'var(--fg2)', padding: '12px 0' } }, 'no direct calls'));
     }
-    callTbl.appendChild(callBody); calls.appendChild(callTbl);
+    // MsgRun references section
+    if ((detail.msgrun_refs || []).length) {
+      calls.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'msgrun references (' + (detail.msgrun_refs || []).length + ')'));
+      const runTbl = el('table');
+      runTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'caller'), el('th', {}, 'status'), el('th', {}, 'tx'))));
+      const runBody = el('tbody');
+      for (const r of detail.msgrun_refs) {
+        runBody.appendChild(el('tr', {},
+          el('td', {}, blockLabel(r.block_height)),
+          el('td', { className: 'truncate' }, link(shortAddr(r.caller), () => navigate('/address/' + r.caller))),
+          el('td', {}, statusBadge(r.success)),
+          el('td', {}, txLink(r.tx_hash, r.block_height))
+        ));
+      }
+      runTbl.appendChild(runBody); calls.appendChild(runTbl);
+    }
+    // Events tab (loaded from indexer)
+    const eventsEl = clear('tab-events'); eventsEl.classList.remove('active');
+    skeletonRows(eventsEl, 4, 3);
+    (async () => {
+      try {
+        const eventsPath = path.replace('gno.land/', '');
+        const evData = await api('events/' + eventsPath);
+        eventsEl.textContent = '';
+        if (!(evData || []).length) {
+          eventsEl.appendChild(el('div', { style: { color: 'var(--fg2)', padding: '12px 0' } }, 'no events emitted by this realm'));
+          return;
+        }
+        const evTbl = el('table');
+        evTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'type'), el('th', {}, 'attributes'), el('th', {}, 'tx'))));
+        const evBody = el('tbody');
+        for (const item of evData) {
+          for (const ev of item.events) {
+            const attrs = (ev.attrs || []).map(a => a.key + '=' + a.value).join(', ');
+            evBody.appendChild(el('tr', {},
+              el('td', {}, blockLabel(item.block_height)),
+              el('td', {}, badge('realm', ev.type || 'event')),
+              el('td', {}, attrs || '-'),
+              el('td', {}, txLink(item.tx_hash, item.block_height))
+            ));
+          }
+        }
+        evTbl.appendChild(evBody); eventsEl.appendChild(evTbl);
+      } catch (err) { eventsEl.textContent = ''; eventsEl.appendChild(el('div', { style: { color: 'var(--red)' } }, 'Error loading events: ' + err.message)); }
+    })();
     // Deps
     const depsEl = clear('tab-deps'); depsEl.classList.remove('active');
     const depsPath = path.replace('gno.land/', '');

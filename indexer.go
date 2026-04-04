@@ -407,6 +407,21 @@ func (c *IndexerClient) GetTransactionsByRealmFunc(ctx context.Context, pkgPath,
 	return result.GetTransactions, err
 }
 
+// GetEventsByPkgPath fetches transactions that emitted GnoEvents for a package.
+func (c *IndexerClient) GetEventsByPkgPath(ctx context.Context, pkgPath string) ([]Transaction, error) {
+	var result struct {
+		GetTransactions []Transaction `json:"getTransactions"`
+	}
+	q := fmt.Sprintf(`{
+		getTransactions(
+			where: { response: { events: { GnoEvent: { pkg_path: { eq: "%s" } } } } }
+			order: { heightAndIndex: DESC }
+		) { %s }
+	}`, pkgPath, txFields)
+	err := c.query(ctx, q, nil, &result)
+	return result.GetTransactions, err
+}
+
 // GetGovDAOTransactions fetches transactions involving govdao realms.
 func (c *IndexerClient) GetGovDAOTransactions(ctx context.Context) ([]Transaction, error) {
 	var result struct {

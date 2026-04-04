@@ -20,6 +20,10 @@ func NewDB(path string) (*DB, error) {
 		return nil, err
 	}
 
+	// Drop old tables without unique constraints (it's just a cache, rebuilds fast)
+	db.Exec(`DROP TABLE IF EXISTS calls`)
+	db.Exec(`DROP TABLE IF EXISTS msg_runs`)
+
 	if err := initSchema(db); err != nil {
 		db.Close()
 		return nil, err
@@ -62,7 +66,8 @@ func initSchema(db *sql.DB) error {
 			pkg_path TEXT NOT NULL,
 			func_name TEXT NOT NULL,
 			success BOOLEAN NOT NULL,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(tx_hash, pkg_path, func_name)
 		);
 
 		CREATE TABLE IF NOT EXISTS msg_runs (
@@ -71,7 +76,8 @@ func initSchema(db *sql.DB) error {
 			caller TEXT NOT NULL,
 			source TEXT NOT NULL,
 			success BOOLEAN NOT NULL,
-			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(tx_hash, caller)
 		);
 
 		CREATE TABLE IF NOT EXISTS sync_state (

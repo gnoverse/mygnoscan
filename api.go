@@ -145,6 +145,44 @@ func (a *API) HandleSearch(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, results)
 }
 
+func (a *API) HandleEvents(w http.ResponseWriter, r *http.Request) {
+	path := "gno.land/" + r.PathValue("path")
+	path = strings.TrimRight(path, "/")
+	txs, err := a.client.GetEventsByPkgPath(r.Context(), path)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	// Extract just the events for this path
+	type EventResult struct {
+		TxHash      string     `json:"tx_hash"`
+		BlockHeight int        `json:"block_height"`
+		Success     bool       `json:"success"`
+		Events      []TxEvent  `json:"events"`
+	}
+	var results []EventResult
+	for _, tx := range txs {
+		if tx.Response == nil {
+			continue
+		}
+		var matched []TxEvent
+		for _, ev := range tx.Response.Events {
+			if ev.PkgPath == path {
+				matched = append(matched, ev)
+			}
+		}
+		if len(matched) > 0 {
+			results = append(results, EventResult{
+				TxHash:      tx.Hash,
+				BlockHeight: tx.BlockHeight,
+				Success:     tx.Success,
+				Events:      matched,
+			})
+		}
+	}
+	jsonResponse(w, results)
+}
+
 func (a *API) HandleBlocks(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	if limit == 0 {
