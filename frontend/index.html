@@ -1502,6 +1502,92 @@ async function loadAddressDetail(addr) {
       statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'balance'), el('span', { className: 'value' }, balDisplay)));
     }
     container.appendChild(statsBar);
+    // Analyze tx patterns
+    const sentTo = {}, recvFrom = {}, calledRealms = {};
+    let totalSentAmount = 0, totalRecvAmount = 0, sendCount = 0, recvCount = 0;
+    for (const tx of txs) {
+      for (const m of tx.messages) {
+        const v = m.value;
+        if (v.__typename === 'BankMsgSend') {
+          if (v.from_address === addr) {
+            sentTo[v.to_address] = (sentTo[v.to_address] || 0) + 1;
+            sendCount++;
+            const am = (v.amount || '').match(/^(\d+)/);
+            if (am) totalSentAmount += parseInt(am[1]);
+          }
+          if (v.to_address === addr) {
+            recvFrom[v.from_address] = (recvFrom[v.from_address] || 0) + 1;
+            recvCount++;
+            const am = (v.amount || '').match(/^(\d+)/);
+            if (am) totalRecvAmount += parseInt(am[1]);
+          }
+        } else if (v.__typename === 'MsgCall') {
+          if (v.caller === addr) {
+            const key = v.pkg_path + '::' + v.func;
+            calledRealms[key] = (calledRealms[key] || 0) + 1;
+          }
+        }
+      }
+    }
+    // Additional stats
+    const uniqueReceivers = Object.keys(sentTo).length;
+    const uniqueSenders = Object.keys(recvFrom).length;
+    if (sendCount > 0 || recvCount > 0) {
+      const extraStats = el('div', { className: 'stats-bar', style: { borderBottom: 'none', paddingBottom: '0' } });
+      if (sendCount > 0) {
+        extraStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'sent'), el('span', { className: 'value' }, fmtNum(sendCount))));
+        extraStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total sent'), el('span', { className: 'value' }, fmtNum(Math.floor(totalSentAmount / 1000000)) + ' GNOT')));
+        extraStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'unique receivers'), el('span', { className: 'value' }, fmtNum(uniqueReceivers))));
+      }
+      if (recvCount > 0) {
+        extraStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'received'), el('span', { className: 'value' }, fmtNum(recvCount))));
+        extraStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total received'), el('span', { className: 'value' }, fmtNum(Math.floor(totalRecvAmount / 1000000)) + ' GNOT')));
+        extraStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'unique senders'), el('span', { className: 'value' }, fmtNum(uniqueSenders))));
+      }
+      container.appendChild(extraStats);
+    }
+    // Top receivers (if >1 with multiple txs)
+    const topSentTo = Object.entries(sentTo).sort((a, b) => b[1] - a[1]);
+    if (topSentTo.length > 0 && topSentTo[0][1] > 1) {
+      container.appendChild(el('div', { className: 'section-title', style: { marginTop: '16px' } }, 'top receivers'));
+      const stbl = el('table');
+      stbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'address'), el('th', {}, 'txs'))));
+      const sbody = el('tbody');
+      for (const [a, c] of topSentTo.slice(0, 10)) {
+        if (c < 2) break;
+        sbody.appendChild(el('tr', {}, el('td', {}, addrLink(a)), el('td', {}, fmtNum(c))));
+      }
+      stbl.appendChild(sbody); container.appendChild(stbl);
+    }
+    // Top senders (if >1 with multiple txs)
+    const topRecvFrom = Object.entries(recvFrom).sort((a, b) => b[1] - a[1]);
+    if (topRecvFrom.length > 0 && topRecvFrom[0][1] > 1) {
+      container.appendChild(el('div', { className: 'section-title', style: { marginTop: '16px' } }, 'top senders'));
+      const rtbl = el('table');
+      rtbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'address'), el('th', {}, 'txs'))));
+      const rbody = el('tbody');
+      for (const [a, c] of topRecvFrom.slice(0, 10)) {
+        if (c < 2) break;
+        rbody.appendChild(el('tr', {}, el('td', {}, addrLink(a)), el('td', {}, fmtNum(c))));
+      }
+      rtbl.appendChild(rbody); container.appendChild(rtbl);
+    }
+    // Top called realms (if any calls)
+    const topCalled = Object.entries(calledRealms).sort((a, b) => b[1] - a[1]);
+    if (topCalled.length > 0) {
+      container.appendChild(el('div', { className: 'section-title', style: { marginTop: '16px' } }, 'top called realms'));
+      const ctbl = el('table');
+      ctbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'realm::func'), el('th', {}, 'calls'))));
+      const cbody = el('tbody');
+      for (const [rf, c] of topCalled.slice(0, 10)) {
+        const parts = rf.split('::');
+        const td = el('td');
+        td.appendChild(realmPathEl(parts[0]));
+        if (parts[1]) td.append('::' + parts[1]);
+        cbody.appendChild(el('tr', {}, td, el('td', {}, fmtNum(c))));
+      }
+      ctbl.appendChild(cbody); container.appendChild(ctbl);
+    }
     // Deployed packages
     if (pkgs.length) {
       container.appendChild(el('div', { className: 'section-title' }, 'deployed packages (' + pkgs.length + ')'));
