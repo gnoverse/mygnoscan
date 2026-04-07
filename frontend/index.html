@@ -149,8 +149,11 @@ footer a:hover { color: var(--accent); }
     <table><thead><tr><th>path</th><th>creator</th><th>block</th><th>files</th></tr></thead><tbody id="realms-list"></tbody></table></div></main></div>
   <div class="view" id="view-packages"><main><div class="section"><div class="section-title">all packages</div>
     <table><thead><tr><th>path</th><th>creator</th><th>block</th><th>files</th></tr></thead><tbody id="packages-list"></tbody></table></div></main></div>
-  <div class="view" id="view-txs"><main><div class="section"><div class="section-title">recent transactions</div>
-    <table><thead><tr><th>hash</th><th>block</th><th>type</th><th>detail</th><th>status</th></tr></thead><tbody id="txs-list"></tbody></table></div></main></div>
+  <div class="view" id="view-txs"><main>
+    <div id="txs-stats" class="stats-bar" style="display:none"></div>
+    <div class="section"><div class="section-title">recent transactions</div>
+    <table><thead><tr><th>hash</th><th>block</th><th>type</th><th>detail</th><th>status</th></tr></thead><tbody id="txs-list"></tbody></table></div>
+  </main></div>
   <div class="view" id="view-blocks"><main>
     <div id="blocks-stats" class="stats-bar" style="display:none"></div>
     <div id="blocks-filter" style="display:none; padding: 8px 0; margin-bottom: 4px"></div>
@@ -161,7 +164,9 @@ footer a:hover { color: var(--accent); }
     <div id="accounts-stats" class="stats-bar" style="display:none"></div>
     <div class="section"><div class="section-title">active accounts</div>
     <table><thead><tr><th>address</th><th>calls</th><th>deploys</th><th>msg_runs</th><th>sends</th><th>total</th></tr></thead><tbody id="accounts-list"></tbody></table></div></main></div>
-  <div class="view" id="view-tokens"><main><div class="section"><div class="section-title">tokens (grc20)</div>
+  <div class="view" id="view-tokens"><main>
+    <div id="tokens-stats" class="stats-bar" style="display:none"></div>
+    <div class="section"><div class="section-title">tokens (grc20)</div>
     <table><thead><tr><th>path</th><th>name</th><th>creator</th><th>calls</th></tr></thead><tbody id="tokens-list"></tbody></table></div></main></div>
   <div class="view" id="view-validators"><main><div class="section"><div class="section-title">validators</div>
     <div id="validators-content"></div></div></main></div>
@@ -592,8 +597,14 @@ async function loadTxs(page) {
   const tbody = clear('txs-list');
   skeletonRows(tbody, 5, 10);
   section.querySelectorAll('.pager').forEach(p => p.remove());
+  const statsBar = document.getElementById('txs-stats');
   try {
     const data = await api('txs?limit=' + PAGE_SIZE + '&offset=' + (page * PAGE_SIZE));
+    // Stats (only on first page)
+    if (page === 0 && data.total) {
+      statsBar.textContent = ''; statsBar.style.display = 'flex';
+      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total txs'), el('span', { className: 'value' }, fmtNum(data.total))));
+    }
     const list = clear('txs-list');
     for (const tx of (data.items || [])) {
       const msg = tx.messages?.[0];
@@ -725,8 +736,17 @@ async function loadAccounts() {
 }
 
 async function loadTokens() {
+  skeletonRows(clear('tokens-list'), 3, 5);
+  const statsBar = document.getElementById('tokens-stats');
+  statsBar.style.display = 'none';
   try {
     const data = await api('tokens');
+    const totalCalls = (data || []).reduce((s, t) => s + t.call_count, 0);
+    const creators = new Set((data || []).map(t => t.creator));
+    statsBar.textContent = ''; statsBar.style.display = 'flex';
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'tokens'), el('span', { className: 'value' }, fmtNum((data || []).length))));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total calls'), el('span', { className: 'value' }, fmtNum(totalCalls))));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'creators'), el('span', { className: 'value' }, fmtNum(creators.size))));
     const tbody = clear('tokens-list');
     for (const t of (data || [])) {
       tbody.appendChild(el('tr', {},
@@ -736,27 +756,41 @@ async function loadTokens() {
       ));
     }
     if (!(data || []).length) {
-      tbody.appendChild(el('tr', {}, el('td', { colspan: '4', style: { color: 'var(--fg2)' } }, 'no tokens found')));
+      tbody.appendChild(el('tr', {}, el('td', { colspan: '3', style: { color: 'var(--fg2)' } }, 'no tokens found')));
     }
   } catch (err) { console.error(err); }
 }
+
+let _valopersCache = null;
+let _valopersShowFailed = false;
 
 async function loadValidators() {
   const container = clear('validators-content');
   skeletonRows(container, 3, 5);
   try {
     const [blocks, valopers] = await Promise.all([api('blocks?limit=100'), api('validators')]);
+    _valopersCache = valopers;
+    _valopersShowFailed = false;
     container.textContent = '';
-    // Active validator set from recent block proposers
+
+    // Stats
     const proposerCounts = {};
     for (const b of (blocks || [])) {
-      const p = b.proposer_address_raw;
-      proposerCounts[p] = (proposerCounts[p] || 0) + 1;
+      proposerCounts[b.proposer_address_raw] = (proposerCounts[b.proposer_address_raw] || 0) + 1;
     }
     const sorted = Object.entries(proposerCounts).sort((a, b) => b[1] - a[1]);
-    container.appendChild(el('div', { className: 'section-title' }, 'active validator set (' + sorted.length + ' validators)'));
+    const okRegs = (valopers || []).filter(t => t.success).length;
+    const failRegs = (valopers || []).length - okRegs;
+    const statsBar = el('div', { className: 'stats-bar' });
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'active validators'), el('span', { className: 'value' }, String(sorted.length))));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'registrations'), el('span', { className: 'value' }, fmtNum(okRegs))));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'failed'), el('span', { className: 'value' }, fmtNum(failRegs))));
+    container.appendChild(statsBar);
+
+    // Active validator set
+    container.appendChild(el('div', { className: 'section-title' }, 'active validator set'));
     const vsTbl = el('table');
-    vsTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'proposer address'), el('th', {}, 'blocks proposed'), el('th', {}, 'share'))));
+    vsTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'proposer'), el('th', {}, 'blocks'), el('th', {}, 'share'))));
     const vsBody = el('tbody');
     const total = (blocks || []).length;
     for (const [addr, count] of sorted) {
@@ -767,28 +801,46 @@ async function loadValidators() {
       ));
     }
     vsTbl.appendChild(vsBody); container.appendChild(vsTbl);
-    // Valoper registrations
+
+    // Valoper registrations with filter
     if ((valopers || []).length) {
       container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'valoper registrations'));
-      const tbl = el('table');
-      tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'caller'), el('th', {}, 'function'), el('th', {}, 'moniker'), el('th', {}, 'status'))));
-      const tbody = el('tbody');
-      for (const tx of valopers) {
-        for (const msg of tx.messages) {
-          if (msg.value.__typename === 'MsgCall') {
-            tbody.appendChild(el('tr', {},
-              el('td', {}, link(blockLabel(tx.block_height), () => navigate('/tx/' + encodeURIComponent(tx.hash)))),
-              el('td', { className: 'truncate' }, addrLink(msg.value.caller)),
-              el('td', {}, msg.value.func),
-              el('td', {}, (msg.value.args || [])[0] || '-'),
-              el('td', {}, statusBadge(tx.success))
-            ));
-          }
-        }
-      }
-      tbl.appendChild(tbody); container.appendChild(tbl);
+      const filterDiv = el('div', { style: { marginBottom: '8px' } });
+      const cb = document.createElement('input'); cb.type = 'checkbox'; cb.id = 'val-show-failed';
+      cb.addEventListener('change', () => { _valopersShowFailed = cb.checked; renderValoperRows(container); });
+      const label = el('label', { style: { display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--fg2)', fontSize: '13px', cursor: 'pointer' } });
+      label.appendChild(cb); label.appendChild(document.createTextNode('show failed txs'));
+      filterDiv.appendChild(label);
+      container.appendChild(filterDiv);
+      const tblWrap = el('div', { id: 'valoper-rows' });
+      container.appendChild(tblWrap);
+      renderValoperRows(container);
     }
   } catch (err) { console.error(err); }
+}
+
+function renderValoperRows(container) {
+  const wrap = document.getElementById('valoper-rows');
+  if (!wrap) return;
+  wrap.textContent = '';
+  const tbl = el('table');
+  tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'caller'), el('th', {}, 'function'), el('th', {}, 'moniker'), el('th', {}, 'status'))));
+  const tbody = el('tbody');
+  for (const tx of (_valopersCache || [])) {
+    if (!_valopersShowFailed && !tx.success) continue;
+    for (const msg of tx.messages) {
+      if (msg.value.__typename === 'MsgCall') {
+        tbody.appendChild(el('tr', {},
+          el('td', {}, blockLink(tx.block_height)),
+          el('td', { className: 'truncate' }, addrLink(msg.value.caller)),
+          el('td', {}, msg.value.func),
+          el('td', {}, (msg.value.args || [])[0] || '-'),
+          el('td', {}, statusBadge(tx.success))
+        ));
+      }
+    }
+  }
+  tbl.appendChild(tbody); wrap.appendChild(tbl);
 }
 
 let _eventsCache = null;
