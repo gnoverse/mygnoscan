@@ -1571,7 +1571,17 @@ async function loadAddressDetail(addr) {
     // Analyze tx patterns
     const sentTo = {}, recvFrom = {}, calledRealms = {};
     let totalSentAmount = 0, totalRecvAmount = 0, sendCount = 0, recvCount = 0;
+    let totalGasUsed = 0, totalGasFee = 0, totalStorageBytes = 0, totalStorageFee = 0;
     for (const tx of txs) {
+      totalGasUsed += tx.gas_used || 0;
+      if (tx.gas_fee) totalGasFee += tx.gas_fee.amount || 0;
+      // Storage events
+      for (const ev of (tx.response?.events || [])) {
+        if (ev.__typename === 'StorageDepositEvent') {
+          totalStorageBytes += ev.bytes_delta || 0;
+          if (ev.fee_delta) totalStorageFee += ev.fee_delta.amount || 0;
+        }
+      }
       for (const m of tx.messages) {
         const v = m.value;
         if (v.__typename === 'BankMsgSend') {
@@ -1598,20 +1608,31 @@ async function loadAddressDetail(addr) {
     // Additional stats
     const uniqueReceivers = Object.keys(sentTo).length;
     const uniqueSenders = Object.keys(recvFrom).length;
-    if (sendCount > 0 || recvCount > 0) {
-      const extraStats = el('div', { className: 'stats-bar', style: { borderBottom: 'none', paddingBottom: '0' } });
-      if (sendCount > 0) {
-        extraStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'sent'), el('span', { className: 'value' }, fmtNum(sendCount))));
-        extraStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total sent'), el('span', { className: 'value' }, fmtNum(Math.floor(totalSentAmount / 1000000)) + ' GNOT')));
-        extraStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'unique receivers'), el('span', { className: 'value' }, fmtNum(uniqueReceivers))));
-      }
-      if (recvCount > 0) {
-        extraStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'received'), el('span', { className: 'value' }, fmtNum(recvCount))));
-        extraStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total received'), el('span', { className: 'value' }, fmtNum(Math.floor(totalRecvAmount / 1000000)) + ' GNOT')));
-        extraStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'unique senders'), el('span', { className: 'value' }, fmtNum(uniqueSenders))));
-      }
-      container.appendChild(extraStats);
+    const extraStats = el('div', { className: 'stats-bar', style: { borderBottom: 'none', paddingBottom: '0' } });
+    let hasExtra = false;
+    if (sendCount > 0) {
+      hasExtra = true;
+      extraStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'sent'), el('span', { className: 'value' }, fmtNum(sendCount))));
+      extraStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total sent'), el('span', { className: 'value' }, fmtNum(Math.floor(totalSentAmount / 1000000)) + ' GNOT')));
+      extraStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'unique receivers'), el('span', { className: 'value' }, fmtNum(uniqueReceivers))));
     }
+    if (recvCount > 0) {
+      hasExtra = true;
+      extraStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'received'), el('span', { className: 'value' }, fmtNum(recvCount))));
+      extraStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total received'), el('span', { className: 'value' }, fmtNum(Math.floor(totalRecvAmount / 1000000)) + ' GNOT')));
+        extraStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'unique senders'), el('span', { className: 'value' }, fmtNum(uniqueSenders))));
+    }
+    if (totalGasUsed > 0) {
+      hasExtra = true;
+      extraStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'gas used'), el('span', { className: 'value' }, fmtNum(totalGasUsed))));
+      extraStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'gas fees'), el('span', { className: 'value' }, fmtNum(Math.floor(totalGasFee / 1000000 * 100) / 100) + ' GNOT')));
+    }
+    if (totalStorageBytes > 0) {
+      hasExtra = true;
+      extraStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'storage'), el('span', { className: 'value' }, fmtNum(totalStorageBytes) + ' bytes')));
+      extraStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'storage fee'), el('span', { className: 'value' }, fmtNum(Math.floor(totalStorageFee / 1000000 * 100) / 100) + ' GNOT')));
+    }
+    if (hasExtra) container.appendChild(extraStats);
     // Top receivers (if >1 with multiple txs)
     const topSentTo = Object.entries(sentTo).sort((a, b) => b[1] - a[1]);
     if (topSentTo.length > 0 && topSentTo[0][1] > 1) {
