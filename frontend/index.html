@@ -437,7 +437,7 @@ function timeAgo(t) {
   if (s < 86400) return Math.floor(s/3600) + 'h ago'; return Math.floor(s/86400) + 'd ago';
 }
 function blockLabel(h) { return h === 0 ? 'genesis' : fmtNum(h); }
-function blockLink(h) { return h === 0 ? el('span', {}, 'genesis') : link(blockLabel(h), () => navigate('/block/' + h)); }
+function blockLink(h) { return link(blockLabel(h), () => navigate('/block/' + h)); }
 // Parse text for g1... addresses and gno.land/... paths, return a span with links
 function linkify(text) {
   const span = el('span');
