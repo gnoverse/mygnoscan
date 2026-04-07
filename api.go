@@ -1,10 +1,15 @@
 package main
 
 import (
+	"context"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type API struct {
@@ -143,10 +148,23 @@ func (a *API) HandleAddress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// First block seen
+	firstBlock := -1
+	for _, tx := range txs {
+		if firstBlock < 0 || tx.BlockHeight < firstBlock {
+			firstBlock = tx.BlockHeight
+		}
+	}
+
+	// Bank balance via RPC
+	balance := fetchBalance(r.Context(), addr)
+
 	jsonResponse(w, map[string]any{
 		"address":      addr,
 		"transactions": txs,
 		"packages":     pkgs,
+		"first_block":  firstBlock,
+		"balance":      balance,
 	})
 }
 
@@ -329,4 +347,45 @@ func (a *API) HandleDeps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, graph)
+}
+
+// fetchBalance queries the gno.land RPC for bank balance.
+func fetchBalance(ctx context.Context, addr string) string {
+	rpcURL := fmt.Sprintf("https://rpc.gno.land/abci_query?path=%%22bank/balances/%s%%22&data=0x", addr)
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, "GET", rpcURL, nil)
+	if err != nil {
+		return ""
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return ""
+	}
+	var result struct {
+		Result struct {
+			Response struct {
+				ResponseBase struct {
+					Data string `json:"Data"`
+				} `json:"ResponseBase"`
+			} `json:"response"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return ""
+	}
+	data := result.Result.Response.ResponseBase.Data
+	if data == "" {
+		return ""
+	}
+	decoded, err := base64.StdEncoding.DecodeString(data)
+	if err != nil {
+		return ""
+	}
+	// Strip quotes: "754954090ugnot" -> 754954090ugnot
+	return strings.Trim(string(decoded), "\"")
 }

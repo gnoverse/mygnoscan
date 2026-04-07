@@ -1251,14 +1251,43 @@ async function loadAddressDetail(addr) {
   const container = clear('address-detail-content');
   skeletonBlock(container);
   try {
+    const [data, blocksData] = await Promise.all([api('address/' + addr), api('blocks?limit=50')]);
+    // Block time lookup
+    const blockTime = {};
+    for (const b of (blocksData || [])) blockTime[b.height] = b.time;
     container.textContent = '';
+    // Header
     container.appendChild(el('h2', { style: { margin: '16px 0 8px' } }, 'Address'));
+    const label = KNOWN_ADDRS[addr];
+    if (label) container.appendChild(el('div', { style: { color: 'var(--accent)', marginBottom: '4px', fontSize: '16px' } }, label));
     container.appendChild(el('div', { style: { color: 'var(--fg2)', marginBottom: '16px', wordBreak: 'break-all' } }, addr));
-    const data = await api('address/' + addr);
-    if ((data.packages || []).length) {
-      container.appendChild(el('div', { className: 'section-title' }, 'deployed packages (' + data.packages.length + ')'));
+    // Stats bar
+    const txs = data.transactions || [];
+    const pkgs = data.packages || [];
+    const statsBar = el('div', { className: 'stats-bar' });
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'transactions'), el('span', { className: 'value' }, fmtNum(txs.length))));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'deploys'), el('span', { className: 'value' }, fmtNum(pkgs.length))));
+    if (data.first_block >= 0) {
+      const fbEl = el('div', { className: 'stat' }, el('span', { className: 'label' }, 'first seen'));
+      const fbVal = el('span', { className: 'value' }); fbVal.appendChild(blockLink(data.first_block)); fbEl.appendChild(fbVal);
+      statsBar.appendChild(fbEl);
+    }
+    if (data.balance) {
+      // Parse "754954090ugnot" -> "754.95 GNOT"
+      const bm = data.balance.match(/^(\d+)(\w+)$/);
+      let balDisplay = data.balance;
+      if (bm && bm[2] === 'ugnot') {
+        const gnot = parseInt(bm[1]) / 1000000;
+        balDisplay = fmtNum(Math.floor(gnot * 100) / 100) + ' GNOT';
+      }
+      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'balance'), el('span', { className: 'value' }, balDisplay)));
+    }
+    container.appendChild(statsBar);
+    // Deployed packages
+    if (pkgs.length) {
+      container.appendChild(el('div', { className: 'section-title' }, 'deployed packages (' + pkgs.length + ')'));
       const ptbl = el('table');
-      for (const p of data.packages) {
+      for (const p of pkgs) {
         ptbl.appendChild(el('tr', {},
           el('td', {}, realmPathEl(p.path)),
           el('td', {}, p.is_realm ? 'realm' : 'package')
@@ -1266,21 +1295,25 @@ async function loadAddressDetail(addr) {
       }
       container.appendChild(ptbl);
     }
-    container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'transactions (' + (data.transactions || []).length + ')'));
+    // Transactions
+    container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'transactions (' + txs.length + ')'));
     const tbl = el('table');
-    tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'tx'), el('th', {}, 'type'), el('th', {}, 'detail'), el('th', {}, 'status'))));
+    tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'tx'), el('th', {}, 'type'), el('th', {}, 'detail'), el('th', {}, 'status'), el('th', {}, 'when'))));
     const tbody = el('tbody');
-    for (const tx of (data.transactions || [])) {
+    for (const tx of txs) {
       const msg = tx.messages?.[0];
+      const when = blockTime[tx.block_height] ? timeAgo(blockTime[tx.block_height]) : (tx.block_height === 0 ? 'genesis' : '');
       tbody.appendChild(el('tr', {},
         el('td', {}, txLink(tx.hash, tx.block_height)),
         el('td', {}, typeBadge(msg?.value?.__typename)),
         el('td', {}, txDetailEl(msg)),
-        el('td', {}, statusBadge(tx.success))
+        el('td', {}, statusBadge(tx.success)),
+        el('td', { style: { color: 'var(--fg2)', fontSize: '12px' } }, when)
       ));
     }
     tbl.appendChild(tbody); container.appendChild(tbl);
-  } catch (err) { container.appendChild(el('p', { style: { color: 'var(--red)' } }, 'Error: ' + err.message)); }
+    if (!txs.length) container.appendChild(el('div', { style: { color: 'var(--fg2)', padding: '12px 0' } }, 'no transactions found for this address'));
+  } catch (err) { container.textContent = ''; container.appendChild(el('p', { style: { color: 'var(--red)' } }, 'Error: ' + err.message)); }
 }
 
 function renderMessageEl(msg, index) {
