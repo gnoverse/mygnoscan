@@ -495,10 +495,13 @@ func (d *DB) GetReverseGraph(path string) (map[string][]string, error) {
 }
 
 type Stats struct {
-	TotalPackages  int `json:"total_packages"`
-	TotalRealms    int `json:"total_realms"`
+	TotalTxs       int `json:"total_txs"`
 	TotalCalls     int `json:"total_calls"`
+	TotalDeploys   int `json:"total_deploys"`
 	TotalMsgRuns   int `json:"total_msg_runs"`
+	TotalSends     int `json:"total_sends"`
+	TotalRealms    int `json:"total_realms"`
+	TotalPackages  int `json:"total_packages"`
 	UniqueCallers  int `json:"unique_callers"`
 	LatestBlock    int `json:"latest_block"`
 }
@@ -509,10 +512,13 @@ func (d *DB) GetStats() (*Stats, error) {
 	defer d.mu.RUnlock()
 
 	var s Stats
-	d.db.QueryRow(`SELECT COUNT(*) FROM packages`).Scan(&s.TotalPackages)
-	d.db.QueryRow(`SELECT COUNT(*) FROM packages WHERE is_realm = 1`).Scan(&s.TotalRealms)
 	d.db.QueryRow(`SELECT COUNT(*) FROM calls`).Scan(&s.TotalCalls)
+	d.db.QueryRow(`SELECT COUNT(*) FROM packages`).Scan(&s.TotalDeploys)
+	d.db.QueryRow(`SELECT COUNT(*) FROM packages WHERE is_realm = 1`).Scan(&s.TotalRealms)
+	s.TotalPackages = s.TotalDeploys - s.TotalRealms
 	d.db.QueryRow(`SELECT COUNT(*) FROM msg_runs`).Scan(&s.TotalMsgRuns)
+	d.db.QueryRow(`SELECT COUNT(*) FROM bank_sends`).Scan(&s.TotalSends)
+	s.TotalTxs = s.TotalCalls + s.TotalDeploys + s.TotalMsgRuns + s.TotalSends
 	d.db.QueryRow(`SELECT COUNT(DISTINCT caller) FROM calls`).Scan(&s.UniqueCallers)
 	d.db.QueryRow(`SELECT COALESCE(MAX(block_height), 0) FROM packages`).Scan(&s.LatestBlock)
 	return &s, nil

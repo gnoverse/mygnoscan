@@ -119,11 +119,13 @@ pre { background: var(--bg2); border: 1px solid var(--border); border-radius: 4p
 <div class="container">
   <div class="view active" id="view-home">
     <div class="stats-bar">
+      <div class="stat"><span class="label">txs</span><span class="value" id="stat-txs">-</span></div>
+      <div class="stat"><span class="label">calls</span><span class="value" id="stat-calls">-</span></div>
+      <div class="stat"><span class="label">deploys</span><span class="value" id="stat-deploys">-</span></div>
+      <div class="stat"><span class="label">runs</span><span class="value" id="stat-runs">-</span></div>
+      <div class="stat"><span class="label">sends</span><span class="value" id="stat-sends">-</span></div>
       <div class="stat"><span class="label">realms</span><span class="value" id="stat-realms">-</span></div>
       <div class="stat"><span class="label">packages</span><span class="value" id="stat-packages">-</span></div>
-      <div class="stat"><span class="label">calls</span><span class="value" id="stat-calls">-</span></div>
-      <div class="stat"><span class="label">msg_runs</span><span class="value" id="stat-msgruns">-</span></div>
-      <div class="stat"><span class="label">callers</span><span class="value" id="stat-callers">-</span></div>
       <div class="stat"><span class="label">block</span><span class="value" id="stat-block">-</span></div>
     </div>
     <main>
@@ -441,11 +443,13 @@ async function loadHome() {
   skeletonRows(clear('latest-realms'), 4, 5);
   try {
     const [stats, realmsData, txsData] = await Promise.all([api('stats'), api('realms?limit=10'), api('txs?limit=20')]);
+    document.getElementById('stat-txs').textContent = fmtNum(stats.total_txs);
+    document.getElementById('stat-calls').textContent = fmtNum(stats.total_calls);
+    document.getElementById('stat-deploys').textContent = fmtNum(stats.total_deploys);
+    document.getElementById('stat-runs').textContent = fmtNum(stats.total_msg_runs);
+    document.getElementById('stat-sends').textContent = fmtNum(stats.total_sends);
     document.getElementById('stat-realms').textContent = fmtNum(stats.total_realms);
     document.getElementById('stat-packages').textContent = fmtNum(stats.total_packages);
-    document.getElementById('stat-calls').textContent = fmtNum(stats.total_calls);
-    document.getElementById('stat-msgruns').textContent = fmtNum(stats.total_msg_runs);
-    document.getElementById('stat-callers').textContent = fmtNum(stats.unique_callers);
     document.getElementById('stat-block').textContent = fmtNum(stats.latest_block);
     const tbody = clear('latest-realms');
     for (const r of (realmsData.items || [])) {
