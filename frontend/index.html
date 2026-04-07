@@ -698,6 +698,9 @@ function renderTxRows() {
   const start = _txsPage * PAGE_SIZE;
   const page = filtered.slice(start, start + PAGE_SIZE);
   const list = clear('txs-list');
+  if (page.length === 0) {
+    list.appendChild(el('tr', {}, el('td', { colspan: '5', style: { color: 'var(--fg2)', textAlign: 'center', padding: '20px' } }, 'no transactions matching filter')));
+  }
   for (const tx of page) {
     const msg = tx.messages?.[0];
     list.appendChild(el('tr', {},
@@ -721,7 +724,7 @@ async function loadBlocks() {
   statsBar.style.display = 'none';
   filterBar.style.display = 'none';
   try {
-    const data = await api('blocks?limit=50');
+    const data = await api('blocks?limit=500');
     _blocksCache = data;
     _blocksWithTxsOnly = false;
     const withTxs = (data || []).filter(b => b.num_txs > 0);
@@ -729,7 +732,9 @@ async function loadBlocks() {
     // Stats
     statsBar.textContent = '';
     statsBar.style.display = 'flex';
-    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'blocks'), el('span', { className: 'value' }, fmtNum((data || []).length))));
+    const latest = (data || []).length ? (data || [])[0].height : 0;
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'latest block'), el('span', { className: 'value' }, fmtNum(latest))));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'shown'), el('span', { className: 'value' }, fmtNum((data || []).length))));
     statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'with txs'), el('span', { className: 'value' }, fmtNum(withTxs.length))));
     statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'proposers'), el('span', { className: 'value' }, fmtNum(proposers.size))));
     // Filter
@@ -746,8 +751,10 @@ async function loadBlocks() {
 
 function renderBlockRows() {
   const tbody = clear('blocks-list');
+  let count = 0;
   for (const b of (_blocksCache || [])) {
     if (_blocksWithTxsOnly && b.num_txs === 0) continue;
+    count++;
     tbody.appendChild(el('tr', {},
       el('td', {}, blockLink(b.height)),
       el('td', {}, timeAgo(b.time)),
@@ -755,6 +762,9 @@ function renderBlockRows() {
       el('td', { className: 'truncate' }, addrLink(b.proposer_address_raw)),
       el('td', { className: 'truncate' }, b.hash)
     ));
+  }
+  if (count === 0) {
+    tbody.appendChild(el('tr', {}, el('td', { colspan: '5', style: { color: 'var(--fg2)', textAlign: 'center', padding: '20px' } }, 'no blocks matching filter')));
   }
 }
 
@@ -1293,14 +1303,31 @@ async function loadTxDetail(hash) {
     container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'messages (' + (tx.messages?.length || 0) + ')'));
     for (const [i, msg] of (tx.messages || []).entries()) container.appendChild(renderMessageEl(msg, i));
     if (tx.response?.events?.length) {
-      container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'events'));
+      container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'events (' + tx.response.events.length + ')'));
       for (const ev of tx.response.events) {
         const evEl = el('div', { className: 'card' });
-        evEl.appendChild(badge('realm', ev.type || ev.__typename || 'event'));
-        if (ev.pkg_path) { evEl.append(' '); evEl.appendChild(link(ev.pkg_path, () => navigate('/realm/' + ev.pkg_path.replace('gno.land/', '')))); }
-        for (const a of (ev.attrs || [])) {
-          const ae = el('div', { style: { paddingLeft: '16px', fontSize: '12px' } });
-          ae.appendChild(el('span', { style: { color: 'var(--fg2)' } }, a.key + ': ')); ae.append(a.value); evEl.appendChild(ae);
+        const typename = ev.__typename || 'event';
+        if (typename === 'StorageDepositEvent') {
+          evEl.appendChild(badge('pkg', 'storage deposit'));
+          if (ev.pkg_path) { evEl.append(' '); evEl.appendChild(link(ev.pkg_path, () => navigate('/realm/' + ev.pkg_path.replace('gno.land/', '')))); }
+          const details = el('div', { style: { paddingLeft: '16px', fontSize: '12px', marginTop: '4px' } });
+          if (ev.bytes_delta) details.appendChild(el('div', {}, el('span', { style: { color: 'var(--fg2)' } }, 'bytes: '), fmtNum(ev.bytes_delta)));
+          if (ev.fee_delta) details.appendChild(el('div', {}, el('span', { style: { color: 'var(--fg2)' } }, 'fee locked: '), fmtNum(ev.fee_delta.amount) + ' ' + ev.fee_delta.denom));
+          evEl.appendChild(details);
+        } else if (typename === 'StorageUnlockEvent') {
+          evEl.appendChild(badge('ok', 'storage unlock'));
+          if (ev.pkg_path) { evEl.append(' '); evEl.appendChild(link(ev.pkg_path, () => navigate('/realm/' + ev.pkg_path.replace('gno.land/', '')))); }
+          const details = el('div', { style: { paddingLeft: '16px', fontSize: '12px', marginTop: '4px' } });
+          if (ev.bytes_delta) details.appendChild(el('div', {}, el('span', { style: { color: 'var(--fg2)' } }, 'bytes: '), fmtNum(ev.bytes_delta)));
+          if (ev.fee_refund) details.appendChild(el('div', {}, el('span', { style: { color: 'var(--fg2)' } }, 'fee refunded: '), fmtNum(ev.fee_refund.amount) + ' ' + ev.fee_refund.denom));
+          evEl.appendChild(details);
+        } else {
+          evEl.appendChild(badge('realm', ev.type || typename));
+          if (ev.pkg_path) { evEl.append(' '); evEl.appendChild(link(ev.pkg_path, () => navigate('/realm/' + ev.pkg_path.replace('gno.land/', '')))); }
+          for (const a of (ev.attrs || [])) {
+            const ae = el('div', { style: { paddingLeft: '16px', fontSize: '12px' } });
+            ae.appendChild(el('span', { style: { color: 'var(--fg2)' } }, a.key + ': ')); ae.append(a.value); evEl.appendChild(ae);
+          }
         }
         container.appendChild(evEl);
       }

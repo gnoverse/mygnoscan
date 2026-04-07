@@ -218,6 +218,18 @@ const txFieldsLight = `
 				pkg_path
 				attrs { key value }
 			}
+			... on StorageDepositEvent {
+				type
+				bytes_delta
+				fee_delta { amount denom }
+				pkg_path
+			}
+			... on StorageUnlockEvent {
+				type
+				bytes_delta
+				fee_refund { amount denom }
+				pkg_path
+			}
 		}
 	}
 `
@@ -271,6 +283,18 @@ const txFields = `
 				type
 				pkg_path
 				attrs { key value }
+			}
+			... on StorageDepositEvent {
+				type
+				bytes_delta
+				fee_delta { amount denom }
+				pkg_path
+			}
+			... on StorageUnlockEvent {
+				type
+				bytes_delta
+				fee_refund { amount denom }
+				pkg_path
 			}
 		}
 	}
