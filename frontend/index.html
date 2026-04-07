@@ -89,8 +89,13 @@ pre { background: var(--bg2); border: 1px solid var(--border); border-radius: 4p
 .pager-btn:hover { border-color: var(--accent); color: var(--accent); }
 .pager-btn:disabled { opacity: 0.3; cursor: default; border-color: var(--border); color: var(--fg2); }
 .pager-info { color: var(--fg2); font-size: 12px; }
-/* Address highlight on hover */
-[data-addr].addr-highlight { background: rgba(78, 205, 196, 0.2); border-radius: 2px; }
+/* Footer */
+footer { border-top: 1px solid var(--border); padding: 16px 0; margin-top: 40px; color: var(--fg2); font-size: 12px; }
+footer .container { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
+footer a { color: var(--fg2); }
+footer a:hover { color: var(--accent); }
+/* Highlight on hover (addresses, tx hashes, event types, etc) */
+[data-hl].hl-active { background: rgba(78, 205, 196, 0.2); border-radius: 2px; }
 @media (max-width: 768px) { .stats-bar { gap: 12px; } .stat .value { font-size: 16px; } .search-box input { width: 160px; } nav { gap: 8px; } }
 </style>
 </head>
@@ -167,6 +172,12 @@ pre { background: var(--bg2); border: 1px solid var(--border); border-radius: 4p
   <div class="view" id="view-tx-detail"><main><div id="tx-detail-content"></div></main></div>
   <div class="view" id="view-address-detail"><main><div id="address-detail-content"></div></main></div>
 </div>
+<footer>
+  <div class="container">
+    <span>mygnoscan — <a href="https://github.com/moul/mygnoscan" target="_blank">github.com/moul/mygnoscan</a> @ <a id="footer-hash" href="#" target="_blank">...</a></span>
+    <span>data from <a href="https://indexer.gno.land/graphql" target="_blank">tx-indexer</a></span>
+  </div>
+</footer>
 <script src="https://d3js.org/d3.v7.min.js"></script>
 <script>
 function el(tag, attrs, ...children) {
@@ -184,7 +195,11 @@ function el(tag, attrs, ...children) {
   return e;
 }
 function clear(id) { const e = document.getElementById(id); e.textContent = ''; return e; }
-function badge(type, text) { return el('span', { className: 'badge badge-' + type }, text); }
+function badge(type, text) {
+  const b = el('span', { className: 'badge badge-' + type }, text);
+  b.setAttribute('data-hl', 'badge:' + text);
+  return b;
+}
 function link(text, onclick) { const a = el('a', { href: '#' }, text); a.addEventListener('click', (e) => { e.preventDefault(); onclick(); }); return a; }
 const KNOWN_ADDRS = {
   'g1edq4dugw0sgat4zxcw9xardvuydqf6cgleuc8p': '@genesis_deployer',
@@ -202,9 +217,9 @@ function shortAddr(addr) {
 function addrLink(addr) {
   const label = KNOWN_ADDRS[addr];
   const span = el('span');
-  span.setAttribute('data-addr', addr);
+  span.setAttribute('data-hl', addr);
   const a = link(label || addr, () => navigate('/address/' + addr));
-  a.setAttribute('data-addr', addr);
+  a.setAttribute('data-hl', addr);
   span.appendChild(a);
   if (label) {
     span.appendChild(el('span', { className: 'block-ctx' }, ' ' + addr.slice(0, 8) + '...'));
@@ -325,8 +340,11 @@ function typeBadge(t) {
 // tx link with block context: "hash (genesis)" or "hash (block N)"
 function txLink(hash, blockHeight) {
   const span = el('span');
-  span.appendChild(link(hash, () => navigate('/tx/' + encodeURIComponent(hash))));
-  const ctx = blockHeight === 0 ? ' (genesis)' : ' (block ' + blockHeight + ')';
+  span.setAttribute('data-hl', 'tx:' + hash);
+  const a = link(hash, () => navigate('/tx/' + encodeURIComponent(hash)));
+  a.setAttribute('data-hl', 'tx:' + hash);
+  span.appendChild(a);
+  const ctx = blockHeight === 0 ? ' (genesis)' : ' (block ' + fmtNum(blockHeight) + ')';
   span.appendChild(el('span', { className: 'block-ctx' }, ctx));
   return span;
 }
@@ -692,9 +710,11 @@ async function loadEvents() {
     for (const item of data) {
       for (const ev of item.events) {
         const attrStr = (ev.attrs || []).map(a => a.key + '=' + a.value).join(', ');
+        const realmLink = ev.pkg_path ? link(ev.pkg_path, () => navigate('/realm/' + ev.pkg_path.replace('gno.land/', ''))) : el('span', {}, '-');
+        if (ev.pkg_path) realmLink.setAttribute('data-hl', 'realm:' + ev.pkg_path);
         list.appendChild(el('tr', {},
           el('td', {}, blockLink(item.block_height)),
-          el('td', {}, ev.pkg_path ? link(ev.pkg_path, () => navigate('/realm/' + ev.pkg_path.replace('gno.land/', ''))) : el('span', {}, '-')),
+          el('td', {}, realmLink),
           el('td', {}, badge('realm', ev.type || 'event')),
           el('td', {}, attrStr ? linkify(attrStr) : el('span', {}, '-')),
           el('td', {}, txLink(item.tx_hash, item.block_height))
@@ -796,41 +816,39 @@ async function loadRealmDetail(path, initialTab) {
         el('div', { style: { color: 'var(--accent)', marginBottom: '4px', fontSize: '12px' } }, f.name),
         codeBlock(f.body)));
     }
-    // Calls + MsgRuns that import this realm
+    // Calls + MsgRuns merged into one table
     const calls = clear('tab-calls'); if (activeTab === 'calls') calls.classList.add('active'); else calls.classList.remove('active');
-    // Direct calls section
-    if ((detail.recent_calls || []).length) {
-      calls.appendChild(el('div', { className: 'section-title' }, 'direct calls (' + fmtNum(detail.call_count) + ' total)'));
+    const directCalls = detail.recent_calls || [];
+    const msgRuns = detail.msgrun_refs || [];
+    const totalActivity = detail.call_count + msgRuns.length;
+    // Stats bar
+    const callStats = el('div', { style: { display: 'flex', gap: '24px', marginBottom: '16px', flexWrap: 'wrap' } });
+    callStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total'), el('span', { className: 'value' }, fmtNum(totalActivity))));
+    callStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'calls'), el('span', { className: 'value' }, fmtNum(detail.call_count))));
+    callStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'runs'), el('span', { className: 'value' }, fmtNum(msgRuns.length))));
+    calls.appendChild(callStats);
+    // Merged table
+    const allRows = [];
+    for (const c of directCalls) allRows.push({ type: 'call', block: c.block_height, caller: c.caller, detail: c.func_name, success: c.success, tx: c.tx_hash });
+    for (const r of msgRuns) allRows.push({ type: 'run', block: r.block_height, caller: r.caller, detail: 'MsgRun', success: r.success, tx: r.tx_hash });
+    allRows.sort((a, b) => b.block - a.block);
+    if (allRows.length) {
       const callTbl = el('table');
-      callTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'caller'), el('th', {}, 'function'), el('th', {}, 'status'), el('th', {}, 'tx'))));
+      callTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'type'), el('th', {}, 'caller'), el('th', {}, 'detail'), el('th', {}, 'status'), el('th', {}, 'tx'))));
       const callBody = el('tbody');
-      for (const c of (detail.recent_calls || [])) {
+      for (const row of allRows) {
         callBody.appendChild(el('tr', {},
-          el('td', {}, blockLink(c.block_height)),
-          el('td', { className: 'truncate' }, addrLink(c.caller)),
-          el('td', {}, c.func_name), el('td', {}, statusBadge(c.success)),
-          el('td', {}, txLink(c.tx_hash, c.block_height))
+          el('td', {}, blockLink(row.block)),
+          el('td', {}, row.type === 'call' ? badge('realm', 'call') : badge('ok', 'run')),
+          el('td', { className: 'truncate' }, addrLink(row.caller)),
+          el('td', {}, row.detail),
+          el('td', {}, statusBadge(row.success)),
+          el('td', {}, txLink(row.tx, row.block))
         ));
       }
       callTbl.appendChild(callBody); calls.appendChild(callTbl);
     } else {
-      calls.appendChild(el('div', { style: { color: 'var(--fg2)', padding: '12px 0' } }, 'no direct calls'));
-    }
-    // MsgRun references section
-    if ((detail.msgrun_refs || []).length) {
-      calls.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'msgrun references (' + (detail.msgrun_refs || []).length + ')'));
-      const runTbl = el('table');
-      runTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'caller'), el('th', {}, 'status'), el('th', {}, 'tx'))));
-      const runBody = el('tbody');
-      for (const r of detail.msgrun_refs) {
-        runBody.appendChild(el('tr', {},
-          el('td', {}, blockLink(r.block_height)),
-          el('td', { className: 'truncate' }, addrLink(r.caller)),
-          el('td', {}, statusBadge(r.success)),
-          el('td', {}, txLink(r.tx_hash, r.block_height))
-        ));
-      }
-      runTbl.appendChild(runBody); calls.appendChild(runTbl);
+      calls.appendChild(el('div', { style: { color: 'var(--fg2)', padding: '12px 0' } }, 'no activity'));
     }
     // Events tab (loaded from indexer)
     const eventsEl = clear('tab-events'); if (activeTab === 'events') eventsEl.classList.add('active'); else eventsEl.classList.remove('active');
@@ -1072,17 +1090,24 @@ document.getElementById('search-input').addEventListener('input', function() {
 });
 document.addEventListener('click', (e) => { if (!e.target.closest('.search-box')) document.getElementById('search-results').classList.remove('open'); });
 
-// --- Address highlight on hover ---
+// --- Highlight on hover (addresses, tx hashes, event types, etc) ---
 document.addEventListener('mouseover', (e) => {
-  const addr = e.target.closest('[data-addr]')?.getAttribute('data-addr');
-  if (!addr) return;
-  document.querySelectorAll('[data-addr="' + CSS.escape(addr) + '"]').forEach(el => el.classList.add('addr-highlight'));
+  const val = e.target.closest('[data-hl]')?.getAttribute('data-hl');
+  if (!val) return;
+  document.querySelectorAll('[data-hl="' + CSS.escape(val) + '"]').forEach(el => el.classList.add('hl-active'));
 });
 document.addEventListener('mouseout', (e) => {
-  const addr = e.target.closest('[data-addr]')?.getAttribute('data-addr');
-  if (!addr) return;
-  document.querySelectorAll('[data-addr="' + CSS.escape(addr) + '"]').forEach(el => el.classList.remove('addr-highlight'));
+  const val = e.target.closest('[data-hl]')?.getAttribute('data-hl');
+  if (!val) return;
+  document.querySelectorAll('[data-hl="' + CSS.escape(val) + '"]').forEach(el => el.classList.remove('hl-active'));
 });
+
+// --- Footer version ---
+api('version').then(v => {
+  const el = document.getElementById('footer-hash');
+  el.textContent = v.git_hash;
+  el.href = 'https://github.com/moul/mygnoscan/commit/' + v.git_hash;
+}).catch(() => {});
 
 // --- Routing ---
 window.addEventListener('popstate', route);

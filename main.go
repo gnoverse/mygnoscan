@@ -17,6 +17,8 @@ import (
 //go:embed frontend
 var frontendFS embed.FS
 
+var gitHash = "dev" // set via -ldflags at build time
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -82,6 +84,10 @@ func run() error {
 	mux := http.NewServeMux()
 
 	// API routes
+	mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"git_hash":%q}`, gitHash)
+	})
 	mux.HandleFunc("GET /api/stats", api.HandleStats)
 	mux.HandleFunc("GET /api/realms", api.HandleRealms)
 	mux.HandleFunc("GET /api/realm/{path...}", api.HandleRealm)
