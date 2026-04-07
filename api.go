@@ -489,6 +489,16 @@ func (a *API) HandleGas(w http.ResponseWriter, r *http.Request) {
 			if path == "" && m.Value.Package != nil {
 				path = m.Value.Package.Path
 			}
+			// Ephemeral packages (MsgRun): aggregate by caller address
+			if strings.Contains(path, "/e/") {
+				caller := m.Value.Caller
+				if caller == "" && m.Value.Creator != "" {
+					caller = m.Value.Creator
+				}
+				if caller != "" {
+					path = "MsgRun by " + caller
+				}
+			}
 			if path != "" {
 				rg, ok := realmMap[path]
 				if !ok {
@@ -548,7 +558,18 @@ func (a *API) HandleGas(w http.ResponseWriter, r *http.Request) {
 					detail += "::" + m.Value.Func
 				}
 			} else if m.Value.Package != nil {
-				detail = m.Value.Package.Path
+				p := m.Value.Package.Path
+				if strings.Contains(p, "/e/") {
+					// Ephemeral: show caller instead
+					caller := m.Value.Caller
+					if caller != "" {
+						detail = "MsgRun by " + caller
+					} else {
+						detail = p
+					}
+				} else {
+					detail = p
+				}
 			}
 		}
 		fee := 0

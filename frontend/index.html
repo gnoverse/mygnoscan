@@ -255,10 +255,20 @@ function addrLink(addr) {
 // g1... namespaces get shortened
 function realmPathEl(fullPath) {
   const path = fullPath.replace('gno.land', '');
+  // Ephemeral package: /e/g1.../run -> link to address
+  const em = path.match(/^\/e\/(g1[a-z0-9]+)(\/.*)?$/);
+  if (em) {
+    const addr = em[1];
+    const span = el('span', { style: { cursor: 'pointer' } });
+    span.appendChild(el('span', { className: 'rp-type' }, '/e/'));
+    span.appendChild(addrLink(addr));
+    span.appendChild(el('span', { className: 'rp-name' }, em[2] || ''));
+    span.appendChild(el('span', { style: { marginLeft: '4px' } }, badge('ok', 'ephemeral')));
+    return span;
+  }
   // Parse: /r/namespace/rest or /p/namespace/rest
   const m = path.match(/^\/([rp])\/([^/]+)(\/.*)?$/);
   if (!m) {
-    // Fallback: just show path
     return link(path, () => navigate('/realm' + path));
   }
   const type = m[1]; // r or p
@@ -975,8 +985,20 @@ async function loadGas() {
     const rbody = el('tbody');
     for (const r of (data.top_realms || [])) {
       const avg = r.tx_count > 0 ? Math.floor(r.gas / r.tx_count) : 0;
+      // Handle "MsgRun by g1..." entries
+      let pathEl;
+      const runMatch = r.path.match(/^MsgRun by (g1[a-z0-9]+)$/);
+      if (runMatch) {
+        const s = el('span');
+        s.appendChild(badge('ok', 'MsgRun'));
+        s.append(' by ');
+        s.appendChild(addrLink(runMatch[1]));
+        pathEl = s;
+      } else {
+        pathEl = realmPathEl(r.path);
+      }
       rbody.appendChild(el('tr', {},
-        el('td', {}, realmPathEl(r.path)),
+        el('td', {}, pathEl),
         el('td', {}, fmtNum(r.gas)),
         el('td', {}, fmtNum(r.fees)),
         el('td', {}, fmtNum(r.tx_count)),
@@ -992,7 +1014,15 @@ async function loadGas() {
     const tbody = el('tbody');
     for (const t of (data.top_txs || [])) {
       const pct = t.gas_wanted > 0 ? (t.gas_used / t.gas_wanted * 100).toFixed(0) + '%' : '-';
-      const detailEl = t.detail ? realmPathEl(t.detail.includes('::') ? 'gno.land/' + t.detail.split('::')[0].replace('gno.land/','') : t.detail) : el('span', {}, '-');
+      let detailEl;
+      const rm = t.detail?.match(/^MsgRun by (g1[a-z0-9]+)$/);
+      if (rm) {
+        const s = el('span'); s.appendChild(badge('ok', 'MsgRun')); s.append(' by '); s.appendChild(addrLink(rm[1])); detailEl = s;
+      } else if (t.detail) {
+        detailEl = realmPathEl(t.detail.includes('::') ? 'gno.land/' + t.detail.split('::')[0].replace('gno.land/','') : t.detail);
+      } else {
+        detailEl = el('span', {}, '-');
+      }
       tbody.appendChild(el('tr', {},
         el('td', {}, txLink(t.hash, t.block_height)),
         el('td', {}, typeBadge(t.type)),
