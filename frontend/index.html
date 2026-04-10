@@ -69,6 +69,11 @@ pre { background: var(--bg2); border: 1px solid var(--border); border-radius: 4p
 .card { background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; padding: 12px; margin-bottom: 8px; }
 .card table td { padding: 4px 0; border-bottom: none; }
 .card table tr:first-child td { padding-top: 0; }
+/* Clamp long values */
+.clamp-wrap { position: relative; }
+.clamp-text { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-family: var(--mono); font-size: 12px; word-break: break-word; white-space: pre-wrap; }
+.clamp-text.open { display: block; -webkit-line-clamp: unset; }
+.clamp-toggle { color: var(--accent); cursor: pointer; font-size: 11px; user-select: none; }
 .block-ctx { color: var(--fg2); font-size: 12px; }
 /* Skeleton loading */
 .skeleton { background: var(--bg3); border-radius: 4px; animation: pulse 1.5s ease-in-out infinite; }
@@ -1819,26 +1824,28 @@ async function loadAddressDetail(addr) {
   } catch (err) { container.textContent = ''; container.appendChild(el('p', { style: { color: 'var(--red)' } }, 'Error: ' + err.message)); }
 }
 
-function truncatedText(text, limit) {
-  const span = el('span');
-  const short = el('span', { style: { fontFamily: 'var(--mono)', fontSize: '12px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' } }, text.slice(0, limit) + '\u2026');
-  const full = el('span', { style: { fontFamily: 'var(--mono)', fontSize: '12px', whiteSpace: 'pre-wrap', wordBreak: 'break-word', display: 'none' } }, text);
-  const btn = el('span', { style: { color: 'var(--accent)', cursor: 'pointer', fontSize: '11px', marginLeft: '4px' } }, '[show]');
-  btn.addEventListener('click', () => {
-    const open = full.style.display !== 'none';
-    short.style.display = open ? '' : 'none';
-    full.style.display = open ? 'none' : '';
-    btn.textContent = open ? '[show]' : '[hide]';
+function truncatedText(text) {
+  const wrap = el('div', { className: 'clamp-wrap' });
+  const content = el('div', { className: 'clamp-text' }, text);
+  wrap.appendChild(content);
+  // After render, check if actually clamped and add toggle
+  requestAnimationFrame(() => {
+    if (content.scrollHeight > content.clientHeight + 2) {
+      const btn = el('span', { className: 'clamp-toggle' }, '[show]');
+      btn.addEventListener('click', () => {
+        const open = content.classList.toggle('open');
+        btn.textContent = open ? '[hide]' : '[show]';
+      });
+      wrap.appendChild(btn);
+    }
   });
-  span.appendChild(short); span.appendChild(full); span.appendChild(btn);
-  return span;
+  return wrap;
 }
 
 function argValueEl(val) {
   if (/^g1[a-z0-9]{38,}$/.test(val)) return addrLink(val);
   if (val.includes('g1') || val.includes('gno.land/')) return linkify(val);
-  if (val.length > 120) return truncatedText(val, 120);
-  return el('span', { style: { fontFamily: 'var(--mono)', fontSize: '12px', wordBreak: 'break-word' } }, val);
+  return truncatedText(val);
 }
 
 function renderMessageEl(msg, index, returnData, msgLog) {
@@ -1850,11 +1857,7 @@ function renderMessageEl(msg, index, returnData, msgLog) {
   const addRow = (label, content) => {
     const td = el('td', { style: { wordBreak: 'break-word', maxWidth: '0', width: '100%' } });
     if (typeof content === 'string') {
-      if (content.length > 120) {
-        td.appendChild(truncatedText(content, 120));
-      } else {
-        td.textContent = content;
-      }
+      td.appendChild(truncatedText(content));
     } else {
       td.appendChild(content);
     }
