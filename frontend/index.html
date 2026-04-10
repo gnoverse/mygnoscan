@@ -310,10 +310,6 @@ function realmPathEl(fullPath) {
 function statusBadge(s) { return s ? badge('ok', 'ok') : badge('fail', 'fail'); }
 function fmtNum(n) { return typeof n === 'number' ? n.toLocaleString() : String(n); }
 function fmtUgnot(amount, denom) {
-  if ((denom || 'ugnot') === 'ugnot' && amount >= 1000000) {
-    const gnot = (amount / 1000000);
-    return (gnot % 1 === 0 ? gnot.toLocaleString() : gnot.toLocaleString(undefined, { maximumFractionDigits: 6 })) + ' GNOT';
-  }
   return fmtNum(amount) + ' ' + (denom || 'ugnot');
 }
 function fmtBytes(n) {
@@ -1473,7 +1469,7 @@ async function loadTxDetail(hash) {
   try {
     const tx = await api('tx/' + encodeURIComponent(hash));
     container.textContent = '';
-    container.appendChild(el('h2', { style: { margin: '16px 0 8px' } }, 'Transaction'));
+    container.appendChild(el('h2', { style: { margin: '16px 0 8px', wordBreak: 'break-all', fontFamily: 'var(--mono)' } }, 'tx ', el('span', { style: { color: 'var(--fg2)', fontWeight: 'normal' } }, hash)));
     // Compute stats from events
     const events = tx.response?.events || [];
     let storageBytes = 0, storageFee = 0, storageCount = 0;
@@ -1524,37 +1520,79 @@ async function loadTxDetail(hash) {
     tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'memo'), el('td', {}, tx.memo || '-')));
     const sr = el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'status'));
     sr.appendChild(el('td', {}, statusBadge(tx.success))); tbl.appendChild(sr);
-    if (tx.response?.data) tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'data'), el('td', { style: { fontFamily: 'var(--mono)', fontSize: '12px', whiteSpace: 'pre-wrap', wordBreak: 'break-all' } }, tx.response.data)));
-    if (tx.response?.log) tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'log'), el('td', { style: { fontFamily: 'var(--mono)', fontSize: '12px', color: 'var(--fg2)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' } }, tx.response.log)));
+    if (tx.response?.log) {
+      // Parse "msg:0,success:true,log:X,events:[]" format into readable rows
+      const logTd = el('td', { style: { fontFamily: 'var(--mono)', fontSize: '12px', color: 'var(--fg2)' } });
+      const parts = tx.response.log.split(';').map(s => s.trim()).filter(Boolean);
+      if (parts.length) {
+        for (const part of parts) {
+          const rowEl = el('div');
+          const kvs = part.split(',').map(kv => { const i = kv.indexOf(':'); return i < 0 ? [kv, ''] : [kv.slice(0,i), kv.slice(i+1)]; });
+          for (const [k, v] of kvs) {
+            if (v && v !== '' && v !== '[]') rowEl.appendChild(el('span', {}, el('span', { style: { color: 'var(--fg2)' } }, k + ': '), el('span', { style: { color: 'var(--fg)' } }, v + '  ')));
+          }
+          if (rowEl.children.length) logTd.appendChild(rowEl);
+        }
+      } else {
+        logTd.textContent = tx.response.log;
+      }
+      if (logTd.children.length || logTd.textContent) tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'log'), logTd));
+    }
     if (tx.response?.error) tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'error'), el('td', { style: { color: 'var(--red)' } }, tx.response.error)));
     container.appendChild(tbl);
+    // Realms touched list (after table)
+    if (storagePaths.size > 0) {
+      const rtEl = el('div', { style: { margin: '8px 0 0', fontSize: '13px', color: 'var(--fg2)' } });
+      rtEl.appendChild(el('span', {}, 'realms touched: '));
+      let first = true;
+      for (const p of storagePaths) {
+        if (!first) rtEl.appendChild(document.createTextNode(', '));
+        rtEl.appendChild(realmPathEl(p));
+        first = false;
+      }
+      container.appendChild(rtEl);
+    }
+    // Split response.data per message by \n\n
+    const msgData = (tx.response?.data || '').split('\n\n').map(s => s.trim()).filter(Boolean);
     container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'messages (' + (tx.messages?.length || 0) + ')'));
-    for (const [i, msg] of (tx.messages || []).entries()) container.appendChild(renderMessageEl(msg, i));
+    for (const [i, msg] of (tx.messages || []).entries()) container.appendChild(renderMessageEl(msg, i, msgData[i]));
     if (tx.response?.events?.length) {
       container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'events (' + tx.response.events.length + ')'));
       for (const ev of tx.response.events) {
         const evEl = el('div', { className: 'card' });
         const typename = ev.__typename || 'event';
         if (typename === 'StorageDepositEvent') {
-          evEl.appendChild(badge('pkg', 'storage deposit'));
-          if (ev.pkg_path) { evEl.append(' '); evEl.appendChild(link(ev.pkg_path, () => navigate('/realm/' + ev.pkg_path.replace('gno.land/', '')))); }
+          const hdr = el('div', { style: { marginBottom: '4px' } });
+          hdr.appendChild(badge('pkg', 'storage deposit'));
+          if (ev.pkg_path) { hdr.append(' '); hdr.appendChild(realmPathEl(ev.pkg_path)); }
+          evEl.appendChild(hdr);
           const details = el('div', { style: { paddingLeft: '16px', fontSize: '12px', marginTop: '4px' } });
           if (ev.bytes_delta) details.appendChild(el('div', {}, el('span', { style: { color: 'var(--fg2)' } }, 'bytes: '), fmtBytes(ev.bytes_delta)));
           if (ev.fee_delta) details.appendChild(el('div', {}, el('span', { style: { color: 'var(--fg2)' } }, 'fee locked: '), fmtUgnot(ev.fee_delta.amount, ev.fee_delta.denom)));
           evEl.appendChild(details);
         } else if (typename === 'StorageUnlockEvent') {
-          evEl.appendChild(badge('ok', 'storage unlock'));
-          if (ev.pkg_path) { evEl.append(' '); evEl.appendChild(link(ev.pkg_path, () => navigate('/realm/' + ev.pkg_path.replace('gno.land/', '')))); }
+          const hdr = el('div', { style: { marginBottom: '4px' } });
+          hdr.appendChild(badge('ok', 'storage unlock'));
+          if (ev.pkg_path) { hdr.append(' '); hdr.appendChild(realmPathEl(ev.pkg_path)); }
+          evEl.appendChild(hdr);
           const details = el('div', { style: { paddingLeft: '16px', fontSize: '12px', marginTop: '4px' } });
           if (ev.bytes_delta) details.appendChild(el('div', {}, el('span', { style: { color: 'var(--fg2)' } }, 'bytes: '), fmtBytes(ev.bytes_delta)));
           if (ev.fee_refund) details.appendChild(el('div', {}, el('span', { style: { color: 'var(--fg2)' } }, 'fee refunded: '), fmtUgnot(ev.fee_refund.amount, ev.fee_refund.denom)));
           evEl.appendChild(details);
         } else {
-          evEl.appendChild(badge('realm', ev.type || typename));
-          if (ev.pkg_path) { evEl.append(' '); evEl.appendChild(link(ev.pkg_path, () => navigate('/realm/' + ev.pkg_path.replace('gno.land/', '')))); }
+          // GnoEvent: realmPath.EventType header, linkified attrs
+          const hdr = el('div', { style: { marginBottom: '4px' } });
+          if (ev.pkg_path) {
+            hdr.appendChild(realmPathEl(ev.pkg_path));
+            hdr.append('.');
+          }
+          hdr.appendChild(el('span', { className: 'badge badge-realm', style: { background: 'rgba(78,205,196,0.15)', border: '1px solid rgba(78,205,196,0.4)', color: 'var(--accent)' } }, ev.type || typename));
+          evEl.appendChild(hdr);
           for (const a of (ev.attrs || [])) {
             const ae = el('div', { style: { paddingLeft: '16px', fontSize: '12px' } });
-            ae.appendChild(el('span', { style: { color: 'var(--fg2)' } }, a.key + ': ')); ae.append(a.value); evEl.appendChild(ae);
+            ae.appendChild(el('span', { style: { color: 'var(--fg2)' } }, a.key + ': '));
+            ae.appendChild(linkify(a.value));
+            evEl.appendChild(ae);
           }
         }
         container.appendChild(evEl);
@@ -1740,27 +1778,65 @@ async function loadAddressDetail(addr) {
   } catch (err) { container.textContent = ''; container.appendChild(el('p', { style: { color: 'var(--red)' } }, 'Error: ' + err.message)); }
 }
 
-function renderMessageEl(msg, index) {
+function argValueEl(val) {
+  // Detect g1 addresses or gno.land paths and linkify
+  if (/^g1[a-z0-9]{38,}$/.test(val)) return addrLink(val);
+  if (val.includes('g1') || val.includes('gno.land/')) return linkify(val);
+  // Long value: truncate with expand toggle
+  const LIMIT = 120;
+  if (val.length > LIMIT) {
+    const span = el('span');
+    const short = el('span', { style: { fontFamily: 'var(--mono)', fontSize: '12px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' } }, val.slice(0, LIMIT) + '…');
+    const full = el('span', { style: { fontFamily: 'var(--mono)', fontSize: '12px', whiteSpace: 'pre-wrap', wordBreak: 'break-word', display: 'none' } }, val);
+    const btn = el('span', { style: { color: 'var(--accent)', cursor: 'pointer', fontSize: '11px', marginLeft: '4px' } }, '[show]');
+    btn.addEventListener('click', () => {
+      const open = full.style.display !== 'none';
+      short.style.display = open ? '' : 'none';
+      full.style.display = open ? 'none' : '';
+      btn.textContent = open ? '[show]' : '[hide]';
+    });
+    span.appendChild(short); span.appendChild(full); span.appendChild(btn);
+    return span;
+  }
+  return el('span', { style: { fontFamily: 'var(--mono)', fontSize: '12px', wordBreak: 'break-word' } }, val);
+}
+
+function renderMessageEl(msg, index, returnData) {
   const v = msg.value;
   const div = el('div', { className: 'card' });
   const typeLabel = { MsgCall: '/vm.m_call', MsgAddPackage: '/vm.m_addpkg', MsgRun: '/vm.m_run', BankMsgSend: '/bank.MsgSend' }[v.__typename] || msg.typeUrl || v.__typename;
   const hdr = el('div', { style: { marginBottom: '8px' } }); hdr.appendChild(typeBadge(v.__typename)); hdr.append(' #' + index + '  '); hdr.appendChild(el('span', { style: { color: 'var(--fg2)', fontSize: '12px', fontFamily: 'var(--mono)' } }, typeLabel)); div.appendChild(hdr);
-  const tbl = el('table');
+  const tbl = el('table', { style: { width: '100%' } });
   const addRow = (label, content) => {
-    const td = el('td'); if (typeof content === 'string') td.textContent = content; else td.appendChild(content);
-    tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, label), td));
+    const td = el('td', { style: { wordBreak: 'break-word', maxWidth: '0', width: '100%' } });
+    if (typeof content === 'string') td.textContent = content; else td.appendChild(content);
+    tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)', whiteSpace: 'nowrap', paddingRight: '12px', verticalAlign: 'top' } }, label), td));
   };
   switch (v.__typename) {
     case 'MsgAddPackage':
-      addRow('creator', link(v.creator, () => navigate('/address/' + v.creator)));
-      addRow('package', link(v.package?.path || '', () => navigate('/realm/' + (v.package?.path || '').replace('gno.land/', ''))));
+      addRow('creator', addrLink(v.creator));
+      addRow('package', realmPathEl(v.package?.path || ''));
       addRow('files', (v.package?.files || []).map(f => f.name).join(', ')); break;
-    case 'MsgCall':
-      addRow('caller', link(v.caller, () => navigate('/address/' + v.caller)));
-      addRow('realm', link(v.pkg_path, () => navigate('/realm/' + v.pkg_path.replace('gno.land/', ''))));
-      addRow('function', v.func); addRow('args', (v.args || []).join(', ') || '-'); break;
+    case 'MsgCall': {
+      addRow('caller', addrLink(v.caller));
+      addRow('realm', realmPathEl(v.pkg_path));
+      // Function name as link to source tab
+      const fnEl = el('span');
+      fnEl.appendChild(link(v.func, () => navigate('/realm/' + v.pkg_path.replace('gno.land/', '') + '?tab=source')));
+      addRow('function', fnEl);
+      // Args as individual numbered rows
+      const args = v.args || [];
+      if (args.length === 0) {
+        addRow('args', '-');
+      } else {
+        for (let i = 0; i < args.length; i++) {
+          addRow('arg[' + i + ']', argValueEl(args[i]));
+        }
+      }
+      break;
+    }
     case 'MsgRun':
-      addRow('caller', link(v.caller, () => navigate('/address/' + v.caller)));
+      addRow('caller', addrLink(v.caller));
       for (const f of (v.package?.files || [])) {
         const fileEl = el('div', { style: { marginTop: '8px' } },
           el('div', { style: { color: 'var(--accent)', fontSize: '12px', marginBottom: '4px' } }, f.name));
@@ -1771,10 +1847,14 @@ function renderMessageEl(msg, index) {
       if (!(v.package?.files || []).length) addRow('files', '-');
       break;
     case 'BankMsgSend':
-      addRow('from', link(v.from_address, () => navigate('/address/' + v.from_address)));
-      addRow('to', link(v.to_address, () => navigate('/address/' + v.to_address)));
+      addRow('from', addrLink(v.from_address));
+      addRow('to', addrLink(v.to_address));
       addRow('amount', v.amount); break;
     default: addRow('raw', JSON.stringify(v, null, 2));
+  }
+  // Return value from response.data
+  if (returnData) {
+    addRow('→ return', el('span', { style: { fontFamily: 'var(--mono)', fontSize: '12px', color: 'var(--accent)', wordBreak: 'break-word' } }, returnData));
   }
   div.appendChild(tbl); return div;
 }
