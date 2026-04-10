@@ -1546,30 +1546,25 @@ async function loadTxDetail(hash) {
     tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'memo'), el('td', {}, tx.memo || '-')));
     const sr = el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'status'));
     sr.appendChild(el('td', {}, statusBadge(tx.success))); tbl.appendChild(sr);
-    if (tx.response?.log) {
-      // Parse "msg:0,success:true,log:X,events:[]" format into readable rows
-      const logTd = el('td', { style: { fontFamily: 'var(--mono)', fontSize: '12px', color: 'var(--fg2)' } });
-      const parts = tx.response.log.split(';').map(s => s.trim()).filter(Boolean);
-      if (parts.length) {
-        for (const part of parts) {
-          const rowEl = el('div');
-          const kvs = part.split(',').map(kv => { const i = kv.indexOf(':'); return i < 0 ? [kv, ''] : [kv.slice(0,i), kv.slice(i+1)]; });
-          for (const [k, v] of kvs) {
-            if (v && v !== '' && v !== '[]') rowEl.appendChild(el('span', {}, el('span', { style: { color: 'var(--fg2)' } }, k + ': '), el('span', { style: { color: 'var(--fg)' } }, v + '  ')));
-          }
-          if (rowEl.children.length) logTd.appendChild(rowEl);
-        }
-      } else {
-        logTd.textContent = tx.response.log;
-      }
-      if (logTd.children.length || logTd.textContent) tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'log'), logTd));
-    }
     if (tx.response?.error) tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'error'), el('td', { style: { color: 'var(--red)' } }, tx.response.error)));
     container.appendChild(tbl);
+    // Parse log into per-message entries: "msg:0,success:true,log:X,events:[];msg:1,..."
+    const msgLogs = {};
+    for (const part of (tx.response?.log || '').split(';').map(s => s.trim()).filter(Boolean)) {
+      const kvs = {};
+      let rest = part;
+      // parse key:value pairs carefully (log value may contain colons)
+      for (const k of ['msg', 'success', 'log', 'events']) {
+        const re = new RegExp('(?:^|,)' + k + ':([^,]*)');
+        const m = rest.match(re); if (m) kvs[k] = m[1];
+      }
+      const idx = parseInt(kvs.msg ?? '-1', 10);
+      if (idx >= 0) msgLogs[idx] = { success: kvs.success, log: kvs.log || '' };
+    }
     // Split response.data per message by \n\n
     const msgData = (tx.response?.data || '').split('\n\n').map(s => s.trim()).filter(Boolean);
     container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'messages (' + (tx.messages?.length || 0) + ')'));
-    for (const [i, msg] of (tx.messages || []).entries()) container.appendChild(renderMessageEl(msg, i, msgData[i]));
+    for (const [i, msg] of (tx.messages || []).entries()) container.appendChild(renderMessageEl(msg, i, msgData[i], msgLogs[i]));
 
     // Storage section (dedicated, separate from events)
     const storageEvs = events.filter(ev => ev.__typename === 'StorageDepositEvent' || ev.__typename === 'StorageUnlockEvent');
@@ -1850,7 +1845,7 @@ function argValueEl(val) {
   return el('span', { style: { fontFamily: 'var(--mono)', fontSize: '12px', wordBreak: 'break-word' } }, val);
 }
 
-function renderMessageEl(msg, index, returnData) {
+function renderMessageEl(msg, index, returnData, msgLog) {
   const v = msg.value;
   const div = el('div', { className: 'card' });
   const typeLabel = { MsgCall: '/vm.m_call', MsgAddPackage: '/vm.m_addpkg', MsgRun: '/vm.m_run', BankMsgSend: '/bank.MsgSend' }[v.__typename] || msg.typeUrl || v.__typename;
@@ -1924,6 +1919,10 @@ function renderMessageEl(msg, index, returnData) {
   // Return value from response.data
   if (returnData) {
     addRow('→ return', el('span', { style: { fontFamily: 'var(--mono)', fontSize: '12px', color: 'var(--accent)', wordBreak: 'break-word' } }, returnData));
+  }
+  // Per-message log
+  if (msgLog?.log) {
+    addRow('log', el('span', { style: { fontFamily: 'var(--mono)', fontSize: '12px', color: 'var(--fg2)' } }, msgLog.log));
   }
   div.appendChild(tbl); return div;
 }
