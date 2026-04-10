@@ -350,7 +350,7 @@ function parseFuncSignature(source, funcName) {
   const re = new RegExp('func\\s+' + funcName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\(([^)]*)\\)');
   const m = source.match(re);
   if (!m) return null;
-  const params = m[1].split(',').map(p => p.trim().split(/\s+/)[0]).filter(Boolean);
+  let params = m[1].split(',').map(p => p.trim().split(/\s+/)[0]).filter(Boolean);
   return params; // e.g. ['_', 'slug', 'title', 'body']
 }
 function highlightLine(parent, line) {
@@ -1888,14 +1888,17 @@ function renderMessageEl(msg, index, returnData) {
           tbl.appendChild(tr);
         }
       }
-      // Async: fetch realm source to get param names
+      // Async: fetch realm source to get param names, align by trimming excess leading params
       api('realm/' + fnPath).then(rd => {
         const allSource = (rd.files || []).map(f => f.body || '').join('\n');
-        const params = parseFuncSignature(allSource, v.func);
+        let params = parseFuncSignature(allSource, v.func);
         if (params) {
+          // Gno functions may have implicit leading params (e.g. `_ realm`) not present in args
+          // Align: take the last args.length params
+          if (params.length > argLabels.length) params = params.slice(params.length - argLabels.length);
           for (let i = 0; i < argLabels.length; i++) {
-            const name = params[i] || ('arg[' + i + ']');
-            argLabels[i].textContent = name === '_' ? ('arg[' + i + ']') : name;
+            const name = params[i];
+            if (name && name !== '_') argLabels[i].textContent = name;
           }
         }
       }).catch(() => {});
