@@ -102,7 +102,17 @@ func (a *API) HandleTx(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err.Error(), 404)
 		return
 	}
-	jsonResponse(w, tx)
+	type txDetail struct {
+		*Transaction
+		BlockTime string `json:"block_time,omitempty"`
+		ChainID   string `json:"chain_id,omitempty"`
+	}
+	resp := txDetail{Transaction: tx}
+	if block, berr := a.client.GetBlock(r.Context(), tx.BlockHeight); berr == nil && block != nil {
+		resp.BlockTime = block.Time
+		resp.ChainID = block.ChainID
+	}
+	jsonResponse(w, resp)
 }
 
 func (a *API) HandleTxs(w http.ResponseWriter, r *http.Request) {

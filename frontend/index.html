@@ -309,6 +309,17 @@ function realmPathEl(fullPath) {
 }
 function statusBadge(s) { return s ? badge('ok', 'ok') : badge('fail', 'fail'); }
 function fmtNum(n) { return typeof n === 'number' ? n.toLocaleString() : String(n); }
+function fmtUgnot(amount, denom) {
+  if ((denom || 'ugnot') === 'ugnot' && amount >= 1000000) {
+    const gnot = (amount / 1000000);
+    return (gnot % 1 === 0 ? gnot.toLocaleString() : gnot.toLocaleString(undefined, { maximumFractionDigits: 6 })) + ' GNOT';
+  }
+  return fmtNum(amount) + ' ' + (denom || 'ugnot');
+}
+function fmtBytes(n) {
+  if (n >= 1024) return fmtNum(n) + ' bytes (' + (n / 1024).toFixed(2) + ' KB)';
+  return fmtNum(n) + ' bytes';
+}
 // Skeleton loading placeholders
 function skeletonRows(tbody, cols, rows) {
   for (let i = 0; i < rows; i++) {
@@ -1486,15 +1497,15 @@ async function loadTxDetail(hash) {
     const txStats = el('div', { className: 'stats-bar' });
     txStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'gas used'), el('span', { className: 'value' }, fmtNum(tx.gas_used))));
     txStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'efficiency'), el('span', { className: 'value' }, gasEff + '%')));
-    txStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'gas fee'), el('span', { className: 'value' }, fmtNum(tx.gas_fee?.amount || 0) + ' ugnot')));
+    txStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'gas fee'), el('span', { className: 'value' }, fmtUgnot(tx.gas_fee?.amount || 0, tx.gas_fee?.denom))));
     if (storageCount > 0) {
-      txStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'storage'), el('span', { className: 'value' }, fmtNum(storageBytes) + ' bytes')));
-      txStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'storage fee'), el('span', { className: 'value' }, fmtNum(storageFee) + ' ugnot')));
+      txStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'storage'), el('span', { className: 'value' }, fmtBytes(storageBytes))));
+      txStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'storage fee'), el('span', { className: 'value' }, fmtUgnot(storageFee, 'ugnot'))));
       txStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'realms touched'), el('span', { className: 'value' }, fmtNum(storagePaths.size))));
     }
     if (unlockCount > 0) {
-      txStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'unlocked'), el('span', { className: 'value' }, fmtNum(unlockBytes) + ' bytes')));
-      txStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'refunded'), el('span', { className: 'value' }, fmtNum(unlockFee) + ' ugnot')));
+      txStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'unlocked'), el('span', { className: 'value' }, fmtBytes(unlockBytes))));
+      txStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'refunded'), el('span', { className: 'value' }, fmtUgnot(unlockFee, 'ugnot'))));
     }
     txStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'events'), el('span', { className: 'value' }, fmtNum(events.length))));
     container.appendChild(txStats);
@@ -1503,11 +1514,18 @@ async function loadTxDetail(hash) {
     tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'hash'), el('td', {}, tx.hash)));
     const blockTd = el('td'); blockTd.appendChild(blockLink(tx.block_height));
     tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'block'), blockTd));
+    if (tx.block_time) {
+      const ts = new Date(tx.block_time);
+      tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'timestamp'), el('td', {}, ts.toISOString().replace('T', ' ').replace('Z', '') + ' UTC  (' + timeAgo(tx.block_time) + ')')));
+    }
+    if (tx.chain_id) tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'network'), el('td', {}, tx.chain_id)));
     tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'gas'), el('td', {}, fmtNum(tx.gas_used) + ' / ' + fmtNum(tx.gas_wanted) + ' (' + gasEff + '%)')));
-    tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'fee'), el('td', {}, fmtNum(tx.gas_fee?.amount || 0) + ' ' + (tx.gas_fee?.denom || ''))));
+    tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'fee'), el('td', {}, fmtUgnot(tx.gas_fee?.amount || 0, tx.gas_fee?.denom))));
     tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'memo'), el('td', {}, tx.memo || '-')));
     const sr = el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'status'));
     sr.appendChild(el('td', {}, statusBadge(tx.success))); tbl.appendChild(sr);
+    if (tx.response?.data) tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'data'), el('td', { style: { fontFamily: 'var(--mono)', fontSize: '12px', whiteSpace: 'pre-wrap', wordBreak: 'break-all' } }, tx.response.data)));
+    if (tx.response?.log) tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'log'), el('td', { style: { fontFamily: 'var(--mono)', fontSize: '12px', color: 'var(--fg2)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' } }, tx.response.log)));
     if (tx.response?.error) tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'error'), el('td', { style: { color: 'var(--red)' } }, tx.response.error)));
     container.appendChild(tbl);
     container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'messages (' + (tx.messages?.length || 0) + ')'));
@@ -1521,15 +1539,15 @@ async function loadTxDetail(hash) {
           evEl.appendChild(badge('pkg', 'storage deposit'));
           if (ev.pkg_path) { evEl.append(' '); evEl.appendChild(link(ev.pkg_path, () => navigate('/realm/' + ev.pkg_path.replace('gno.land/', '')))); }
           const details = el('div', { style: { paddingLeft: '16px', fontSize: '12px', marginTop: '4px' } });
-          if (ev.bytes_delta) details.appendChild(el('div', {}, el('span', { style: { color: 'var(--fg2)' } }, 'bytes: '), fmtNum(ev.bytes_delta)));
-          if (ev.fee_delta) details.appendChild(el('div', {}, el('span', { style: { color: 'var(--fg2)' } }, 'fee locked: '), fmtNum(ev.fee_delta.amount) + ' ' + ev.fee_delta.denom));
+          if (ev.bytes_delta) details.appendChild(el('div', {}, el('span', { style: { color: 'var(--fg2)' } }, 'bytes: '), fmtBytes(ev.bytes_delta)));
+          if (ev.fee_delta) details.appendChild(el('div', {}, el('span', { style: { color: 'var(--fg2)' } }, 'fee locked: '), fmtUgnot(ev.fee_delta.amount, ev.fee_delta.denom)));
           evEl.appendChild(details);
         } else if (typename === 'StorageUnlockEvent') {
           evEl.appendChild(badge('ok', 'storage unlock'));
           if (ev.pkg_path) { evEl.append(' '); evEl.appendChild(link(ev.pkg_path, () => navigate('/realm/' + ev.pkg_path.replace('gno.land/', '')))); }
           const details = el('div', { style: { paddingLeft: '16px', fontSize: '12px', marginTop: '4px' } });
-          if (ev.bytes_delta) details.appendChild(el('div', {}, el('span', { style: { color: 'var(--fg2)' } }, 'bytes: '), fmtNum(ev.bytes_delta)));
-          if (ev.fee_refund) details.appendChild(el('div', {}, el('span', { style: { color: 'var(--fg2)' } }, 'fee refunded: '), fmtNum(ev.fee_refund.amount) + ' ' + ev.fee_refund.denom));
+          if (ev.bytes_delta) details.appendChild(el('div', {}, el('span', { style: { color: 'var(--fg2)' } }, 'bytes: '), fmtBytes(ev.bytes_delta)));
+          if (ev.fee_refund) details.appendChild(el('div', {}, el('span', { style: { color: 'var(--fg2)' } }, 'fee refunded: '), fmtUgnot(ev.fee_refund.amount, ev.fee_refund.denom)));
           evEl.appendChild(details);
         } else {
           evEl.appendChild(badge('realm', ev.type || typename));
@@ -1725,7 +1743,8 @@ async function loadAddressDetail(addr) {
 function renderMessageEl(msg, index) {
   const v = msg.value;
   const div = el('div', { className: 'card' });
-  const hdr = el('div', { style: { marginBottom: '8px' } }); hdr.appendChild(typeBadge(v.__typename)); hdr.append(' #' + index); div.appendChild(hdr);
+  const typeLabel = { MsgCall: '/vm.m_call', MsgAddPackage: '/vm.m_addpkg', MsgRun: '/vm.m_run', BankMsgSend: '/bank.MsgSend' }[v.__typename] || msg.typeUrl || v.__typename;
+  const hdr = el('div', { style: { marginBottom: '8px' } }); hdr.appendChild(typeBadge(v.__typename)); hdr.append(' #' + index + '  '); hdr.appendChild(el('span', { style: { color: 'var(--fg2)', fontSize: '12px', fontFamily: 'var(--mono)' } }, typeLabel)); div.appendChild(hdr);
   const tbl = el('table');
   const addRow = (label, content) => {
     const td = el('td'); if (typeof content === 'string') td.textContent = content; else td.appendChild(content);

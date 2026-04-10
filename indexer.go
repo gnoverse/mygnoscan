@@ -107,6 +107,7 @@ type Transaction struct {
 	Memo        string       `json:"memo"`
 	Messages    []TxMessage  `json:"messages"`
 	Response    *TxResponse  `json:"response"`
+	ContentRaw  string       `json:"content_raw,omitempty"`
 }
 
 type Coin struct {
@@ -251,6 +252,7 @@ const txFields = `
 	gas_wanted
 	gas_used
 	gas_fee { amount denom }
+	content_raw
 	memo
 	messages {
 		typeUrl
