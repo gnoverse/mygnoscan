@@ -67,6 +67,8 @@ pre { background: var(--bg2); border: 1px solid var(--border); border-radius: 4p
 .view { display: none; }
 .view.active { display: block; }
 .card { background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; padding: 12px; margin-bottom: 8px; }
+.card table td { padding: 4px 0; border-bottom: none; }
+.card table tr:first-child td { padding-top: 0; }
 .block-ctx { color: var(--fg2); font-size: 12px; }
 /* Skeleton loading */
 .skeleton { background: var(--bg3); border-radius: 4px; animation: pulse 1.5s ease-in-out infinite; }
@@ -1822,26 +1824,25 @@ async function loadAddressDetail(addr) {
   } catch (err) { container.textContent = ''; container.appendChild(el('p', { style: { color: 'var(--red)' } }, 'Error: ' + err.message)); }
 }
 
+function truncatedText(text, limit) {
+  const span = el('span');
+  const short = el('span', { style: { fontFamily: 'var(--mono)', fontSize: '12px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' } }, text.slice(0, limit) + '\u2026');
+  const full = el('span', { style: { fontFamily: 'var(--mono)', fontSize: '12px', whiteSpace: 'pre-wrap', wordBreak: 'break-word', display: 'none' } }, text);
+  const btn = el('span', { style: { color: 'var(--accent)', cursor: 'pointer', fontSize: '11px', marginLeft: '4px' } }, '[show]');
+  btn.addEventListener('click', () => {
+    const open = full.style.display !== 'none';
+    short.style.display = open ? '' : 'none';
+    full.style.display = open ? 'none' : '';
+    btn.textContent = open ? '[show]' : '[hide]';
+  });
+  span.appendChild(short); span.appendChild(full); span.appendChild(btn);
+  return span;
+}
+
 function argValueEl(val) {
-  // Detect g1 addresses or gno.land paths and linkify
   if (/^g1[a-z0-9]{38,}$/.test(val)) return addrLink(val);
   if (val.includes('g1') || val.includes('gno.land/')) return linkify(val);
-  // Long value: truncate with expand toggle
-  const LIMIT = 120;
-  if (val.length > LIMIT) {
-    const span = el('span');
-    const short = el('span', { style: { fontFamily: 'var(--mono)', fontSize: '12px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' } }, val.slice(0, LIMIT) + '…');
-    const full = el('span', { style: { fontFamily: 'var(--mono)', fontSize: '12px', whiteSpace: 'pre-wrap', wordBreak: 'break-word', display: 'none' } }, val);
-    const btn = el('span', { style: { color: 'var(--accent)', cursor: 'pointer', fontSize: '11px', marginLeft: '4px' } }, '[show]');
-    btn.addEventListener('click', () => {
-      const open = full.style.display !== 'none';
-      short.style.display = open ? '' : 'none';
-      full.style.display = open ? 'none' : '';
-      btn.textContent = open ? '[show]' : '[hide]';
-    });
-    span.appendChild(short); span.appendChild(full); span.appendChild(btn);
-    return span;
-  }
+  if (val.length > 120) return truncatedText(val, 120);
   return el('span', { style: { fontFamily: 'var(--mono)', fontSize: '12px', wordBreak: 'break-word' } }, val);
 }
 
@@ -1853,8 +1854,16 @@ function renderMessageEl(msg, index, returnData, msgLog) {
   const tbl = el('table', { style: { width: '100%' } });
   const addRow = (label, content) => {
     const td = el('td', { style: { wordBreak: 'break-word', maxWidth: '0', width: '100%' } });
-    if (typeof content === 'string') td.textContent = content; else td.appendChild(content);
-    tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)', whiteSpace: 'nowrap', paddingRight: '12px', verticalAlign: 'top' } }, label), td));
+    if (typeof content === 'string') {
+      if (content.length > 120) {
+        td.appendChild(truncatedText(content, 120));
+      } else {
+        td.textContent = content;
+      }
+    } else {
+      td.appendChild(content);
+    }
+    tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)', whiteSpace: 'nowrap', paddingRight: '12px', verticalAlign: 'top', paddingTop: '8px', paddingBottom: '8px' } }, label), td));
   };
   switch (v.__typename) {
     case 'MsgAddPackage':
