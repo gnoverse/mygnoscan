@@ -580,9 +580,9 @@ async function loadHome() {
     document.getElementById('stat-block').textContent = fmtNum(stats.latest_block);
     // Block height → time lookup
     const blockTime = {};
-    for (const b of (blocksData || [])) blockTime[b.height] = b.time;
+    for (const b of (Array.isArray(blocksData) ? blocksData : [])) blockTime[b.height] = b.time;
     const tbody = clear('latest-realms');
-    for (const r of (realmsData.items || [])) {
+    for (const r of (realmsData?.items || [])) {
       tbody.appendChild(el('tr', {},
         el('td', {}, realmPathEl(r.path)),
         el('td', {}, addrLink(r.creator)),
@@ -591,7 +591,7 @@ async function loadHome() {
       ));
     }
     const txBody = clear('recent-txs');
-    for (const tx of (txsData.items || [])) {
+    for (const tx of (txsData?.items || [])) {
       const msg = tx.messages?.[0];
       const when = blockTime[tx.block_height] ? timeAgo(blockTime[tx.block_height]) : (tx.block_height === 0 ? 'genesis' : '');
       txBody.appendChild(el('tr', {},
@@ -1655,7 +1655,7 @@ async function loadAddressDetail(addr) {
     const [data, blocksData] = await Promise.all([api('address/' + addr), api('blocks?limit=50')]);
     // Block time lookup
     const blockTime = {};
-    for (const b of (blocksData || [])) blockTime[b.height] = b.time;
+    for (const b of (Array.isArray(blocksData) ? blocksData : [])) blockTime[b.height] = b.time;
     container.textContent = '';
     // Header
     container.appendChild(el('h2', { style: { margin: '16px 0 8px' } }, 'Address'));
@@ -1846,9 +1846,11 @@ function processClampQueue() {
     }
   }
 }
-// Run after every DOM update settles
-const _clampObserver = new MutationObserver(() => { if (_clampQueue.length) setTimeout(processClampQueue, 0); });
-_clampObserver.observe(document.body, { childList: true, subtree: true });
+// Run after DOM mutations settle — observe body when available
+if (document.body) {
+  new MutationObserver(() => { if (_clampQueue.length) setTimeout(processClampQueue, 0); })
+    .observe(document.body, { childList: true, subtree: true });
+}
 
 function argValueEl(val) {
   if (/^g1[a-z0-9]{38,}$/.test(val)) return addrLink(val);
