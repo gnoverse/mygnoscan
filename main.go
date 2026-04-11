@@ -111,7 +111,7 @@ func run() error {
 	mux.HandleFunc("GET /api/govdao", api.HandleGovDAO)
 
 	// SSE live feed (proxies tx-indexer WebSocket → SSE for browsers)
-	initLiveFeed(*indexerURL)
+	initLiveFeed(client)
 	mux.HandleFunc("GET /api/live", sseHandler())
 
 	// Frontend: SPA handler serves index.html for all non-API routes

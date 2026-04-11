@@ -1,30 +1,32 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
-// SSE-based live feed. The Go backend subscribes to the tx-indexer WebSocket
-// and fans out events to browser clients via Server-Sent Events.
-// This avoids WebSocket upgrade issues with HTTP/2 reverse proxies (Caddy).
+// SSE live feed via polling. The Go backend polls the tx-indexer for new
+// blocks/txs and fans out to browser clients via Server-Sent Events.
 
 type liveFeed struct {
 	mu         sync.RWMutex
 	clients    map[chan []byte]struct{}
 	running    bool
-	indexerURL string
+	indexer    *IndexerClient
+	lastBlock  int
 }
 
 var feed = &liveFeed{
 	clients: make(map[chan []byte]struct{}),
+}
+
+func initLiveFeed(client *IndexerClient) {
+	feed.indexer = client
 }
 
 func (f *liveFeed) addClient() chan []byte {
@@ -49,7 +51,6 @@ func (f *liveFeed) broadcast(data []byte) {
 		select {
 		case ch <- data:
 		default:
-			// Client too slow, drop
 		}
 	}
 }
@@ -62,114 +63,85 @@ func (f *liveFeed) ensureRunning() {
 	}
 	f.running = true
 	f.mu.Unlock()
-	go f.connectLoop()
+	go f.pollLoop()
 }
 
-func (f *liveFeed) connectLoop() {
+func (f *liveFeed) pollLoop() {
+	log.Println("live feed: started polling")
 	for {
 		f.mu.RLock()
-		nClients := len(f.clients)
+		n := len(f.clients)
 		f.mu.RUnlock()
-		if nClients == 0 {
+		if n == 0 {
 			f.mu.Lock()
 			f.running = false
 			f.mu.Unlock()
+			log.Println("live feed: no clients, stopped")
 			return
 		}
 
-		if err := f.subscribe(); err != nil {
-			log.Printf("live feed: %v, reconnecting in 5s", err)
-			time.Sleep(5 * time.Second)
-		}
-	}
-}
-
-func (f *liveFeed) subscribe() error {
-	wsURL := strings.Replace(f.indexerURL, "https://", "wss://", 1)
-	wsURL = strings.Replace(wsURL, "http://", "ws://", 1)
-
-	log.Printf("live feed: connecting to %s", wsURL)
-	dialer := websocket.Dialer{
-		HandshakeTimeout: 10 * time.Second,
-		Subprotocols:     []string{"graphql-transport-ws"},
-	}
-	conn, _, err := dialer.Dial(wsURL, nil)
-	if err != nil {
-		return fmt.Errorf("dial %s: %w", wsURL, err)
-	}
-	log.Printf("live feed: connected")
-	defer conn.Close()
-
-	// Init
-	conn.WriteJSON(map[string]string{"type": "connection_init"})
-
-	// Read ack
-	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	var ack map[string]any
-	if err := conn.ReadJSON(&ack); err != nil {
-		return fmt.Errorf("ack: %w", err)
-	}
-
-	// Subscribe to transactions
-	conn.WriteJSON(map[string]any{
-		"id": "tx", "type": "subscribe",
-		"payload": map[string]string{
-			"query": `subscription { getTransactions(where: {}) { hash block_height success gas_used gas_fee { amount denom } messages { typeUrl route value { __typename ... on MsgCall { caller pkg_path func } ... on MsgAddPackage { creator package { name path } } ... on MsgRun { caller } ... on BankMsgSend { from_address to_address amount } } } } }`,
-		},
-	})
-
-	// Subscribe to blocks
-	conn.WriteJSON(map[string]any{
-		"id": "block", "type": "subscribe",
-		"payload": map[string]string{
-			"query": `subscription { getBlocks(where: {}) { height time num_txs proposer_address_raw } }`,
-		},
-	})
-
-	conn.SetReadDeadline(time.Time{}) // No deadline for streaming
-
-	for {
-		_, raw, err := conn.ReadMessage()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		height, err := f.indexer.LatestBlockHeight(ctx)
+		cancel()
 		if err != nil {
-			return fmt.Errorf("read: %w", err)
-		}
-
-		var msg struct {
-			ID      string          `json:"id"`
-			Type    string          `json:"type"`
-			Payload json.RawMessage `json:"payload"`
-		}
-		if err := json.Unmarshal(raw, &msg); err != nil {
+			time.Sleep(3 * time.Second)
 			continue
 		}
 
-		switch msg.Type {
-		case "next":
-			// Forward to SSE clients with event type
-			eventType := "tx"
-			if msg.ID == "block" {
-				eventType = "block"
-			}
-			sseData, _ := json.Marshal(map[string]any{
-				"type":    eventType,
-				"payload": json.RawMessage(msg.Payload),
-			})
-			f.broadcast(sseData)
-		case "ping":
-			conn.WriteJSON(map[string]string{"type": "pong"})
+		if f.lastBlock == 0 {
+			f.lastBlock = height
 		}
-	}
-}
 
-func initLiveFeed(indexerURL string) {
-	feed.indexerURL = indexerURL
+		if height > f.lastBlock {
+			// New blocks — fetch them
+			ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+			blocks, err := f.indexer.GetRecentBlocks(ctx2, height-f.lastBlock+1)
+			cancel2()
+			if err == nil {
+				for _, b := range blocks {
+					if b.Height <= f.lastBlock {
+						continue
+					}
+					data, _ := json.Marshal(map[string]any{
+						"type": "block",
+						"payload": map[string]any{
+							"data": map[string]any{"getBlocks": b},
+						},
+					})
+					f.broadcast(data)
+				}
+			}
+
+			// Check for new txs in these blocks
+			ctx3, cancel3 := context.WithTimeout(context.Background(), 10*time.Second)
+			txs, err := f.indexer.GetRecentTransactions(ctx3, 20)
+			cancel3()
+			if err == nil {
+				for _, tx := range txs {
+					if tx.BlockHeight > f.lastBlock {
+						data, _ := json.Marshal(map[string]any{
+							"type": "tx",
+							"payload": map[string]any{
+								"data": map[string]any{"getTransactions": tx},
+							},
+						})
+						f.broadcast(data)
+					}
+				}
+			}
+
+			f.lastBlock = height
+		}
+
+		time.Sleep(3 * time.Second)
+	}
 }
 
 func sseHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		flusher, ok := w.(http.Flusher)
 		if !ok {
-			http.Error(w, "streaming not supported", http.StatusInternalServerError)
+			http.Error(w, "streaming not supported", 500)
 			return
 		}
 
@@ -181,7 +153,6 @@ func sseHandler() http.HandlerFunc {
 		ch := feed.addClient()
 		defer feed.removeClient(ch)
 
-		// Send keepalive comment immediately
 		fmt.Fprintf(w, ": connected\n\n")
 		flusher.Flush()
 
