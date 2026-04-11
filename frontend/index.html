@@ -2183,14 +2183,41 @@ function toggleLive() {
   }
 }
 
+const LIVE_TX_QUERY = 'subscription { getTransactions(where: {}) { hash block_height success gas_used gas_fee { amount denom } messages { typeUrl route value { __typename ... on MsgCall { caller pkg_path func } ... on MsgAddPackage { creator package { name path } } ... on MsgRun { caller } ... on BankMsgSend { from_address to_address amount } } } } }';
+const LIVE_BLOCK_QUERY = 'subscription { getBlocks(where: {}) { height time num_txs proposer_address_raw } }';
+
 function startLive() {
   stopLive();
   _liveTxCount = 0;
   _liveBlockCount = 0;
+  setLiveState('connecting');
+
+  // Try graphql-transport-ws first, fall back to graphql-ws (legacy)
+  tryConnect(['graphql-transport-ws', 'graphql-ws']);
+}
+
+function tryConnect(protocols) {
+  if (!protocols.length) { setLiveState('error'); return; }
+  const proto = protocols[0];
+  console.log('live: trying', proto);
 
   try {
-    _liveWs = new WebSocket('wss://indexer.gno.land/graphql/query', 'graphql-transport-ws');
-  } catch (e) { console.error('live: ws create failed', e); return; }
+    _liveWs = new WebSocket('wss://indexer.gno.land/graphql/query', proto);
+  } catch (e) {
+    console.error('live: ws create failed for', proto, e);
+    tryConnect(protocols.slice(1));
+    return;
+  }
+
+  let gotAck = false;
+  const timeout = setTimeout(() => {
+    if (!gotAck && _liveWs) {
+      console.log('live: no ack from', proto, '- trying next');
+      _liveWs.onclose = null;
+      _liveWs.close();
+      tryConnect(protocols.slice(1));
+    }
+  }, 5000);
 
   _liveWs.onopen = () => {
     _liveWs.send(JSON.stringify({ type: 'connection_init' }));
@@ -2199,18 +2226,15 @@ function startLive() {
   _liveWs.onmessage = (evt) => {
     const msg = JSON.parse(evt.data);
     if (msg.type === 'connection_ack') {
+      gotAck = true;
+      clearTimeout(timeout);
       setLiveState('active');
-      const subType = 'subscribe'; // graphql-transport-ws
-      _liveWs.send(JSON.stringify({
-        id: 'live-tx', type: subType,
-        payload: { query: 'subscription { getTransactions(where: {}) { hash block_height success gas_used gas_fee { amount denom } messages { typeUrl route value { __typename ... on MsgCall { caller pkg_path func } ... on MsgAddPackage { creator package { name path } } ... on MsgRun { caller } ... on BankMsgSend { from_address to_address amount } } } } }' }
-      }));
-      _liveWs.send(JSON.stringify({
-        id: 'live-block', type: subType,
-        payload: { query: 'subscription { getBlocks(where: {}) { height time num_txs proposer_address_raw } }' }
-      }));
+      console.log('live: connected via', proto);
+      // graphql-transport-ws uses 'subscribe', graphql-ws uses 'start'
+      const subType = proto === 'graphql-transport-ws' ? 'subscribe' : 'start';
+      _liveWs.send(JSON.stringify({ id: 'live-tx', type: subType, payload: { query: LIVE_TX_QUERY } }));
+      _liveWs.send(JSON.stringify({ id: 'live-block', type: subType, payload: { query: LIVE_BLOCK_QUERY } }));
     } else if (msg.type === 'next' || msg.type === 'data') {
-      // 'next' = graphql-transport-ws, 'data' = legacy graphql-ws
       if (msg.id === 'live-tx' && msg.payload?.data?.getTransactions) {
         onLiveTx(msg.payload.data.getTransactions);
       } else if (msg.id === 'live-block' && msg.payload?.data?.getBlocks) {
@@ -2218,17 +2242,28 @@ function startLive() {
       }
     } else if (msg.type === 'ping') {
       _liveWs.send(JSON.stringify({ type: 'pong' }));
+    } else if (msg.type === 'ka') {
+      // graphql-ws keepalive — ignore
     }
   };
 
   _liveWs.onerror = (e) => {
-    console.error('live: ws error', e);
-    setLiveState('error');
+    console.error('live: ws error on', proto, e);
+    clearTimeout(timeout);
+    if (!gotAck) {
+      tryConnect(protocols.slice(1));
+    } else {
+      setLiveState('error');
+    }
   };
+
   _liveWs.onclose = () => {
-    if (_liveActive) {
+    clearTimeout(timeout);
+    if (_liveActive && gotAck) {
       setLiveState('connecting');
       setTimeout(() => { if (_liveActive) startLive(); }, 3000);
+    } else if (!gotAck) {
+      tryConnect(protocols.slice(1));
     }
   };
 }
