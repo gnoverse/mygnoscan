@@ -2185,8 +2185,10 @@ function toggleLive() {
   }
 }
 
-const LIVE_TX_QUERY = 'subscription { getTransactions(where: {}) { hash block_height success gas_used gas_fee { amount denom } messages { typeUrl route value { __typename ... on MsgCall { caller pkg_path func } ... on MsgAddPackage { creator package { name path } } ... on MsgRun { caller } ... on BankMsgSend { from_address to_address amount } } } } }';
-const LIVE_BLOCK_QUERY = 'subscription { getBlocks(where: {}) { height time num_txs proposer_address_raw } }';
+// Live mode via SSE — Go backend subscribes to tx-indexer WebSocket,
+// fans out to browsers via /api/live (Server-Sent Events).
+// Works over HTTP/2, no WebSocket upgrade needed from browser.
+let _liveSSE = null;
 
 function startLive() {
   stopLive();
@@ -2194,89 +2196,33 @@ function startLive() {
   _liveBlockCount = 0;
   setLiveState('connecting');
 
-  // Try graphql-transport-ws first, fall back to graphql-ws (legacy)
-  tryConnect(['graphql-transport-ws', 'graphql-ws']);
-}
+  _liveSSE = new EventSource('/api/live');
 
-function tryConnect(protocols) {
-  if (!protocols.length) { setLiveState('error'); return; }
-  const proto = protocols[0];
-  console.log('live: trying', proto);
-
-  // Connect to our own WS proxy (which relays to tx-indexer)
-  const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = wsProto + '//' + location.host + '/ws';
-  try {
-    _liveWs = new WebSocket(wsUrl, proto);
-  } catch (e) {
-    console.error('live: ws create failed for', proto, e);
-    tryConnect(protocols.slice(1));
-    return;
-  }
-
-  let gotAck = false;
-  const timeout = setTimeout(() => {
-    if (!gotAck && _liveWs) {
-      console.log('live: no ack from', proto, '- trying next');
-      _liveWs.onclose = null;
-      _liveWs.close();
-      tryConnect(protocols.slice(1));
-    }
-  }, 5000);
-
-  _liveWs.onopen = () => {
-    _liveWs.send(JSON.stringify({ type: 'connection_init' }));
+  _liveSSE.onopen = () => {
+    setLiveState('active');
   };
 
-  _liveWs.onmessage = (evt) => {
-    const msg = JSON.parse(evt.data);
-    if (msg.type === 'connection_ack') {
-      gotAck = true;
-      clearTimeout(timeout);
-      setLiveState('active');
-      console.log('live: connected via', proto);
-      // graphql-transport-ws uses 'subscribe', graphql-ws uses 'start'
-      const subType = proto === 'graphql-transport-ws' ? 'subscribe' : 'start';
-      _liveWs.send(JSON.stringify({ id: 'live-tx', type: subType, payload: { query: LIVE_TX_QUERY } }));
-      _liveWs.send(JSON.stringify({ id: 'live-block', type: subType, payload: { query: LIVE_BLOCK_QUERY } }));
-    } else if (msg.type === 'next' || msg.type === 'data') {
-      if (msg.id === 'live-tx' && msg.payload?.data?.getTransactions) {
+  _liveSSE.onmessage = (evt) => {
+    try {
+      const msg = JSON.parse(evt.data);
+      if (msg.type === 'tx' && msg.payload?.data?.getTransactions) {
         onLiveTx(msg.payload.data.getTransactions);
-      } else if (msg.id === 'live-block' && msg.payload?.data?.getBlocks) {
+      } else if (msg.type === 'block' && msg.payload?.data?.getBlocks) {
         onLiveBlock(msg.payload.data.getBlocks);
       }
-    } else if (msg.type === 'ping') {
-      _liveWs.send(JSON.stringify({ type: 'pong' }));
-    } else if (msg.type === 'ka') {
-      // graphql-ws keepalive — ignore
-    }
+    } catch (e) {}
   };
 
-  _liveWs.onerror = (e) => {
-    console.error('live: ws error on', proto, e);
-    clearTimeout(timeout);
-    if (!gotAck) {
-      tryConnect(protocols.slice(1));
-    } else {
-      setLiveState('error');
-    }
-  };
-
-  _liveWs.onclose = () => {
-    clearTimeout(timeout);
-    if (_liveActive && gotAck) {
-      setLiveState('connecting');
-      setTimeout(() => { if (_liveActive) startLive(); }, 3000);
-    } else if (!gotAck) {
-      tryConnect(protocols.slice(1));
-    }
+  _liveSSE.onerror = () => {
+    // EventSource auto-reconnects. Show connecting state.
+    if (_liveActive) setLiveState('connecting');
   };
 }
 
 function stopLive() {
-  if (_liveWs) {
-    _liveWs.close();
-    _liveWs = null;
+  if (_liveSSE) {
+    _liveSSE.close();
+    _liveSSE = null;
   }
 }
 

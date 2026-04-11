@@ -110,8 +110,9 @@ func run() error {
 	mux.HandleFunc("GET /api/accounts", api.HandleAccounts)
 	mux.HandleFunc("GET /api/govdao", api.HandleGovDAO)
 
-	// WebSocket proxy to tx-indexer (browser can't connect directly due to CDN)
-	mux.HandleFunc("GET /ws", wsProxyHandler(*indexerURL))
+	// SSE live feed (proxies tx-indexer WebSocket → SSE for browsers)
+	initLiveFeed(*indexerURL)
+	mux.HandleFunc("GET /api/live", sseHandler())
 
 	// Frontend: SPA handler serves index.html for all non-API routes
 	frontendSub, err := fs.Sub(frontendFS, "frontend")
