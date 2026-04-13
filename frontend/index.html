@@ -538,7 +538,7 @@ async function initNetworkSelector() {
     const sel = document.getElementById('network-select');
     sel.innerHTML = '';
     const all = document.createElement('option');
-    all.value = 'all'; all.textContent = 'all networks';
+    all.value = 'all'; all.textContent = 'all networks (beta)';
     sel.appendChild(all);
     for (const n of nets) {
       const opt = document.createElement('option');
