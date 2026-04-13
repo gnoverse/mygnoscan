@@ -2384,7 +2384,7 @@ function startLive() {
   _liveBlockCount = 0;
   setLiveState('connecting');
 
-  _liveSSE = new EventSource('/api/live');
+  _liveSSE = new EventSource('/api/live' + netSuffix(getNetwork()));
 
   _liveSSE.onopen = () => {
     setLiveState('active');
@@ -2397,7 +2397,7 @@ function startLive() {
         const tx = { ...msg.payload.data.getTransactions, network: msg.network_id };
         onLiveTx(tx);
       } else if (msg.type === 'block' && msg.payload?.data?.getBlocks) {
-        onLiveBlock(msg.payload.data.getBlocks);
+        onLiveBlock(msg.payload.data.getBlocks, msg.network_id);
       }
     } catch (e) {}
   };
@@ -2445,10 +2445,8 @@ function onLiveTx(tx) {
   const tbody = document.getElementById('recent-txs');
   if (tbody && document.getElementById('view-home')?.classList.contains('active')) {
     const msg = tx.messages?.[0];
-    const blockTd = el('td', {}, blockLink(tx.block_height));
-    if (tx.network) blockTd.appendChild(netBadgeEl(tx.network));
     const tr = el('tr', { className: 'live-new' },
-      blockTd,
+      el('td', {}, blockLink(tx.block_height, tx.network)),
       el('td', {}, typeBadge(msg?.value?.__typename)),
       el('td', {}, txDetailEl(msg)),
       el('td', {}, statusBadge(tx.success)),
@@ -2464,8 +2462,8 @@ function onLiveTx(tx) {
   if (txsList && document.getElementById('view-txs')?.classList.contains('active')) {
     const msg = tx.messages?.[0];
     const tr = el('tr', { className: 'live-new' },
-      el('td', {}, txLink(tx.hash, tx.block_height)),
-      el('td', {}, blockLink(tx.block_height)),
+      el('td', {}, txLink(tx.hash, tx.block_height, tx.network)),
+      el('td', {}, blockLink(tx.block_height, tx.network)),
       el('td', {}, typeBadge(msg?.value?.__typename)),
       el('td', {}, txDetailEl(msg)),
       el('td', {}, statusBadge(tx.success))
@@ -2479,7 +2477,7 @@ function onLiveTx(tx) {
   if (lbl) lbl.textContent = ' +' + _liveTxCount + 'tx ' + _liveBlockCount + 'blk';
 }
 
-function onLiveBlock(block) {
+function onLiveBlock(block, network) {
   _liveBlockCount++;
   const blockEl = document.getElementById('stat-block');
   if (blockEl) blockEl.textContent = fmtNum(block.height);
@@ -2488,11 +2486,11 @@ function onLiveBlock(block) {
   const blocksList = document.getElementById('blocks-list');
   if (blocksList && document.getElementById('view-blocks')?.classList.contains('active')) {
     const tr = el('tr', { className: 'live-new' },
-      el('td', {}, blockLink(block.height)),
+      el('td', {}, blockLink(block.height, network)),
       el('td', {}, 'just now'),
-      el('td', {}, String(block.num_txs)),
+      el('td', { style: block.num_txs === 0 ? { color: 'var(--fg2)' } : {} }, String(block.num_txs || 0)),
       el('td', { className: 'truncate' }, addrLink(block.proposer_address_raw)),
-      el('td', { className: 'truncate' }, '-')
+      el('td', { className: 'truncate' }, block.hash || '-')
     );
     blocksList.insertBefore(tr, blocksList.firstChild);
     while (blocksList.children.length > 60) blocksList.removeChild(blocksList.lastChild);
