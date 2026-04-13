@@ -498,9 +498,22 @@ function txDetail(msg) {
 function timeAgo(t) {
   if (!t) return '';
   const d = new Date(t); const s = Math.floor((Date.now() - d) / 1000);
+  if (s < 5) return 'just now';
   if (s < 60) return s + 's ago'; if (s < 3600) return Math.floor(s/60) + 'm ago';
   if (s < 86400) return Math.floor(s/3600) + 'h ago'; return Math.floor(s/86400) + 'd ago';
 }
+function timeEl(t) {
+  const span = document.createElement('span');
+  span.setAttribute('data-time', t || '');
+  span.textContent = t ? timeAgo(t) : '';
+  return span;
+}
+setInterval(() => {
+  document.querySelectorAll('[data-time]').forEach(s => {
+    const t = s.getAttribute('data-time');
+    if (t) s.textContent = timeAgo(t);
+  });
+}, 10000);
 function blockLabel(h) { return h === 0 ? 'genesis' : fmtNum(h); }
 function blockLink(h, network) {
   const span = el('span');
@@ -666,7 +679,7 @@ async function loadHome() {
     const txBody = clear('recent-txs');
     for (const tx of (txsData?.items || [])) {
       const msg = tx.messages?.[0];
-      const when = tx.block_time ? timeAgo(tx.block_time) : blockTime[tx.block_height] ? timeAgo(blockTime[tx.block_height]) : (tx.block_height === 0 ? 'genesis' : '');
+      const when = tx.block_time ? timeEl(tx.block_time) : blockTime[tx.block_height] ? timeEl(blockTime[tx.block_height]) : (tx.block_height === 0 ? 'genesis' : '');
       txBody.appendChild(el('tr', {},
         el('td', {}, blockLink(tx.block_height, tx.network)),
         el('td', {}, typeBadge(msg?.value?.__typename)),
@@ -883,7 +896,7 @@ function renderBlockRows() {
     count++;
     tbody.appendChild(el('tr', {},
       el('td', {}, blockLink(b.height, b.network)),
-      el('td', {}, timeAgo(b.time)),
+      el('td', {}, timeEl(b.time)),
       el('td', { style: b.num_txs === 0 ? { color: 'var(--fg2)' } : {} }, String(b.num_txs)),
       el('td', { className: 'truncate' }, addrLink(b.proposer_address_raw)),
       el('td', { className: 'truncate' }, b.hash)
@@ -1995,7 +2008,7 @@ async function loadAddressDetail(addr) {
     const tbody = el('tbody');
     for (const tx of txs) {
       const msg = tx.messages?.[0];
-      const when = tx.block_time ? timeAgo(tx.block_time) : blockTime[tx.block_height] ? timeAgo(blockTime[tx.block_height]) : (tx.block_height === 0 ? 'genesis' : '');
+      const when = tx.block_time ? timeEl(tx.block_time) : blockTime[tx.block_height] ? timeEl(blockTime[tx.block_height]) : (tx.block_height === 0 ? 'genesis' : '');
       tbody.appendChild(el('tr', {},
         el('td', {}, txLink(tx.hash, tx.block_height, tx.network)),
         el('td', {}, typeBadge(msg?.value?.__typename)),
@@ -2450,7 +2463,7 @@ function onLiveTx(tx) {
       el('td', {}, typeBadge(msg?.value?.__typename)),
       el('td', {}, txDetailEl(msg)),
       el('td', {}, statusBadge(tx.success)),
-      el('td', { style: { color: 'var(--fg2)', fontSize: '12px' } }, 'just now')
+      el('td', { style: { color: 'var(--fg2)', fontSize: '12px' } }, timeEl(new Date().toISOString()))
     );
     tbody.insertBefore(tr, tbody.firstChild);
     // Keep max 30 rows
@@ -2487,7 +2500,7 @@ function onLiveBlock(block, network) {
   if (blocksList && document.getElementById('view-blocks')?.classList.contains('active')) {
     const tr = el('tr', { className: 'live-new' },
       el('td', {}, blockLink(block.height, network)),
-      el('td', {}, 'just now'),
+      el('td', {}, timeEl(block.time || new Date().toISOString())),
       el('td', { style: block.num_txs === 0 ? { color: 'var(--fg2)' } : {} }, String(block.num_txs || 0)),
       el('td', { className: 'truncate' }, addrLink(block.proposer_address_raw)),
       el('td', { className: 'truncate' }, block.hash || '-')
