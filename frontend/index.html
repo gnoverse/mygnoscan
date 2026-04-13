@@ -2027,7 +2027,9 @@ async function loadAddressDetail(addr) {
       container.appendChild(el('div', { className: 'section-title' }, 'deployed packages (' + pkgs.length + ')'));
       const ptbl = el('table');
       for (const p of pkgs) {
-        ptbl.appendChild(el('tr', {}, el('td', {}, realmPathEl(p.path, p.network)), el('td', {}, p.is_realm ? 'realm' : 'package')));
+        const pathTd = el('td', {}, realmPathEl(p.path, p.network));
+        if (p.network) pathTd.appendChild(netBadgeEl(p.network));
+        ptbl.appendChild(el('tr', {}, pathTd, el('td', {}, p.is_realm ? 'realm' : 'package')));
       }
       container.appendChild(ptbl);
     }
@@ -2039,8 +2041,10 @@ async function loadAddressDetail(addr) {
     for (const tx of txs) {
       const msg = tx.messages?.[0];
       const when = tx.block_time ? timeEl(tx.block_time) : blockTime[tx.block_height] ? timeEl(blockTime[tx.block_height]) : (tx.block_height === 0 ? 'genesis' : '');
+      const txTd = el('td', {}, txLink(tx.hash, tx.block_height, tx.network));
+      if (tx.network) txTd.appendChild(netBadgeEl(tx.network));
       tbody.appendChild(el('tr', {},
-        el('td', {}, txLink(tx.hash, tx.block_height, tx.network)),
+        txTd,
         el('td', {}, typeBadge(msg?.value?.__typename)),
         el('td', {}, txDetailEl(msg)),
         el('td', {}, statusBadge(tx.success)),
