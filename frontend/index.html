@@ -74,6 +74,18 @@ pre { background: var(--bg2); border: 1px solid var(--border); border-radius: 4p
 .clamp-text { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-family: var(--mono); font-size: 12px; word-break: break-word; white-space: pre-wrap; }
 .clamp-text.open { display: block; -webkit-line-clamp: unset; }
 .clamp-toggle { color: var(--accent); cursor: pointer; font-size: 11px; user-select: none; }
+/* Table filter */
+.table-filter { background: var(--bg2); border: 1px solid var(--border); color: var(--fg); padding: 4px 10px; border-radius: 4px; font-family: var(--mono); font-size: 12px; width: 200px; outline: none; margin-bottom: 8px; }
+.table-filter:focus { border-color: var(--accent); }
+/* Sortable headers */
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { color: var(--accent); }
+th.sortable::after { content: ' \u2195'; font-size: 10px; opacity: 0.4; }
+th.sort-asc::after { content: ' \u2191'; opacity: 1; }
+th.sort-desc::after { content: ' \u2193'; opacity: 1; }
+/* Total row */
+tr.total-row { border-top: 2px solid var(--border); }
+tr.total-row td { font-weight: bold; color: var(--accent); }
 .block-ctx { color: var(--fg2); font-size: 12px; }
 /* Skeleton loading */
 .skeleton { background: var(--bg3); border-radius: 4px; animation: pulse 1.5s ease-in-out infinite; }
@@ -1580,6 +1592,8 @@ async function loadRealmDetail(path, initialTab) {
     calls.appendChild(callStats);
     // Merged table
     const allRows = [];
+    // Deploy tx
+    allRows.push({ type: 'deploy', block: detail.block_height, caller: detail.creator, detail: 'MsgAddPackage', success: true, tx: detail.tx_hash });
     for (const c of directCalls) allRows.push({ type: 'call', block: c.block_height, caller: c.caller, detail: c.func_name, success: c.success, tx: c.tx_hash });
     for (const r of msgRuns) allRows.push({ type: 'run', block: r.block_height, caller: r.caller, detail: 'MsgRun', success: r.success, tx: r.tx_hash });
     allRows.sort((a, b) => b.block - a.block);
@@ -1588,9 +1602,10 @@ async function loadRealmDetail(path, initialTab) {
       callTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'type'), el('th', {}, 'caller'), el('th', {}, 'detail'), el('th', {}, 'status'), el('th', {}, 'tx'))));
       const callBody = el('tbody');
       for (const row of allRows) {
+        const typeBdg = row.type === 'call' ? badge('realm', 'call') : row.type === 'run' ? badge('ok', 'run') : badge('pkg', 'deploy');
         callBody.appendChild(el('tr', {},
           el('td', {}, blockLink(row.block)),
-          el('td', {}, row.type === 'call' ? badge('realm', 'call') : badge('ok', 'run')),
+          el('td', {}, typeBdg),
           el('td', { className: 'truncate' }, addrLink(row.caller)),
           el('td', {}, row.detail),
           el('td', {}, statusBadge(row.success)),
@@ -1598,6 +1613,7 @@ async function loadRealmDetail(path, initialTab) {
         ));
       }
       callTbl.appendChild(callBody); calls.appendChild(callTbl);
+
     } else {
       calls.appendChild(el('div', { style: { color: 'var(--fg2)', padding: '12px 0' } }, 'no activity'));
     }
@@ -1664,7 +1680,16 @@ async function loadRealmDetail(path, initialTab) {
               el('td', {}, txLink(e.tx_hash, e.block_height))
             ));
           }
+          // Total row
+          const totalBytes = st.entries.reduce((s, e) => s + e.bytes_delta, 0);
+          const totalFee = st.entries.reduce((s, e) => s + e.fee_amount, 0);
+          stBody.appendChild(el('tr', { className: 'total-row' },
+            el('td', {}, ''), el('td', {}, 'total'),
+            el('td', {}, fmtNum(totalBytes)),
+            el('td', {}, fmtNum(totalFee) + ' ugnot'), el('td', {}, '')
+          ));
           stTbl.appendChild(stBody); storageEl.appendChild(stTbl);
+
         }
         // Gas usage table
         if ((gs.entries || []).length) {
@@ -1684,7 +1709,20 @@ async function loadRealmDetail(path, initialTab) {
               el('td', {}, txLink(e.tx_hash, e.block_height))
             ));
           }
+          // Total row
+          const tGasUsed = gs.entries.reduce((s, e) => s + e.gas_used, 0);
+          const tGasWanted = gs.entries.reduce((s, e) => s + e.gas_wanted, 0);
+          const tGasFee = gs.entries.reduce((s, e) => s + e.gas_fee, 0);
+          const tPct = tGasWanted > 0 ? (tGasUsed / tGasWanted * 100).toFixed(0) + '%' : '-';
+          gsBody.appendChild(el('tr', { className: 'total-row' },
+            el('td', {}, ''), el('td', {}, 'total'),
+            el('td', {}, fmtNum(tGasUsed) + ' (' + tPct + ')'),
+            el('td', {}, fmtNum(tGasWanted)),
+            el('td', {}, fmtNum(tGasFee) + ' ugnot'),
+            el('td', {}, ''), el('td', {}, '')
+          ));
           gsTbl.appendChild(gsBody); storageEl.appendChild(gsTbl);
+
         }
         if (!(st.entries || []).length && !(gs.entries || []).length) {
           storageEl.appendChild(el('div', { style: { color: 'var(--fg2)', padding: '12px 0' } }, 'no storage or gas data for this realm'));
@@ -2052,6 +2090,7 @@ async function loadAddressDetail(addr) {
       ));
     }
     tbl.appendChild(tbody); container.appendChild(tbl);
+
     if (!txs.length) container.appendChild(el('div', { style: { color: 'var(--fg2)', padding: '12px 0' } }, 'no transactions found for this address'));
   } catch (err) { container.textContent = ''; container.appendChild(el('p', { style: { color: 'var(--red)' } }, 'Error: ' + err.message)); }
 }
@@ -2078,10 +2117,78 @@ function processClampQueue() {
     }
   }
 }
+// --- Filterable + sortable tables ---
+// Adds a text filter input above a table. Filters rows by text content.
+function addTableFilter(container, table) {
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'table-filter';
+  input.placeholder = 'filter...';
+  input.addEventListener('input', () => {
+    const q = input.value.toLowerCase();
+    const rows = table.querySelectorAll('tbody tr');
+    rows.forEach(tr => {
+      if (tr.classList.contains('total-row')) return;
+      tr.style.display = tr.textContent.toLowerCase().includes(q) ? '' : 'none';
+    });
+  });
+  container.insertBefore(input, table);
+}
+
+// Makes table headers clickable for sorting. Sorts by text content.
+function makeSortable(table) {
+  const headers = table.querySelectorAll('th');
+  headers.forEach((th, colIdx) => {
+    th.classList.add('sortable');
+    th.addEventListener('click', () => {
+      const tbody = table.querySelector('tbody');
+      if (!tbody) return;
+      const rows = Array.from(tbody.querySelectorAll('tr:not(.total-row)'));
+      const asc = !th.classList.contains('sort-asc');
+      // Reset all headers
+      headers.forEach(h => { h.classList.remove('sort-asc', 'sort-desc'); });
+      th.classList.add(asc ? 'sort-asc' : 'sort-desc');
+      rows.sort((a, b) => {
+        const at = (a.children[colIdx]?.textContent || '').trim();
+        const bt = (b.children[colIdx]?.textContent || '').trim();
+        // Try numeric sort
+        const an = parseFloat(at.replace(/,/g, ''));
+        const bn = parseFloat(bt.replace(/,/g, ''));
+        if (!isNaN(an) && !isNaN(bn)) return asc ? an - bn : bn - an;
+        return asc ? at.localeCompare(bt) : bt.localeCompare(at);
+      });
+      rows.forEach(r => tbody.appendChild(r));
+      // Move total row to end
+      const total = tbody.querySelector('.total-row');
+      if (total) tbody.appendChild(total);
+    });
+  });
+}
+
+// Auto-enhance tables: make sortable + add filter for large tables
+let _enhanceTimer = null;
+function enhanceTables() {
+  document.querySelectorAll('table:not([data-enhanced])').forEach(tbl => {
+    const rows = tbl.querySelectorAll('tbody tr');
+    if (rows.length < 3) return;
+    tbl.setAttribute('data-enhanced', '1');
+    makeSortable(tbl);
+    if (rows.length >= 8) {
+      const parent = tbl.parentElement;
+      if (parent && !parent.querySelector('.table-filter')) {
+        addTableFilter(parent, tbl);
+      }
+    }
+  });
+}
+
 // Run after DOM mutations settle — observe body when available
 if (document.body) {
-  new MutationObserver(() => { if (_clampQueue.length) setTimeout(processClampQueue, 0); })
-    .observe(document.body, { childList: true, subtree: true });
+  new MutationObserver(() => {
+    if (_clampQueue.length) setTimeout(processClampQueue, 0);
+    clearTimeout(_enhanceTimer);
+    _enhanceTimer = setTimeout(enhanceTables, 100);
+  }).observe(document.body, { childList: true, subtree: true });
 }
 
 function argValueEl(val) {
