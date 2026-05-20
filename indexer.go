@@ -97,20 +97,20 @@ func (c *IndexerClient) LatestBlockHeight(ctx context.Context) (int, error) {
 }
 
 type Transaction struct {
-	Index       int          `json:"index"`
-	Hash        string       `json:"hash"`
-	Success     bool         `json:"success"`
-	BlockHeight int          `json:"block_height"`
-	GasWanted   int          `json:"gas_wanted"`
-	GasUsed     int          `json:"gas_used"`
-	GasFee      *Coin        `json:"gas_fee"`
-	Memo        string       `json:"memo"`
-	Messages    []TxMessage  `json:"messages"`
-	Response    *TxResponse  `json:"response"`
-	ContentRaw  string       `json:"content_raw,omitempty"`
-	Network     string       `json:"network,omitempty"`
-	BlockTime   string       `json:"block_time,omitempty"`
-	ChainID     string       `json:"chain_id,omitempty"`
+	Index       int         `json:"index"`
+	Hash        string      `json:"hash"`
+	Success     bool        `json:"success"`
+	BlockHeight int         `json:"block_height"`
+	GasWanted   int         `json:"gas_wanted"`
+	GasUsed     int         `json:"gas_used"`
+	GasFee      *Coin       `json:"gas_fee"`
+	Memo        string      `json:"memo"`
+	Messages    []TxMessage `json:"messages"`
+	Response    *TxResponse `json:"response"`
+	ContentRaw  string      `json:"content_raw,omitempty"`
+	Network     string      `json:"network,omitempty"`
+	BlockTime   string      `json:"block_time,omitempty"`
+	ChainID     string      `json:"chain_id,omitempty"`
 }
 
 type Coin struct {
@@ -315,16 +315,29 @@ const txFields = `
 `
 
 // GetAllPackages fetches all MsgAddPackage transactions.
-func (c *IndexerClient) GetAllPackages(ctx context.Context) ([]Transaction, error) {
+func (c *IndexerClient) GetAllPackages(ctx context.Context, lastHeight *int,
+) ([]Transaction, error) {
+
 	var result struct {
 		GetTransactions []Transaction `json:"getTransactions"`
 	}
+
+	where := `messages: { value: { MsgAddPackage: {} } }`
+
+	if lastHeight != nil {
+		where = fmt.Sprintf(`
+			block_height: { gt: %d }
+			messages: { value: { MsgAddPackage: {} } }
+		`, *lastHeight)
+	}
+
 	q := fmt.Sprintf(`{
 		getTransactions(
-			where: { messages: { value: { MsgAddPackage: {} } } }
-			order: { heightAndIndex: DESC }
+			where: { %s }
+			order: { heightAndIndex: ASC }
 		) { %s }
-	}`, txFields)
+	}`, where, txFields)
+
 	err := c.query(ctx, q, nil, &result)
 	return result.GetTransactions, err
 }
@@ -348,6 +361,41 @@ func (c *IndexerClient) GetRecentTransactions(ctx context.Context, maxResults in
 		return result.GetTransactions[:maxResults], nil
 	}
 	return result.GetTransactions, err
+}
+
+func (c *IndexerClient) GetRecentTransactionsFromHeight(ctx context.Context, lastHeight *int) ([]Transaction, error) {
+	var result struct {
+		GetTransactions []Transaction `json:"getTransactions"`
+	}
+
+	where := ""
+
+	if lastHeight != nil {
+		where = fmt.Sprintf(`block_height: { gt: %d }`, *lastHeight)
+	}
+
+	// if where is empty, avoid trailing comma / invalid GraphQL
+	whereClause := ""
+	if where != "" {
+		whereClause = fmt.Sprintf("where: { %s }", where)
+	} else {
+		whereClause = "where: {}"
+	}
+
+	q := fmt.Sprintf(`{
+		getTransactions(
+			%s
+			order: { heightAndIndex: DESC }
+		) { %s }
+	}`, whereClause, txFieldsLight)
+
+	if err := c.query(ctx, q, nil, &result); err != nil {
+		return nil, err
+	}
+
+	txs := result.GetTransactions
+
+	return txs, nil
 }
 
 // GetTransactionsByPkgPath fetches MsgCall transactions for a specific package.
@@ -413,16 +461,31 @@ func (c *IndexerClient) GetTransactionsByAddress(ctx context.Context, addr strin
 }
 
 // GetMsgRunTransactions fetches all MsgRun transactions.
-func (c *IndexerClient) GetMsgRunTransactions(ctx context.Context) ([]Transaction, error) {
+func (c *IndexerClient) GetMsgRunTransactions(
+	ctx context.Context,
+	lastHeight *int,
+) ([]Transaction, error) {
+
 	var result struct {
 		GetTransactions []Transaction `json:"getTransactions"`
 	}
+
+	where := `messages: { value: { MsgRun: {} } }`
+
+	if lastHeight != nil {
+		where = fmt.Sprintf(`
+			block_height: { gt: %d }
+			messages: { value: { MsgRun: {} } }
+		`, *lastHeight)
+	}
+
 	q := fmt.Sprintf(`{
 		getTransactions(
-			where: { messages: { value: { MsgRun: {} } } }
+			where: { %s }
 			order: { heightAndIndex: DESC }
 		) { %s }
-	}`, txFields)
+	}`, where, txFields)
+
 	err := c.query(ctx, q, nil, &result)
 	return result.GetTransactions, err
 }

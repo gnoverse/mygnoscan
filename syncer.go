@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"errors"
+	"fmt"
 	"log"
 )
 
@@ -37,7 +40,12 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 }
 
 func (s *Syncer) syncPackages(ctx context.Context) error {
-	txs, err := s.client.GetAllPackages(ctx)
+	lastHeight, err := s.getLastBlockHeight(ctx, "packages")
+	if err != nil {
+		return err
+	}
+
+	txs, err := s.client.GetAllPackages(ctx, lastHeight)
 	if err != nil {
 		return err
 	}
@@ -65,8 +73,49 @@ func (s *Syncer) syncPackages(ctx context.Context) error {
 	return nil
 }
 
+func (s *Syncer) getLastBlockHeight(ctx context.Context, tableName string) (*int, error) {
+	var lastHeight int
+	err := s.db.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT block_height 
+	FROM %s 
+	WHERE network = $1
+	ORDER BY block_height DESC 
+	LIMIT 1`, tableName), s.networkID).Scan(&lastHeight)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("error getting last block height: %w", err)
+	}
+	return &lastHeight, nil
+}
+
+func (s *Syncer) getLastRecentTransactionBlockHeight(ctx context.Context) (*int, error) {
+	var lastHeight int
+	err := s.db.db.QueryRowContext(ctx, `SELECT block_height
+		FROM calls
+		WHERE network = $1 
+		UNION
+		SELECT block_height
+		FROM bank_sends
+		WHERE network = $1
+		ORDER BY block_height DESC 
+		LIMIT 1`, s.networkID).Scan(&lastHeight)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("error getting last block height: %w", err)
+	}
+	return &lastHeight, nil
+}
+
 func (s *Syncer) syncCalls(ctx context.Context) error {
-	txs, err := s.client.GetRecentTransactions(ctx, 0)
+	lastHeight, err := s.getLastRecentTransactionBlockHeight(ctx)
+	if err != nil {
+		return err
+	}
+
+	txs, err := s.client.GetRecentTransactionsFromHeight(ctx, lastHeight)
 	if err != nil {
 		return err
 	}
@@ -109,7 +158,12 @@ func (s *Syncer) syncCalls(ctx context.Context) error {
 }
 
 func (s *Syncer) syncMsgRuns(ctx context.Context) error {
-	txs, err := s.client.GetMsgRunTransactions(ctx)
+	lastHeight, err := s.getLastBlockHeight(ctx, "msg_runs")
+	if err != nil {
+		return err
+	}
+
+	txs, err := s.client.GetMsgRunTransactions(ctx, lastHeight)
 	if err != nil {
 		return err
 	}
