@@ -48,11 +48,11 @@ func (a *Analyzer) ExtractMsgRunImports(files []MemFile) []string {
 }
 
 // ProcessPackage analyzes a package and stores its dependency info.
-func (a *Analyzer) ProcessPackage(network string, pkg *MemPackage, creator, txHash string, blockHeight int, success bool) error {
+func (a *Analyzer) ProcessPackage(network string, pkg *MemPackage, creator, txHash string, blockHeight int, blockTime string, success bool) error {
 	isRealm := strings.HasPrefix(pkg.Path, "gno.land/r/")
 
 	// Store package
-	if err := a.db.UpsertPackage(network, pkg.Path, pkg.Name, creator, txHash, blockHeight, isRealm, len(pkg.Files)); err != nil {
+	if err := a.db.UpsertPackage(network, pkg.Path, pkg.Name, creator, txHash, blockHeight, blockTime, isRealm, len(pkg.Files)); err != nil {
 		return err
 	}
 
@@ -73,17 +73,17 @@ func (a *Analyzer) ProcessPackage(network string, pkg *MemPackage, creator, txHa
 }
 
 // ProcessCall stores a function call record.
-func (a *Analyzer) ProcessCall(network, txHash string, blockHeight int, caller, pkgPath, funcName string, success bool) error {
-	return a.db.InsertCall(network, txHash, blockHeight, caller, pkgPath, funcName, success)
+func (a *Analyzer) ProcessCall(network, txHash string, blockHeight int, blockTime, caller, pkgPath, funcName string, success bool) error {
+	return a.db.InsertCall(network, txHash, blockHeight, blockTime, caller, pkgPath, funcName, success)
 }
 
 // ProcessMsgRun stores MsgRun with full source for import analysis.
-func (a *Analyzer) ProcessMsgRun(network, txHash string, blockHeight int, caller string, files []MemFile, success bool) error {
+func (a *Analyzer) ProcessMsgRun(network, txHash string, blockHeight int, blockTime, caller string, files []MemFile, success bool) error {
 	// Concatenate source for search
 	var source strings.Builder
 	for _, f := range files {
 		source.WriteString(f.Body)
 		source.WriteString("\n")
 	}
-	return a.db.InsertMsgRun(network, txHash, blockHeight, caller, source.String(), success)
+	return a.db.InsertMsgRun(network, txHash, blockHeight, blockTime, caller, source.String(), success)
 }

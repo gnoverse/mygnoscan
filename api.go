@@ -1010,3 +1010,156 @@ func fetchBalance(ctx context.Context, addr, rpcURL string) string {
 	// Strip quotes: "754954090ugnot" -> 754954090ugnot
 	return strings.Trim(string(decoded), "\"")
 }
+
+func parseTimeseriesParams(r *http.Request) (days int, granularity string) {
+	days, _ = strconv.Atoi(r.URL.Query().Get("days"))
+	if days <= 0 {
+		days = 30
+	}
+	if days > 365 {
+		days = 365
+	}
+	granularity = r.URL.Query().Get("granularity")
+	switch granularity {
+	case "hourly", "daily", "weekly":
+	default:
+		granularity = "daily"
+	}
+	return
+}
+
+func (a *API) HandleTimeSeriesTransactions(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	days, granularity := parseTimeseriesParams(r)
+	pts, err := a.db.GetTransactionTimeSeries(network, granularity, days)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	if pts == nil {
+		pts = []TxTimePoint{}
+	}
+	jsonResponse(w, pts)
+}
+
+func (a *API) HandleTimeSeriesPackages(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	days, granularity := parseTimeseriesParams(r)
+	pts, err := a.db.GetPackageTimeSeries(network, granularity, days)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	if pts == nil {
+		pts = []PkgTimePoint{}
+	}
+	jsonResponse(w, pts)
+}
+
+func (a *API) HandleTimeSeriesStorage(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	days, granularity := parseTimeseriesParams(r)
+	realmPath := r.URL.Query().Get("realm")
+	pts, err := a.db.GetStorageTimeSeries(network, realmPath, granularity, days)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	if pts == nil {
+		pts = []StorageTimePoint{}
+	}
+	jsonResponse(w, pts)
+}
+
+func (a *API) HandleStorageRealms(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	days, _ := parseTimeseriesParams(r)
+	paths, err := a.db.GetRealmsWithStorage(network, days)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	if paths == nil {
+		paths = []string{}
+	}
+	jsonResponse(w, paths)
+}
+
+func (a *API) HandleTimeSeriesGas(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	days, granularity := parseTimeseriesParams(r)
+	pts, err := a.db.GetGasTimeSeries(network, granularity, days)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	if pts == nil {
+		pts = []GasTimePoint{}
+	}
+	jsonResponse(w, pts)
+}
+
+func (a *API) HandleTimeSeriesCallers(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	days, granularity := parseTimeseriesParams(r)
+	pts, err := a.db.GetCallerTimeSeries(network, granularity, days)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	if pts == nil {
+		pts = []CallerTimePoint{}
+	}
+	jsonResponse(w, pts)
+}
+
+func (a *API) HandleSanityOverview(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	ov, err := a.db.GetSanityOverview(network)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	// Chain height, last block time and liveness always come from the live indexer.
+	if client := a.clientFor(network); client != nil {
+		if blocks, err := client.GetRecentBlocks(r.Context(), 1); err == nil && len(blocks) > 0 {
+			b := blocks[0]
+			ov.ChainHeight = b.Height
+			ov.LastBlockTime = b.Time
+			if t, err := time.Parse(time.RFC3339, b.Time); err == nil {
+				ov.SecondsSinceBlock = int(time.Since(t).Seconds())
+				ov.IsAlive = ov.SecondsSinceBlock < 120
+			}
+		}
+	}
+	jsonResponse(w, ov)
+}
+
+func (a *API) HandleTimeSeriesHealth(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	days, granularity := parseTimeseriesParams(r)
+	pts, err := a.db.GetHealthTimeSeries(network, granularity, days)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	if pts == nil {
+		pts = []HealthTimePoint{}
+	}
+	jsonResponse(w, pts)
+}
+
+
+func (a *API) HandleTimeSeriesActiveAddresses(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	days, granularity := parseTimeseriesParams(r)
+	pts, err := a.db.GetActiveAddressTimeSeries(network, granularity, days)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	if pts == nil {
+		pts = []ActiveAddressTimePoint{}
+	}
+	jsonResponse(w, pts)
+}

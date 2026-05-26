@@ -19,6 +19,7 @@ a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 .container { max-width: 1200px; margin: 0 auto; padding: 0 20px; }
 header { border-bottom: 1px solid var(--border); padding: 12px 0; position: sticky; top: 0; background: var(--bg); z-index: 100; }
+#sanity-subbar { display: none; position: sticky; z-index: 90; background: var(--bg); border-bottom: 1px solid var(--border); padding: 6px 0; }
 header .container { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
 .logo { font-size: 18px; font-weight: bold; color: var(--accent); cursor: pointer; }
 nav { display: flex; gap: 12px; flex-wrap: wrap; }
@@ -108,6 +109,7 @@ tr.total-row td { font-weight: bold; color: var(--accent); }
 .pager-btn { background: var(--bg2); border: 1px solid var(--border); color: var(--fg); padding: 6px 14px; border-radius: 4px; font-family: var(--mono); font-size: 13px; cursor: pointer; }
 .pager-btn:hover { border-color: var(--accent); color: var(--accent); }
 .pager-btn:disabled { opacity: 0.3; cursor: default; border-color: var(--border); color: var(--fg2); }
+.pager-btn.active { border-color: var(--accent); color: var(--accent); }
 .pager-info { color: var(--fg2); font-size: 12px; }
 /* Realm path styling */
 .rp-type { color: var(--fg2); }
@@ -160,6 +162,7 @@ footer a:hover { color: var(--accent); }
       <a onclick="navigate('/govdao')" id="nav-govdao">govdao</a>
       <a onclick="navigate('/gas')" id="nav-gas">gas</a>
       <a onclick="navigate('/analytics')" id="nav-analytics">analytics</a>
+      <a onclick="navigate('/sanity')" id="nav-sanity">sanity</a>
       <a onclick="navigate('/events')" id="nav-events">events</a>
     </nav>
     <div class="search-box">
@@ -170,6 +173,12 @@ footer a:hover { color: var(--accent); }
     <button class="live-btn" id="live-toggle" onclick="toggleLive()"><span class="live-dot"></span><span id="live-label"> live</span></button>
   </div>
 </header>
+<div id="sanity-subbar">
+  <div class="container" style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+    <div id="sanity-days-group" style="display:flex; gap:4px;"></div>
+    <div id="sanity-gran-group" style="display:flex; gap:4px;"></div>
+  </div>
+</div>
 <div class="container">
   <div class="view active" id="view-home">
     <div class="stats-bar">
@@ -219,6 +228,7 @@ footer a:hover { color: var(--accent); }
   <div class="view" id="view-govdao"><main><div id="govdao-stats" class="stats-bar" style="display:none"></div><div class="section"><div class="section-title">govdao activity</div>
     <table><thead><tr><th>block</th><th>caller</th><th>function</th><th>status</th><th>tx</th></tr></thead><tbody id="govdao-list"></tbody></table></div></main></div>
   <div class="view" id="view-analytics"><main><div id="analytics-content"></div></main></div>
+  <div class="view" id="view-sanity"><main><div id="sanity-content"></div></main></div>
   <div class="view" id="view-gas"><main><div id="gas-content"></div></main></div>
   <div class="view" id="view-block-detail"><main><div id="block-detail-content"></div></main></div>
   <div class="view" id="view-events"><main>
@@ -248,6 +258,7 @@ footer a:hover { color: var(--accent); }
   </div>
 </footer>
 <script src="https://d3js.org/d3.v7.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <script>
 function el(tag, attrs, ...children) {
   const e = document.createElement(tag);
@@ -659,6 +670,7 @@ function route() {
   else if (path === '/events') { view = 'events'; }
   else if (path === '/gas') { view = 'gas'; }
   else if (path === '/analytics') { view = 'analytics'; }
+  else if (path === '/sanity') { view = 'sanity'; }
   else if (path.startsWith('/block/')) { view = 'block-detail'; data = parseInt(path.slice(7)); }
   else if (path.startsWith('/realm/')) { view = 'realm-detail'; data = 'gno.land/' + path.slice(7); }
   else if (path.startsWith('/tx/')) { view = 'tx-detail'; data = decodeURIComponent(path.slice(4)); }
@@ -669,6 +681,16 @@ function route() {
   if (ve) ve.classList.add('active');
   const nav = document.getElementById('nav-' + view);
   if (nav) nav.classList.add('active');
+
+  const subbar = document.getElementById('sanity-subbar');
+  if (subbar) {
+    if (view === 'sanity') {
+      subbar.style.display = 'block';
+      subbar.style.top = document.querySelector('header').getBoundingClientRect().height + 'px';
+    } else {
+      subbar.style.display = 'none';
+    }
+  }
 
   switch (view) {
     case 'home': loadHome(); break;
@@ -683,6 +705,7 @@ function route() {
     case 'events': loadEvents(); break;
     case 'gas': loadGas(); break;
     case 'analytics': loadAnalytics(); break;
+    case 'sanity': loadSanity(); break;
     case 'block-detail': loadBlockDetail(data); break;
     case 'realm-detail': loadRealmDetail(data, urlTab); break;
     case 'tx-detail': loadTxDetail(data); break;
@@ -691,6 +714,275 @@ function route() {
 }
 
 // --- Loaders ---
+// --- Time-series charts ---
+Chart.defaults.color = '#888';
+Chart.defaults.borderColor = '#2a2a2a';
+Chart.defaults.font.family = "'SF Mono','Cascadia Code','Fira Code',monospace";
+Chart.defaults.font.size = 11;
+
+let _tsDays = 30, _tsGranularity = 'daily', _tsChartInstances = [], _analyticsData = null;
+
+function destroyTsCharts() {
+  _tsChartInstances.forEach(c => c.destroy());
+  _tsChartInstances = [];
+}
+
+async function renderTsCharts(container) {
+  destroyTsCharts();
+  container.textContent = '';
+
+  const q = 'days=' + _tsDays + '&granularity=' + _tsGranularity;
+  let txData, pkgData;
+  try {
+    [txData, pkgData] = await Promise.all([
+      api('timeseries/transactions?' + q),
+      api('timeseries/packages?' + q),
+    ]);
+  } catch (err) {
+    container.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '12px' } }, 'no chart data yet — blocks sync in progress'));
+    return;
+  }
+
+  const grid = el('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '24px' } });
+
+  function makeCanvas() {
+    const wrap = el('div', { style: { position: 'relative', height: '200px' } });
+    const canvas = document.createElement('canvas');
+    wrap.appendChild(canvas);
+    grid.appendChild(wrap);
+    return canvas;
+  }
+
+  const txCanvas = makeCanvas();
+  const pkgCanvas = makeCanvas();
+  const realmsCanvas = makeCanvas();
+  container.appendChild(grid);
+
+  const scaleOpts = {
+    x: { ticks: { color: '#888', maxTicksLimit: 8, maxRotation: 0 }, grid: { color: '#2a2a2a' } },
+    y: { ticks: { color: '#888' }, grid: { color: '#2a2a2a' }, beginAtZero: true }
+  };
+  const commonOpts = {
+    responsive: true, maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: { legend: { labels: { color: '#888', boxWidth: 12, padding: 10 } } },
+    scales: scaleOpts,
+    elements: { point: { radius: 2, hoverRadius: 4 } }
+  };
+
+  const labels = txData.map(p => p.time);
+
+  _tsChartInstances.push(new Chart(txCanvas, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'calls',    data: txData.map(p => p.calls),    borderColor: '#4ecdc4', backgroundColor: 'rgba(78,205,196,0.08)',  tension: 0.3, fill: true },
+        { label: 'deploys',  data: txData.map(p => p.deploys),  borderColor: '#ff6b6b', backgroundColor: 'rgba(255,107,107,0.08)', tension: 0.3, fill: true },
+        { label: 'msg_runs', data: txData.map(p => p.msg_runs), borderColor: '#51cf66', backgroundColor: 'rgba(81,207,102,0.08)',  tension: 0.3, fill: true },
+        { label: 'sends',    data: txData.map(p => p.sends),    borderColor: '#ffd43b', backgroundColor: 'rgba(255,212,59,0.08)',  tension: 0.3, fill: true },
+      ]
+    },
+    options: { ...commonOpts, plugins: { ...commonOpts.plugins, title: { display: true, text: 'transaction volume', color: '#888' } } }
+  }));
+
+  _tsChartInstances.push(new Chart(pkgCanvas, {
+    type: 'bar',
+    data: {
+      labels: pkgData.map(p => p.time),
+      datasets: [
+        { label: 'realms',   data: pkgData.map(p => p.realms),   backgroundColor: 'rgba(78,205,196,0.7)',  borderColor: '#4ecdc4', borderWidth: 1 },
+        { label: 'packages', data: pkgData.map(p => p.packages), backgroundColor: 'rgba(255,107,107,0.7)', borderColor: '#ff6b6b', borderWidth: 1 },
+      ]
+    },
+    options: {
+      ...commonOpts,
+      plugins: { ...commonOpts.plugins, title: { display: true, text: 'new deployments', color: '#888' } },
+      scales: {
+        x: { ...scaleOpts.x, stacked: true },
+        y: { ...scaleOpts.y, stacked: true }
+      }
+    }
+  }));
+
+  // 3rd chart: top realms by calls from analytics data (static, not time-based)
+  const topRealms = (_analyticsData?.top_realms || []).slice(0, 10);
+  _tsChartInstances.push(new Chart(realmsCanvas, {
+    type: 'bar',
+    data: {
+      labels: topRealms.map(r => r.path.replace('gno.land/', '')),
+      datasets: [
+        { label: 'calls',    data: topRealms.map(r => r.calls),    backgroundColor: 'rgba(78,205,196,0.7)',  borderColor: '#4ecdc4', borderWidth: 1 },
+        { label: 'callers',  data: topRealms.map(r => r.callers),  backgroundColor: 'rgba(255,107,107,0.5)', borderColor: '#ff6b6b', borderWidth: 1 },
+      ]
+    },
+    options: {
+      ...commonOpts,
+      indexAxis: 'y',
+      plugins: { ...commonOpts.plugins, title: { display: true, text: 'top realms by calls', color: '#888' } },
+      scales: {
+        x: scaleOpts.x,
+        y: { ticks: { color: '#888', font: { size: 10 } }, grid: { color: '#2a2a2a' } }
+      }
+    }
+  }));
+}
+
+let _storageChartInstances = [];
+let _storageRealm = '';
+
+function destroyStorageChart() {
+  _storageChartInstances.forEach(c => c.destroy());
+  _storageChartInstances = [];
+}
+
+// realm = '' means all; realm = 'gno.land/r/...' means specific realm
+async function renderStorageChart(container, realm) {
+  destroyStorageChart();
+  container.textContent = '';
+
+  const realmQ = realm ? '&realm=' + encodeURIComponent(realm) : '';
+  const q = 'days=' + _sanityDays + '&granularity=' + _sanityGranularity + realmQ;
+  let data;
+  try {
+    data = await api('timeseries/storage?' + q);
+  } catch (err) {
+    container.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '12px' } }, 'no storage data yet'));
+    return;
+  }
+
+  let cumulative = 0;
+  const cumulativeData = data.map(p => { cumulative += p.bytes_added; return cumulative; });
+
+  const wrap = el('div', { style: { position: 'relative', height: '240px' } });
+  const canvas = document.createElement('canvas');
+  wrap.appendChild(canvas);
+  container.appendChild(wrap);
+
+  const scaleOpts = {
+    x: { ticks: { color: '#888', maxTicksLimit: 10, maxRotation: 0 }, grid: { color: '#2a2a2a' } },
+    y: { ticks: { color: '#888' }, grid: { color: '#2a2a2a' }, beginAtZero: true }
+  };
+
+  _storageChartInstances.push(new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels: data.map(p => p.time),
+      datasets: [
+        {
+          label: 'bytes added',
+          data: data.map(p => p.bytes_added),
+          backgroundColor: 'rgba(78,205,196,0.5)',
+          borderColor: '#4ecdc4',
+          borderWidth: 1,
+          order: 2,
+        },
+        {
+          label: 'cumulative bytes',
+          data: cumulativeData,
+          type: 'line',
+          borderColor: '#ffd43b',
+          backgroundColor: 'rgba(255,212,59,0.08)',
+          tension: 0.3,
+          fill: true,
+          pointRadius: 2,
+          order: 1,
+        },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { labels: { color: '#888', boxWidth: 12, padding: 10 } },
+        title: { display: true, text: 'source storage growth (bytes)' + (realm ? ' — ' + realm : ''), color: '#888' },
+      },
+      scales: { x: scaleOpts.x, y: scaleOpts.y },
+      elements: { point: { radius: 2, hoverRadius: 4 } },
+    }
+  }));
+}
+
+let _gasChartInstances = [];
+
+function destroyGasCharts() {
+  _gasChartInstances.forEach(c => c.destroy());
+  _gasChartInstances = [];
+}
+
+async function renderGasCharts(container) {
+  destroyGasCharts();
+  container.textContent = '';
+
+  const q = 'days=' + _tsDays + '&granularity=' + _tsGranularity;
+  let data;
+  try {
+    data = await api('timeseries/gas?' + q);
+  } catch (err) {
+    container.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '12px' } }, 'no gas data yet — blocks sync in progress'));
+    return;
+  }
+
+  const grid = el('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' } });
+
+  function makeCanvas() {
+    const wrap = el('div', { style: { position: 'relative', height: '200px' } });
+    const canvas = document.createElement('canvas');
+    wrap.appendChild(canvas);
+    grid.appendChild(wrap);
+    return canvas;
+  }
+
+  const gasCanvas = makeCanvas();
+  const avgCanvas = makeCanvas();
+  container.appendChild(grid);
+
+  const labels = data.map(p => p.time);
+  const scaleOpts = {
+    x: { ticks: { color: '#888', maxTicksLimit: 8, maxRotation: 0 }, grid: { color: '#2a2a2a' } },
+    y: { ticks: { color: '#888' }, grid: { color: '#2a2a2a' }, beginAtZero: true }
+  };
+  const commonOpts = {
+    responsive: true, maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: { legend: { labels: { color: '#888', boxWidth: 12, padding: 10 } } },
+    scales: scaleOpts,
+    elements: { point: { radius: 2, hoverRadius: 4 } }
+  };
+
+  _gasChartInstances.push(new Chart(gasCanvas, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label: 'gas used',   data: data.map(p => p.total_gas_used),   backgroundColor: 'rgba(78,205,196,0.7)', borderColor: '#4ecdc4', borderWidth: 1 },
+        { label: 'gas wanted', data: data.map(p => p.total_gas_wanted), backgroundColor: 'rgba(136,136,136,0.3)', borderColor: '#888',    borderWidth: 1 },
+      ]
+    },
+    options: { ...commonOpts, plugins: { ...commonOpts.plugins, title: { display: true, text: 'total gas per period', color: '#888' } } }
+  }));
+
+  _gasChartInstances.push(new Chart(avgCanvas, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'avg gas/tx', data: data.map(p => p.avg_gas_used), borderColor: '#4ecdc4', backgroundColor: 'rgba(78,205,196,0.08)', tension: 0.3, fill: true, yAxisID: 'y' },
+        { label: 'tx count',   data: data.map(p => p.tx_count),    borderColor: '#ffd43b', backgroundColor: 'rgba(255,212,59,0.08)',  tension: 0.3, fill: true, yAxisID: 'y2' },
+      ]
+    },
+    options: {
+      ...commonOpts,
+      plugins: { ...commonOpts.plugins, title: { display: true, text: 'avg gas / tx count', color: '#888' } },
+      scales: {
+        x: scaleOpts.x,
+        y:  { ...scaleOpts.y, position: 'left',  title: { display: true, text: 'avg gas', color: '#888' } },
+        y2: { ...scaleOpts.y, position: 'right', title: { display: true, text: 'tx count', color: '#888' }, grid: { drawOnChartArea: false } }
+      }
+    }
+  }));
+}
+
 async function loadHome() {
   skeletonRows(clear('recent-txs'), 5, 8);
   skeletonRows(clear('latest-realms'), 4, 5);
@@ -1195,6 +1487,7 @@ async function loadAnalytics() {
   skeletonBlock(container);
   try {
     const data = await api('analytics');
+    _analyticsData = data;
     container.textContent = '';
 
     // Overview stats
@@ -1208,6 +1501,43 @@ async function loadAnalytics() {
     stats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'addresses'), el('span', { className: 'value' }, fmtNum(data.total_addresses))));
     stats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'source'), el('span', { className: 'value' }, fmtNum(data.total_source_kb) + ' KB')));
     container.appendChild(stats);
+
+    // Time-series charts with controls
+    const tsSection = el('div', { className: 'section' });
+    const tsHeader = el('div', { style: { display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '16px', paddingBottom: '8px', borderBottom: '1px solid var(--border)' } });
+    tsHeader.appendChild(el('span', { style: { fontSize: '14px', color: 'var(--fg2)', textTransform: 'uppercase', letterSpacing: '1px', marginRight: '4px' } }, 'activity over time'));
+
+    const daysGroup = el('div', { style: { display: 'flex', gap: '4px' } });
+    for (const d of [7, 30, 90]) {
+      const btn = el('button', { className: 'pager-btn' + (_tsDays === d ? ' active' : ''), style: { padding: '3px 10px', fontSize: '12px' } }, d + 'd');
+      btn.addEventListener('click', () => {
+        _tsDays = d;
+        daysGroup.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        renderTsCharts(tsChartsDiv);
+      });
+      daysGroup.appendChild(btn);
+    }
+    tsHeader.appendChild(daysGroup);
+
+    const granGroup = el('div', { style: { display: 'flex', gap: '4px' } });
+    for (const g of ['daily', 'weekly']) {
+      const btn = el('button', { className: 'pager-btn' + (_tsGranularity === g ? ' active' : ''), style: { padding: '3px 10px', fontSize: '12px' } }, g);
+      btn.addEventListener('click', () => {
+        _tsGranularity = g;
+        granGroup.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        renderTsCharts(tsChartsDiv);
+      });
+      granGroup.appendChild(btn);
+    }
+    tsHeader.appendChild(granGroup);
+    tsSection.appendChild(tsHeader);
+
+    const tsChartsDiv = el('div');
+    tsSection.appendChild(tsChartsDiv);
+    container.appendChild(tsSection);
+    renderTsCharts(tsChartsDiv);
 
     // Grid layout for rankings
     const grid = el('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', marginTop: '16px' } });
@@ -1305,6 +1635,295 @@ async function loadAnalytics() {
   } catch (err) { container.textContent = ''; container.appendChild(el('p', { style: { color: 'var(--red)' } }, 'Error: ' + err.message)); }
 }
 
+let _sanityChartInstances = [];
+let _sanityDays = 30, _sanityGranularity = 'daily';
+
+function destroySanityCharts() {
+  _sanityChartInstances.forEach(c => c.destroy());
+  _sanityChartInstances = [];
+}
+
+async function renderSanityCharts(container) {
+  destroySanityCharts();
+  container.textContent = '';
+
+  const q = 'days=' + _sanityDays + '&granularity=' + _sanityGranularity;
+  let healthData, gasData, addrData;
+  try {
+    [healthData, gasData, addrData] = await Promise.all([
+      api('timeseries/health?' + q),
+      api('timeseries/gas?' + q),
+      api('timeseries/active-addresses?' + q),
+    ]);
+  } catch (err) {
+    container.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '12px' } }, 'no sanity data yet — sync in progress'));
+    return;
+  }
+
+  const scaleOpts = {
+    x: { ticks: { color: '#888', maxTicksLimit: 8, maxRotation: 0 }, grid: { color: '#2a2a2a' } },
+    y: { ticks: { color: '#888' }, grid: { color: '#2a2a2a' }, beginAtZero: true }
+  };
+  const commonOpts = {
+    responsive: true, maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: { legend: { labels: { color: '#888', boxWidth: 12, padding: 10 } } },
+    scales: scaleOpts,
+    elements: { point: { radius: 2, hoverRadius: 4 } }
+  };
+
+  function makeSection(title) {
+    const sec = el('div', { className: 'section', style: { marginBottom: '32px' } });
+    sec.appendChild(el('div', { className: 'section-title' }, title));
+    return sec;
+  }
+
+  function makeGrid(cols) {
+    return el('div', { style: { display: 'grid', gridTemplateColumns: Array(cols).fill('1fr').join(' '), gap: '24px' } });
+  }
+
+  function makeCanvas(grid) {
+    const wrap = el('div', { style: { position: 'relative', height: '200px' } });
+    const canvas = document.createElement('canvas');
+    wrap.appendChild(canvas);
+    grid.appendChild(wrap);
+    return canvas;
+  }
+
+  // --- Transaction Health ---
+  {
+    const sec = makeSection('transaction health');
+    const grid = makeGrid(2);
+    const successCanvas = makeCanvas(grid);
+    const rateCanvas = makeCanvas(grid);
+    sec.appendChild(grid);
+    container.appendChild(sec);
+
+    const labels = healthData.map(p => p.time);
+
+    _sanityChartInstances.push(new Chart(successCanvas, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          { label: 'success', data: healthData.map(p => p.success), backgroundColor: 'rgba(81,207,102,0.7)',  borderColor: '#51cf66', borderWidth: 1, stack: 'tx' },
+          { label: 'failed',  data: healthData.map(p => p.failed),  backgroundColor: 'rgba(255,107,107,0.7)', borderColor: '#ff6b6b', borderWidth: 1, stack: 'tx' },
+        ]
+      },
+      options: {
+        ...commonOpts,
+        plugins: { ...commonOpts.plugins, title: { display: true, text: 'success vs failed', color: '#888' } },
+        scales: { x: { ...scaleOpts.x, stacked: true }, y: { ...scaleOpts.y, stacked: true } }
+      }
+    }));
+
+    _sanityChartInstances.push(new Chart(rateCanvas, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          { label: 'success rate', data: healthData.map(p => p.success_rate >= 0 ? +(p.success_rate * 100).toFixed(2) : null), borderColor: '#51cf66', backgroundColor: 'rgba(81,207,102,0.08)', tension: 0.3, fill: true }
+        ]
+      },
+      options: {
+        ...commonOpts,
+        plugins: { ...commonOpts.plugins, title: { display: true, text: 'success rate (%)', color: '#888' } },
+        scales: { ...scaleOpts, y: { ...scaleOpts.y, min: 0, max: 100 } }
+      }
+    }));
+  }
+
+  // --- Block Health ---
+  // --- Gas Efficiency ---
+  {
+    const sec = makeSection('gas efficiency');
+    const grid = makeGrid(2);
+    const effCanvas = makeCanvas(grid);
+    const feeCanvas = makeCanvas(grid);
+    sec.appendChild(grid);
+    container.appendChild(sec);
+
+    const labels = gasData.map(p => p.time);
+
+    _sanityChartInstances.push(new Chart(effCanvas, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{ label: 'gas efficiency', data: gasData.map(p => p.gas_efficiency > 0 ? +(p.gas_efficiency * 100).toFixed(2) : null), borderColor: '#4ecdc4', backgroundColor: 'rgba(78,205,196,0.08)', tension: 0.3, fill: true }]
+      },
+      options: {
+        ...commonOpts,
+        plugins: { ...commonOpts.plugins, title: { display: true, text: 'gas efficiency (used/wanted %)', color: '#888' } },
+        scales: { ...scaleOpts, y: { ...scaleOpts.y, min: 0, max: 100 } }
+      }
+    }));
+
+    _sanityChartInstances.push(new Chart(feeCanvas, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          { label: 'avg gas/tx', data: gasData.map(p => p.avg_gas_used || null), borderColor: '#ff6b6b', backgroundColor: 'rgba(255,107,107,0.08)', tension: 0.3, fill: true, yAxisID: 'y' },
+          { label: 'avg fee/tx', data: gasData.map(p => p.avg_fee || null),      borderColor: '#ffd43b', backgroundColor: 'rgba(255,212,59,0.08)',  tension: 0.3, fill: true, yAxisID: 'y2' },
+        ]
+      },
+      options: {
+        ...commonOpts,
+        plugins: { ...commonOpts.plugins, title: { display: true, text: 'avg gas & fee per tx', color: '#888' } },
+        scales: {
+          x: scaleOpts.x,
+          y:  { ...scaleOpts.y, position: 'left',  title: { display: true, text: 'gas',  color: '#888' } },
+          y2: { ...scaleOpts.y, position: 'right', title: { display: true, text: 'fee',  color: '#888' }, grid: { drawOnChartArea: false } }
+        }
+      }
+    }));
+  }
+
+  // --- Active Addresses ---
+  {
+    const sec = makeSection('active addresses');
+    const grid = makeGrid(2);
+    const totalCanvas = makeCanvas(grid);
+    const breakdownCanvas = makeCanvas(grid);
+    sec.appendChild(grid);
+    container.appendChild(sec);
+
+    const labels = addrData.map(p => p.time);
+
+    _sanityChartInstances.push(new Chart(totalCanvas, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{ label: 'total active', data: addrData.map(p => p.total_active || null), borderColor: '#4ecdc4', backgroundColor: 'rgba(78,205,196,0.08)', tension: 0.3, fill: true }]
+      },
+      options: { ...commonOpts, plugins: { ...commonOpts.plugins, title: { display: true, text: 'total unique active addresses', color: '#888' } } }
+    }));
+
+    _sanityChartInstances.push(new Chart(breakdownCanvas, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          { label: 'callers',   data: addrData.map(p => p.unique_callers   || null), borderColor: '#4ecdc4', backgroundColor: 'rgba(78,205,196,0.08)',  tension: 0.3, fill: true },
+          { label: 'deployers', data: addrData.map(p => p.unique_deployers || null), borderColor: '#ff6b6b', backgroundColor: 'rgba(255,107,107,0.08)', tension: 0.3, fill: true },
+          { label: 'senders',   data: addrData.map(p => p.unique_senders   || null), borderColor: '#ffd43b', backgroundColor: 'rgba(255,212,59,0.08)',  tension: 0.3, fill: true },
+        ]
+      },
+      options: { ...commonOpts, plugins: { ...commonOpts.plugins, title: { display: true, text: 'by activity type', color: '#888' } } }
+    }));
+  }
+}
+
+async function loadSanity() {
+  const container = clear('sanity-content');
+  skeletonBlock(container);
+
+  try {
+    const ov = await api('sanity/overview');
+    container.textContent = '';
+
+    // Health cards
+    const cards = el('div', { className: 'stats-bar' });
+    const alive = ov.is_alive
+      ? el('span', { style: { color: '#51cf66', fontWeight: 'bold' } }, '● alive')
+      : el('span', { style: { color: '#ff6b6b', fontWeight: 'bold' } }, '● stale');
+    cards.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'status'), alive));
+    cards.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'height'), el('span', { className: 'value' }, fmtNum(ov.chain_height))));
+    const ago = ov.seconds_since_block < 60
+      ? ov.seconds_since_block + 's ago'
+      : Math.floor(ov.seconds_since_block / 60) + 'm ago';
+    cards.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'last block'), el('span', { className: 'value' }, ago)));
+    cards.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'txs 1h'), el('span', { className: 'value' }, fmtNum(ov.tx_last_1h))));
+    cards.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'txs 24h'), el('span', { className: 'value' }, fmtNum(ov.tx_last_24h))));
+    const sr = ov.success_rate_24h > 0 ? (ov.success_rate_24h * 100).toFixed(1) + '%' : '-';
+    cards.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'success 24h'), el('span', { className: 'value' }, sr)));
+    const ge = ov.gas_efficiency_24h > 0 ? (ov.gas_efficiency_24h * 100).toFixed(1) + '%' : '-';
+    cards.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'gas eff 24h'), el('span', { className: 'value' }, ge)));
+    cards.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'active addrs 24h'), el('span', { className: 'value' }, fmtNum(ov.active_addresses_24h))));
+    cards.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'new pkgs 7d'), el('span', { className: 'value' }, fmtNum(ov.new_packages_7d))));
+    container.appendChild(cards);
+
+    // Wire up sticky subbar controls (shared for all sanity charts)
+    let chartsDiv, storageChartsDiv, realmSel;
+    function renderAll() {
+      if (chartsDiv) renderSanityCharts(chartsDiv);
+      if (storageChartsDiv && realmSel) {
+        refreshStorageRealms(realmSel).then(() => renderStorageChart(storageChartsDiv, _storageRealm));
+      }
+    }
+    async function refreshStorageRealms(sel) {
+      const net = getNetwork();
+      const netQ = net && net !== 'all' ? '&network=' + encodeURIComponent(net) : '';
+      let paths = [];
+      try { paths = await api('timeseries/storage/realms?days=' + _sanityDays + netQ); } catch (_) {}
+      const prev = sel.value;
+      sel.textContent = '';
+      const allOpt = document.createElement('option');
+      allOpt.value = ''; allOpt.textContent = 'all realms';
+      sel.appendChild(allOpt);
+      (paths || []).forEach(path => {
+        const opt = document.createElement('option');
+        opt.value = path; opt.textContent = path;
+        sel.appendChild(opt);
+      });
+      sel.value = (paths || []).includes(prev) ? prev : '';
+      _storageRealm = sel.value;
+    }
+
+    const daysGroupEl = document.getElementById('sanity-days-group');
+    const granGroupEl = document.getElementById('sanity-gran-group');
+    daysGroupEl.textContent = '';
+    granGroupEl.textContent = '';
+    for (const d of [7, 30, 90]) {
+      const btn = el('button', { className: 'pager-btn' + (_sanityDays === d ? ' active' : ''), style: { padding: '3px 10px', fontSize: '12px' } }, d + 'd');
+      btn.addEventListener('click', () => {
+        _sanityDays = d;
+        daysGroupEl.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        renderAll();
+      });
+      daysGroupEl.appendChild(btn);
+    }
+    for (const g of ['daily', 'weekly']) {
+      const btn = el('button', { className: 'pager-btn' + (_sanityGranularity === g ? ' active' : ''), style: { padding: '3px 10px', fontSize: '12px' } }, g);
+      btn.addEventListener('click', () => {
+        _sanityGranularity = g;
+        granGroupEl.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        renderAll();
+      });
+      granGroupEl.appendChild(btn);
+    }
+
+    // Sanity health charts section
+    const tsSection = el('div', { className: 'section', style: { marginTop: '24px' } });
+    tsSection.appendChild(el('div', { style: { fontSize: '14px', color: 'var(--fg2)', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '16px', paddingBottom: '8px', borderBottom: '1px solid var(--border)' } }, 'sanity over time'));
+    chartsDiv = el('div');
+    tsSection.appendChild(chartsDiv);
+    container.appendChild(tsSection);
+    renderSanityCharts(chartsDiv);
+
+    // Storage growth section
+    const storageSection = el('div', { className: 'section', style: { marginTop: '24px' } });
+    const storageHeader = el('div', { style: { display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '16px', paddingBottom: '8px', borderBottom: '1px solid var(--border)' } });
+    storageHeader.appendChild(el('span', { style: { fontSize: '14px', color: 'var(--fg2)', textTransform: 'uppercase', letterSpacing: '1px' } }, 'storage growth'));
+    realmSel = el('select', { style: { background: 'var(--bg2)', border: '1px solid var(--border)', color: 'var(--fg)', fontFamily: 'var(--mono)', fontSize: '12px', padding: '3px 8px', borderRadius: '4px', maxWidth: '260px' } });
+    realmSel.addEventListener('change', () => {
+      _storageRealm = realmSel.value;
+      renderStorageChart(storageChartsDiv, _storageRealm);
+    });
+    storageHeader.appendChild(realmSel);
+    storageSection.appendChild(storageHeader);
+    storageChartsDiv = el('div');
+    storageSection.appendChild(storageChartsDiv);
+    container.appendChild(storageSection);
+
+    await refreshStorageRealms(realmSel);
+    renderStorageChart(storageChartsDiv, _storageRealm);
+
+  } catch (err) { container.textContent = ''; container.appendChild(el('p', { style: { color: 'var(--red)' } }, 'Error: ' + err.message)); }
+}
+
 async function loadGas() {
   const container = clear('gas-content');
   skeletonBlock(container);
@@ -1324,6 +1943,43 @@ async function loadGas() {
     statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'failed'), el('span', { className: 'value' }, fmtNum(data.fail_count))));
     statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total source'), el('span', { className: 'value' }, fmtNum(data.total_source_bytes) + ' bytes')));
     container.appendChild(statsBar);
+
+    // Gas time-series chart
+    const gasSection = el('div', { className: 'section', style: { marginTop: '24px' } });
+    const gasHeader = el('div', { style: { display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '16px', paddingBottom: '8px', borderBottom: '1px solid var(--border)' } });
+    gasHeader.appendChild(el('span', { style: { fontSize: '14px', color: 'var(--fg2)', textTransform: 'uppercase', letterSpacing: '1px', marginRight: '4px' } }, 'gas usage over time'));
+
+    const gasDaysGroup = el('div', { style: { display: 'flex', gap: '4px' } });
+    for (const d of [7, 30, 90]) {
+      const btn = el('button', { className: 'pager-btn' + (_tsDays === d ? ' active' : ''), style: { padding: '3px 10px', fontSize: '12px' } }, d + 'd');
+      btn.addEventListener('click', () => {
+        _tsDays = d;
+        gasDaysGroup.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        renderGasCharts(gasChartsDiv);
+      });
+      gasDaysGroup.appendChild(btn);
+    }
+    gasHeader.appendChild(gasDaysGroup);
+
+    const gasGranGroup = el('div', { style: { display: 'flex', gap: '4px' } });
+    for (const g of ['daily', 'weekly']) {
+      const btn = el('button', { className: 'pager-btn' + (_tsGranularity === g ? ' active' : ''), style: { padding: '3px 10px', fontSize: '12px' } }, g);
+      btn.addEventListener('click', () => {
+        _tsGranularity = g;
+        gasGranGroup.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        renderGasCharts(gasChartsDiv);
+      });
+      gasGranGroup.appendChild(btn);
+    }
+    gasHeader.appendChild(gasGranGroup);
+    gasSection.appendChild(gasHeader);
+
+    const gasChartsDiv = el('div');
+    gasSection.appendChild(gasChartsDiv);
+    container.appendChild(gasSection);
+    renderGasCharts(gasChartsDiv);
 
     // Top realms by gas
     container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'top realms by gas usage'));

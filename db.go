@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -140,6 +141,7 @@ func initSchema(db *sql.DB) error {
 			name TEXT NOT NULL,
 			creator TEXT NOT NULL,
 			block_height INTEGER NOT NULL,
+			block_time TEXT,
 			tx_hash TEXT NOT NULL,
 			is_realm BOOLEAN NOT NULL,
 			num_files INTEGER NOT NULL,
@@ -166,6 +168,7 @@ func initSchema(db *sql.DB) error {
 			network TEXT NOT NULL DEFAULT 'gnoland1',
 			tx_hash TEXT NOT NULL,
 			block_height INTEGER NOT NULL,
+			block_time TEXT,
 			caller TEXT NOT NULL,
 			pkg_path TEXT NOT NULL,
 			func_name TEXT NOT NULL,
@@ -178,6 +181,7 @@ func initSchema(db *sql.DB) error {
 			network TEXT NOT NULL DEFAULT 'gnoland1',
 			tx_hash TEXT NOT NULL,
 			block_height INTEGER NOT NULL,
+			block_time TEXT,
 			caller TEXT NOT NULL,
 			source TEXT NOT NULL,
 			success BOOLEAN NOT NULL,
@@ -189,6 +193,7 @@ func initSchema(db *sql.DB) error {
 			network TEXT NOT NULL DEFAULT 'gnoland1',
 			tx_hash TEXT NOT NULL,
 			block_height INTEGER NOT NULL,
+			block_time TEXT,
 			from_address TEXT NOT NULL,
 			to_address TEXT NOT NULL,
 			amount TEXT NOT NULL,
@@ -196,11 +201,24 @@ func initSchema(db *sql.DB) error {
 			UNIQUE(network, tx_hash, from_address, to_address)
 		);
 
+		CREATE TABLE IF NOT EXISTS transactions (
+			network      TEXT NOT NULL DEFAULT 'gnoland1',
+			tx_hash      TEXT NOT NULL,
+			block_height INTEGER NOT NULL,
+			block_time   TEXT,
+			gas_used     INTEGER NOT NULL DEFAULT 0,
+			gas_wanted   INTEGER NOT NULL DEFAULT 0,
+			gas_fee      INTEGER NOT NULL DEFAULT 0,
+			success      BOOLEAN NOT NULL,
+			PRIMARY KEY (network, tx_hash)
+		);
+
 		CREATE TABLE IF NOT EXISTS sync_state (
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL
 		);
 
+		CREATE INDEX IF NOT EXISTS idx_txs_height ON transactions(network, block_height);
 		CREATE INDEX IF NOT EXISTS idx_calls_pkg ON calls(pkg_path);
 		CREATE INDEX IF NOT EXISTS idx_calls_caller ON calls(caller);
 		CREATE INDEX IF NOT EXISTS idx_deps_import ON dependencies(import_path);
@@ -209,6 +227,15 @@ func initSchema(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_msg_runs_caller ON msg_runs(caller);
 		CREATE INDEX IF NOT EXISTS idx_bank_from ON bank_sends(from_address);
 		CREATE INDEX IF NOT EXISTS idx_bank_to ON bank_sends(to_address);
+		CREATE INDEX IF NOT EXISTS idx_calls_height   ON calls(network, block_height);
+		CREATE INDEX IF NOT EXISTS idx_pkgs_height    ON packages(network, block_height);
+		CREATE INDEX IF NOT EXISTS idx_runs_height    ON msg_runs(network, block_height);
+		CREATE INDEX IF NOT EXISTS idx_sends_height   ON bank_sends(network, block_height);
+		CREATE INDEX IF NOT EXISTS idx_calls_block_time  ON calls(network, block_time);
+		CREATE INDEX IF NOT EXISTS idx_pkgs_block_time   ON packages(network, block_time);
+		CREATE INDEX IF NOT EXISTS idx_runs_block_time   ON msg_runs(network, block_time);
+		CREATE INDEX IF NOT EXISTS idx_sends_block_time  ON bank_sends(network, block_time);
+		CREATE INDEX IF NOT EXISTS idx_txs_block_time    ON transactions(network, block_time);
 	`)
 	return err
 }
@@ -217,26 +244,14 @@ func (d *DB) Close() error {
 	return d.db.Close()
 }
 
-// networkWhere returns a WHERE or AND clause for network filtering.
-// If network is empty, returns empty string and no args.
-func networkWhere(network string, hasWhere bool) (string, []any) {
-	if network == "" {
-		return "", nil
-	}
-	if hasWhere {
-		return " AND network = ?", []any{network}
-	}
-	return " WHERE network = ?", []any{network}
-}
-
 // UpsertPackage inserts or updates a package.
-func (d *DB) UpsertPackage(network, path, name, creator, txHash string, blockHeight int, isRealm bool, numFiles int) error {
+func (d *DB) UpsertPackage(network, path, name, creator, txHash string, blockHeight int, blockTime string, isRealm bool, numFiles int) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	_, err := d.db.Exec(`
-		INSERT OR REPLACE INTO packages (network, path, name, creator, tx_hash, block_height, is_realm, num_files)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, network, path, name, creator, txHash, blockHeight, isRealm, numFiles)
+		INSERT OR REPLACE INTO packages (network, path, name, creator, tx_hash, block_height, block_time, is_realm, num_files)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, network, path, name, creator, txHash, blockHeight, blockTime, isRealm, numFiles)
 	return err
 }
 
@@ -282,32 +297,32 @@ func (d *DB) SetDependencies(network, pkgPath string, imports []string) error {
 }
 
 // InsertCall records a MsgCall.
-func (d *DB) InsertCall(network, txHash string, blockHeight int, caller, pkgPath, funcName string, success bool) error {
+func (d *DB) InsertCall(network, txHash string, blockHeight int, blockTime, caller, pkgPath, funcName string, success bool) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	_, err := d.db.Exec(`
-		INSERT OR IGNORE INTO calls (network, tx_hash, block_height, caller, pkg_path, func_name, success)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, network, txHash, blockHeight, caller, pkgPath, funcName, success)
+		INSERT OR IGNORE INTO calls (network, tx_hash, block_height, block_time, caller, pkg_path, func_name, success)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, network, txHash, blockHeight, blockTime, caller, pkgPath, funcName, success)
 	return err
 }
 
 // InsertMsgRun records a MsgRun transaction with its source.
-func (d *DB) InsertMsgRun(network, txHash string, blockHeight int, caller, source string, success bool) error {
+func (d *DB) InsertMsgRun(network, txHash string, blockHeight int, blockTime, caller, source string, success bool) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	_, err := d.db.Exec(`
-		INSERT OR IGNORE INTO msg_runs (network, tx_hash, block_height, caller, source, success)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, network, txHash, blockHeight, caller, source, success)
+		INSERT OR IGNORE INTO msg_runs (network, tx_hash, block_height, block_time, caller, source, success)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, network, txHash, blockHeight, blockTime, caller, source, success)
 	return err
 }
 
-func (d *DB) InsertBankSend(network, txHash string, blockHeight int, from, to, amount string, success bool) error {
+func (d *DB) InsertBankSend(network, txHash string, blockHeight int, blockTime, from, to, amount string, success bool) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	_, err := d.db.Exec(`INSERT OR IGNORE INTO bank_sends (network, tx_hash, block_height, from_address, to_address, amount, success) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		network, txHash, blockHeight, from, to, amount, success)
+	_, err := d.db.Exec(`INSERT OR IGNORE INTO bank_sends (network, tx_hash, block_height, block_time, from_address, to_address, amount, success) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		network, txHash, blockHeight, blockTime, from, to, amount, success)
 	return err
 }
 
@@ -1054,4 +1069,805 @@ func (d *DB) queryAddrStats(query string) []AddrStat {
 		result = append(result, s)
 	}
 	return result
+}
+
+// --- Time-series types ---
+
+type TxTimePoint struct {
+	Time    string `json:"time"`
+	Calls   int    `json:"calls"`
+	Deploys int    `json:"deploys"`
+	MsgRuns int    `json:"msg_runs"`
+	Sends   int    `json:"sends"`
+	Total   int    `json:"total"`
+}
+
+type PkgTimePoint struct {
+	Time     string `json:"time"`
+	Packages int    `json:"packages"`
+	Realms   int    `json:"realms"`
+	Total    int    `json:"total"`
+}
+
+type CallerTimePoint struct {
+	Time            string `json:"time"`
+	UniqueCallers   int    `json:"unique_callers"`
+	UniqueDeployers int    `json:"unique_deployers"`
+	UniqueSenders   int    `json:"unique_senders"`
+}
+
+// timeseriesFormat returns the SQLite strftime pattern, step duration, and truncation function
+// for daily/hourly/weekly granularity.
+func timeseriesFormat(granularity string) (sqlFmt string, step time.Duration, truncFn func(time.Time) time.Time) {
+	switch granularity {
+	case "hourly":
+		return "%Y-%m-%dT%H", time.Hour, func(t time.Time) time.Time {
+			return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, time.UTC)
+		}
+	case "weekly":
+		return "%G-W%V", 7 * 24 * time.Hour, func(t time.Time) time.Time {
+			d := int(t.Weekday())
+			if d == 0 {
+				d = 7
+			}
+			return time.Date(t.Year(), t.Month(), t.Day()-d+1, 0, 0, 0, 0, time.UTC)
+		}
+	default:
+		return "%Y-%m-%d", 24 * time.Hour, func(t time.Time) time.Time {
+			return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+		}
+	}
+}
+
+func bucketKey(t time.Time, granularity string) string {
+	switch granularity {
+	case "hourly":
+		return t.UTC().Format("2006-01-02T15")
+	case "weekly":
+		year, week := t.UTC().ISOWeek()
+		return fmt.Sprintf("%d-W%02d", year, week)
+	default:
+		return t.UTC().Format("2006-01-02")
+	}
+}
+
+func fillBuckets[T any](
+	buckets map[string]*T,
+	days int,
+	granularity string,
+	step time.Duration,
+	truncFn func(time.Time) time.Time,
+	empty func(string) T,
+	finalize func(*T),
+) []T {
+	now := time.Now().UTC()
+	start := truncFn(now.AddDate(0, 0, -days))
+	end := truncFn(now)
+	var out []T
+	for cur := start; !cur.After(end); cur = truncFn(cur.Add(step)) {
+		k := bucketKey(cur, granularity)
+		if pt, ok := buckets[k]; ok {
+			finalize(pt)
+			out = append(out, *pt)
+		} else {
+			out = append(out, empty(k))
+		}
+	}
+	return out
+}
+
+func (d *DB) GetTransactionTimeSeries(network, granularity string, days int) ([]TxTimePoint, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	sqlFmt, step, truncFn := timeseriesFormat(granularity)
+	startTime := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
+
+	netFilter := ""
+	if network != "" {
+		netFilter = " AND t.network = ?"
+	}
+
+	subq := func(table, typ string) string {
+		return fmt.Sprintf(
+			"SELECT strftime('%s', t.block_time) as bucket, '%s' as typ, COUNT(*) as cnt"+
+				" FROM %s t"+
+				" WHERE t.block_time >= ?%s"+
+				" GROUP BY bucket",
+			sqlFmt, typ, table, netFilter)
+	}
+
+	q := subq("calls", "calls") +
+		" UNION ALL " + subq("packages", "deploys") +
+		" UNION ALL " + subq("msg_runs", "msg_runs") +
+		" UNION ALL " + subq("bank_sends", "sends") +
+		" ORDER BY bucket ASC"
+
+	var args []any
+	for range 4 {
+		args = append(args, startTime)
+		if network != "" {
+			args = append(args, network)
+		}
+	}
+
+	rows, err := d.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	buckets := make(map[string]*TxTimePoint)
+	for rows.Next() {
+		var bucket, typ string
+		var cnt int
+		if err := rows.Scan(&bucket, &typ, &cnt); err != nil {
+			return nil, err
+		}
+		pt, ok := buckets[bucket]
+		if !ok {
+			pt = &TxTimePoint{Time: bucket}
+			buckets[bucket] = pt
+		}
+		switch typ {
+		case "calls":
+			pt.Calls = cnt
+		case "deploys":
+			pt.Deploys = cnt
+		case "msg_runs":
+			pt.MsgRuns = cnt
+		case "sends":
+			pt.Sends = cnt
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return fillBuckets(buckets, days, granularity, step, truncFn,
+		func(k string) TxTimePoint { return TxTimePoint{Time: k} },
+		func(pt *TxTimePoint) { pt.Total = pt.Calls + pt.Deploys + pt.MsgRuns + pt.Sends },
+	), nil
+}
+
+func (d *DB) GetPackageTimeSeries(network, granularity string, days int) ([]PkgTimePoint, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	sqlFmt, step, truncFn := timeseriesFormat(granularity)
+	startTime := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
+
+	netFilter := ""
+	if network != "" {
+		netFilter = " AND t.network = ?"
+	}
+
+	subq := func(typ string, isRealm int) string {
+		return fmt.Sprintf(
+			"SELECT strftime('%s', t.block_time) as bucket, '%s' as typ, COUNT(*) as cnt"+
+				" FROM packages t"+
+				" WHERE t.block_time >= ? AND t.is_realm = %d%s"+
+				" GROUP BY bucket",
+			sqlFmt, typ, isRealm, netFilter)
+	}
+
+	q := subq("packages", 0) +
+		" UNION ALL " + subq("realms", 1) +
+		" ORDER BY bucket ASC"
+
+	var args []any
+	for range 2 {
+		args = append(args, startTime)
+		if network != "" {
+			args = append(args, network)
+		}
+	}
+
+	rows, err := d.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	buckets := make(map[string]*PkgTimePoint)
+	for rows.Next() {
+		var bucket, typ string
+		var cnt int
+		if err := rows.Scan(&bucket, &typ, &cnt); err != nil {
+			return nil, err
+		}
+		pt, ok := buckets[bucket]
+		if !ok {
+			pt = &PkgTimePoint{Time: bucket}
+			buckets[bucket] = pt
+		}
+		switch typ {
+		case "packages":
+			pt.Packages = cnt
+		case "realms":
+			pt.Realms = cnt
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return fillBuckets(buckets, days, granularity, step, truncFn,
+		func(k string) PkgTimePoint { return PkgTimePoint{Time: k} },
+		func(pt *PkgTimePoint) { pt.Total = pt.Packages + pt.Realms },
+	), nil
+}
+
+func (d *DB) GetCallerTimeSeries(network, granularity string, days int) ([]CallerTimePoint, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	sqlFmt, step, truncFn := timeseriesFormat(granularity)
+	startTime := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
+
+	netFilter := ""
+	if network != "" {
+		netFilter = " AND t.network = ?"
+	}
+
+	subqs := []string{
+		fmt.Sprintf(
+			"SELECT strftime('%s', t.block_time) as bucket, 'callers' as typ, COUNT(DISTINCT t.caller) as cnt"+
+				" FROM calls t"+
+				" WHERE t.block_time >= ?%s"+
+				" GROUP BY bucket",
+			sqlFmt, netFilter),
+		fmt.Sprintf(
+			"SELECT strftime('%s', t.block_time) as bucket, 'deployers' as typ, COUNT(DISTINCT t.creator) as cnt"+
+				" FROM packages t"+
+				" WHERE t.block_time >= ?%s"+
+				" GROUP BY bucket",
+			sqlFmt, netFilter),
+		fmt.Sprintf(
+			"SELECT strftime('%s', t.block_time) as bucket, 'senders' as typ, COUNT(DISTINCT t.from_address) as cnt"+
+				" FROM bank_sends t"+
+				" WHERE t.block_time >= ?%s"+
+				" GROUP BY bucket",
+			sqlFmt, netFilter),
+	}
+	q := strings.Join(subqs, " UNION ALL ") + " ORDER BY bucket ASC"
+
+	var args []any
+	for range 3 {
+		args = append(args, startTime)
+		if network != "" {
+			args = append(args, network)
+		}
+	}
+
+	rows, err := d.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	buckets := make(map[string]*CallerTimePoint)
+	for rows.Next() {
+		var bucket, typ string
+		var cnt int
+		if err := rows.Scan(&bucket, &typ, &cnt); err != nil {
+			return nil, err
+		}
+		pt, ok := buckets[bucket]
+		if !ok {
+			pt = &CallerTimePoint{Time: bucket}
+			buckets[bucket] = pt
+		}
+		switch typ {
+		case "callers":
+			pt.UniqueCallers = cnt
+		case "deployers":
+			pt.UniqueDeployers = cnt
+		case "senders":
+			pt.UniqueSenders = cnt
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return fillBuckets(buckets, days, granularity, step, truncFn,
+		func(k string) CallerTimePoint { return CallerTimePoint{Time: k} },
+		func(*CallerTimePoint) {},
+	), nil
+}
+
+type StorageTimePoint struct {
+	Time          string `json:"time"`
+	BytesAdded    int    `json:"bytes_added"`
+	FilesAdded    int    `json:"files_added"`
+	PackagesAdded int    `json:"packages_added"`
+}
+
+func (d *DB) GetStorageTimeSeries(network, realmPath, granularity string, days int) ([]StorageTimePoint, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	sqlFmt, step, truncFn := timeseriesFormat(granularity)
+	startTime := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
+
+	extraFilters := ""
+	args := []any{startTime}
+	if network != "" {
+		extraFilters += " AND p.network = ?"
+		args = append(args, network)
+	}
+	if realmPath != "" {
+		extraFilters += " AND p.path = ?"
+		args = append(args, realmPath)
+	}
+
+	q := fmt.Sprintf(
+		"SELECT strftime('%s', p.block_time) as bucket,"+
+			" SUM(LENGTH(pf.body)) as bytes_added,"+
+			" COUNT(*) as files_added,"+
+			" COUNT(DISTINCT p.path) as packages_added"+
+			" FROM package_files pf"+
+			" JOIN packages p ON p.network = pf.network AND p.path = pf.package_path"+
+			" WHERE p.block_time >= ?%s"+
+			" GROUP BY bucket ORDER BY bucket ASC",
+		sqlFmt, extraFilters)
+
+	rows, err := d.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type row struct {
+		bucket        string
+		bytesAdded    int
+		filesAdded    int
+		packagesAdded int
+	}
+	buckets := make(map[string]*row)
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.bucket, &r.bytesAdded, &r.filesAdded, &r.packagesAdded); err != nil {
+			return nil, err
+		}
+		buckets[r.bucket] = &r
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	now := time.Now().UTC()
+	start := truncFn(now.AddDate(0, 0, -days))
+	end := truncFn(now)
+	var out []StorageTimePoint
+	for cur := start; !cur.After(end); cur = truncFn(cur.Add(step)) {
+		k := bucketKey(cur, granularity)
+		if r, ok := buckets[k]; ok {
+			out = append(out, StorageTimePoint{
+				Time:          k,
+				BytesAdded:    r.bytesAdded,
+				FilesAdded:    r.filesAdded,
+				PackagesAdded: r.packagesAdded,
+			})
+		} else {
+			out = append(out, StorageTimePoint{Time: k})
+		}
+	}
+	return out, nil
+}
+
+func (d *DB) UpsertTransaction(network, txHash string, blockHeight int, blockTime string, gasUsed, gasWanted, gasFee int, success bool) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, err := d.db.Exec(`
+		INSERT OR IGNORE INTO transactions (network, tx_hash, block_height, block_time, gas_used, gas_wanted, gas_fee, success)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, network, txHash, blockHeight, blockTime, gasUsed, gasWanted, gasFee, success)
+	return err
+}
+
+type GasTimePoint struct {
+	Time           string  `json:"time"`
+	TotalGasUsed   int     `json:"total_gas_used"`
+	TotalGasWanted int     `json:"total_gas_wanted"`
+	TotalFees      int     `json:"total_fees"`
+	TxCount        int     `json:"tx_count"`
+	AvgGasUsed     int     `json:"avg_gas_used"`
+	GasEfficiency  float64 `json:"gas_efficiency"`
+	AvgFee         int     `json:"avg_fee"`
+}
+
+type SanityOverview struct {
+	Network            string  `json:"network"`
+	ChainHeight        int     `json:"chain_height"`
+	LastBlockTime      string  `json:"last_block_time"`
+	SecondsSinceBlock  int     `json:"seconds_since_block"`
+	IsAlive            bool    `json:"is_alive"`
+	TxLast1h           int     `json:"tx_last_1h"`
+	TxLast24h          int     `json:"tx_last_24h"`
+	SuccessRate24h     float64 `json:"success_rate_24h"`
+	GasEfficiency24h   float64 `json:"gas_efficiency_24h"`
+	ActiveAddresses24h int     `json:"active_addresses_24h"`
+	NewPackages7d      int     `json:"new_packages_7d"`
+}
+
+type HealthTimePoint struct {
+	Time        string  `json:"time"`
+	Total       int     `json:"total"`
+	Success     int     `json:"success"`
+	Failed      int     `json:"failed"`
+	SuccessRate float64 `json:"success_rate"`
+}
+
+type ActiveAddressTimePoint struct {
+	Time            string `json:"time"`
+	TotalActive     int    `json:"total_active"`
+	UniqueCallers   int    `json:"unique_callers"`
+	UniqueDeployers int    `json:"unique_deployers"`
+	UniqueSenders   int    `json:"unique_senders"`
+}
+
+func (d *DB) GetGasTimeSeries(network, granularity string, days int) ([]GasTimePoint, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	sqlFmt, step, truncFn := timeseriesFormat(granularity)
+	startTime := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
+
+	netFilter := ""
+	if network != "" {
+		netFilter = " AND t.network = ?"
+	}
+
+	q := fmt.Sprintf(
+		"SELECT strftime('%s', t.block_time) as bucket,"+
+			" SUM(t.gas_used) as total_gas_used,"+
+			" SUM(t.gas_wanted) as total_gas_wanted,"+
+			" SUM(t.gas_fee) as total_fees,"+
+			" COUNT(*) as tx_count"+
+			" FROM transactions t"+
+			" WHERE t.block_time >= ?%s"+
+			" GROUP BY bucket ORDER BY bucket ASC",
+		sqlFmt, netFilter)
+
+	args := []any{startTime}
+	if network != "" {
+		args = append(args, network)
+	}
+
+	rows, err := d.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type row struct {
+		bucket         string
+		totalGasUsed   int
+		totalGasWanted int
+		totalFees      int
+		txCount        int
+	}
+	buckets := make(map[string]*row)
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.bucket, &r.totalGasUsed, &r.totalGasWanted, &r.totalFees, &r.txCount); err != nil {
+			return nil, err
+		}
+		buckets[r.bucket] = &r
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	now := time.Now().UTC()
+	start := truncFn(now.AddDate(0, 0, -days))
+	end := truncFn(now)
+	var out []GasTimePoint
+	for cur := start; !cur.After(end); cur = truncFn(cur.Add(step)) {
+		k := bucketKey(cur, granularity)
+		if r, ok := buckets[k]; ok {
+			avg := 0
+			avgFee := 0
+			var eff float64
+			if r.txCount > 0 {
+				avg = r.totalGasUsed / r.txCount
+				avgFee = r.totalFees / r.txCount
+			}
+			if r.totalGasWanted > 0 {
+				eff = float64(r.totalGasUsed) / float64(r.totalGasWanted)
+			}
+			out = append(out, GasTimePoint{
+				Time:           k,
+				TotalGasUsed:   r.totalGasUsed,
+				TotalGasWanted: r.totalGasWanted,
+				TotalFees:      r.totalFees,
+				TxCount:        r.txCount,
+				AvgGasUsed:     avg,
+				GasEfficiency:  eff,
+				AvgFee:         avgFee,
+			})
+		} else {
+			out = append(out, GasTimePoint{Time: k})
+		}
+	}
+	return out, nil
+}
+
+func (d *DB) GetSanityOverview(network string) (*SanityOverview, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	ov := &SanityOverview{Network: network}
+
+	netFilter := ""
+	if network != "" {
+		netFilter = " AND network = ?"
+	}
+
+	now := time.Now().UTC()
+	since1h := now.Add(-1 * time.Hour).Format(time.RFC3339)
+	since24h := now.Add(-24 * time.Hour).Format(time.RFC3339)
+	since7d := now.Add(-7 * 24 * time.Hour).Format(time.RFC3339)
+
+	args1h := []any{since1h}
+	if network != "" {
+		args1h = append(args1h, network)
+	}
+	d.db.QueryRow(`SELECT COUNT(*) FROM transactions WHERE block_time >= ?`+netFilter, args1h...).Scan(&ov.TxLast1h)
+
+	args24h := []any{since24h}
+	if network != "" {
+		args24h = append(args24h, network)
+	}
+	var total24h, success24h, gasUsed24h, gasWanted24h int
+	d.db.QueryRow(`SELECT COUNT(*), SUM(CASE WHEN success THEN 1 ELSE 0 END), SUM(gas_used), SUM(gas_wanted) FROM transactions WHERE block_time >= ?`+netFilter, args24h...).Scan(&total24h, &success24h, &gasUsed24h, &gasWanted24h)
+	ov.TxLast24h = total24h
+	if total24h > 0 {
+		ov.SuccessRate24h = float64(success24h) / float64(total24h)
+	}
+	if gasWanted24h > 0 {
+		ov.GasEfficiency24h = float64(gasUsed24h) / float64(gasWanted24h)
+	}
+
+	addrArgs := []any{since24h, since24h, since24h}
+	addrQuery := `SELECT COUNT(DISTINCT addr) FROM (
+		SELECT caller as addr FROM calls WHERE block_time >= ?
+		UNION SELECT creator FROM packages WHERE block_time >= ?
+		UNION SELECT from_address FROM bank_sends WHERE block_time >= ?
+	)`
+	if network != "" {
+		addrArgs = []any{since24h, network, since24h, network, since24h, network}
+		addrQuery = `SELECT COUNT(DISTINCT addr) FROM (
+			SELECT caller as addr FROM calls WHERE block_time >= ? AND network = ?
+			UNION SELECT creator FROM packages WHERE block_time >= ? AND network = ?
+			UNION SELECT from_address FROM bank_sends WHERE block_time >= ? AND network = ?
+		)`
+	}
+	d.db.QueryRow(addrQuery, addrArgs...).Scan(&ov.ActiveAddresses24h)
+
+	args7d := []any{since7d}
+	if network != "" {
+		args7d = append(args7d, network)
+	}
+	d.db.QueryRow(`SELECT COUNT(*) FROM packages WHERE block_time >= ?`+netFilter, args7d...).Scan(&ov.NewPackages7d)
+
+	return ov, nil
+}
+
+func (d *DB) GetHealthTimeSeries(network, granularity string, days int) ([]HealthTimePoint, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	sqlFmt, step, truncFn := timeseriesFormat(granularity)
+	startTime := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
+
+	netFilter := ""
+	if network != "" {
+		netFilter = " AND t.network = ?"
+	}
+
+	q := fmt.Sprintf(
+		"SELECT strftime('%s', t.block_time) as bucket,"+
+			" COUNT(*) as total,"+
+			" SUM(CASE WHEN t.success THEN 1 ELSE 0 END) as success,"+
+			" SUM(CASE WHEN NOT t.success THEN 1 ELSE 0 END) as failed"+
+			" FROM transactions t"+
+			" WHERE t.block_time >= ?%s"+
+			" GROUP BY bucket ORDER BY bucket ASC",
+		sqlFmt, netFilter)
+
+	args := []any{startTime}
+	if network != "" {
+		args = append(args, network)
+	}
+
+	rows, err := d.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type rowData struct {
+		bucket  string
+		total   int
+		success int
+		failed  int
+	}
+	buckets := make(map[string]*rowData)
+	for rows.Next() {
+		var r rowData
+		if err := rows.Scan(&r.bucket, &r.total, &r.success, &r.failed); err != nil {
+			return nil, err
+		}
+		buckets[r.bucket] = &r
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	now := time.Now().UTC()
+	start := truncFn(now.AddDate(0, 0, -days))
+	end := truncFn(now)
+	var out []HealthTimePoint
+	for cur := start; !cur.After(end); cur = truncFn(cur.Add(step)) {
+		k := bucketKey(cur, granularity)
+		if r, ok := buckets[k]; ok {
+			rate := -1.0
+			if r.total > 0 {
+				rate = float64(r.success) / float64(r.total)
+			}
+			out = append(out, HealthTimePoint{
+				Time:        k,
+				Total:       r.total,
+				Success:     r.success,
+				Failed:      r.failed,
+				SuccessRate: rate,
+			})
+		} else {
+			out = append(out, HealthTimePoint{Time: k, SuccessRate: -1})
+		}
+	}
+	return out, nil
+}
+
+func (d *DB) GetRealmsWithStorage(network string, days int) ([]string, error) {
+	startTime := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
+	q := `SELECT DISTINCT p.path
+		FROM package_files pf
+		JOIN packages p ON p.network = pf.network AND p.path = pf.package_path
+		WHERE p.block_time >= ? AND p.is_realm = 1`
+	args := []any{startTime}
+	if network != "" {
+		q += " AND p.network = ?"
+		args = append(args, network)
+	}
+	q += " ORDER BY p.path ASC"
+	rows, err := d.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var paths []string
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return nil, err
+		}
+		paths = append(paths, path)
+	}
+	return paths, rows.Err()
+}
+
+func (d *DB) GetActiveAddressTimeSeries(network, granularity string, days int) ([]ActiveAddressTimePoint, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	sqlFmt, step, truncFn := timeseriesFormat(granularity)
+	startTime := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
+
+	netFilter := ""
+	if network != "" {
+		netFilter = " AND t.network = ?"
+	}
+
+	// Individual counts: callers, deployers, senders
+	subqs := []string{
+		fmt.Sprintf("SELECT strftime('%s', t.block_time) as bucket, 'callers' as typ, COUNT(DISTINCT t.caller) as cnt FROM calls t WHERE t.block_time >= ?%s GROUP BY bucket", sqlFmt, netFilter),
+		fmt.Sprintf("SELECT strftime('%s', t.block_time) as bucket, 'deployers' as typ, COUNT(DISTINCT t.creator) as cnt FROM packages t WHERE t.block_time >= ?%s GROUP BY bucket", sqlFmt, netFilter),
+		fmt.Sprintf("SELECT strftime('%s', t.block_time) as bucket, 'senders' as typ, COUNT(DISTINCT t.from_address) as cnt FROM bank_sends t WHERE t.block_time >= ?%s GROUP BY bucket", sqlFmt, netFilter),
+	}
+	q := strings.Join(subqs, " UNION ALL ") + " ORDER BY bucket ASC"
+
+	var args []any
+	for range 3 {
+		args = append(args, startTime)
+		if network != "" {
+			args = append(args, network)
+		}
+	}
+
+	rows, err := d.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	buckets := make(map[string]*ActiveAddressTimePoint)
+	for rows.Next() {
+		var bucket, typ string
+		var cnt int
+		if err := rows.Scan(&bucket, &typ, &cnt); err != nil {
+			return nil, err
+		}
+		pt, ok := buckets[bucket]
+		if !ok {
+			pt = &ActiveAddressTimePoint{Time: bucket}
+			buckets[bucket] = pt
+		}
+		switch typ {
+		case "callers":
+			pt.UniqueCallers = cnt
+		case "deployers":
+			pt.UniqueDeployers = cnt
+		case "senders":
+			pt.UniqueSenders = cnt
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Union total active addresses per bucket
+	var unionNetFilter string
+	var unionArgs []any
+	if network != "" {
+		unionNetFilter = " AND network = ?"
+		unionArgs = []any{startTime, network, startTime, network, startTime, network}
+	} else {
+		unionArgs = []any{startTime, startTime, startTime}
+	}
+	unionQ := fmt.Sprintf(
+		"SELECT strftime('%s', block_time) as bucket, COUNT(DISTINCT addr) as cnt FROM ("+
+			" SELECT caller as addr, block_time, network FROM calls WHERE block_time >= ?%s"+
+			" UNION SELECT creator, block_time, network FROM packages WHERE block_time >= ?%s"+
+			" UNION SELECT from_address, block_time, network FROM bank_sends WHERE block_time >= ?%s"+
+			") GROUP BY bucket ORDER BY bucket ASC",
+		sqlFmt, unionNetFilter, unionNetFilter, unionNetFilter)
+
+	urows, err := d.db.Query(unionQ, unionArgs...)
+	if err != nil {
+		return nil, err
+	}
+	defer urows.Close()
+	for urows.Next() {
+		var bucket string
+		var cnt int
+		if err := urows.Scan(&bucket, &cnt); err != nil {
+			return nil, err
+		}
+		if pt, ok := buckets[bucket]; ok {
+			pt.TotalActive = cnt
+		} else {
+			buckets[bucket] = &ActiveAddressTimePoint{Time: bucket, TotalActive: cnt}
+		}
+	}
+	if err := urows.Err(); err != nil {
+		return nil, err
+	}
+
+	now := time.Now().UTC()
+	start := truncFn(now.AddDate(0, 0, -days))
+	end := truncFn(now)
+	var out []ActiveAddressTimePoint
+	for cur := start; !cur.After(end); cur = truncFn(cur.Add(step)) {
+		k := bucketKey(cur, granularity)
+		if pt, ok := buckets[k]; ok {
+			out = append(out, *pt)
+		} else {
+			out = append(out, ActiveAddressTimePoint{Time: k})
+		}
+	}
+	return out, nil
 }
