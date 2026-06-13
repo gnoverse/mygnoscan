@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>mygnoscan — Chain Analytics Vision (POC, synthetic data)</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/echarts-gl@2/dist/echarts-gl.min.js"></script>
+<style>
+  :root{
+    --bg:#0a0a0a; --panel:#141414; --panel2:#1c1c1c; --border:#262626;
+    --txt:#e8e8e8; --muted:#8a8a8a;
+    --accent:#4ecdc4; --coral:#ff6b6b; --green:#51cf66; --yellow:#ffd43b;
+    --purple:#b197fc; --blue:#4dabf7; --orange:#ff922b;
+    --mono:'SF Mono','Cascadia Code','Fira Code',ui-monospace,Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font-family:var(--mono);font-size:13px;line-height:1.5}
+  a{color:var(--accent);text-decoration:none}
+  header{position:sticky;top:0;z-index:10;background:rgba(10,10,10,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--border)}
+  .hbar{display:flex;align-items:center;gap:16px;padding:14px 22px;flex-wrap:wrap}
+  .logo{font-weight:700;font-size:16px;color:var(--accent);letter-spacing:.5px}
+  .logo small{color:var(--muted);font-weight:400;font-size:11px;letter-spacing:0}
+  nav{display:flex;gap:6px;flex-wrap:wrap}
+  nav button{background:var(--panel);color:var(--muted);border:1px solid var(--border);padding:7px 13px;border-radius:7px;cursor:pointer;font-family:var(--mono);font-size:12px}
+  nav button:hover{color:var(--txt);border-color:#3a3a3a}
+  nav button.active{background:var(--accent);color:#06231f;border-color:var(--accent);font-weight:600}
+  .demo-flag{margin-left:auto;background:rgba(255,212,59,.12);border:1px solid rgba(255,212,59,.4);color:var(--yellow);padding:5px 11px;border-radius:6px;font-size:11px}
+  main{padding:22px;max-width:1600px;margin:0 auto}
+  .intro{color:var(--muted);max-width:900px;margin:0 0 22px}
+  .intro b{color:var(--txt)}
+  .secthead{margin:30px 0 4px;font-size:18px;color:var(--txt)}
+  .secthead .tag{font-size:11px;color:var(--muted);font-weight:400;margin-left:8px}
+  .secsub{color:var(--muted);margin:0 0 16px;max-width:920px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(460px,1fr));gap:18px}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px 16px 14px;display:flex;flex-direction:column}
+  .card.wide{grid-column:1/-1}
+  .card.tall .chart{height:480px}
+  .card h3{margin:0 0 2px;font-size:14px;color:var(--txt);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .why{color:var(--muted);font-size:11.5px;margin:0 0 12px;line-height:1.45}
+  .why b{color:#cfcfcf;font-weight:600}
+  .chart{width:100%;height:320px}
+  .badge{font-size:10px;padding:2px 7px;border-radius:5px;font-weight:600;letter-spacing:.3px;white-space:nowrap}
+  .b-live{background:rgba(81,207,102,.14);color:var(--green);border:1px solid rgba(81,207,102,.3)}
+  .b-idx{background:rgba(255,212,59,.14);color:var(--yellow);border:1px solid rgba(255,212,59,.3)}
+  .b-rpc{background:rgba(255,107,107,.14);color:var(--coral);border:1px solid rgba(255,107,107,.3)}
+  .legendnote{display:flex;gap:18px;flex-wrap:wrap;color:var(--muted);font-size:11px;margin:0 0 18px}
+  .legendnote span{display:inline-flex;align-items:center;gap:6px}
+  .ctlbar{display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin:0 0 12px;padding:9px 11px;background:var(--panel2);border:1px solid var(--border);border-radius:8px}
+  .ctlgrp{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--muted)}
+  .seg{display:inline-flex;border:1px solid var(--border);border-radius:6px;overflow:hidden}
+  .seg button{background:var(--panel);color:var(--muted);border:none;border-left:1px solid var(--border);padding:4px 10px;cursor:pointer;font-family:var(--mono);font-size:11px}
+  .seg button:first-child{border-left:none}
+  .seg button.on{background:var(--accent);color:#06231f;font-weight:600}
+  .ctl-btn{background:var(--panel);color:var(--coral);border:1px solid var(--border);padding:4px 11px;border-radius:6px;cursor:pointer;font-family:var(--mono);font-size:11px}
+  .ctl-btn:hover{border-color:var(--coral)}
+  .ctl-status{font-size:11px;color:var(--accent);margin-left:auto}
+  .ctl-select{background:var(--panel);color:var(--txt);border:1px solid var(--border);border-radius:6px;padding:4px 9px;font-family:var(--mono);font-size:11px;cursor:pointer}
+  .ctl-select:hover{border-color:var(--accent)}
+  footer{color:var(--muted);text-align:center;padding:40px 0 24px;font-size:11px}
+</style>
+</head>
+<body>
+<header>
+  <div class="hbar">
+    <div class="logo">mygnoscan<small> / chain analytics vision</small></div>
+    <nav id="nav"></nav>
+    <span class="demo-flag">POC · synthetic data</span>
+  </div>
+</header>
+
+<main>
+  <p class="intro">
+    This is a <b>vision prototype</b> for turning the data flowing through <b>tx-indexer</b> into a picture of
+    the whole chain — how it grows, where value moves, who builds, and what it costs to store state.
+    Every number here is <b>synthetic but shaped to be realistic</b> (growth curves, weekly seasonality, power-law
+    distributions). The point is the <b>charts and the questions they answer</b>, not the values.
+    Each card explains <b>why it matters</b> and is tagged by what it would take to ship:
+  </p>
+  <div class="legendnote">
+    <span><span class="badge b-live">✅ LIVE</span> already in the indexer — just an aggregation in mygnoscan</span>
+    <span><span class="badge b-idx">🟡 INDEX</span> needs GnoEvent replay / new bucketing</span>
+    <span><span class="badge b-rpc">🔴 RPC</span> needs chain state (balances, voting power, tallies)</span>
+  </div>
+  <div id="sections"></div>
+</main>
+
+<footer>mygnoscan vision POC — ECharts + echarts-gl (WebGL), synthetic data generated client-side · matches tx-indexer → gnorigin data model</footer>
+
+<script>
+/* ---------------- seeded RNG so the demo is deterministic ---------------- */
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+const rnd = mulberry32(20260613);
+const rint=(a,b)=>Math.floor(a+rnd()*(b-a));
+const noise=(amp)=>1+(rnd()-0.5)*amp;
+
+/* ---------------- date axis: last N days ---------------- */
+const DAYS=90;
+const dayLabels=[];
+{ const now=new Date(); for(let i=DAYS-1;i>=0;i--){const d=new Date(now);d.setDate(now.getDate()-i);dayLabels.push((d.getMonth()+1)+'/'+d.getDate());} }
+const dowOf=i=>(new Date(Date.now()-(DAYS-1-i)*864e5)).getDay(); // 0=Sun
+const weekendDip=i=>{const d=dowOf(i);return (d===0||d===6)?0.62:1;};
+
+/* ---------------- synthetic series ---------------- */
+const D={};
+// tx volume by message type (grows, weekly seasonality, noise)
+D.calls=[];D.sends=[];D.deploys=[];D.runs=[];D.totalTx=[];D.cumTx=[];
+let cum=120000;
+for(let i=0;i<DAYS;i++){
+  const g=i/DAYS, w=weekendDip(i);
+  const c=Math.round((800+2400*g)*w*noise(.25));
+  const s=Math.round((300+950*g)*w*noise(.3));
+  const dp=Math.round((14+70*g)*w*noise(.45));
+  const r=Math.round((40+170*g)*w*noise(.4));
+  D.calls.push(c);D.sends.push(s);D.deploys.push(dp);D.runs.push(r);
+  const t=c+s+dp+r;D.totalTx.push(t);cum+=t;D.cumTx.push(cum);
+}
+// addresses
+D.newAddr=[];D.dau=[];D.wau=[];D.mau=[];let cumAddr=8500;D.cumAddr=[];
+for(let i=0;i<DAYS;i++){const g=i/DAYS,w=weekendDip(i);
+  const na=Math.round((35+150*g)*w*noise(.4));D.newAddr.push(na);cumAddr+=na;D.cumAddr.push(cumAddr);
+  const d=Math.round((220+1250*g)*w*noise(.18));D.dau.push(d);
+  D.wau.push(Math.round(d*(2.6+rnd()*.4)));D.mau.push(Math.round(d*(5.2+rnd()*.6)));
+}
+// success rate %
+D.success=[];for(let i=0;i<DAYS;i++){D.success.push(+(96.5+rnd()*3 - (rnd()<.06? rint(2,7):0)).toFixed(2));}
+// block time histogram (seconds)
+D.btBins=['4.0','4.5','5.0','5.5','6.0','6.5','7.0','7.5','8.0+'];
+D.btHist=[420,1850,5400,7200,4100,1600,520,180,90];
+// activity heatmap hour(0-23) x dow(Mon..Sun)
+D.heat=[];const dows=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+for(let h=0;h<24;h++)for(let d=0;d<7;d++){
+  const day=Math.sin((h-3)/24*Math.PI*2)*0.5+0.6; // peak ~ midday UTC
+  const wd=(d>=5)?0.65:1;
+  D.heat.push([h,d,Math.round(Math.max(0,(day*wd*1000)*noise(.3)))]);
+}
+// gas used/wanted per day
+D.gasUsed=[];D.gasWanted=[];D.fees=[];D.cumFees=[];let cf=0;
+for(let i=0;i<DAYS;i++){const base=D.totalTx[i];
+  const gw=Math.round(base*120000*noise(.1));const gu=Math.round(gw*(0.55+rnd()*0.15));
+  D.gasWanted.push(gw);D.gasUsed.push(gu);
+  const fee=Math.round(base*1800*noise(.2));D.fees.push(fee);cf+=fee;D.cumFees.push(cf);
+}
+// gas-per-tx histogram (log-ish buckets)
+D.gptBins=['<50k','50–100k','100–200k','200–400k','400–800k','800k–1.5M','>1.5M'];
+D.gptHist=[3200,8800,14200,9100,4200,1500,480];
+// storage cumulative bytes (MB)
+D.storMB=[];let sm=210;for(let i=0;i<DAYS;i++){sm+=(2+8*(i/DAYS))*noise(.3)+D.deploys[i]*0.04;D.storMB.push(+sm.toFixed(1));}
+// deposit vs refund per day (ugnot)
+D.depo=[];D.refund=[];for(let i=0;i<DAYS;i++){D.depo.push(Math.round((D.deploys[i]*1.6+D.calls[i]*0.05)*100000*noise(.3)));D.refund.push(-Math.round((D.calls[i]*0.012)*100000*noise(.5)));}
+// storage treemap top consumers (bytes)
+D.storeTree=[
+  {name:'r/gnoland/boards2',value:4_820_000},{name:'r/sys/users',value:2_140_000},
+  {name:'r/gov/dao',value:1_560_000},{name:'r/demo/art/gnoface',value:980_000},
+  {name:'r/leon/hor',value:760_000},{name:'r/gnoland/home',value:540_000},
+  {name:'r/x/manfred_outfmt',value:430_000},{name:'r/morgan/blog',value:360_000},
+  {name:'r/demo/users',value:300_000},{name:'r/g1.../profile',value:260_000},
+  {name:'others (1.2k realms)',value:3_100_000}
+];
+// event-type treemap
+D.eventTree=[
+  {name:'Transfer',value:48200},{name:'Registered',value:9100},{name:'StorageDeposit',value:7600},
+  {name:'Approval',value:6400},{name:'ProposalCreated',value:540},{name:'Vote',value:2900},
+  {name:'PostCreated',value:8800},{name:'ReplyCreated',value:15200},{name:'ValidatorAdded',value:42},
+  {name:'set (params)',value:310},{name:'OwnershipTransferred',value:180},{name:'other',value:5200}
+];
+// users registrations
+D.regs=[];let cumReg=4200;D.cumReg=[];
+for(let i=0;i<DAYS;i++){const g=i/DAYS,w=weekendDip(i);const x=Math.round((12+60*g)*w*noise(.45));D.regs.push(x);cumReg+=x;D.cumReg.push(cumReg);}
+// proposer distribution (validators)
+D.vals=Array.from({length:20},(_,i)=>'val-'+String.fromCharCode(97+i));
+D.proposed=D.vals.map((_,i)=>Math.round(900*Math.exp(-i*0.12)*noise(.12))).sort((a,b)=>b-a);
+// voting power treemap
+D.power=D.vals.map((v,i)=>({name:v,value:Math.round(1000*Math.exp(-i*0.18)*noise(.1))}));
+// govdao proposals per month by status
+D.gdMonths=['Jan','Feb','Mar','Apr','May','Jun'];
+D.gdAccepted=[3,5,4,7,6,8];D.gdDenied=[1,2,1,2,3,2];D.gdActive=[0,0,1,1,2,3];
+// govdao current proposal tally by tier (Yes/No/Abstain)
+D.tierNames=['T1 (core)','T2 (contrib)','T3 (community)'];
+D.tYes=[42,310,1820];D.tNo=[6,55,640];D.tAbstain=[2,40,520];
+// boards2 activity
+D.threads=[];D.replies=[];for(let i=0;i<DAYS;i++){const g=i/DAYS,w=weekendDip(i);D.threads.push(Math.round((6+22*g)*w*noise(.4)));D.replies.push(Math.round((30+120*g)*w*noise(.35)));}
+D.topBoards=[{n:'/gnoland',v:18400},{n:'/showcase',v:9200},{n:'/gnodev',v:6100},{n:'/random',v:4700},{n:'/governance',v:3300},{n:'/intro',v:2100}];
+// function call heatmap (funcs x last 14 days) for one realm
+D.last14=dayLabels.slice(-14);
+// per-realm exported functions + a 14-day call heatmap each (func hotness decays down the list, grows over days)
+D.realmFns={
+  'r/gnoland/boards2':['Post','CreateReply','Render','Repost','FlagPost','CreateThread','DeletePost'],
+  'r/gnoswap':['Swap','Quote','AddLiquidity','RemoveLiquidity','ClaimFees','Render'],
+  'r/sys/users':['Register','UpdateName','Resolve','Render'],
+  'r/gov/dao':['Vote','CreateProposal','Execute','Render'],
+  'r/demo/art/nft':['Mint','Transfer','Approve','SetMetadata','Render']
+};
+D.realmHeat={};
+Object.keys(D.realmFns).forEach(rp=>{const fns=D.realmFns[rp];const heat=[];
+  for(let f=0;f<fns.length;f++)for(let d=0;d<14;d++){heat.push([d,f,Math.round(Math.max(0,(fns.length-f)*8)*noise(.6)*(0.5+d/14))]);}
+  D.realmHeat[rp]=heat;});
+// wealth Lorenz curve
+D.lorenzX=[];D.lorenzY=[];D.lorenzEq=[];
+for(let p=0;p<=100;p+=5){D.lorenzX.push(p);D.lorenzEq.push(p);D.lorenzY.push(+(Math.pow(p/100,3.1)*100).toFixed(1));}
+// total supply / circulating (millions GNOT)
+D.supply=[];D.circ=[];let su=10_000_000,ci=2_400_000;
+for(let i=0;i<DAYS;i++){su+=4500*noise(.1);ci+=(8000+6000*(i/DAYS))*noise(.15);D.supply.push(Math.round(su));D.circ.push(Math.round(ci));}
+// value-transfer network — a population of addresses with TIMESTAMPED, valued edges.
+// The chart never draws all of it: a time window + top-N (or an ego focus) prune it at render time.
+// In production that pruning is a SQL query; here it's done client-side over the synthetic set.
+(function(){
+  const hubs=['faucet','gnoswap','validator-pool','bridge','dao-treasury','gnoswap-pool2'];
+  const N=420,addrs=[];
+  for(let i=0;i<N;i++){const hub=i<hubs.length;addrs.push({id:'a'+i,name:hub?hubs[i]:('g1'+rnd().toString(36).slice(2,8)),hub});}
+  const edges=[];
+  for(let k=0;k<2400;k++){
+    let f=(rnd()<0.45)?rint(0,hubs.length):rint(0,N);
+    let t=(rnd()<0.55)?rint(0,hubs.length):rint(0,N);
+    if(f===t)continue;
+    const day=rint(0,90);                                  // 0 = oldest, 89 = today
+    const hubBoost=(addrs[f].hub||addrs[t].hub)?6:1;
+    const value=Math.round((50+rnd()*4000)*(0.35+day/90)*hubBoost); // recent + hub = bigger flows
+    edges.push({from:'a'+f,to:'a'+t,value,day});
+  }
+  D.tfAddrs=addrs;D.tfEdges=edges;D.amap={};addrs.forEach(a=>D.amap[a.id]=a);
+})();
+// caller→realm WebGL graph — many nodes in clusters
+(function(){
+  const clusters=[['boards2',280],['gnoswap',240],['users',180],['art/nft',160],['govdao',120],['misc',420]];
+  const nodes=[],edges=[];let id=0;const hubIds=[];
+  clusters.forEach((c,ci)=>{const hub=id++;hubIds.push(hub);
+    nodes.push({id:String(hub),name:'r/'+c[0],symbolSize:26,value:c[1],category:ci,
+      label:{show:true,position:'top',color:'#fff',fontSize:13,fontWeight:'bold',fontFamily:'var(--mono)',formatter:'r/'+c[0],
+        textBorderColor:'#0a0a0a',textBorderWidth:3}});
+    for(let k=0;k<c[1];k++){const n=id++;nodes.push({id:String(n),name:'g1'+(rnd().toString(36).slice(2,7)),symbolSize:2+rnd()*5,value:Math.round(rnd()*200),category:ci});
+      edges.push({source:String(n),target:String(hub)});
+      if(rnd()<0.18){const oc=rint(0,clusters.length);edges.push({source:String(n),target:String(hubIds[oc]??hub)});}}});
+  D.callerNodes=nodes;D.callerEdges=edges;D.callerCats=clusters.map((c,i)=>({name:'r/'+c[0]}));
+})();
+
+/* ---------------- ECharts theme helpers ---------------- */
+const PAL=['#4ecdc4','#ff6b6b','#51cf66','#ffd43b','#b197fc','#4dabf7','#ff922b','#e599f7'];
+const fmt=n=>n>=1e6?(n/1e6).toFixed(1)+'M':n>=1e3?(n/1e3).toFixed(1)+'k':n;
+const axisStyle={axisLine:{lineStyle:{color:'#333'}},axisLabel:{color:'#8a8a8a',fontSize:10},splitLine:{lineStyle:{color:'#1d1d1d'}}};
+const baseGrid={left:54,right:20,top:30,bottom:34};
+function base(opt){return Object.assign({backgroundColor:'transparent',textStyle:{fontFamily:"var(--mono)",color:'#e8e8e8'},
+  tooltip:{backgroundColor:'#1c1c1c',borderColor:'#333',textStyle:{color:'#e8e8e8',fontSize:11}},
+  legend:{textStyle:{color:'#8a8a8a',fontSize:11},top:2,right:6},color:PAL},opt);}
+function cat(name){return Object.assign({type:'category',data:dayLabels,boundaryGap:false},axisStyle,{name});}
+function val(name){return Object.assign({type:'value'},axisStyle,{name,nameTextStyle:{color:'#8a8a8a'}});}
+// segmented control: label + buttons; calls onpick(value) on click
+function mkSeg(label,labels,values,current,onpick){
+  const g=document.createElement('span');g.className='ctlgrp';g.appendChild(document.createTextNode(label+':'));
+  const seg=document.createElement('span');seg.className='seg';
+  labels.forEach((lb,i)=>{const b=document.createElement('button');b.textContent=lb;if(values[i]===current)b.classList.add('on');
+    b.onclick=()=>{[...seg.children].forEach(x=>x.classList.remove('on'));b.classList.add('on');onpick(values[i]);};seg.appendChild(b);});
+  g.appendChild(seg);return g;
+}
+// dropdown control: label + <select>; calls onpick(value) on change
+function mkSelect(label,options,current,onpick){
+  const g=document.createElement('span');g.className='ctlgrp';g.appendChild(document.createTextNode(label+':'));
+  const sel=document.createElement('select');sel.className='ctl-select';
+  options.forEach(o=>{const op=document.createElement('option');op.value=o;op.textContent=o;if(o===current)op.selected=true;sel.appendChild(op);});
+  sel.onchange=()=>onpick(sel.value);g.appendChild(sel);return g;
+}
+// SCOPING: this is the logic that, in production, lives in SQL on the server — not the browser.
+// Filter by time window, then either top-N-by-volume (overview) or ego-neighborhood (drill-down),
+// collapse parallel edges into aggregated flows, and size nodes by total volume.
+function buildTransfer(st){
+  const minDay=90-st.windowDays;
+  let edges=D.tfEdges.filter(e=>e.day>=minDay);
+  let keep;
+  if(st.ego){                                              // drill-down: ego + 1-hop neighbors
+    const nb=new Set([st.ego]);
+    edges.forEach(e=>{if(e.from===st.ego)nb.add(e.to);if(e.to===st.ego)nb.add(e.from);});
+    edges=edges.filter(e=>nb.has(e.from)&&nb.has(e.to));keep=nb;
+  }else{                                                   // overview: top-N addresses by volume
+    const v={};edges.forEach(e=>{v[e.from]=(v[e.from]||0)+e.value;v[e.to]=(v[e.to]||0)+e.value;});
+    const ranked=Object.keys(v).sort((a,b)=>v[b]-v[a]).slice(0,st.topN);
+    keep=new Set(ranked);edges=edges.filter(e=>keep.has(e.from)&&keep.has(e.to));
+  }
+  const pair={};edges.forEach(e=>{const k=e.from+''+e.to;pair[k]=(pair[k]||0)+e.value;});
+  const links=Object.keys(pair).map(k=>{const p=k.split('');return {source:p[0],target:p[1],value:pair[k]};});
+  const vol={};links.forEach(l=>{vol[l.source]=(vol[l.source]||0)+l.value;vol[l.target]=(vol[l.target]||0)+l.value;});
+  const nodes=[...keep].map(id=>{const a=D.amap[id],v=vol[id]||0;
+    return {id,name:a?a.name:id,value:v,symbolSize:(a&&a.hub)?30:Math.max(6,Math.min(32,Math.sqrt(v)/10)),
+      category:id===st.ego?2:((a&&a.hub)?0:1),
+      itemStyle:id===st.ego?{color:'#ffd43b',borderColor:'#fff',borderWidth:2}:undefined};
+  }).filter(n=>n.value>0||n.id===st.ego);
+  return {nodes,links,count:nodes.length,edgeCount:links.length};
+}
+
+/* ---------------- chart definitions ---------------- */
+const SECTIONS=[
+ {id:'pulse',title:'Chain Pulse',tag:'P0 · is the chain healthy & growing?',
+  sub:'The headline story: activity, adoption, throughput and reliability over time. Everything here is already in the indexer.',
+  charts:[
+   {t:'Transactions per day, by message type',b:'b-live',badge:'✅ LIVE',
+    why:'The single most important chart — <b>total activity and its composition</b>. Are calls, deploys, sends or runs driving growth? A shift in the mix signals what the chain is being used for.',
+    opt:()=>base({grid:baseGrid,tooltip:{trigger:'axis'},legend:{data:['calls','sends','runs','deploys']},
+      xAxis:cat(),yAxis:val(),series:['calls','sends','runs','deploys'].map((k,i)=>({name:k,type:'line',stack:'t',areaStyle:{opacity:.5},showSymbol:false,lineStyle:{width:1},data:D[k]}))})},
+   {t:'Cumulative transactions & addresses',b:'b-live',badge:'✅ LIVE',
+    why:'The <b>"up and to the right"</b> growth curve leadership wants. Cumulative tx vs cumulative unique addresses shows whether growth is more usage or more users.',
+    opt:()=>base({grid:baseGrid,tooltip:{trigger:'axis'},legend:{data:['cumulative tx','cumulative addresses']},
+      xAxis:cat(),yAxis:[val('tx'),Object.assign(val('addr'),{position:'right'})],
+      series:[{name:'cumulative tx',type:'line',smooth:true,showSymbol:false,areaStyle:{opacity:.25},data:D.cumTx},
+              {name:'cumulative addresses',type:'line',yAxisIndex:1,smooth:true,showSymbol:false,lineStyle:{color:PAL[3]},itemStyle:{color:PAL[3]},data:D.cumAddr}]})},
+   {t:'Active addresses — DAU / WAU / MAU',b:'b-live',badge:'✅ LIVE',
+    why:'<b>Engagement & stickiness.</b> DAU/MAU ratio is the retention pulse — rising = users coming back, not just one-off faucet hits.',
+    opt:()=>base({grid:baseGrid,tooltip:{trigger:'axis'},legend:{data:['DAU','WAU','MAU']},xAxis:cat(),yAxis:val(),
+      series:[['DAU','dau'],['WAU','wau'],['MAU','mau']].map(([n,k],i)=>({name:n,type:'line',smooth:true,showSymbol:false,data:D[k]}))})},
+   {t:'New addresses per day (first-seen)',b:'b-live',badge:'✅ LIVE',
+    why:'<b>Real user acquisition</b> — addresses appearing for the first time, not repeat activity. The leading indicator of organic growth.',
+    opt:()=>base({grid:baseGrid,tooltip:{trigger:'axis'},xAxis:cat(),yAxis:val(),
+      series:[{type:'bar',data:D.newAddr,itemStyle:{color:PAL[4]}}]})},
+   {t:'Success vs failed transaction rate',b:'b-live',badge:'✅ LIVE',
+    why:'<b>Reliability.</b> A sudden dip flags a buggy realm deploy, a spam/attack wave, or a gas-estimation problem — a chain-health alarm.',
+    opt:()=>base({grid:baseGrid,tooltip:{trigger:'axis',valueFormatter:v=>v+'%'},xAxis:cat(),
+      yAxis:Object.assign(val('%'),{min:85,max:100}),
+      series:[{type:'line',smooth:true,showSymbol:false,areaStyle:{opacity:.2},lineStyle:{color:PAL[2]},itemStyle:{color:PAL[2]},data:D.success}]})},
+   {t:'Block-time distribution',b:'b-live',badge:'✅ LIVE',
+    why:'<b>Consensus health & throughput.</b> A tight cluster around target block time is healthy; a fat right tail means the chain is stalling under load.',
+    opt:()=>base({grid:baseGrid,tooltip:{trigger:'axis'},xAxis:Object.assign({type:'category',data:D.btBins},axisStyle,{name:'seconds'}),
+      yAxis:val('blocks'),series:[{type:'bar',data:D.btHist,itemStyle:{color:PAL[5]}}]})},
+   {t:'Activity heatmap — hour × day-of-week',b:'b-live',badge:'✅ LIVE',wide:true,
+    why:'<b>When is the chain alive?</b> Reveals the community timezone and weekday/weekend rhythm — useful for ops, launches, and understanding the user base.',
+    opt:()=>base({grid:{left:50,right:20,top:20,bottom:30,height:'70%'},tooltip:{position:'top'},
+      xAxis:Object.assign({type:'category',data:Array.from({length:24},(_,h)=>h+'h')},axisStyle),
+      yAxis:Object.assign({type:'category',data:dows},axisStyle),
+      visualMap:{min:0,max:1100,calculable:true,orient:'horizontal',left:'center',bottom:0,inRange:{color:['#141414','#1f5e58','#4ecdc4']},textStyle:{color:'#8a8a8a'}},
+      series:[{type:'heatmap',data:D.heat.map(([h,d,v])=>[h,d,v]),emphasis:{itemStyle:{borderColor:'#fff',borderWidth:1}}}]})},
+  ]},
+
+ {id:'econ',title:'Economics',tag:'P1 · gas, fees & storage cost',
+  sub:'What the chain costs to run and to store. Storage growth is the long-term sustainability question for any on-chain VM.',
+  charts:[
+   {t:'Gas used vs gas wanted',b:'b-live',badge:'✅ LIVE',
+    why:'<b>Capacity & estimator quality.</b> The gap between wanted and used is wasted headroom; tracking it tunes fee markets and block limits.',
+    opt:()=>base({grid:baseGrid,tooltip:{trigger:'axis'},legend:{data:['gas wanted','gas used']},xAxis:cat(),yAxis:val(),
+      series:[{name:'gas wanted',type:'line',showSymbol:false,areaStyle:{opacity:.15},data:D.gasWanted},
+              {name:'gas used',type:'line',showSymbol:false,areaStyle:{opacity:.3},lineStyle:{color:PAL[1]},itemStyle:{color:PAL[1]},data:D.gasUsed}]})},
+   {t:'Gas-used-per-tx distribution',b:'b-live',badge:'✅ LIVE',
+    why:'<b>Spot heavy vs cheap operations.</b> A long right tail = expensive realms worth optimizing; the bulk shows the typical user cost.',
+    opt:()=>base({grid:baseGrid,tooltip:{trigger:'axis'},xAxis:Object.assign({type:'category',data:D.gptBins},axisStyle),
+      yAxis:val('# txs'),series:[{type:'bar',data:D.gptHist,itemStyle:{color:PAL[6]}}]})},
+   {t:'Fees collected per day & cumulative',b:'b-live',badge:'✅ LIVE',
+    why:'<b>The fee economy.</b> How much GNOT the chain burns/collects — the basis for any sustainability or validator-reward model.',
+    opt:()=>base({grid:baseGrid,tooltip:{trigger:'axis'},legend:{data:['daily fees','cumulative']},xAxis:cat(),
+      yAxis:[val('ugnot/day'),Object.assign(val('cum'),{position:'right'})],
+      series:[{name:'daily fees',type:'bar',data:D.fees,itemStyle:{color:PAL[0]}},
+              {name:'cumulative',type:'line',yAxisIndex:1,showSymbol:false,lineStyle:{color:PAL[3]},itemStyle:{color:PAL[3]},data:D.cumFees}]})},
+   {t:'On-chain storage growth (cumulative)',b:'b-live',badge:'✅ LIVE',
+    why:'<b>The sustainability chart.</b> State only grows; at 100 ugnot/byte this is the long-term cost driver. Slope = how fast the chain is getting heavier.',
+    opt:()=>base({grid:baseGrid,tooltip:{trigger:'axis',valueFormatter:v=>v+' MB'},xAxis:cat(),yAxis:val('MB'),
+      series:[{type:'line',smooth:true,showSymbol:false,areaStyle:{opacity:.35},lineStyle:{color:PAL[4]},itemStyle:{color:PAL[4]},data:D.storMB}]})},
+   {t:'Top storage consumers (bytes by realm)',b:'b-live',badge:'✅ LIVE',tall:true,
+    why:'<b>Who is eating state?</b> A treemap answers "who is biggest" instantly. These realms drive storage cost — the ones to watch, optimize, or price.',
+    opt:()=>base({tooltip:{formatter:p=>p.name+'<br/>'+fmt(p.value)+' bytes'},
+      series:[{type:'treemap',roam:false,nodeClick:false,breadcrumb:{show:false},data:D.storeTree,
+        label:{color:'#06231f',fontSize:11,fontFamily:'var(--mono)'},
+        levels:[{itemStyle:{borderColor:'#0a0a0a',borderWidth:2,gapWidth:2}}],
+        colorMappingBy:'value'}]})},
+   {t:'Storage deposit locked vs refunded',b:'b-live',badge:'✅ LIVE',
+    why:'<b>Storage-deposit economics in action.</b> Deposits lock GNOT when state grows; refunds return it when realms prune. Net flow shows real state pressure.',
+    opt:()=>base({grid:baseGrid,tooltip:{trigger:'axis'},legend:{data:['deposit locked','refunded']},xAxis:cat(),yAxis:val('ugnot'),
+      series:[{name:'deposit locked',type:'bar',stack:'s',data:D.depo,itemStyle:{color:PAL[1]}},
+              {name:'refunded',type:'bar',stack:'s',data:D.refund,itemStyle:{color:PAL[2]}}]})},
+  ]},
+
+ {id:'net',title:'Networks',tag:'P2 · who interacts with whom (WebGL)',
+  sub:'Relationship structure is invisible in tables. These graphs make clusters, hubs and money-flow obvious. The caller graph is rendered with WebGL (echarts-gl) to scale to 100k+ nodes.',
+  charts:[
+   {t:'Caller → realm interaction graph (WebGL)',b:'b-live',badge:'✅ LIVE',wide:true,tall:true,gl:true,
+    why:'<b>The map of who uses what.</b> Each cluster is a realm and its callers; bridges between clusters reveal power users and composability. WebGL keeps it interactive at scale (100k+ nodes) where D3/SVG dies. <i>Hover any node for its address/realm.</i>'
+       +'<br><span style="display:inline-flex;gap:14px;flex-wrap:wrap;margin-top:8px">'
+       +[['r/gnoland/boards2',0],['r/gnoswap',1],['r/sys/users',2],['r/demo/art/nft',3],['r/gov/dao',4],['misc realms',5]]
+         .map(([n,i])=>'<span style="display:inline-flex;align-items:center;gap:5px"><span style="width:10px;height:10px;border-radius:50%;background:'+PAL[i]+';display:inline-block"></span>'+n+'</span>').join('')
+       +'</span>',
+    opt:()=>base({tooltip:{formatter:p=>p.dataType==='node'?p.data.name:''},
+      legend:{show:true,data:D.callerCats.map(c=>c.name),type:'scroll',top:2,left:'center',
+        textStyle:{color:'#bcbcbc',fontSize:11},itemWidth:12,itemHeight:12,icon:'circle'},
+      series:[{type:'graphGL',nodes:D.callerNodes,edges:D.callerEdges,categories:D.callerCats,
+        forceAtlas2:{steps:3,stopThreshold:0.5,jitterTolerence:5,edgeWeight:[0.5,2],gravity:6,scaling:4,edgeWeightInfluence:1,preventOverlap:true},
+        label:{show:false},itemStyle:{opacity:.95},lineStyle:{color:'rgba(255,255,255,0.07)',width:0.4},focusNodeAdjacency:true}]})},
+   {t:'Value-transfer network (address → address)',b:'b-live',badge:'✅ LIVE',wide:true,tall:true,
+    why:'<b>Follow the money.</b> Node size = volume, so faucets, DEXes and whales pop out as hubs. <b>Scoped on purpose:</b> a chain with millions of addresses is never drawn whole — pick a <i>time window</i> and <i>top-N by volume</i>, or <b>click any node</b> to focus on its neighborhood (ego graph). In production this filtering is a <b>server-side SQL query</b>; the browser only ever receives the pruned graph.',
+    state:{windowDays:30,topN:100,ego:null},
+    onClick:(p,st,render)=>{if(p.dataType==='node'){st.ego=p.data.id;render();}},
+    controls:(bar,render,st,ch,c)=>{
+      bar.appendChild(mkSeg('Window',['7d','30d','90d'],['7','30','90'],String(st.windowDays),v=>{st.windowDays=+v;st.ego=null;render();}));
+      bar.appendChild(mkSeg('Top-N',['50','100','250'],['50','100','250'],String(st.topN),v=>{st.topN=+v;st.ego=null;render();}));
+      const reset=document.createElement('button');reset.className='ctl-btn';reset.textContent='⟲ reset focus';
+      reset.onclick=()=>{st.ego=null;render();};bar.appendChild(reset);
+      const status=document.createElement('span');status.className='ctl-status';bar.appendChild(status);
+      c._after=()=>{const g=buildTransfer(st);status.textContent=st.ego
+        ?('● focused: '+((D.amap[st.ego]||{}).name||st.ego)+' — '+g.count+' neighbors, '+g.edgeCount+' flows')
+        :(g.count+' addresses · '+g.edgeCount+' flows shown');};
+    },
+    opt:(st)=>{const g=buildTransfer(st);return base({
+      tooltip:{formatter:p=>p.dataType==='node'?(p.data.name+'<br/>vol '+fmt(p.data.value)+' ugnot · click to focus'):(p.data.source+' → '+p.data.target+'<br/>'+fmt(p.data.value)+' ugnot')},
+      legend:{show:false},
+      series:[{type:'graph',layout:'force',roam:true,draggable:true,
+        categories:[{name:'hub',itemStyle:{color:PAL[1]}},{name:'wallet',itemStyle:{color:PAL[0]}},{name:'focus',itemStyle:{color:PAL[3]}}],
+        force:{repulsion:st.ego?220:75,edgeLength:[20,120],gravity:.12},
+        data:g.nodes,links:g.links,
+        lineStyle:{color:'rgba(255,255,255,0.13)',curveness:.12,width:.6},
+        label:{show:!!st.ego,color:'#cfcfcf',fontSize:9,position:'right'},
+        emphasis:{label:{show:true,color:'#fff'},focus:'adjacency'}}]});}},
+   {t:'Token-flow Sankey (top GNOT routes)',b:'b-live',badge:'✅ LIVE',wide:true,
+    why:'<b>Where GNOT concentrates and flows.</b> Sankey shows the dominant pathways — faucet → users → DEX/validators — at a glance, with width = volume.',
+    opt:()=>base({tooltip:{trigger:'item'},series:[{type:'sankey',emphasis:{focus:'adjacency'},
+      nodeAlign:'left',lineStyle:{color:'gradient',opacity:.4,curveness:.5},label:{color:'#e8e8e8'},
+      data:[{name:'Faucet'},{name:'New users'},{name:'gnoswap'},{name:'Boards2 tips'},{name:'Validators'},{name:'Bridge out'},{name:'Treasury'}],
+      links:[{source:'Faucet',target:'New users',value:5200},{source:'New users',target:'gnoswap',value:3100},
+        {source:'New users',target:'Boards2 tips',value:900},{source:'gnoswap',target:'Validators',value:1400},
+        {source:'gnoswap',target:'Bridge out',value:1200},{source:'Treasury',target:'Validators',value:2600},
+        {source:'New users',target:'Treasury',value:400},{source:'Boards2 tips',target:'Validators',value:300}]}]})},
+  ]},
+
+ {id:'realms',title:'Realm Dashboards',tag:'P3 · per-realm deep dives',
+  sub:'System realms each tell their own story. Most need a generic GnoEvent decoder in the syncer; live tallies and voting power need a chain-RPC path.',
+  charts:[
+   {t:'r/sys/users — registrations per day & total',b:'b-idx',badge:'🟡 INDEX',
+    why:'<b>Identity adoption.</b> Username registrations are the closest thing to "sign-ups". Replayed from the realm\'s Registered/Deleted events.',
+    opt:()=>base({grid:baseGrid,tooltip:{trigger:'axis'},legend:{data:['registrations','cumulative']},xAxis:cat(),
+      yAxis:[val('per day'),Object.assign(val('total'),{position:'right'})],
+      series:[{name:'registrations',type:'bar',data:D.regs,itemStyle:{color:PAL[4]}},
+              {name:'cumulative',type:'line',yAxisIndex:1,showSymbol:false,lineStyle:{color:PAL[0]},itemStyle:{color:PAL[0]},data:D.cumReg}]})},
+   {t:'r/sys/validators — proposer distribution',b:'b-live',badge:'✅ LIVE',
+    why:'<b>Decentralization check.</b> Blocks proposed per validator — already derivable from block.proposer_address_raw. A skewed bar = a few validators dominating block production.',
+    opt:()=>base({grid:{left:60,right:20,top:20,bottom:34},tooltip:{trigger:'axis'},
+      xAxis:Object.assign({type:'category',data:D.vals},axisStyle,{axisLabel:{color:'#8a8a8a',rotate:45,fontSize:9}}),
+      yAxis:val('blocks'),series:[{type:'bar',data:D.proposed,itemStyle:{color:PAL[5]}}]})},
+   {t:'r/sys/validators — voting power share',b:'b-rpc',badge:'🔴 RPC',tall:true,
+    why:'<b>Real consensus weight.</b> Proposing blocks ≠ power. Voting-power treemap shows actual influence over consensus — needs the live validator set from chain RPC.',
+    opt:()=>base({tooltip:{formatter:p=>p.name+'<br/>power '+fmt(p.value)},
+      series:[{type:'treemap',roam:false,nodeClick:false,breadcrumb:{show:false},data:D.power,
+        label:{color:'#06231f',fontSize:10},levels:[{itemStyle:{borderColor:'#0a0a0a',borderWidth:2,gapWidth:2}}]}]})},
+   {t:'r/gov/dao — proposals per month by outcome',b:'b-idx',badge:'🟡 INDEX',
+    why:'<b>Governance throughput & legitimacy.</b> Accepted vs denied vs still-voting over time — is the DAO active and is it actually deciding things?',
+    opt:()=>base({grid:{left:50,right:20,top:24,bottom:30},tooltip:{trigger:'axis'},legend:{data:['accepted','denied','voting']},
+      xAxis:Object.assign({type:'category',data:D.gdMonths},axisStyle),yAxis:val(),
+      series:[{name:'accepted',type:'bar',stack:'g',data:D.gdAccepted,itemStyle:{color:PAL[2]}},
+              {name:'denied',type:'bar',stack:'g',data:D.gdDenied,itemStyle:{color:PAL[1]}},
+              {name:'voting',type:'bar',stack:'g',data:D.gdActive,itemStyle:{color:PAL[3]}}]})},
+   {t:'r/gov/dao — current proposal tally by tier',b:'b-rpc',badge:'🔴 RPC',
+    why:'<b>Live democratic signal.</b> Yes/No/Abstain split across member tiers (T1/T2/T3) shows where consensus or conflict sits. Needs live tallies via render/RPC.',
+    opt:()=>base({grid:{left:90,right:20,top:24,bottom:30},tooltip:{trigger:'axis'},legend:{data:['Yes','No','Abstain']},
+      xAxis:val('votes'),yAxis:Object.assign({type:'category',data:D.tierNames},axisStyle),
+      series:[{name:'Yes',type:'bar',stack:'v',data:D.tYes,itemStyle:{color:PAL[2]}},
+              {name:'No',type:'bar',stack:'v',data:D.tNo,itemStyle:{color:PAL[1]}},
+              {name:'Abstain',type:'bar',stack:'v',data:D.tAbstain,itemStyle:{color:PAL[7]}}]})},
+   {t:'r/gnoland/boards2 — threads & replies per day',b:'b-idx',badge:'🟡 INDEX',
+    why:'<b>Content liveliness.</b> Threads vs replies = creation vs conversation. Replies/threads ratio shows whether content sparks discussion.',
+    opt:()=>base({grid:baseGrid,tooltip:{trigger:'axis'},legend:{data:['threads','replies']},xAxis:cat(),yAxis:val(),
+      series:[{name:'threads',type:'line',stack:'b',areaStyle:{opacity:.4},showSymbol:false,data:D.threads},
+              {name:'replies',type:'line',stack:'b',areaStyle:{opacity:.4},showSymbol:false,lineStyle:{color:PAL[6]},itemStyle:{color:PAL[6]},data:D.replies}]})},
+   {t:'r/gnoland/boards2 — activity per board',b:'b-idx',badge:'🟡 INDEX',
+    why:'<b>Where the community gathers.</b> Posts per board surfaces the hubs and the ghost towns — useful for moderation focus and feature decisions.',
+    opt:()=>base({grid:{left:90,right:20,top:14,bottom:30},tooltip:{trigger:'axis'},
+      xAxis:val('posts'),yAxis:Object.assign({type:'category',data:D.topBoards.map(b=>b.n).reverse()},axisStyle),
+      series:[{type:'bar',data:D.topBoards.map(b=>b.v).reverse(),itemStyle:{color:PAL[0]}}]})},
+   {t:'Function-call heatmap — by realm (func × last 14d)',b:'b-live',badge:'✅ LIVE',wide:true,
+    why:'<b>What people actually do inside a realm.</b> Pick a realm — each row is one of <i>that realm\'s</i> exported functions, each column a day, color = calls. Exposes hot paths vs dead code, and how each realm\'s function mix differs. Derivable from MsgCall.pkg_path + MsgCall.func.',
+    state:{realm:'r/gnoland/boards2'},
+    controls:(bar,render,st)=>{bar.appendChild(mkSelect('Realm',Object.keys(D.realmFns),st.realm,v=>{st.realm=v;render();}));},
+    opt:(st)=>{const fns=D.realmFns[st.realm];return base({grid:{left:130,right:20,top:14,bottom:36,height:'66%'},
+      tooltip:{position:'top',formatter:p=>fns[p.data[1]]+' · '+D.last14[p.data[0]]+'<br/>'+p.data[2]+' calls'},
+      xAxis:Object.assign({type:'category',data:D.last14},axisStyle,{name:'day'}),
+      yAxis:Object.assign({type:'category',data:fns},axisStyle,{name:'function'}),
+      visualMap:{min:0,max:100,calculable:true,orient:'horizontal',left:'center',bottom:0,inRange:{color:['#141414','#5e4a1f','#ffd43b']},textStyle:{color:'#8a8a8a'}},
+      series:[{type:'heatmap',data:D.realmHeat[st.realm],emphasis:{itemStyle:{borderColor:'#fff',borderWidth:1}}}]});}},
+  ]},
+
+ {id:'supply',title:'Supply & Wealth',tag:'P4 · monetary picture (needs RPC)',
+  sub:'The economic distribution of the chain. These need chain state (balances, supply) beyond tx history — a chain-RPC path or state-reconstruction layer.',
+  charts:[
+   {t:'Total supply vs circulating',b:'b-rpc',badge:'🔴 RPC',
+    why:'<b>The monetary base.</b> Supply vs circulating shows issuance and how much GNOT is actually liquid vs locked/treasury — foundational macro context.',
+    opt:()=>base({grid:baseGrid,tooltip:{trigger:'axis'},legend:{data:['total supply','circulating']},xAxis:cat(),yAxis:val('GNOT'),
+      series:[{name:'total supply',type:'line',showSymbol:false,areaStyle:{opacity:.15},data:D.supply},
+              {name:'circulating',type:'line',showSymbol:false,areaStyle:{opacity:.3},lineStyle:{color:PAL[2]},itemStyle:{color:PAL[2]},data:D.circ}]})},
+   {t:'Wealth distribution — Lorenz curve',b:'b-rpc',badge:'🔴 RPC',
+    why:'<b>How concentrated is GNOT?</b> Distance from the equality line is the Gini coefficient — a single number for "how fair / how whale-dominated" the chain is.',
+    opt:()=>base({grid:baseGrid,tooltip:{trigger:'axis',valueFormatter:v=>v+'%'},
+      legend:{data:['actual','perfect equality']},
+      xAxis:Object.assign({type:'value',data:D.lorenzX},axisStyle,{name:'% of accounts',max:100}),
+      yAxis:Object.assign(val('% of wealth'),{max:100}),
+      series:[{name:'actual',type:'line',smooth:true,showSymbol:false,areaStyle:{opacity:.3},
+        data:D.lorenzX.map((x,i)=>[x,D.lorenzY[i]]),lineStyle:{color:PAL[1]},itemStyle:{color:PAL[1]}},
+        {name:'perfect equality',type:'line',showSymbol:false,lineStyle:{type:'dashed',color:'#555'},
+        data:D.lorenzX.map((x,i)=>[x,D.lorenzEq[i]])}]})},
+   {t:'Event-type frequency across the chain',b:'b-live',badge:'✅ LIVE',tall:true,
+    why:'<b>What kind of activity dominates?</b> A treemap of every GnoEvent type — transfers vs posts vs votes vs registrations — the qualitative shape of on-chain life.',
+    opt:()=>base({tooltip:{formatter:p=>p.name+'<br/>'+fmt(p.value)+' events'},
+      series:[{type:'treemap',roam:false,nodeClick:false,breadcrumb:{show:false},data:D.eventTree,
+        label:{color:'#06231f',fontSize:11},levels:[{itemStyle:{borderColor:'#0a0a0a',borderWidth:2,gapWidth:2}}]}]})},
+  ]},
+];
+
+/* ---------------- render ---------------- */
+const navEl=document.getElementById('nav');
+const secWrap=document.getElementById('sections');
+const charts={};            // key "<sec>-<idx>" -> echarts instance (when alive)
+let activeId=null;
+function buildSection(s){
+  const wrap=document.createElement('div');wrap.id='sec-'+s.id;wrap.style.display='none';
+  wrap.innerHTML='<h2 class="secthead">'+s.title+' <span class="tag">'+s.tag+'</span></h2><p class="secsub">'+s.sub+'</p>';
+  const grid=document.createElement('div');grid.className='grid';
+  s.charts.forEach((c,i)=>{
+    const card=document.createElement('div');card.className='card'+(c.wide?' wide':'')+(c.tall?' tall':'');
+    const h=document.createElement('h3');h.innerHTML=c.t+' <span class="badge '+c.b+'">'+c.badge+'</span>';
+    const why=document.createElement('p');why.className='why';why.innerHTML=c.why;
+    card.appendChild(h);card.appendChild(why);
+    if(c.controls){const bar=document.createElement('div');bar.className='ctlbar';bar.id='ctl-'+s.id+'-'+i;card.appendChild(bar);}
+    const chart=document.createElement('div');chart.className='chart';chart.id='ch-'+s.id+'-'+i;
+    card.appendChild(chart);grid.appendChild(card);
+  });
+  wrap.appendChild(grid);secWrap.appendChild(wrap);
+}
+function initChart(s,c,i){
+  const el=document.getElementById('ch-'+s.id+'-'+i);el.innerHTML='';
+  const ch=echarts.init(el,null,{renderer:c.gl?'auto':'canvas'});
+  c._state=Object.assign({},c.state||{});
+  const render=()=>{if(!ch.isDisposed())ch.setOption(c.opt(c._state),true);if(c._after)c._after();};
+  render();
+  if(c.controls){const bar=document.getElementById('ctl-'+s.id+'-'+i);bar.innerHTML='';c.controls(bar,render,c._state,ch,c);if(c._after)c._after();}
+  if(c.onClick){ch.on('click',p=>c.onClick(p,c._state,render));}
+  charts[s.id+'-'+i]=ch;
+}
+function initSection(s){
+  s.charts.forEach((c,i)=>{
+    const inst=charts[s.id+'-'+i];
+    if(inst&&!inst.isDisposed())return;           // already alive — keep it
+    try{initChart(s,c,i);}catch(e){document.getElementById('ch-'+s.id+'-'+i).innerHTML='<div style="color:#ff6b6b;padding:20px;font-size:11px">chart failed: '+e.message+'</div>';}
+  });
+}
+// WebGL charts run an unbounded animation loop that display:none does NOT pause —
+// dispose them on leave so the loop stops, and re-init on return.
+function disposeGL(s){
+  s.charts.forEach((c,i)=>{const inst=charts[s.id+'-'+i];if(c.gl&&inst&&!inst.isDisposed()){inst.dispose();delete charts[s.id+'-'+i];}});
+}
+function resizeSection(s){
+  s.charts.forEach((c,i)=>{const inst=charts[s.id+'-'+i];if(inst&&!inst.isDisposed())inst.resize();});
+}
+function activate(id){
+  if(id===activeId)return;
+  SECTIONS.forEach(s=>{if(s.id!==id)disposeGL(s);});          // stop background WebGL loops
+  SECTIONS.forEach(s=>{document.getElementById('sec-'+s.id).style.display=(s.id===id)?'block':'none';});
+  [...navEl.children].forEach(b=>b.classList.toggle('active',b.dataset.id===id));
+  activeId=id;
+  const s=SECTIONS.find(x=>x.id===id);initSection(s);
+  setTimeout(()=>resizeSection(s),40);                        // resize only the active section
+}
+let rzTimer;window.addEventListener('resize',()=>{clearTimeout(rzTimer);rzTimer=setTimeout(()=>{const s=SECTIONS.find(x=>x.id===activeId);if(s)resizeSection(s);},120);});
+SECTIONS.forEach((s,i)=>{
+  const b=document.createElement('button');b.textContent=s.title;b.dataset.id=s.id;
+  b.onclick=()=>activate(s.id);navEl.appendChild(b);buildSection(s);
+});
+activate(SECTIONS[0].id);
+</script>
+</body>
+</html>
