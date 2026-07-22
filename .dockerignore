@@ -1,0 +1,6 @@
+.git
+.ignore
+.claude
+.DS_Store
+mygnoscan
+*.db
