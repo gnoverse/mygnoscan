@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -520,10 +521,7 @@ func (c *IndexerClient) GetRecentBlocks(ctx context.Context, limit int) ([]Block
 	if err != nil {
 		return nil, err
 	}
-	fromHeight := latest - limit
-	if fromHeight < 0 {
-		fromHeight = 0
-	}
+	fromHeight := max(latest-limit, 0)
 
 	var result struct {
 		GetBlocks []Block `json:"getBlocks"`
@@ -545,12 +543,40 @@ func (c *IndexerClient) GetBlocksInRange(ctx context.Context, fromHeight, toHeig
 	}
 	q := fmt.Sprintf(`{
 		getBlocks(
-			where: { height: { gte: %d, lte: %d } }
+			where: { height: { gt: %d, lt: %d } }
 			order: { height: ASC }
 		) { %s }
-	}`, fromHeight, toHeight, blockFields)
+	}`, fromHeight-1, toHeight+1, blockFields)
 	err := c.query(ctx, q, nil, &result)
 	return result.GetBlocks, err
+}
+
+// GetBlocksByHeights fetches blocks for a specific set of heights and returns a height→time map.
+// Fetches each block individually with up to 10 concurrent requests.
+func (c *IndexerClient) GetBlocksByHeights(ctx context.Context, heights []int) (map[int]string, error) {
+	if len(heights) == 0 {
+		return nil, nil
+	}
+	m := make(map[int]string, len(heights))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 10)
+	for _, h := range heights {
+		wg.Add(1)
+		go func(height int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			block, err := c.GetBlock(ctx, height)
+			if err == nil && block != nil {
+				mu.Lock()
+				m[height] = block.Time
+				mu.Unlock()
+			}
+		}(h)
+	}
+	wg.Wait()
+	return m, nil
 }
 
 // GetBlock fetches a single block by height.
