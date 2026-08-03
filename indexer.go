@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -97,20 +98,20 @@ func (c *IndexerClient) LatestBlockHeight(ctx context.Context) (int, error) {
 }
 
 type Transaction struct {
-	Index       int          `json:"index"`
-	Hash        string       `json:"hash"`
-	Success     bool         `json:"success"`
-	BlockHeight int          `json:"block_height"`
-	GasWanted   int          `json:"gas_wanted"`
-	GasUsed     int          `json:"gas_used"`
-	GasFee      *Coin        `json:"gas_fee"`
-	Memo        string       `json:"memo"`
-	Messages    []TxMessage  `json:"messages"`
-	Response    *TxResponse  `json:"response"`
-	ContentRaw  string       `json:"content_raw,omitempty"`
-	Network     string       `json:"network,omitempty"`
-	BlockTime   string       `json:"block_time,omitempty"`
-	ChainID     string       `json:"chain_id,omitempty"`
+	Index       int         `json:"index"`
+	Hash        string      `json:"hash"`
+	Success     bool        `json:"success"`
+	BlockHeight int         `json:"block_height"`
+	GasWanted   int         `json:"gas_wanted"`
+	GasUsed     int         `json:"gas_used"`
+	GasFee      *Coin       `json:"gas_fee"`
+	Memo        string      `json:"memo"`
+	Messages    []TxMessage `json:"messages"`
+	Response    *TxResponse `json:"response"`
+	ContentRaw  string      `json:"content_raw,omitempty"`
+	Network     string      `json:"network,omitempty"`
+	BlockTime   string      `json:"block_time,omitempty"`
+	ChainID     string      `json:"chain_id,omitempty"`
 }
 
 type Coin struct {
@@ -315,16 +316,29 @@ const txFields = `
 `
 
 // GetAllPackages fetches all MsgAddPackage transactions.
-func (c *IndexerClient) GetAllPackages(ctx context.Context) ([]Transaction, error) {
+func (c *IndexerClient) GetAllPackages(ctx context.Context, lastHeight *int,
+) ([]Transaction, error) {
+
 	var result struct {
 		GetTransactions []Transaction `json:"getTransactions"`
 	}
+
+	where := `messages: { value: { MsgAddPackage: {} } }`
+
+	if lastHeight != nil {
+		where = fmt.Sprintf(`
+			block_height: { gt: %d }
+			messages: { value: { MsgAddPackage: {} } }
+		`, *lastHeight)
+	}
+
 	q := fmt.Sprintf(`{
 		getTransactions(
-			where: { messages: { value: { MsgAddPackage: {} } } }
-			order: { heightAndIndex: DESC }
+			where: { %s }
+			order: { heightAndIndex: ASC }
 		) { %s }
-	}`, txFields)
+	}`, where, txFields)
+
 	err := c.query(ctx, q, nil, &result)
 	return result.GetTransactions, err
 }
@@ -348,6 +362,41 @@ func (c *IndexerClient) GetRecentTransactions(ctx context.Context, maxResults in
 		return result.GetTransactions[:maxResults], nil
 	}
 	return result.GetTransactions, err
+}
+
+func (c *IndexerClient) GetRecentTransactionsFromHeight(ctx context.Context, lastHeight *int) ([]Transaction, error) {
+	var result struct {
+		GetTransactions []Transaction `json:"getTransactions"`
+	}
+
+	where := ""
+
+	if lastHeight != nil {
+		where = fmt.Sprintf(`block_height: { gt: %d }`, *lastHeight)
+	}
+
+	// if where is empty, avoid trailing comma / invalid GraphQL
+	whereClause := ""
+	if where != "" {
+		whereClause = fmt.Sprintf("where: { %s }", where)
+	} else {
+		whereClause = "where: {}"
+	}
+
+	q := fmt.Sprintf(`{
+		getTransactions(
+			%s
+			order: { heightAndIndex: DESC }
+		) { %s }
+	}`, whereClause, txFieldsLight)
+
+	if err := c.query(ctx, q, nil, &result); err != nil {
+		return nil, err
+	}
+
+	txs := result.GetTransactions
+
+	return txs, nil
 }
 
 // GetTransactionsByPkgPath fetches MsgCall transactions for a specific package.
@@ -413,16 +462,31 @@ func (c *IndexerClient) GetTransactionsByAddress(ctx context.Context, addr strin
 }
 
 // GetMsgRunTransactions fetches all MsgRun transactions.
-func (c *IndexerClient) GetMsgRunTransactions(ctx context.Context) ([]Transaction, error) {
+func (c *IndexerClient) GetMsgRunTransactions(
+	ctx context.Context,
+	lastHeight *int,
+) ([]Transaction, error) {
+
 	var result struct {
 		GetTransactions []Transaction `json:"getTransactions"`
 	}
+
+	where := `messages: { value: { MsgRun: {} } }`
+
+	if lastHeight != nil {
+		where = fmt.Sprintf(`
+			block_height: { gt: %d }
+			messages: { value: { MsgRun: {} } }
+		`, *lastHeight)
+	}
+
 	q := fmt.Sprintf(`{
 		getTransactions(
-			where: { messages: { value: { MsgRun: {} } } }
+			where: { %s }
 			order: { heightAndIndex: DESC }
 		) { %s }
-	}`, txFields)
+	}`, where, txFields)
+
 	err := c.query(ctx, q, nil, &result)
 	return result.GetTransactions, err
 }
@@ -457,10 +521,7 @@ func (c *IndexerClient) GetRecentBlocks(ctx context.Context, limit int) ([]Block
 	if err != nil {
 		return nil, err
 	}
-	fromHeight := latest - limit
-	if fromHeight < 0 {
-		fromHeight = 0
-	}
+	fromHeight := max(latest-limit, 0)
 
 	var result struct {
 		GetBlocks []Block `json:"getBlocks"`
@@ -482,12 +543,40 @@ func (c *IndexerClient) GetBlocksInRange(ctx context.Context, fromHeight, toHeig
 	}
 	q := fmt.Sprintf(`{
 		getBlocks(
-			where: { height: { gte: %d, lte: %d } }
+			where: { height: { gt: %d, lt: %d } }
 			order: { height: ASC }
 		) { %s }
-	}`, fromHeight, toHeight, blockFields)
+	}`, fromHeight-1, toHeight+1, blockFields)
 	err := c.query(ctx, q, nil, &result)
 	return result.GetBlocks, err
+}
+
+// GetBlocksByHeights fetches blocks for a specific set of heights and returns a height→time map.
+// Fetches each block individually with up to 10 concurrent requests.
+func (c *IndexerClient) GetBlocksByHeights(ctx context.Context, heights []int) (map[int]string, error) {
+	if len(heights) == 0 {
+		return nil, nil
+	}
+	m := make(map[int]string, len(heights))
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 10)
+	for _, h := range heights {
+		wg.Add(1)
+		go func(height int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			block, err := c.GetBlock(ctx, height)
+			if err == nil && block != nil {
+				mu.Lock()
+				m[height] = block.Time
+				mu.Unlock()
+			}
+		}(h)
+	}
+	wg.Wait()
+	return m, nil
 }
 
 // GetBlock fetches a single block by height.
