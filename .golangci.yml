@@ -1,0 +1,13 @@
+version: "2"
+
+# Deliberately conservative to start: the point is a lint job that is green and
+# therefore trustworthy, not a wall of pre-existing findings that everyone learns
+# to ignore. Tighten one linter at a time, fixing what it reports as it is enabled.
+linters:
+  default: standard
+  disable:
+    # The codebase ignores errors in a lot of places on purpose (best-effort
+    # migrations, fire-and-forget upserts in the sync path). Some of those are
+    # real bugs worth fixing, but that is its own change, not a prerequisite for
+    # having CI at all.
+    - errcheck

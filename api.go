@@ -1149,7 +1149,6 @@ func (a *API) HandleTimeSeriesHealth(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, pts)
 }
 
-
 func (a *API) HandleTimeSeriesActiveAddresses(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
 	days, granularity := parseTimeseriesParams(r)

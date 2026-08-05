@@ -222,4 +222,3 @@ func (s *Syncer) syncMsgRuns(ctx context.Context) error {
 	log.Printf("[%s] synced %d msg_runs", s.networkID, count)
 	return nil
 }
-
