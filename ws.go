@@ -34,15 +34,6 @@ func initLiveFeeds(networks []NetworkConfig, clients map[string]*IndexerClient) 
 	}
 }
 
-func (f *liveFeed) addClient() chan []byte {
-	ch := make(chan []byte, 32)
-	f.mu.Lock()
-	f.clients[ch] = struct{}{}
-	f.mu.Unlock()
-	f.ensureRunning()
-	return ch
-}
-
 func (f *liveFeed) addClientChan(ch chan []byte) {
 	f.mu.Lock()
 	f.clients[ch] = struct{}{}
