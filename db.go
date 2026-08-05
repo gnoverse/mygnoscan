@@ -348,6 +348,62 @@ func (d *DB) SetSyncState(key, value string) error {
 	return err
 }
 
+// networkScopedTables lists every table whose rows belong to a single network.
+var networkScopedTables = []string{
+	"packages",
+	"package_files",
+	"dependencies",
+	"calls",
+	"msg_runs",
+	"bank_sends",
+	"transactions",
+}
+
+// DeleteNetworkData removes every row belonging to a network, in one transaction.
+// Used when a chain reset makes the stored history refer to blocks that no longer
+// exist. Returns the number of rows removed.
+func (d *DB) DeleteNetworkData(network string) (int64, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	tx, err := d.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	var total int64
+	for _, table := range networkScopedTables {
+		// Table names come from the constant above, never from input.
+		res, err := tx.Exec(fmt.Sprintf(`DELETE FROM %s WHERE network = ?`, table), network)
+		if err != nil {
+			return 0, fmt.Errorf("delete from %s: %w", table, err)
+		}
+		if n, err := res.RowsAffected(); err == nil {
+			total += n
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
+// MaxBlockHeight returns the highest block height stored for a network, or 0 if
+// the network has no data yet.
+func (d *DB) MaxBlockHeight(network string) (int, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	var height sql.NullInt64
+	err := d.db.QueryRow(
+		`SELECT MAX(block_height) FROM transactions WHERE network = ?`, network,
+	).Scan(&height)
+	if err != nil {
+		return 0, err
+	}
+	return int(height.Int64), nil
+}
+
 type PackageInfo struct {
 	Network     string `json:"network,omitempty"`
 	Path        string `json:"path"`

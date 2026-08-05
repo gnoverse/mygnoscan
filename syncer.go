@@ -19,8 +19,15 @@ func NewSyncer(client *IndexerClient, db *DB, analyzer *Analyzer, networkID stri
 	return &Syncer{client: client, db: db, analyzer: analyzer, networkID: networkID}
 }
 
+// fingerprintKeyPrefix namespaces the stored chain fingerprint per network.
+const fingerprintKeyPrefix = "chain_fingerprint:"
+
 // SyncAll fetches all data from the indexer and processes it.
 func (s *Syncer) SyncAll(ctx context.Context) error {
+	if err := s.checkChainReset(ctx); err != nil {
+		return err
+	}
+	s.warnOnHeightRegression(ctx)
 	if err := s.syncPackages(ctx); err != nil {
 		return err
 	}
@@ -95,6 +102,88 @@ func (s *Syncer) syncPackages(ctx context.Context) error {
 	}
 	log.Printf("[%s] synced %d packages", s.networkID, count)
 	return nil
+}
+
+// chainFingerprint identifies a specific chain instance by its first block.
+// The chain ID alone is not enough: a reset network keeps its chain ID and comes
+// back with a different block 1, which is exactly what portal-loop and staging
+// style networks do.
+func (s *Syncer) chainFingerprint(ctx context.Context) (string, error) {
+	block, err := s.client.GetBlock(ctx, 1)
+	if err != nil {
+		return "", err
+	}
+	if block.Hash == "" {
+		return "", errors.New("block 1 has no hash")
+	}
+	return block.ChainID + ":" + block.Hash, nil
+}
+
+// checkChainReset wipes locally stored data when the indexer is no longer serving
+// the chain that data came from.
+//
+// Sync cursors are derived from the highest stored block height, so after a reset
+// to a lower height the cursor sits above the new tip permanently: every pass asks
+// for blocks that do not exist yet, stores nothing, and reports success. The
+// network silently freezes while continuing to serve pre-reset rows whose heights
+// and tx hashes no longer refer to anything on that chain.
+//
+// Detection is by fingerprint rather than by height comparison on purpose. A
+// lagging indexer replica also reports a tip below what we have stored, and
+// wiping a large chain because a replica was behind would be far worse than the
+// bug being fixed.
+func (s *Syncer) checkChainReset(ctx context.Context) error {
+	key := fingerprintKeyPrefix + s.networkID
+
+	current, err := s.chainFingerprint(ctx)
+	if err != nil {
+		// Never wipe on uncertainty: an unreachable indexer or a pruned block 1
+		// is not evidence of a reset.
+		log.Printf("[%s] chain fingerprint unavailable, skipping reset check: %v", s.networkID, err)
+		return nil
+	}
+
+	stored, err := s.db.GetSyncState(key)
+	if err != nil {
+		return fmt.Errorf("read chain fingerprint: %w", err)
+	}
+
+	switch stored {
+	case "":
+		// First sync for this network, or a database predating this check.
+		return s.db.SetSyncState(key, current)
+	case current:
+		return nil
+	}
+
+	log.Printf("[%s] CHAIN RESET DETECTED: stored chain %q is no longer served (indexer now serves %q); discarding local data for this network",
+		s.networkID, stored, current)
+
+	deleted, err := s.db.DeleteNetworkData(s.networkID)
+	if err != nil {
+		return fmt.Errorf("discard data after chain reset: %w", err)
+	}
+	log.Printf("[%s] removed %d rows, re-syncing from the new genesis", s.networkID, deleted)
+
+	return s.db.SetSyncState(key, current)
+}
+
+// warnOnHeightRegression reports the lagging-replica case: the same chain, but an
+// indexer tip below what is already stored, so sync cannot advance until it
+// catches up. Not an error, and deliberately not a reason to discard data.
+func (s *Syncer) warnOnHeightRegression(ctx context.Context) {
+	remote, err := s.client.LatestBlockHeight(ctx)
+	if err != nil {
+		return
+	}
+	stored, err := s.db.MaxBlockHeight(s.networkID)
+	if err != nil || stored == 0 {
+		return
+	}
+	if remote < stored {
+		log.Printf("[%s] indexer tip %d is below stored height %d on the same chain; sync will not advance until the indexer catches up",
+			s.networkID, remote, stored)
+	}
 }
 
 func (s *Syncer) getLastBlockHeight(ctx context.Context, tableName string) (*int, error) {
@@ -222,4 +311,3 @@ func (s *Syncer) syncMsgRuns(ctx context.Context) error {
 	log.Printf("[%s] synced %d msg_runs", s.networkID, count)
 	return nil
 }
-
