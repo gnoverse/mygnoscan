@@ -40,12 +40,85 @@ func NewDB(path string) (*DB, error) {
 		}
 	}
 
+	// Migrate: add block_time to tables created before it existed. Must run
+	// before initSchema, which builds indexes on that column.
+	if err := migrateAddBlockTime(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate block_time: %w", err)
+	}
+
 	if err := initSchema(db); err != nil {
 		db.Close()
 		return nil, err
 	}
 
 	return &DB{db: db}, nil
+}
+
+// blockTimeTables are the tables carrying a block_time column.
+var blockTimeTables = []string{"packages", "calls", "msg_runs", "bank_sends", "transactions"}
+
+// migrateAddBlockTime adds block_time to tables that predate it.
+//
+// CREATE TABLE IF NOT EXISTS cannot add a column to a table that already exists,
+// and initSchema creates indexes on block_time, so without this a database
+// written by a build older than the time-series work fails at startup with
+// "no such column: block_time" and the process exits.
+func migrateAddBlockTime(db *sql.DB) error {
+	for _, table := range blockTimeTables {
+		exists, err := tableExists(db, table)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			// initSchema will create it, block_time included.
+			continue
+		}
+		has, err := columnExists(db, table, "block_time")
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		// Table names come from the constant above, never from input.
+		if _, err := db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN block_time TEXT`, table)); err != nil {
+			return fmt.Errorf("add block_time to %s: %w", table, err)
+		}
+	}
+	return nil
+}
+
+func tableExists(db *sql.DB, name string) (bool, error) {
+	var count int
+	err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name,
+	).Scan(&count)
+	return count > 0, err
+}
+
+func columnExists(db *sql.DB, table, column string) (bool, error) {
+	// PRAGMA does not accept bound parameters; table comes from a constant.
+	rows, err := db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid, notnull, pk int
+			name, ctype      string
+			dflt             sql.NullString
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 func migrateAddNetworkColumn(db *sql.DB) error {
