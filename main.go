@@ -47,25 +47,11 @@ func run() error {
 	defer db.Close()
 
 	// Load config
-	var cfg *AppConfig
-	if *configPath != "" {
-		loaded, err := LoadConfig(*configPath)
-		if err != nil {
-			return err
-		}
-		cfg = loaded
-	} else if *indexerFlag != "" && *networkFlag != "" {
-		cfg = &AppConfig{Networks: []NetworkConfig{{ID: *networkFlag, IndexerURL: *indexerFlag, RPCURL: *rpcFlag}}}
-	} else {
-		if _, serr := os.Stat("networks.json"); serr == nil {
-			if loaded, lerr := LoadConfig("networks.json"); lerr == nil {
-				cfg = loaded
-			}
-		}
-		if cfg == nil {
-			cfg = defaultConfig
-		}
+	cfg, cfgSource, err := ResolveConfig(*configPath, *networkFlag, *indexerFlag, *rpcFlag)
+	if err != nil {
+		return err
 	}
+	log.Printf("networks %v (from %s)", cfg.IDs(), cfgSource)
 
 	// Create per-network clients
 	clients := make(map[string]*IndexerClient)
@@ -202,13 +188,7 @@ func run() error {
 		srv.Shutdown(context.Background())
 	}()
 
-	log.Printf("mygnoscan listening on %s (networks: %v)", *listenAddr, func() []string {
-		var ids []string
-		for _, n := range cfg.Networks {
-			ids = append(ids, n.ID)
-		}
-		return ids
-	}())
+	log.Printf("mygnoscan listening on %s (networks: %v)", *listenAddr, cfg.IDs())
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 		return err
 	}
