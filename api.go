@@ -471,6 +471,14 @@ func (a *API) HandleSearch(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, results)
 }
 
+// Event listing bounds. `limit=-1` still means "everything" for callers that
+// genuinely want it; the default keeps the events page from pulling the whole
+// chain's event history on load.
+const (
+	defaultEventTxs = 200
+	maxEventTxs     = 2000
+)
+
 func (a *API) HandleAllEvents(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
 	client := a.clientFor(network)
@@ -478,11 +486,22 @@ func (a *API) HandleAllEvents(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "no client available", 500)
 		return
 	}
-	// Recent transactions that have GnoEvents
-	txs, err := client.GetRecentTransactionsWithEvents(r.Context())
+	// Recent transactions that have GnoEvents. Bounded by default: unbounded,
+	// this returns every event-emitting transaction the chain ever had.
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit == 0 {
+		limit = defaultEventTxs
+	}
+	if limit > maxEventTxs {
+		limit = maxEventTxs
+	}
+	txs, err := client.GetRecentTransactionsWithEvents(r.Context(), limit)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
+	}
+	if limit > 0 && len(txs) > limit {
+		txs = txs[:limit]
 	}
 	type EventResult struct {
 		TxHash      string    `json:"tx_hash"`
