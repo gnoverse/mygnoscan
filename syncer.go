@@ -28,6 +28,7 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 		return err
 	}
 	s.warnOnHeightRegression(ctx)
+	s.backfillBlockTimes(ctx)
 	if err := s.syncPackages(ctx); err != nil {
 		return err
 	}
@@ -102,6 +103,49 @@ func (s *Syncer) syncPackages(ctx context.Context) error {
 	}
 	log.Printf("[%s] synced %d packages", s.networkID, count)
 	return nil
+}
+
+// backfillBatch bounds how many block heights are repaired per sync pass. The
+// work is spread across passes rather than done in one burst so a large gap
+// cannot stall startup or hammer a public indexer.
+const backfillBatch = 200
+
+// backfillBlockTimes fills in block_time for rows written before that column
+// existed.
+//
+// Incremental sync only moves forward from the cursor, so historical rows would
+// otherwise never get a timestamp. That matters twice over: rows without a
+// timestamp cannot be ordered against another chain's rows in a merged view, and
+// list endpoints have to ask the indexer for block times at request time instead
+// of reading what is already stored.
+//
+// Best-effort by design — failures are logged and retried on the next pass
+// rather than failing the sync.
+func (s *Syncer) backfillBlockTimes(ctx context.Context) {
+	heights, err := s.db.HeightsMissingBlockTime(s.networkID, backfillBatch)
+	if err != nil {
+		log.Printf("[%s] backfill: %v", s.networkID, err)
+		return
+	}
+	if len(heights) == 0 {
+		return
+	}
+
+	times, err := s.client.GetBlockTimesForHeights(ctx, heights)
+	if err != nil {
+		log.Printf("[%s] backfill: fetching %d block times: %v", s.networkID, len(heights), err)
+		return
+	}
+	if len(times) == 0 {
+		return
+	}
+
+	updated, err := s.db.SetBlockTimes(s.networkID, times)
+	if err != nil {
+		log.Printf("[%s] backfill: %v", s.networkID, err)
+		return
+	}
+	log.Printf("[%s] backfilled block_time on %d rows across %d blocks", s.networkID, updated, len(times))
 }
 
 // chainFingerprint identifies a specific chain instance by its first block.

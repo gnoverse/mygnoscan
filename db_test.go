@@ -205,3 +205,79 @@ func TestNewDBIsIdempotent(t *testing.T) {
 		t.Errorf("packages = %d after reopen, want 1", count)
 	}
 }
+
+func TestBackfillBlockTimes(t *testing.T) {
+	db, err := NewDB(filepath.Join(t.TempDir(), "backfill.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	// Rows as an older build would have left them: no block_time anywhere.
+	seedNetwork(t, db, "gnoland1", 100)
+	seedNetwork(t, db, "topaz", 100)
+	for _, table := range backfillTables {
+		if _, err := db.db.Exec(
+			`UPDATE ` + table + ` SET block_time = '' WHERE network = 'gnoland1'`); err != nil {
+			t.Fatalf("clear block_time on %s: %v", table, err)
+		}
+	}
+	// topaz stands in for an already-healthy network: every row has a time.
+	for _, table := range backfillTables {
+		if _, err := db.db.Exec(
+			`UPDATE ` + table + ` SET block_time = 'ALREADY-SET' WHERE network = 'topaz'`); err != nil {
+			t.Fatalf("seed topaz %s: %v", table, err)
+		}
+	}
+
+	heights, err := db.HeightsMissingBlockTime("gnoland1", 200)
+	if err != nil {
+		t.Fatalf("find heights: %v", err)
+	}
+	if len(heights) != 1 || heights[0] != 100 {
+		t.Fatalf("heights = %v, want [100]", heights)
+	}
+
+	// Other networks are not reported as needing repair.
+	if h, err := db.HeightsMissingBlockTime("topaz", 200); err != nil || len(h) != 0 {
+		t.Errorf("topaz heights = %v (err %v), want none", h, err)
+	}
+
+	updated, err := db.SetBlockTimes("gnoland1", map[int]string{100: "2026-01-01T00:00:00Z"})
+	if err != nil {
+		t.Fatalf("set block times: %v", err)
+	}
+	if updated != int64(len(backfillTables)) {
+		t.Errorf("updated %d rows, want %d (one per table)", updated, len(backfillTables))
+	}
+
+	for _, table := range backfillTables {
+		var got string
+		if err := db.db.QueryRow(
+			`SELECT block_time FROM ` + table + ` WHERE network = 'gnoland1'`).Scan(&got); err != nil {
+			t.Fatalf("read %s: %v", table, err)
+		}
+		if got != "2026-01-01T00:00:00Z" {
+			t.Errorf("%s block_time = %q, want the backfilled value", table, got)
+		}
+	}
+
+	// Nothing left to do, and the repair is idempotent.
+	if h, err := db.HeightsMissingBlockTime("gnoland1", 200); err != nil || len(h) != 0 {
+		t.Errorf("after backfill heights = %v (err %v), want none", h, err)
+	}
+
+	// An existing timestamp is never overwritten — this repairs history, it
+	// does not rewrite it.
+	if _, err := db.SetBlockTimes("topaz", map[int]string{100: "2099-01-01T00:00:00Z"}); err != nil {
+		t.Fatalf("set block times on topaz: %v", err)
+	}
+	var topaz string
+	if err := db.db.QueryRow(
+		`SELECT block_time FROM calls WHERE network = 'topaz'`).Scan(&topaz); err != nil {
+		t.Fatalf("read topaz: %v", err)
+	}
+	if topaz != "ALREADY-SET" {
+		t.Errorf("topaz block_time = %q, want it left untouched", topaz)
+	}
+}
