@@ -254,7 +254,7 @@ footer a:hover { color: var(--accent); }
 </div>
 <footer>
   <div class="container">
-    <span>mygnoscan — <a href="https://github.com/moul/mygnoscan" target="_blank">github.com/moul/mygnoscan</a> @ <a id="footer-hash" href="#" target="_blank">...</a></span>
+    <span>mygnoscan — <a href="https://github.com/gnoverse/mygnoscan" target="_blank">github.com/gnoverse/mygnoscan</a> @ <a id="footer-hash" href="#" target="_blank">...</a></span>
     <span>data from <a href="https://indexer.gno.land/graphql" target="_blank">tx-indexer</a></span>
   </div>
 </footer>
@@ -3154,7 +3154,7 @@ initNetworkSelector();
 api('version').then(v => {
   const el = document.getElementById('footer-hash');
   el.textContent = v.git_hash;
-  el.href = 'https://github.com/moul/mygnoscan/commit/' + v.git_hash;
+  el.href = 'https://github.com/gnoverse/mygnoscan/commit/' + v.git_hash;
 }).catch(() => {});
 
 // --- Live mode (WebSocket subscription to tx-indexer) ---
