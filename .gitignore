@@ -26,3 +26,6 @@ go.work.sum
 Thumbs.db
 mygnoscan
 mygnoscan.db
+
+# local dev server config (machine-specific paths)
+.claude/launch.json

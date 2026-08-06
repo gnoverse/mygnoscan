@@ -1,0 +1,14 @@
+{
+  "networks": [
+    {
+      "id": "topaz",
+      "indexer": "https://indexer.topaz.testnets.gno.land/graphql/query",
+      "rpc": "https://rpc.topaz.testnets.gno.land"
+    },
+    {
+      "id": "gnoland1",
+      "indexer": "https://indexer.gno.land/graphql/query",
+      "rpc": "https://rpc.gno.land"
+    }
+  ]
+}
