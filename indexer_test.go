@@ -3,13 +3,16 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // countingIndexer serves block queries and records how many requests it took,
@@ -194,3 +197,50 @@ func TestGetRecentTransactionsPageWidensWindow(t *testing.T) {
 		t.Errorf("made %d transaction queries; expected the window to widen at least once", queries)
 	}
 }
+
+func TestClientBreakerShortCircuitsDeadIndexer(t *testing.T) {
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		http.Error(w, "down", http.StatusBadGateway)
+	}))
+	defer srv.Close()
+
+	client := NewIndexerClient(srv.URL)
+	ctx := context.Background()
+
+	// Every path goes through query(), so this protects single-network pages,
+	// merged views and the sync loop alike.
+	for i := 0; i < clientBreakerThreshold+3; i++ {
+		if _, err := client.LatestBlockHeight(ctx); err == nil {
+			t.Fatalf("call %d unexpectedly succeeded against a failing indexer", i)
+		}
+	}
+	if got := attempts.Load(); got != int32(clientBreakerThreshold) {
+		t.Errorf("indexer was contacted %d times, want %d — the breaker should stop retrying",
+			got, clientBreakerThreshold)
+	}
+	if !errors.Is(mustErr(client.LatestBlockHeight(ctx)), errIndexerUnavailable) {
+		t.Error("expected errIndexerUnavailable once the breaker is open")
+	}
+
+	// A recovered indexer must be picked up without a restart.
+	client.mu.Lock()
+	client.skipUntil = time.Now().Add(-time.Second)
+	client.mu.Unlock()
+	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":{"latestBlockHeight":42}}`)
+	})
+	h, err := client.LatestBlockHeight(ctx)
+	if err != nil {
+		t.Fatalf("after recovery: %v", err)
+	}
+	if h != 42 {
+		t.Errorf("height = %d, want 42", h)
+	}
+	if client.breakerOpen() {
+		t.Error("breaker should be closed after a success")
+	}
+}
+
+func mustErr(_ int, err error) error { return err }

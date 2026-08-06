@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,43 @@ import (
 type IndexerClient struct {
 	url    string
 	client *http.Client
+
+	// Per-client circuit breaker. Every request path goes through query(), so
+	// putting it here protects single-network pages, merged views and the sync
+	// loop alike — an indexer that is down (or a testnet configured before it
+	// launches) fails fast instead of making each caller wait out the timeout.
+	mu        sync.Mutex
+	failures  int
+	skipUntil time.Time
+}
+
+// errIndexerUnavailable is returned while the breaker is open.
+var errIndexerUnavailable = errors.New("indexer unavailable, not retried yet")
+
+const (
+	clientBreakerThreshold = 2
+	clientBreakerCooldown  = 30 * time.Second
+)
+
+// breakerOpen reports whether requests are currently being short-circuited.
+func (c *IndexerClient) breakerOpen() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return time.Now().Before(c.skipUntil)
+}
+
+// recordResult updates the breaker after a request.
+func (c *IndexerClient) recordResult(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err == nil {
+		c.failures, c.skipUntil = 0, time.Time{}
+		return
+	}
+	c.failures++
+	if c.failures >= clientBreakerThreshold {
+		c.skipUntil = time.Now().Add(clientBreakerCooldown)
+	}
 }
 
 func NewIndexerClient(url string) *IndexerClient {
@@ -26,7 +64,9 @@ func NewIndexerClient(url string) *IndexerClient {
 	return &IndexerClient{
 		url: url,
 		client: &http.Client{
-			Timeout: 30 * time.Second,
+			// A page cannot wait 30s on one indexer; callers add their own
+			// tighter deadlines on top of this backstop.
+			Timeout: 10 * time.Second,
 		},
 	}
 }
@@ -53,6 +93,18 @@ type gqlResponse struct {
 }
 
 func (c *IndexerClient) query(ctx context.Context, query string, vars map[string]any, result any) error {
+	if c.breakerOpen() {
+		return errIndexerUnavailable
+	}
+	err := c.doQuery(ctx, query, vars, result)
+	// Caller-side cancellation says nothing about the indexer's health.
+	if !errors.Is(err, context.Canceled) {
+		c.recordResult(err)
+	}
+	return err
+}
+
+func (c *IndexerClient) doQuery(ctx context.Context, query string, vars map[string]any, result any) error {
 	body, err := json.Marshal(gqlRequest{Query: query, Variables: vars})
 	if err != nil {
 		return err
