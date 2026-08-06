@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
@@ -19,10 +20,17 @@ type API struct {
 	clients  map[string]*IndexerClient
 	networks []NetworkConfig
 	analyzer *Analyzer
+	health   *healthTracker
 }
 
 func NewAPI(db *DB, clients map[string]*IndexerClient, networks []NetworkConfig, analyzer *Analyzer) *API {
-	return &API{db: db, clients: clients, networks: networks, analyzer: analyzer}
+	return &API{
+		db:       db,
+		clients:  clients,
+		networks: networks,
+		analyzer: analyzer,
+		health:   newHealthTracker(),
+	}
 }
 
 func jsonResponse(w http.ResponseWriter, data any) {
@@ -97,6 +105,130 @@ func stampBlockTimes(ctx context.Context, client *IndexerClient, txs []Transacti
 	for i := range txs {
 		txs[i].BlockTime = bt[txs[i].BlockHeight]
 	}
+}
+
+// perNetworkDeadline bounds how long a single network may hold up a merged
+// response. A configured-but-unreachable network — one that is down, or a
+// testnet configured ahead of its launch — must degrade to missing data rather
+// than to a hung page. The HTTP client's own timeout is far too long to serve
+// as this bound.
+const perNetworkDeadline = 8 * time.Second
+
+// Circuit breaker settings. Without one, a configured network that is down costs
+// every merged request the full perNetworkDeadline, forever. With one it costs
+// that once, then nothing until the cooldown expires and it is retried — so a
+// network can be configured before it launches and starts working on its own.
+const (
+	breakerThreshold = 2
+	breakerCooldown  = 60 * time.Second
+)
+
+// healthTracker trips a per-network breaker after repeated failures.
+type healthTracker struct {
+	mu    sync.Mutex
+	state map[string]*netHealth
+}
+
+type netHealth struct {
+	failures  int
+	skipUntil time.Time
+}
+
+func newHealthTracker() *healthTracker {
+	return &healthTracker{state: map[string]*netHealth{}}
+}
+
+// shouldSkip reports whether the breaker for this network is currently open.
+func (h *healthTracker) shouldSkip(id string) bool {
+	if h == nil {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	s := h.state[id]
+	return s != nil && time.Now().Before(s.skipUntil)
+}
+
+// record updates the breaker after an attempt.
+func (h *healthTracker) record(id string, err error) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	s := h.state[id]
+	if s == nil {
+		s = &netHealth{}
+		h.state[id] = s
+	}
+	if err == nil {
+		if s.failures >= breakerThreshold {
+			log.Printf("[%s] reachable again, resuming", id)
+		}
+		s.failures, s.skipUntil = 0, time.Time{}
+		return
+	}
+	s.failures++
+	if s.failures >= breakerThreshold {
+		if s.skipUntil.IsZero() || time.Now().After(s.skipUntil) {
+			log.Printf("[%s] unreachable, pausing for %s: %v", id, breakerCooldown, err)
+		}
+		s.skipUntil = time.Now().Add(breakerCooldown)
+	}
+}
+
+// fanOut queries every configured network concurrently, returning results in
+// configured order. Networks that error or time out are skipped: a merged view
+// is best-effort by nature, and one bad network must not take the others down
+// with it.
+//
+// Sequential fan-out made an all-networks response cost the sum of every
+// network's latency, which is also what made adding an unreachable network
+// dangerous.
+func fanOut[T any](
+	ctx context.Context,
+	networks []NetworkConfig,
+	clients map[string]*IndexerClient,
+	health *healthTracker,
+	fn func(ctx context.Context, net NetworkConfig, client *IndexerClient) (T, error),
+) []T {
+	type slot struct {
+		val T
+		ok  bool
+	}
+	slots := make([]slot, len(networks))
+
+	var wg sync.WaitGroup
+	for i, n := range networks {
+		client := clients[n.ID]
+		if client == nil {
+			continue
+		}
+		if health.shouldSkip(n.ID) {
+			continue
+		}
+		wg.Add(1)
+		go func(i int, n NetworkConfig, c *IndexerClient) {
+			defer wg.Done()
+			nctx, cancel := context.WithTimeout(ctx, perNetworkDeadline)
+			defer cancel()
+			v, err := fn(nctx, n, c)
+			health.record(n.ID, err)
+			if err != nil {
+				return
+			}
+			slots[i] = slot{val: v, ok: true}
+		}(i, n, client)
+	}
+	wg.Wait()
+
+	out := make([]T, 0, len(slots))
+	for _, s := range slots {
+		if s.ok {
+			out = append(out, s.val)
+		}
+	}
+	return out
 }
 
 // networkParam reads ?network from request. Returns "" for "all" (no filter), or specific network ID.
@@ -175,14 +307,15 @@ func (a *API) handleListPackages(w http.ResponseWriter, r *http.Request, realmOn
 
 	// All networks: fetch per-network, stamp block times, merge, sort by time
 	var merged []PackageInfo
-	for _, n := range a.networks {
-		items, err := a.db.ListPackages(n.ID, realmOnly, limit+offset, 0)
-		if err != nil {
-			continue
-		}
-		if client := a.clients[n.ID]; client != nil {
-			stampPackageTimes(r.Context(), client, items)
-		}
+	for _, items := range fanOut(r.Context(), a.networks, a.clients, a.health,
+		func(ctx context.Context, n NetworkConfig, c *IndexerClient) ([]PackageInfo, error) {
+			items, err := a.db.ListPackages(n.ID, realmOnly, limit+offset, 0)
+			if err != nil {
+				return nil, err
+			}
+			stampPackageTimes(ctx, c, items)
+			return items, nil
+		}) {
 		merged = append(merged, items...)
 	}
 	sort.Slice(merged, func(i, j int) bool {
@@ -241,13 +374,13 @@ func (a *API) HandleTx(w http.ResponseWriter, r *http.Request) {
 		Network   string `json:"network,omitempty"`
 	}
 
-	tryClient := func(netID string, client *IndexerClient) (*txDetail, error) {
-		tx, err := client.GetTransactionByHash(r.Context(), hash)
+	tryClient := func(ctx context.Context, netID string, client *IndexerClient) (*txDetail, error) {
+		tx, err := client.GetTransactionByHash(ctx, hash)
 		if err != nil {
 			return nil, err
 		}
 		resp := &txDetail{Transaction: tx, Network: netID}
-		if block, berr := client.GetBlock(r.Context(), tx.BlockHeight); berr == nil && block != nil {
+		if block, berr := client.GetBlock(ctx, tx.BlockHeight); berr == nil && block != nil {
 			resp.BlockTime = block.Time
 			resp.ChainID = block.ChainID
 		}
@@ -260,7 +393,7 @@ func (a *API) HandleTx(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, "network not found", 404)
 			return
 		}
-		resp, err := tryClient(network, client)
+		resp, err := tryClient(r.Context(), network, client)
 		if err != nil {
 			jsonError(w, err.Error(), 404)
 			return
@@ -269,16 +402,15 @@ func (a *API) HandleTx(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Try all clients
-	for _, n := range a.networks {
-		client := a.clients[n.ID]
-		if client == nil {
-			continue
-		}
-		if resp, err := tryClient(n.ID, client); err == nil {
-			jsonResponse(w, resp)
-			return
-		}
+	// Ask every network at once; a hash lives on at most one, and the others
+	// answering "not found" should not be paid for serially.
+	found := fanOut(r.Context(), a.networks, a.clients, a.health,
+		func(ctx context.Context, n NetworkConfig, c *IndexerClient) (*txDetail, error) {
+			return tryClient(ctx, n.ID, c)
+		})
+	if len(found) > 0 {
+		jsonResponse(w, found[0])
+		return
 	}
 	jsonError(w, "transaction not found", 404)
 }
@@ -294,11 +426,11 @@ func (a *API) HandleTxs(w http.ResponseWriter, r *http.Request) {
 	if limit > 0 {
 		need = offset + limit
 	}
-	fetch := func(c *IndexerClient) ([]Transaction, error) {
+	fetch := func(ctx context.Context, c *IndexerClient) ([]Transaction, error) {
 		if need > 0 {
-			return c.GetRecentTransactionsPage(r.Context(), need)
+			return c.GetRecentTransactionsPage(ctx, need)
 		}
-		return c.GetRecentTransactions(r.Context(), 0)
+		return c.GetRecentTransactions(ctx, 0)
 	}
 
 	if network != "" {
@@ -307,7 +439,7 @@ func (a *API) HandleTxs(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, "network not found", 404)
 			return
 		}
-		txs, err := fetch(client)
+		txs, err := fetch(r.Context(), client)
 		if err != nil {
 			jsonError(w, err.Error(), 500)
 			return
@@ -339,25 +471,30 @@ func (a *API) HandleTxs(w http.ResponseWriter, r *http.Request) {
 	}
 	var merged []netTx
 	seen := make(map[string]bool)
-	for _, n := range a.networks {
-		client := a.clients[n.ID]
-		if client == nil {
-			continue
-		}
-		txs, err := fetch(client)
-		if err != nil {
-			continue
-		}
-		// Block times are needed before sorting: across networks, heights from
-		// different chains are not comparable and only the timestamp orders them.
-		stampBlockTimes(r.Context(), client, txs)
+	perNetwork := fanOut(r.Context(), a.networks, a.clients, a.health,
+		func(ctx context.Context, n NetworkConfig, c *IndexerClient) ([]netTx, error) {
+			txs, err := fetch(ctx, c)
+			if err != nil {
+				return nil, err
+			}
+			// Block times are needed before sorting: across networks, heights
+			// from different chains are not comparable and only the timestamp
+			// orders them.
+			stampBlockTimes(ctx, c, txs)
+			out := make([]netTx, 0, len(txs))
+			for _, tx := range txs {
+				tx.Network = n.ID
+				out = append(out, netTx{Transaction: tx, Network: n.ID})
+			}
+			return out, nil
+		})
+	for _, txs := range perNetwork {
 		for _, tx := range txs {
 			if seen[tx.Hash] {
 				continue
 			}
 			seen[tx.Hash] = true
-			tx.Network = n.ID
-			merged = append(merged, netTx{Transaction: tx, Network: n.ID})
+			merged = append(merged, tx)
 		}
 	}
 	sort.Slice(merged, func(i, j int) bool {
@@ -389,18 +526,19 @@ func (a *API) HandleAddress(w http.ResponseWriter, r *http.Request) {
 	var txs []Transaction
 	if network == "" {
 		seen := make(map[string]bool)
-		for _, n := range a.networks {
-			c := a.clients[n.ID]
-			if c == nil {
-				continue
-			}
-			netTxs, err := c.GetTransactionsByAddress(r.Context(), addr)
-			if err != nil {
-				continue
-			}
-			stampBlockTimes(r.Context(), c, netTxs)
+		for _, netTxs := range fanOut(r.Context(), a.networks, a.clients, a.health,
+			func(ctx context.Context, n NetworkConfig, c *IndexerClient) ([]Transaction, error) {
+				netTxs, err := c.GetTransactionsByAddress(ctx, addr)
+				if err != nil {
+					return nil, err
+				}
+				stampBlockTimes(ctx, c, netTxs)
+				for i := range netTxs {
+					netTxs[i].Network = n.ID
+				}
+				return netTxs, nil
+			}) {
 			for i := range netTxs {
-				netTxs[i].Network = n.ID
 				if !seen[netTxs[i].Hash] {
 					seen[netTxs[i].Hash] = true
 					txs = append(txs, netTxs[i])
@@ -604,18 +742,19 @@ func (a *API) HandleBlocks(w http.ResponseWriter, r *http.Request) {
 		Network string `json:"network,omitempty"`
 	}
 	var merged []netBlock
-	for _, n := range a.networks {
-		client := a.clients[n.ID]
-		if client == nil {
-			continue
-		}
-		blocks, err := client.GetRecentBlocks(r.Context(), limit)
-		if err != nil {
-			continue
-		}
-		for _, b := range blocks {
-			merged = append(merged, netBlock{Block: b, Network: n.ID})
-		}
+	for _, blocks := range fanOut(r.Context(), a.networks, a.clients, a.health,
+		func(ctx context.Context, n NetworkConfig, c *IndexerClient) ([]netBlock, error) {
+			blocks, err := c.GetRecentBlocks(ctx, limit)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]netBlock, 0, len(blocks))
+			for _, b := range blocks {
+				out = append(out, netBlock{Block: b, Network: n.ID})
+			}
+			return out, nil
+		}) {
+		merged = append(merged, blocks...)
 	}
 	sort.Slice(merged, func(i, j int) bool {
 		if merged[i].Time != "" && merged[j].Time != "" {
