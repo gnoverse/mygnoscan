@@ -462,6 +462,95 @@ func (d *DB) DeleteNetworkData(network string) (int64, error) {
 	return total, nil
 }
 
+// blockTimeTables lists tables whose rows carry a block_time worth backfilling.
+// package_files and dependencies have no height of their own.
+var backfillTables = []string{"packages", "calls", "msg_runs", "bank_sends", "transactions"}
+
+// HeightsMissingBlockTime returns block heights that have rows with no
+// block_time, oldest first, capped at limit.
+//
+// Rows written before block_time existed never got one, and incremental sync
+// only ever moves forward from the cursor, so nothing fills them in. Without a
+// timestamp a row cannot be ordered against another chain's rows, and list
+// endpoints have to ask the indexer at request time instead of reading storage.
+func (d *DB) HeightsMissingBlockTime(network string, limit int) ([]int, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var parts []string
+	for _, t := range backfillTables {
+		// Table names come from the constant above, never from input.
+		parts = append(parts, fmt.Sprintf(
+			`SELECT DISTINCT block_height FROM %s WHERE network = ? AND (block_time IS NULL OR block_time = '')`, t))
+	}
+	query := strings.Join(parts, " UNION ") + " ORDER BY block_height DESC LIMIT ?"
+
+	args := make([]any, 0, len(backfillTables)+1)
+	for range backfillTables {
+		args = append(args, network)
+	}
+	args = append(args, limit)
+
+	rows, err := d.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var heights []int
+	for rows.Next() {
+		var h int
+		if err := rows.Scan(&h); err != nil {
+			return nil, err
+		}
+		heights = append(heights, h)
+	}
+	return heights, rows.Err()
+}
+
+// SetBlockTimes fills in block_time for rows at the given heights that lack it.
+// Existing values are left alone: this repairs history, it does not rewrite it.
+func (d *DB) SetBlockTimes(network string, times map[int]string) (int64, error) {
+	if len(times) == 0 {
+		return 0, nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	tx, err := d.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	var updated int64
+	for _, table := range backfillTables {
+		stmt, err := tx.Prepare(fmt.Sprintf(
+			`UPDATE %s SET block_time = ? WHERE network = ? AND block_height = ? AND (block_time IS NULL OR block_time = '')`, table))
+		if err != nil {
+			return 0, fmt.Errorf("prepare %s: %w", table, err)
+		}
+		for height, t := range times {
+			if t == "" {
+				continue
+			}
+			res, err := stmt.Exec(t, network, height)
+			if err != nil {
+				stmt.Close()
+				return 0, fmt.Errorf("update %s: %w", table, err)
+			}
+			if n, err := res.RowsAffected(); err == nil {
+				updated += n
+			}
+		}
+		stmt.Close()
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return updated, nil
+}
+
 // MaxBlockHeight returns the highest block height stored for a network, or 0 if
 // the network has no data yet.
 func (d *DB) MaxBlockHeight(network string) (int, error) {
