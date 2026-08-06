@@ -242,7 +242,7 @@ footer a:hover { color: var(--accent); }
   <div class="view" id="view-block-detail"><main><div id="block-detail-content"></div></main></div>
   <div class="view" id="view-events"><main>
     <div id="events-stats" class="stats-bar" style="display:none"></div>
-    <div id="events-filter" style="display:none; padding: 8px 0; margin-bottom: 12px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center"></div>
+    <div id="events-filter" style="display:none; padding: 8px 0; margin-bottom: 12px; gap: 8px; flex-wrap: wrap; align-items: center"></div>
     <div class="section"><div class="section-title">recent events</div>
     <table><thead><tr><th>block</th><th>realm</th><th>type</th><th>attributes</th><th>tx</th></tr></thead><tbody id="events-list"></tbody></table></div>
   </main></div>
@@ -2112,6 +2112,9 @@ async function loadGas() {
 let _eventsCache = null;
 let _eventsFilter = null;
 
+let _eventsFlat = [];
+let _eventsPage = 0;
+
 async function loadEvents() {
   const tbody = clear('events-list');
   skeletonRows(tbody, 5, 10);
@@ -2123,67 +2126,127 @@ async function loadEvents() {
     const data = await api('allevents');
     _eventsCache = data;
     _eventsFilter = null;
+    _eventsPage = 0;
 
-    // Flatten events
-    const flat = [];
+    // Flatten once: the table is a list of events, not of transactions.
+    _eventsFlat = [];
     for (const item of (data || [])) {
-      for (const ev of item.events) {
-        flat.push({ block: item.block_height, tx: item.tx_hash, success: item.success, ...ev });
+      for (const ev of (item.events || [])) {
+        _eventsFlat.push({
+          block: item.block_height,
+          tx: item.tx_hash,
+          success: item.success,
+          type: ev.type || 'unknown',
+          pkg_path: ev.pkg_path,
+          attrs: ev.attrs,
+        });
       }
     }
 
-    // Stats
-    const types = new Set(flat.map(e => e.type || 'unknown'));
-    const realms = new Set(flat.map(e => e.pkg_path).filter(Boolean));
+    const typeCounts = {};
+    for (const e of _eventsFlat) typeCounts[e.type] = (typeCounts[e.type] || 0) + 1;
+    const realms = new Set(_eventsFlat.map(e => e.pkg_path).filter(Boolean));
+
     statsBar.textContent = '';
     statsBar.style.display = 'flex';
-    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'events'), el('span', { className: 'value' }, fmtNum(flat.length))));
-    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'types'), el('span', { className: 'value' }, fmtNum(types.size))));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'events'), el('span', { className: 'value' }, fmtNum(_eventsFlat.length))));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'types'), el('span', { className: 'value' }, fmtNum(Object.keys(typeCounts).length))));
     statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'realms'), el('span', { className: 'value' }, fmtNum(realms.size))));
 
-    // Filter buttons
+    // A chip per event type does not scale — topaz has over a hundred, which
+    // filled the viewport before any event was visible. An autocomplete input
+    // stays one line no matter how many types exist.
     filterBar.textContent = '';
     filterBar.style.display = 'flex';
-    filterBar.appendChild(el('span', { style: { color: 'var(--fg2)', fontSize: '12px', marginRight: '4px' } }, 'filter:'));
-    const allBtn = el('button', { className: 'pager-btn', style: { padding: '3px 10px', fontSize: '12px' }, onclick: () => { _eventsFilter = null; renderEventRows(data); setActiveFilter(allBtn); } }, 'all');
-    allBtn.style.borderColor = 'var(--accent)'; allBtn.style.color = 'var(--accent)';
-    filterBar.appendChild(allBtn);
-    for (const t of [...types].sort()) {
-      const btn = el('button', { className: 'pager-btn', style: { padding: '3px 10px', fontSize: '12px' }, onclick: () => { _eventsFilter = t; renderEventRows(data); setActiveFilter(btn); } }, t);
-      filterBar.appendChild(btn);
+    filterBar.appendChild(el('span', { style: { color: 'var(--fg2)', fontSize: '12px' } }, 'type:'));
+
+    const listId = 'event-type-options';
+    const input = el('input', {
+      id: 'events-type-input',
+      className: 'table-filter',
+      type: 'text',
+      placeholder: 'all types \u2014 start typing to filter',
+      autocomplete: 'off',
+      style: { width: '300px', marginBottom: '0' },
+    });
+    input.setAttribute('list', listId);
+
+    const datalist = el('datalist', { id: listId });
+    for (const [t, c] of Object.entries(typeCounts).sort((a, b) => b[1] - a[1])) {
+      const opt = el('option', { value: t });
+      opt.label = t + ' (' + c + ')';
+      datalist.appendChild(opt);
     }
 
-    renderEventRows(data);
+    const apply = () => {
+      const v = input.value.trim();
+      _eventsFilter = v && typeCounts[v] ? v : (v || null);
+      _eventsPage = 0;
+      renderEventRows();
+    };
+    input.addEventListener('change', apply);
+    input.addEventListener('input', () => { if (!input.value.trim()) apply(); });
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') apply(); });
+
+    const clearBtn = el('button', { className: 'pager-btn', style: { padding: '3px 10px', fontSize: '12px' } }, 'clear');
+    clearBtn.addEventListener('click', () => { input.value = ''; apply(); });
+
+    filterBar.appendChild(input);
+    filterBar.appendChild(datalist);
+    filterBar.appendChild(clearBtn);
+    filterBar.appendChild(el('span', { id: 'events-match-count', className: 'pager-info' }, ''));
+
+    renderEventRows();
   } catch (err) { console.error(err); }
 }
 
-function setActiveFilter(activeBtn) {
-  const bar = document.getElementById('events-filter');
-  bar.querySelectorAll('.pager-btn').forEach(b => { b.style.borderColor = ''; b.style.color = ''; });
-  activeBtn.style.borderColor = 'var(--accent)'; activeBtn.style.color = 'var(--accent)';
+function filteredEvents() {
+  if (!_eventsFilter) return _eventsFlat;
+  const needle = _eventsFilter.toLowerCase();
+  // Exact type when it matches one, otherwise treat it as a substring search so
+  // a partial term still narrows the list rather than returning nothing.
+  const exact = _eventsFlat.filter(e => e.type === _eventsFilter);
+  if (exact.length) return exact;
+  return _eventsFlat.filter(e =>
+    e.type.toLowerCase().includes(needle) ||
+    (e.pkg_path || '').toLowerCase().includes(needle));
 }
 
-function renderEventRows(data) {
+function renderEventRows() {
+  const section = document.querySelector('#view-events .section');
   const list = clear('events-list');
-  if (!(data || []).length) {
+  section.querySelectorAll('.pager').forEach(p => p.remove());
+
+  const matches = filteredEvents();
+  const countEl = document.getElementById('events-match-count');
+  if (countEl) {
+    countEl.textContent = _eventsFilter
+      ? fmtNum(matches.length) + ' of ' + fmtNum(_eventsFlat.length) + ' events'
+      : fmtNum(_eventsFlat.length) + ' events';
+  }
+
+  if (!matches.length) {
     list.appendChild(el('tr', {}, el('td', { colspan: '5', style: { color: 'var(--fg2)' } }, 'no events found')));
     return;
   }
-  for (const item of data) {
-    for (const ev of item.events) {
-      if (_eventsFilter && (ev.type || 'unknown') !== _eventsFilter) continue;
-      const attrStr = (ev.attrs || []).map(a => a.key + '=' + a.value).join(', ');
-      const realmLink = ev.pkg_path ? link(ev.pkg_path, () => navigate('/realm/' + ev.pkg_path.replace('gno.land/', ''))) : el('span', {}, '-');
-      if (ev.pkg_path) realmLink.setAttribute('data-hl', 'realm:' + ev.pkg_path);
-      list.appendChild(el('tr', {},
-        el('td', {}, blockLink(item.block_height)),
-        el('td', {}, realmLink),
-        el('td', {}, badge('realm', ev.type || 'event')),
-        el('td', {}, attrStr ? linkify(attrStr) : el('span', {}, '-')),
-        el('td', {}, txLink(item.tx_hash, item.block_height))
-      ));
-    }
+
+  const start = _eventsPage * PAGE_SIZE;
+  for (const ev of matches.slice(start, start + PAGE_SIZE)) {
+    const attrStr = (ev.attrs || []).map(a => a.key + '=' + a.value).join(', ');
+    const realmLink = ev.pkg_path
+      ? link(ev.pkg_path, () => navigate('/realm/' + ev.pkg_path.replace('gno.land/', '')))
+      : el('span', {}, '-');
+    if (ev.pkg_path) realmLink.setAttribute('data-hl', 'realm:' + ev.pkg_path);
+    list.appendChild(el('tr', {},
+      el('td', {}, blockLink(ev.block)),
+      el('td', {}, realmLink),
+      el('td', {}, badge('realm', ev.type)),
+      el('td', {}, attrStr ? linkify(attrStr) : el('span', {}, '-')),
+      el('td', {}, txLink(ev.tx, ev.block))
+    ));
   }
+
+  pager(section, _eventsPage, matches.length, p => { _eventsPage = p; renderEventRows(); });
 }
 
 async function loadGovDAO() {
