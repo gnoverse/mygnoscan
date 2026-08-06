@@ -549,24 +549,13 @@ function txDetailEl(msg) {
     case 'MsgRun':
       s.append('run by '); s.appendChild(addrLink(v.caller));
       return s;
-    case 'BankMsgSend':
-      s.appendChild(addrLink(v.from_address)); s.append(' > '); s.appendChild(addrLink(v.to_address));
-      return s;
-    default: return el('span', {}, v.__typename || '?');
-  }
-}
-function txDetail(msg) {
-  const v = msg?.value; if (!v) return '';
-  switch (v.__typename) {
-    case 'MsgAddPackage': return v.package?.path || '';
-    case 'MsgCall': return v.pkg_path + '::' + v.func;
-    case 'MsgRun': return 'run by ' + shortAddr(v.caller);
     case 'BankMsgSend': {
-      const move = shortAddr(v.from_address) + ' > ' + shortAddr(v.to_address);
+      s.appendChild(addrLink(v.from_address)); s.append(' > '); s.appendChild(addrLink(v.to_address));
       const amt = fmtCoins(v.amount);
-      return amt ? move + ' (' + amt + ')' : move;
+      if (amt) s.appendChild(el('span', { className: 'block-ctx' }, ' ' + amt));
+      return s;
     }
-    default: return '';
+    default: return el('span', {}, v.__typename || '?');
   }
 }
 function timeAgo(t) {
