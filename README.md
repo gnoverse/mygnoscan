@@ -1,67 +1,49 @@
 # mygnoscan
 
-A fast, minimal blockchain explorer for [gno.land](https://gno.land) that actually shows useful data.
+A fast, minimal block explorer for [gno.land](https://gno.land) — built around the
+question generic explorers answer badly: **what code is deployed, what does it
+import, and who actually calls it?**
 
-Built on the [tx-indexer](https://github.com/gnolang/tx-indexer) GraphQL API with a local SQLite cache for dependency analysis.
+Transactions and blocks are table stakes. The dependency and usage graph between
+realms is the point.
 
-## Features
+![Home](docs/images/home.png)
+
+## What it does
 
 - **Realm inspector** — source, imports, dependents, callers, MsgRun references
-- **Dependency graph** — interactive D3 visualization of what imports what
-- **Transaction inspector** — full message details, events, errors
-- **Usage tracking** — direct MsgCall, indirect imports from other contracts, MsgRun references
-- **Multi-network** — track several chains in one instance and one database
-- **Smart caching** — SQLite stores computed dependency graphs and usage stats
-- **Single binary** — Go backend with embedded frontend, no Node.js
+- **Dependency graph** — interactive D3 view of what imports what
+- **Usage tracking** — direct calls, indirect imports, MsgRun references
+- **Multi-network** — several chains in one instance and one database, switchable
+- **Analytics** — activity over time, gas, storage growth, leaderboards
+- **Single binary** — Go backend with the frontend embedded, no Node.js
+
+![Analytics](docs/images/analytics.png)
+
+Built on the [tx-indexer](https://github.com/gnolang/tx-indexer) GraphQL API, with
+a local SQLite cache for the dependency analysis.
 
 ## Quick start
 
 ```bash
 make install
 mygnoscan
-# open http://localhost:8888
+# http://localhost:8888
 ```
 
-By default it syncs the built-in default networks. To point it at one specific
-indexer:
+Point it at one network:
 
 ```bash
 mygnoscan -indexer https://indexer.topaz.testnets.gno.land/graphql/query -network topaz
 ```
 
-For several networks at once, use a config file:
-
-```json
-{
-  "networks": [
-    {"id": "topaz", "indexer": "https://indexer.topaz.testnets.gno.land/graphql/query", "rpc": "https://rpc.topaz.testnets.gno.land"},
-    {"id": "betanet", "indexer": "https://indexer.betanet.testnets.gno.land/graphql/query", "rpc": "https://rpc.betanet.testnets.gno.land"}
-  ]
-}
-```
+…or several, with a config file:
 
 ```bash
 mygnoscan -config networks.json
 ```
 
-## Flags
-
-```
-mygnoscan [flags]
-  -listen    listen address (default ":8888")
-  -db        SQLite database path (default "mygnoscan.db")
-  -config    JSON config file, for multiple networks
-  -network   single network ID
-  -indexer   single network tx-indexer GraphQL URL
-  -rpc       single network RPC URL (needed for account balances)
-  -sync      run the background sync (default true)
-```
-
-`-config` and the single-network flags are mutually exclusive. Startup logs which
-configuration source was used and which networks resulted — worth checking, along
-with `/api/networks`, after any config change.
-
-## Docker
+With Docker:
 
 ```bash
 docker run -p 8888:8888 ghcr.io/gnoverse/mygnoscan:main
@@ -69,34 +51,28 @@ docker run -p 8888:8888 ghcr.io/gnoverse/mygnoscan:main
 
 ## Documentation
 
+Everything lives in [`docs/`](docs/) — start there.
+
 | | |
 |---|---|
-| [docs/spec.md](docs/spec.md) | what mygnoscan is, and its data model |
-| [docs/architecture.md](docs/architecture.md) | components, data flow, design decisions |
-| [docs/api.md](docs/api.md) | full HTTP API reference |
-| [docs/development.md](docs/development.md) | local development |
-| [docs/deployment.md](docs/deployment.md) | running it for real |
+| [docs/spec.md](docs/spec.md) | what mygnoscan is, the data model, how networks are scoped |
+| [docs/architecture.md](docs/architecture.md) | components, data flow, design decisions, known weak points |
+| [docs/api.md](docs/api.md) | full `/api/*` reference |
+| [docs/development.md](docs/development.md) | local development loop |
+| [docs/deployment.md](docs/deployment.md) | flags, config, operating notes |
+| [docs/screenshots.md](docs/screenshots.md) | regenerating the images above |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | how to contribute |
 | [AGENTS.md](AGENTS.md) | conventions and invariants for code changes |
 
-## API
+## More views
 
-The most-used endpoints — see [docs/api.md](docs/api.md) for all of them, including
-analytics, time series and the SSE live feed.
+<details>
+<summary>Realms, transactions, blocks</summary>
 
-| Endpoint | Description |
-|---|---|
-| `GET /api/networks` | Configured network IDs |
-| `GET /api/stats` | Aggregate statistics |
-| `GET /api/realms` | List realms (`limit`, `offset`) |
-| `GET /api/packages` | List all packages |
-| `GET /api/realm/{path}` | Realm/package detail with deps, calls, source |
-| `GET /api/deps/{path}` | Dependency graph (`?dir=dependents` for reverse) |
-| `GET /api/tx/{hash}` | Transaction detail |
-| `GET /api/txs` | Recent transactions |
-| `GET /api/address/{addr}` | Address activity |
-| `GET /api/search?q=...` | Search packages by path, name, creator |
-| `GET /api/live` | Live block/tx feed (SSE) |
+![Realms](docs/images/realms.png)
 
-Most endpoints accept `?network=<id>` to scope results to one network; omitting it
-spans all of them.
+![Transactions](docs/images/transactions.png)
+
+![Blocks](docs/images/blocks.png)
+
+</details>
