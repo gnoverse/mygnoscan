@@ -380,8 +380,22 @@ const (
 // has ever had — 14MB and 4.5s on a modest testnet — because the indexer exposes
 // no limit or pagination argument. Bounding by height is the only lever there is.
 func (c *IndexerClient) GetRecentTransactionsPage(ctx context.Context, need int) ([]Transaction, error) {
-	if need <= 0 {
+	return c.recentTransactionsWindowed(ctx, need, "", func() ([]Transaction, error) {
 		return c.GetRecentTransactions(ctx, 0)
+	})
+}
+
+// recentTransactionsWindowed is the shared widening-window fetch. extraWhere is
+// an optional additional filter fragment merged into the where clause; unbounded
+// falls back to the caller's own full-fetch.
+func (c *IndexerClient) recentTransactionsWindowed(
+	ctx context.Context,
+	need int,
+	extraWhere string,
+	unbounded func() ([]Transaction, error),
+) ([]Transaction, error) {
+	if need <= 0 {
+		return unbounded()
 	}
 	tip, err := c.LatestBlockHeight(ctx)
 	if err != nil {
@@ -399,10 +413,10 @@ func (c *IndexerClient) GetRecentTransactionsPage(ctx context.Context, need int)
 		}
 		q := fmt.Sprintf(`{
 		getTransactions(
-			where: { block_height: { gt: %d } }
+			where: { block_height: { gt: %d } %s }
 			order: { heightAndIndex: DESC }
 		) { %s }
-	}`, from, txFieldsLight)
+	}`, from, extraWhere, txFieldsLight)
 		if err := c.query(ctx, q, nil, &result); err != nil {
 			return nil, err
 		}
@@ -778,18 +792,22 @@ func (c *IndexerClient) GetGasUsageForRealm(ctx context.Context, pkgPath string)
 }
 
 // GetRecentTransactionsWithEvents fetches recent transactions that have GnoEvents.
-func (c *IndexerClient) GetRecentTransactionsWithEvents(ctx context.Context) ([]Transaction, error) {
-	var result struct {
-		GetTransactions []Transaction `json:"getTransactions"`
-	}
-	q := fmt.Sprintf(`{
+func (c *IndexerClient) GetRecentTransactionsWithEvents(ctx context.Context, need int) ([]Transaction, error) {
+	return c.recentTransactionsWindowed(ctx, need,
+		"response: { events: { GnoEvent: {} } }",
+		func() ([]Transaction, error) {
+			var result struct {
+				GetTransactions []Transaction `json:"getTransactions"`
+			}
+			q := fmt.Sprintf(`{
 		getTransactions(
 			where: { response: { events: { GnoEvent: {} } } }
 			order: { heightAndIndex: DESC }
 		) { %s }
 	}`, txFieldsLight)
-	err := c.query(ctx, q, nil, &result)
-	return result.GetTransactions, err
+			err := c.query(ctx, q, nil, &result)
+			return result.GetTransactions, err
+		})
 }
 
 // GetEventsByPkgPath fetches transactions that emitted GnoEvents for a package.
