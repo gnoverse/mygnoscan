@@ -34,6 +34,9 @@ nav a:hover, nav a.active { color: var(--accent); text-decoration: none; }
 .stat { display: flex; flex-direction: column; }
 .stat .label { font-size: 11px; color: var(--fg2); text-transform: uppercase; letter-spacing: 1px; }
 .stat .value { font-size: 20px; font-weight: bold; color: var(--accent); }
+.stat-link { cursor: pointer; }
+.stat-link:hover .label { color: var(--accent); }
+.stat-link:hover .value { text-decoration: underline; }
 main { padding: 20px 0; }
 .section { margin-bottom: 32px; }
 .section-title { font-size: 14px; color: var(--fg2); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
@@ -183,14 +186,14 @@ footer a:hover { color: var(--accent); }
 <div class="container">
   <div class="view active" id="view-home">
     <div class="stats-bar">
-      <div class="stat"><span class="label">txs</span><span class="value" id="stat-txs">-</span></div>
-      <div class="stat"><span class="label">calls</span><span class="value" id="stat-calls">-</span></div>
-      <div class="stat"><span class="label">deploys</span><span class="value" id="stat-deploys">-</span></div>
-      <div class="stat"><span class="label">runs</span><span class="value" id="stat-runs">-</span></div>
-      <div class="stat"><span class="label">sends</span><span class="value" id="stat-sends">-</span></div>
-      <div class="stat"><span class="label">realms</span><span class="value" id="stat-realms">-</span></div>
-      <div class="stat"><span class="label">packages</span><span class="value" id="stat-packages">-</span></div>
-      <div class="stat"><span class="label">block</span><span class="value" id="stat-block">-</span></div>
+      <div class="stat stat-link" data-goto="/txs"><span class="label">txs</span><span class="value" id="stat-txs">-</span></div>
+      <div class="stat stat-link" data-goto="/txs" data-type="MsgCall"><span class="label">calls</span><span class="value" id="stat-calls">-</span></div>
+      <div class="stat stat-link" data-goto="/txs" data-type="MsgAddPackage"><span class="label">deploys</span><span class="value" id="stat-deploys">-</span></div>
+      <div class="stat stat-link" data-goto="/txs" data-type="MsgRun"><span class="label">runs</span><span class="value" id="stat-runs">-</span></div>
+      <div class="stat stat-link" data-goto="/txs" data-type="BankMsgSend"><span class="label">sends</span><span class="value" id="stat-sends">-</span></div>
+      <div class="stat stat-link" data-goto="/realms"><span class="label">realms</span><span class="value" id="stat-realms">-</span></div>
+      <div class="stat stat-link" data-goto="/packages"><span class="label">packages</span><span class="value" id="stat-packages">-</span></div>
+      <div class="stat stat-link" data-goto="/blocks"><span class="label">block</span><span class="value" id="stat-block">-</span></div>
     </div>
     <main>
       <div class="section"><div class="section-title">recent activity</div>
@@ -1098,6 +1101,7 @@ async function loadPackages(page) {
 }
 
 let _txsCache = null;
+let _pendingTxType = null; // set by a home stat tile, consumed by loadTxs
 let _txsFilterType = null; // null = all
 let _txsFilterStatus = null; // null = all, true = ok, false = fail
 let _txsPage = 0;
@@ -1113,7 +1117,9 @@ async function loadTxs() {
     const data = await api('txs?limit=0'); // fetch all
     _txsCache = data.items || [];
     _txsPage = 0;
-    _txsFilterType = null;
+    // Arriving from a home stat tile pre-selects that message type.
+    _txsFilterType = _pendingTxType;
+    _pendingTxType = null;
     _txsFilterStatus = null;
 
     // Compute type counts
@@ -3164,6 +3170,14 @@ document.addEventListener('mouseout', (e) => {
   const val = e.target.closest('[data-hl]')?.getAttribute('data-hl');
   if (!val) return;
   document.querySelectorAll('[data-hl="' + CSS.escape(val) + '"]').forEach(el => el.classList.remove('hl-active'));
+});
+
+// --- Home stat tiles navigate to the page behind the number ---
+document.querySelectorAll('.stat-link').forEach(tile => {
+  tile.addEventListener('click', () => {
+    _pendingTxType = tile.getAttribute('data-type') || null;
+    navigate(tile.getAttribute('data-goto') + netSuffix(getNetwork()));
+  });
 });
 
 // --- Init ---
