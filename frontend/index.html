@@ -314,6 +314,7 @@ function proposerEl(addr) {
   if (moniker) {
     const a = link(moniker, () => navigate('/address/' + addr + netSuffix(getNetwork())));
     a.setAttribute('data-hl', addr);
+    a.title = addr;
     span.appendChild(a);
     span.appendChild(el('span', { className: 'block-ctx' }, ' ' + truncAddr(addr)));
   } else {
@@ -337,8 +338,12 @@ function addrLink(addr) {
   const label = KNOWN_ADDRS[addr];
   const span = el('span');
   span.setAttribute('data-hl', addr);
-  const a = link(label || addr, () => navigate('/address/' + addr + netSuffix(getNetwork())));
+  // Show the abbreviated form; a full 40-character address in every table cell
+  // crowds out the content beside it. The full value stays in the tooltip, and
+  // the link target is unchanged.
+  const a = link(label || truncAddr(addr), () => navigate('/address/' + addr + netSuffix(getNetwork())));
   a.setAttribute('data-hl', addr);
+  a.title = addr;
   span.appendChild(a);
   if (label) {
     span.appendChild(el('span', { className: 'block-ctx' }, ' ' + truncAddr(addr)));
