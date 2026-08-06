@@ -604,6 +604,8 @@ function onNetworkChange() {
 }
 function netBadgeEl(networkId) {
   if (!networkId) return document.createTextNode('');
+  // Redundant when one network is selected: everything on screen belongs to it.
+  if (getNetwork() !== 'all') return document.createTextNode('');
   const span = document.createElement('span');
   span.className = 'net-badge net-' + networkId;
   span.textContent = networkId;
