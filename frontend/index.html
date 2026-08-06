@@ -311,18 +311,23 @@ function proposerEl(addr) {
     const a = link(moniker, () => navigate('/address/' + addr + netSuffix(getNetwork())));
     a.setAttribute('data-hl', addr);
     span.appendChild(a);
-    span.appendChild(el('span', { className: 'block-ctx' }, ' ' + addr.slice(0, 8) + '...'));
+    span.appendChild(el('span', { className: 'block-ctx' }, ' ' + truncAddr(addr)));
   } else {
     span.appendChild(addrLink(addr));
   }
   return span;
 }
 function addrLabel(addr) { return KNOWN_ADDRS[addr] || ''; }
+// Single source of truth for abbreviating an address: keep the g1 prefix and the
+// tail, so two addresses sharing a prefix stay distinguishable. Every call site
+// that shortens an address goes through this.
+function truncAddr(addr) {
+  if (!addr) return '';
+  return addr.length <= 16 ? addr : addr.slice(0, 8) + '\u2026' + addr.slice(-4);
+}
 function shortAddr(addr) {
   if (!addr) return '';
-  const label = KNOWN_ADDRS[addr];
-  if (label) return label;
-  return addr.length <= 16 ? addr : addr.slice(0, 10) + '...' + addr.slice(-6);
+  return KNOWN_ADDRS[addr] || truncAddr(addr);
 }
 function addrLink(addr) {
   const label = KNOWN_ADDRS[addr];
@@ -332,7 +337,7 @@ function addrLink(addr) {
   a.setAttribute('data-hl', addr);
   span.appendChild(a);
   if (label) {
-    span.appendChild(el('span', { className: 'block-ctx' }, ' ' + addr.slice(0, 8) + '...'));
+    span.appendChild(el('span', { className: 'block-ctx' }, ' ' + truncAddr(addr)));
   }
   return span;
 }
@@ -367,7 +372,7 @@ function realmPathEl(fullPath, network) {
   span.appendChild(el('span', { className: 'rp-type' }, '/' + type + '/'));
   // Namespace: shorten if g1 address
   if (nsName.match(/^g1[a-z0-9]{38,}/)) {
-    const nsEl = el('span', { className: 'rp-ns' }, nsName.slice(0, 8) + '...');
+    const nsEl = el('span', { className: 'rp-ns' }, truncAddr(nsName));
     nsEl.setAttribute('data-hl', nsName);
     span.appendChild(nsEl);
   } else {
