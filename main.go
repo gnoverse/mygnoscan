@@ -103,11 +103,13 @@ func run() error {
 	})
 	mux.HandleFunc("GET /api/networks", func(w http.ResponseWriter, r *http.Request) {
 		type netInfo struct {
-			ID string `json:"id"`
+			ID      string `json:"id"`
+			Indexer string `json:"indexer,omitempty"`
+			RPC     string `json:"rpc,omitempty"`
 		}
 		var nets []netInfo
 		for _, n := range cfg.Networks {
-			nets = append(nets, netInfo{n.ID})
+			nets = append(nets, netInfo{ID: n.ID, Indexer: n.IndexerURL, RPC: n.RPCURL})
 		}
 		jsonResponse(w, nets)
 	})
