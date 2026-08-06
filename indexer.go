@@ -364,6 +364,56 @@ func (c *IndexerClient) GetRecentTransactions(ctx context.Context, maxResults in
 	return result.GetTransactions, err
 }
 
+// Window sizes for paged transaction fetches. The indexer has no limit argument,
+// so the only way to bound a query is by block height; cost tracks the number of
+// rows returned, not the width of the window, so widening is cheap.
+const (
+	initialTxWindow = 20000
+	txWindowGrowth  = 8
+)
+
+// GetRecentTransactionsPage fetches at least `need` of the most recent
+// transactions by querying a bounded height window, widening it until enough are
+// found or the chain start is reached.
+//
+// The unbounded alternative (`where: {}`) downloads every transaction the chain
+// has ever had — 14MB and 4.5s on a modest testnet — because the indexer exposes
+// no limit or pagination argument. Bounding by height is the only lever there is.
+func (c *IndexerClient) GetRecentTransactionsPage(ctx context.Context, need int) ([]Transaction, error) {
+	if need <= 0 {
+		return c.GetRecentTransactions(ctx, 0)
+	}
+	tip, err := c.LatestBlockHeight(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	for window := initialTxWindow; ; window *= txWindowGrowth {
+		from := tip - window
+		if from < 0 {
+			from = 0
+		}
+
+		var result struct {
+			GetTransactions []Transaction `json:"getTransactions"`
+		}
+		q := fmt.Sprintf(`{
+		getTransactions(
+			where: { block_height: { gt: %d } }
+			order: { heightAndIndex: DESC }
+		) { %s }
+	}`, from, txFieldsLight)
+		if err := c.query(ctx, q, nil, &result); err != nil {
+			return nil, err
+		}
+
+		// Enough rows, or we have already reached genesis and there are no more.
+		if len(result.GetTransactions) >= need || from == 0 {
+			return result.GetTransactions, nil
+		}
+	}
+}
+
 func (c *IndexerClient) GetRecentTransactionsFromHeight(ctx context.Context, lastHeight *int) ([]Transaction, error) {
 	var result struct {
 		GetTransactions []Transaction `json:"getTransactions"`
@@ -549,6 +599,48 @@ func (c *IndexerClient) GetBlocksInRange(ctx context.Context, fromHeight, toHeig
 	}`, fromHeight-1, toHeight+1, blockFields)
 	err := c.query(ctx, q, nil, &result)
 	return result.GetBlocks, err
+}
+
+// rangeStampDensity decides between one range query and one query per height.
+//
+// A range query returns every block in the span, not just the wanted ones, so it
+// only pays off when the heights are dense. Measured against a live indexer: 20
+// transactions spread over 20k blocks cost 4.5s and 579KB as a range (10k blocks
+// returned) versus 0.3s fetched individually and concurrently. Densities near 1
+// invert that — consecutive blocks are one cheap query instead of N.
+const rangeStampDensity = 2
+
+// GetBlockTimesForHeights returns a height→time map for the given heights.
+//
+// One range query when the heights are dense, one query per height when they are
+// scattered. Getting this backwards is expensive in both directions.
+func (c *IndexerClient) GetBlockTimesForHeights(ctx context.Context, heights []int) (map[int]string, error) {
+	if len(heights) == 0 {
+		return nil, nil
+	}
+	lo, hi := heights[0], heights[0]
+	for _, h := range heights {
+		if h < lo {
+			lo = h
+		}
+		if h > hi {
+			hi = h
+		}
+	}
+	if span := hi - lo + 1; span > rangeStampDensity*len(heights) {
+		return c.GetBlocksByHeights(ctx, heights)
+	}
+
+	blocks, err := c.GetBlocksInRange(ctx, lo, hi)
+	if err != nil {
+		// A failed range query is not fatal: the per-height path still works.
+		return c.GetBlocksByHeights(ctx, heights)
+	}
+	times := make(map[int]string, len(blocks))
+	for _, b := range blocks {
+		times[b.Height] = b.Time
+	}
+	return times, nil
 }
 
 // GetBlocksByHeights fetches blocks for a specific set of heights and returns a height→time map.
