@@ -384,6 +384,14 @@ function fmtNum(n) { return typeof n === 'number' ? n.toLocaleString() : String(
 function fmtUgnot(amount, denom) {
   return fmtNum(amount) + ' ' + (denom || 'ugnot');
 }
+// Coin strings arrive packed, e.g. "1000000ugnot" or "100ugnot,5foo".
+function fmtCoins(s) {
+  if (!s) return '';
+  return String(s).split(',').map(part => {
+    const m = part.trim().match(/^(\d+)(.*)$/);
+    return m ? fmtNum(Number(m[1])) + ' ' + m[2] : part.trim();
+  }).join(', ');
+}
 function fmtBytes(n) {
   if (n >= 1024) return fmtNum(n) + ' bytes (' + (n / 1024).toFixed(2) + ' KB)';
   return fmtNum(n) + ' bytes';
@@ -544,7 +552,11 @@ function txDetail(msg) {
     case 'MsgAddPackage': return v.package?.path || '';
     case 'MsgCall': return v.pkg_path + '::' + v.func;
     case 'MsgRun': return 'run by ' + shortAddr(v.caller);
-    case 'BankMsgSend': return shortAddr(v.from_address) + ' > ' + shortAddr(v.to_address);
+    case 'BankMsgSend': {
+      const move = shortAddr(v.from_address) + ' > ' + shortAddr(v.to_address);
+      const amt = fmtCoins(v.amount);
+      return amt ? move + ' (' + amt + ')' : move;
+    }
     default: return '';
   }
 }
