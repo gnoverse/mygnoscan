@@ -293,10 +293,11 @@ func (a *API) handleListPackages(w http.ResponseWriter, r *http.Request, realmOn
 	if limit == 0 {
 		limit = 50
 	}
+	sortBy := r.URL.Query().Get("sort")
 	total, _ := a.db.CountPackages(network, realmOnly)
 
 	if network != "" {
-		items, err := a.db.ListPackages(network, realmOnly, limit, offset)
+		items, err := a.db.ListPackages(network, realmOnly, limit, offset, sortBy)
 		if err != nil {
 			jsonError(w, err.Error(), 500)
 			return
@@ -309,7 +310,7 @@ func (a *API) handleListPackages(w http.ResponseWriter, r *http.Request, realmOn
 	var merged []PackageInfo
 	for _, items := range fanOut(r.Context(), a.networks, a.clients, a.health,
 		func(ctx context.Context, n NetworkConfig, c *IndexerClient) ([]PackageInfo, error) {
-			items, err := a.db.ListPackages(n.ID, realmOnly, limit+offset, 0)
+			items, err := a.db.ListPackages(n.ID, realmOnly, limit+offset, 0, sortBy)
 			if err != nil {
 				return nil, err
 			}
@@ -318,18 +319,7 @@ func (a *API) handleListPackages(w http.ResponseWriter, r *http.Request, realmOn
 		}) {
 		merged = append(merged, items...)
 	}
-	sort.Slice(merged, func(i, j int) bool {
-		if merged[i].BlockTime != "" && merged[j].BlockTime != "" {
-			return merged[i].BlockTime > merged[j].BlockTime
-		}
-		if merged[i].BlockTime != "" {
-			return true
-		}
-		if merged[j].BlockTime != "" {
-			return false
-		}
-		return merged[i].BlockHeight > merged[j].BlockHeight
-	})
+	sortMergedPackages(merged, sortBy)
 	if offset >= len(merged) {
 		jsonResponse(w, map[string]any{"items": []PackageInfo{}, "total": total})
 		return
@@ -339,6 +329,33 @@ func (a *API) handleListPackages(w http.ResponseWriter, r *http.Request, realmOn
 		end = len(merged)
 	}
 	jsonResponse(w, map[string]any{"items": merged[offset:end], "total": total})
+}
+
+// sortMergedPackages orders a cross-network list. Block heights from different
+// chains are not comparable, so the default ordering is by timestamp with height
+// only as a tiebreaker within rows that have none.
+func sortMergedPackages(pkgs []PackageInfo, sortBy string) {
+	switch sortBy {
+	case "calls":
+		sort.SliceStable(pkgs, func(i, j int) bool { return pkgs[i].Calls > pkgs[j].Calls })
+	case "importers":
+		sort.SliceStable(pkgs, func(i, j int) bool { return pkgs[i].Importers > pkgs[j].Importers })
+	case "imports":
+		sort.SliceStable(pkgs, func(i, j int) bool { return pkgs[i].Imports > pkgs[j].Imports })
+	case "name":
+		sort.SliceStable(pkgs, func(i, j int) bool { return pkgs[i].Path < pkgs[j].Path })
+	default:
+		sort.SliceStable(pkgs, func(i, j int) bool {
+			ti, tj := pkgs[i].BlockTime, pkgs[j].BlockTime
+			if ti != "" && tj != "" {
+				return ti > tj
+			}
+			if ti != tj {
+				return ti != "" // rows with a timestamp sort ahead of rows without
+			}
+			return pkgs[i].BlockHeight > pkgs[j].BlockHeight
+		})
+	}
 }
 
 func (a *API) HandleRealms(w http.ResponseWriter, r *http.Request) {

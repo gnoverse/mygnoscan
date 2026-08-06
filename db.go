@@ -576,6 +576,9 @@ type PackageInfo struct {
 	TxHash      string `json:"tx_hash"`
 	IsRealm     bool   `json:"is_realm"`
 	NumFiles    int    `json:"num_files"`
+	Calls       int    `json:"calls"`
+	Importers   int    `json:"importers"`
+	Imports     int    `json:"imports"`
 }
 
 type PackageDetail struct {
@@ -623,17 +626,46 @@ func (d *DB) CountPackages(network string, realmOnly bool) (int, error) {
 }
 
 // ListPackages returns all packages, optionally filtered.
-func (d *DB) ListPackages(network string, realmOnly bool, limit, offset int) ([]PackageInfo, error) {
+// packageSortClause maps a sort key to SQL. Whitelisted rather than
+// interpolated: the value comes from a query parameter.
+func packageSortClause(sortBy string) string {
+	switch sortBy {
+	case "calls":
+		return "calls DESC, p.block_height DESC"
+	case "importers":
+		return "importers DESC, p.block_height DESC"
+	case "imports":
+		return "imports DESC, p.block_height DESC"
+	case "name":
+		return "p.path ASC"
+	case "oldest":
+		return "p.block_height ASC"
+	default: // newest
+		return "p.block_height DESC"
+	}
+}
+
+func (d *DB) ListPackages(network string, realmOnly bool, limit, offset int, sortBy string) ([]PackageInfo, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	q := `SELECT network, path, name, creator, block_height, tx_hash, is_realm, num_files FROM packages WHERE is_realm = ?`
+	// Usage counts come from correlated subqueries rather than joins: a join on
+	// path alone would mix networks together, and grouping four tables in one
+	// query multiplies rows against each other.
+	q := `SELECT p.network, p.path, p.name, p.creator, p.block_height, p.tx_hash, p.is_realm, p.num_files,
+		(SELECT COUNT(*) FROM calls c
+		   WHERE c.network = p.network AND c.pkg_path = p.path) AS calls,
+		(SELECT COUNT(*) FROM dependencies d
+		   WHERE d.network = p.network AND d.import_path = p.path) AS importers,
+		(SELECT COUNT(*) FROM dependencies d
+		   WHERE d.network = p.network AND d.package_path = p.path) AS imports
+		FROM packages p WHERE p.is_realm = ?`
 	args := []any{realmOnly}
 	if network != "" {
-		q += ` AND network = ?`
+		q += ` AND p.network = ?`
 		args = append(args, network)
 	}
-	q += ` ORDER BY block_height DESC`
+	q += ` ORDER BY ` + packageSortClause(sortBy)
 	if limit > 0 {
 		q += fmt.Sprintf(` LIMIT %d OFFSET %d`, limit, offset)
 	}
@@ -647,7 +679,8 @@ func (d *DB) ListPackages(network string, realmOnly bool, limit, offset int) ([]
 	var pkgs []PackageInfo
 	for rows.Next() {
 		var p PackageInfo
-		if err := rows.Scan(&p.Network, &p.Path, &p.Name, &p.Creator, &p.BlockHeight, &p.TxHash, &p.IsRealm, &p.NumFiles); err != nil {
+		if err := rows.Scan(&p.Network, &p.Path, &p.Name, &p.Creator, &p.BlockHeight, &p.TxHash,
+			&p.IsRealm, &p.NumFiles, &p.Calls, &p.Importers, &p.Imports); err != nil {
 			return nil, err
 		}
 		pkgs = append(pkgs, p)
@@ -930,7 +963,8 @@ func (d *DB) Search(network, q string) ([]PackageInfo, error) {
 	var pkgs []PackageInfo
 	for rows.Next() {
 		var p PackageInfo
-		if err := rows.Scan(&p.Network, &p.Path, &p.Name, &p.Creator, &p.BlockHeight, &p.TxHash, &p.IsRealm, &p.NumFiles); err != nil {
+		if err := rows.Scan(&p.Network, &p.Path, &p.Name, &p.Creator, &p.BlockHeight, &p.TxHash,
+			&p.IsRealm, &p.NumFiles, &p.Calls, &p.Importers, &p.Imports); err != nil {
 			return nil, err
 		}
 		pkgs = append(pkgs, p)

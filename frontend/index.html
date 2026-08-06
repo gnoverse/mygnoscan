@@ -203,7 +203,12 @@ footer a:hover { color: var(--accent); }
     </main>
   </div>
   <div class="view" id="view-realms"><main><div id="realms-stats" class="stats-bar" style="display:none"></div><div class="section"><div class="section-title">all realms</div>
-    <table><thead><tr><th>path</th><th>creator</th><th>block</th><th>files</th></tr></thead><tbody id="realms-list"></tbody></table></div></main></div>
+    <table><thead><tr><th>path</th><th>creator</th>
+      <th class="rs" data-sort="calls">calls</th>
+      <th class="rs" data-sort="importers">importers</th>
+      <th class="rs" data-sort="imports">imports</th>
+      <th class="rs" data-sort="newest">block</th>
+      <th>files</th></tr></thead><tbody id="realms-list"></tbody></table></div></main></div>
   <div class="view" id="view-packages"><main><div id="packages-stats" class="stats-bar" style="display:none"></div><div class="section"><div class="section-title">all packages</div>
     <table><thead><tr><th>path</th><th>creator</th><th>block</th><th>files</th></tr></thead><tbody id="packages-list"></tbody></table></div></main></div>
   <div class="view" id="view-txs"><main>
@@ -394,6 +399,11 @@ function realmPathEl(fullPath, network) {
   return span;
 }
 function statusBadge(s) { return s ? badge('ok', 'ok') : badge('fail', 'fail'); }
+// Dim zeroes so the counts that carry information stand out in a dense table.
+function countCell(n) {
+  const v = n || 0;
+  return el('span', v ? {} : { style: { color: 'var(--fg2)', opacity: '0.5' } }, fmtNum(v));
+}
 function fmtNum(n) { return typeof n === 'number' ? n.toLocaleString() : String(n); }
 function fmtUgnot(amount, denom) {
   return fmtNum(amount) + ' ' + (denom || 'ugnot');
@@ -1069,15 +1079,24 @@ async function loadHome() {
   } catch (err) { console.error('home:', err); }
 }
 
+let _realmsSort = 'newest';
 async function loadRealms(page) {
   page = page || 0;
   const section = document.querySelector('#view-realms .section');
   const tbody = clear('realms-list');
-  skeletonRows(tbody, 4, 10);
+  skeletonRows(tbody, 7, 10);
   section.querySelectorAll('.pager').forEach(p => p.remove());
   const statsBar = document.getElementById('realms-stats');
+  // Sorting is server-side: ordering only the current page would rank 50 rows
+  // out of hundreds and quietly answer a different question.
+  document.querySelectorAll('#view-realms th.rs').forEach(th => {
+    const key = th.getAttribute('data-sort');
+    th.classList.toggle('sort-desc', _realmsSort === key);
+    th.classList.add('sortable');
+    th.onclick = () => { _realmsSort = key; loadRealms(0); };
+  });
   try {
-    const data = await api('realms?limit=' + PAGE_SIZE + '&offset=' + (page * PAGE_SIZE));
+    const data = await api('realms?limit=' + PAGE_SIZE + '&offset=' + (page * PAGE_SIZE) + '&sort=' + _realmsSort);
     if (page === 0) {
       const creators = new Set((data.items || []).map(r => r.creator));
       statsBar.textContent = ''; statsBar.style.display = 'flex';
@@ -1089,6 +1108,9 @@ async function loadRealms(page) {
       list.appendChild(el('tr', {},
         el('td', {}, realmPathEl(r.path, r.network)),
         el('td', {}, addrLink(r.creator)),
+        el('td', {}, countCell(r.calls)),
+        el('td', {}, countCell(r.importers)),
+        el('td', {}, countCell(r.imports)),
         el('td', {}, blockLink(r.block_height, r.network)), el('td', {}, String(r.num_files))
       ));
     }
