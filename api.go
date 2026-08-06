@@ -80,22 +80,19 @@ func stampBlockTimes(ctx context.Context, client *IndexerClient, txs []Transacti
 	if len(txs) == 0 {
 		return
 	}
-	minH, maxH := txs[0].BlockHeight, txs[0].BlockHeight
+	// Deduplicate: many transactions share a block, and a naive min..max range
+	// over a sparse set would pull every block in between.
+	seen := make(map[int]bool, len(txs))
+	heights := make([]int, 0, len(txs))
 	for _, tx := range txs {
-		if tx.BlockHeight < minH {
-			minH = tx.BlockHeight
-		}
-		if tx.BlockHeight > maxH {
-			maxH = tx.BlockHeight
+		if !seen[tx.BlockHeight] {
+			seen[tx.BlockHeight] = true
+			heights = append(heights, tx.BlockHeight)
 		}
 	}
-	blocks, err := client.GetBlocksInRange(ctx, minH, maxH)
+	bt, err := client.GetBlockTimesForHeights(ctx, heights)
 	if err != nil {
 		return
-	}
-	bt := make(map[int]string, len(blocks))
-	for _, b := range blocks {
-		bt[b.Height] = b.Time
 	}
 	for i := range txs {
 		txs[i].BlockTime = bt[txs[i].BlockHeight]
@@ -291,19 +288,33 @@ func (a *API) HandleTxs(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 
+	// With a limit we only need enough rows to fill the page. Without one the
+	// caller is asking for everything, which stays expensive by definition.
+	need := 0
+	if limit > 0 {
+		need = offset + limit
+	}
+	fetch := func(c *IndexerClient) ([]Transaction, error) {
+		if need > 0 {
+			return c.GetRecentTransactionsPage(r.Context(), need)
+		}
+		return c.GetRecentTransactions(r.Context(), 0)
+	}
+
 	if network != "" {
 		client := a.clientFor(network)
 		if client == nil {
 			jsonError(w, "network not found", 404)
 			return
 		}
-		txs, err := client.GetRecentTransactions(r.Context(), 0)
+		txs, err := fetch(client)
 		if err != nil {
 			jsonError(w, err.Error(), 500)
 			return
 		}
 		total := len(txs)
 		if limit <= 0 {
+			stampBlockTimes(r.Context(), client, txs)
 			jsonResponse(w, map[string]any{"items": txs, "total": total})
 			return
 		}
@@ -314,7 +325,10 @@ func (a *API) HandleTxs(w http.ResponseWriter, r *http.Request) {
 		if end > total {
 			end = total
 		}
-		jsonResponse(w, map[string]any{"items": txs[offset:end], "total": total})
+		page := txs[offset:end]
+		// Stamp only what is being returned, not everything that was fetched.
+		stampBlockTimes(r.Context(), client, page)
+		jsonResponse(w, map[string]any{"items": page, "total": total})
 		return
 	}
 
@@ -330,10 +344,12 @@ func (a *API) HandleTxs(w http.ResponseWriter, r *http.Request) {
 		if client == nil {
 			continue
 		}
-		txs, err := client.GetRecentTransactions(r.Context(), 0)
+		txs, err := fetch(client)
 		if err != nil {
 			continue
 		}
+		// Block times are needed before sorting: across networks, heights from
+		// different chains are not comparable and only the timestamp orders them.
 		stampBlockTimes(r.Context(), client, txs)
 		for _, tx := range txs {
 			if seen[tx.Hash] {
