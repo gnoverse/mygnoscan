@@ -258,7 +258,7 @@ footer a:hover { color: var(--accent); }
 <footer>
   <div class="container">
     <span>mygnoscan — <a href="https://github.com/gnoverse/mygnoscan" target="_blank">github.com/gnoverse/mygnoscan</a> @ <a id="footer-hash" href="#" target="_blank">...</a></span>
-    <span>data from <a href="https://indexer.gno.land/graphql" target="_blank">tx-indexer</a></span>
+    <span id="footer-indexer">data from tx-indexer</span>
   </div>
 </footer>
 <script src="https://d3js.org/d3.v7.min.js"></script>
@@ -621,6 +621,7 @@ function onNetworkChange() {
   if (n && n !== 'all') { params.set('network', n); } else { params.delete('network'); }
   const newUrl = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
   history.replaceState(null, '', newUrl);
+  renderFooterIndexer();
   route();
 }
 function netBadgeEl(networkId) {
@@ -637,9 +638,11 @@ function netSuffix(n) {
   const net = (n !== undefined ? n : null) || getNetwork();
   return (net && net !== 'all') ? '?network=' + net : '';
 }
+let _networks = [];
 async function initNetworkSelector() {
   try {
     const nets = await fetch('/api/networks').then(r => r.json());
+    _networks = nets || [];
     const sel = document.getElementById('network-select');
     sel.innerHTML = '';
     const all = document.createElement('option');
@@ -651,7 +654,31 @@ async function initNetworkSelector() {
       sel.appendChild(opt);
     }
     sel.value = getNetwork();
+    renderFooterIndexer();
   } catch(e) { console.error('network selector:', e); }
+}
+
+// The footer names the indexer the selected network actually reads from. In
+// all-networks mode several are in play, so naming one would be wrong.
+function renderFooterIndexer() {
+  const span = document.getElementById('footer-indexer');
+  if (!span) return;
+  span.textContent = '';
+  const net = getNetwork();
+  const cfg = _networks.find(n => n.id === net);
+  if (!net || net === 'all' || !cfg || !cfg.indexer) {
+    span.appendChild(document.createTextNode(
+      'select a single network to see which indexer is used'));
+    return;
+  }
+  span.appendChild(document.createTextNode('data from '));
+  // A loopback/private indexer is real but unreachable from a visitor's browser,
+  // so show it without pretending it is a working link.
+  if (/^https?:\/\/(localhost|127\.|0\.0\.0\.0|\[::1\]|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/i.test(cfg.indexer)) {
+    span.appendChild(el('span', { title: 'indexer is local to the server' }, cfg.indexer));
+  } else {
+    span.appendChild(el('a', { href: cfg.indexer, target: '_blank' }, cfg.indexer));
+  }
 }
 
 async function api(path) {
