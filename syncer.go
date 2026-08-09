@@ -211,10 +211,27 @@ func (s *Syncer) backfillTransactions(ctx context.Context) {
 	}
 
 	blockTimes := s.fetchBlockTimes(ctx, all)
+	rows := make([]TxRow, 0, len(all))
 	for _, tx := range all {
-		s.upsertTx(tx, blockTimes[tx.BlockHeight])
+		gasFee := 0
+		if tx.GasFee != nil {
+			gasFee = tx.GasFee.Amount
+		}
+		rows = append(rows, TxRow{
+			Hash:        tx.Hash,
+			BlockHeight: tx.BlockHeight,
+			BlockTime:   blockTimes[tx.BlockHeight],
+			GasUsed:     tx.GasUsed,
+			GasWanted:   tx.GasWanted,
+			GasFee:      gasFee,
+			Success:     tx.Success,
+		})
 	}
-	log.Printf("[%s] backfilled %d transactions across %d blocks", s.networkID, len(all), len(heights))
+	if err := s.db.UpsertTransactions(s.networkID, rows); err != nil {
+		log.Printf("[%s] transaction backfill: %v", s.networkID, err)
+		return
+	}
+	log.Printf("[%s] backfilled %d transactions across %d blocks", s.networkID, len(rows), len(heights))
 }
 
 // chainFingerprint identifies a specific chain instance by its first block.

@@ -508,6 +508,55 @@ func (d *DB) HeightsMissingBlockTime(network string, limit int) ([]int, error) {
 	return heights, rows.Err()
 }
 
+// TxRow is a transaction to be stored.
+type TxRow struct {
+	Hash        string
+	BlockHeight int
+	BlockTime   string
+	GasUsed     int
+	GasWanted   int
+	GasFee      int
+	Success     bool
+}
+
+// UpsertTransactions writes many transactions under a single lock and a single
+// SQLite transaction.
+//
+// Writing them one at a time takes and releases the write lock per row, and with
+// an application-level RWMutex over the database that means read requests queue
+// behind every individual insert — a backfill pass of 100 rows measurably slowed
+// the API while it ran.
+func (d *DB) UpsertTransactions(network string, rows []TxRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+		INSERT OR IGNORE INTO transactions
+			(network, tx_hash, block_height, block_time, gas_used, gas_wanted, gas_fee, success)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, r := range rows {
+		if _, err := stmt.Exec(network, r.Hash, r.BlockHeight, r.BlockTime,
+			r.GasUsed, r.GasWanted, r.GasFee, r.Success); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // HeightsMissingTransactions returns block heights that have event rows with no
 // corresponding entry in the transactions table, newest first, capped at limit.
 //
