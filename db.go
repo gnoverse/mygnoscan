@@ -508,6 +508,52 @@ func (d *DB) HeightsMissingBlockTime(network string, limit int) ([]int, error) {
 	return heights, rows.Err()
 }
 
+// BlockTimesForHeights returns known block times for the given heights, read
+// from stored transactions.
+//
+// Stamping list responses by asking the indexer for each block is the dominant
+// cost of those endpoints: a public indexer answers in roughly a quarter second,
+// so a page touching 50 distinct blocks spends over a second on timestamps alone.
+// The syncer already records block_time on every transaction it writes, so for
+// anything already synced this is a local lookup instead.
+func (d *DB) BlockTimesForHeights(network string, heights []int) (map[int]string, error) {
+	if len(heights) == 0 {
+		return nil, nil
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(heights)), ",")
+	args := make([]any, 0, len(heights)+1)
+	q := `SELECT block_height, block_time FROM transactions
+	      WHERE block_time IS NOT NULL AND block_time != ''`
+	if network != "" {
+		q += ` AND network = ?`
+		args = append(args, network)
+	}
+	q += ` AND block_height IN (` + placeholders + `) GROUP BY block_height`
+	for _, h := range heights {
+		args = append(args, h)
+	}
+
+	rows, err := d.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[int]string, len(heights))
+	for rows.Next() {
+		var h int
+		var t string
+		if err := rows.Scan(&h, &t); err != nil {
+			return nil, err
+		}
+		out[h] = t
+	}
+	return out, rows.Err()
+}
+
 // TxRow is a transaction to be stored.
 type TxRow struct {
 	Hash        string
