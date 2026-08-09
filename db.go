@@ -480,8 +480,10 @@ func (d *DB) HeightsMissingBlockTime(network string, limit int) ([]int, error) {
 	var parts []string
 	for _, t := range backfillTables {
 		// Table names come from the constant above, never from input.
+		// Genesis rows have no block to read a time from; excluding them keeps
+		// the repair from re-querying an unanswerable height on every pass.
 		parts = append(parts, fmt.Sprintf(
-			`SELECT DISTINCT block_height FROM %s WHERE network = ? AND (block_time IS NULL OR block_time = '')`, t))
+			`SELECT DISTINCT block_height FROM %s WHERE network = ? AND block_height > 0 AND (block_time IS NULL OR block_time = '')`, t))
 	}
 	query := strings.Join(parts, " UNION ") + " ORDER BY block_height DESC LIMIT ?"
 
@@ -615,9 +617,13 @@ func (d *DB) HeightsMissingTransactions(network string, limit int) ([]int, error
 
 	var parts []string
 	for _, t := range []string{"packages", "calls", "msg_runs", "bank_sends"} {
+		// Height 0 is genesis: those packages were loaded with the chain rather
+		// than deployed by a transaction, so no transaction row will ever exist
+		// for them. Including them made the backfill retry the same query every
+		// pass, forever, finding nothing.
 		parts = append(parts, fmt.Sprintf(`
 			SELECT DISTINCT e.block_height FROM %s e
-			WHERE e.network = ?
+			WHERE e.network = ? AND e.block_height > 0
 			  AND NOT EXISTS (
 			    SELECT 1 FROM transactions t
 			    WHERE t.network = e.network AND t.tx_hash = e.tx_hash)`, t))

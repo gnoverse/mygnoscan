@@ -462,3 +462,45 @@ func TestBlockTimesForHeights(t *testing.T) {
 		t.Errorf("empty height list should be a no-op, got %v", err)
 	}
 }
+
+func TestBackfillSkipsGenesisRows(t *testing.T) {
+	db, err := NewDB(filepath.Join(t.TempDir(), "genesis.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	// Genesis-loaded packages: height 0, no transaction, no block, ever.
+	if err := db.UpsertPackage("gnoland1", "gno.land/r/gen", "gen", "g1c", "", 0, "", true, 1); err != nil {
+		t.Fatalf("seed genesis package: %v", err)
+	}
+	// A real deployment that genuinely needs repair.
+	if err := db.UpsertPackage("gnoland1", "gno.land/r/real", "real", "g1c", "TX", 42, "", true, 1); err != nil {
+		t.Fatalf("seed package: %v", err)
+	}
+
+	// Both backfills must ignore height 0, or they re-query an unanswerable
+	// height on every sync pass for the life of the process.
+	txHeights, err := db.HeightsMissingTransactions("gnoland1", 100)
+	if err != nil {
+		t.Fatalf("transaction gaps: %v", err)
+	}
+	for _, h := range txHeights {
+		if h == 0 {
+			t.Error("transaction backfill returned genesis height 0")
+		}
+	}
+	if len(txHeights) != 1 || txHeights[0] != 42 {
+		t.Errorf("transaction gaps = %v, want [42]", txHeights)
+	}
+
+	timeHeights, err := db.HeightsMissingBlockTime("gnoland1", 100)
+	if err != nil {
+		t.Fatalf("block time gaps: %v", err)
+	}
+	for _, h := range timeHeights {
+		if h == 0 {
+			t.Error("block time backfill returned genesis height 0")
+		}
+	}
+}
