@@ -422,3 +422,43 @@ func TestUpsertTransactionsIsBatchedAndIdempotent(t *testing.T) {
 		t.Errorf("empty batch should be a no-op, got %v", err)
 	}
 }
+
+func TestBlockTimesForHeights(t *testing.T) {
+	db, err := NewDB(filepath.Join(t.TempDir(), "times.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.UpsertTransactions("topaz", []TxRow{
+		{Hash: "A", BlockHeight: 10, BlockTime: "2026-01-01T00:00:00Z"},
+		{Hash: "B", BlockHeight: 11, BlockTime: ""}, // synced before times were known
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := db.UpsertTransactions("gnoland1", []TxRow{
+		{Hash: "C", BlockHeight: 10, BlockTime: "OTHER-NETWORK"},
+	}); err != nil {
+		t.Fatalf("seed other: %v", err)
+	}
+
+	got, err := db.BlockTimesForHeights("topaz", []int{10, 11, 12})
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if got[10] != "2026-01-01T00:00:00Z" {
+		t.Errorf("height 10 = %q, want the stored time", got[10])
+	}
+	// Heights with no usable time are absent, so the caller knows to ask the
+	// indexer for exactly those rather than for everything.
+	if _, ok := got[11]; ok {
+		t.Errorf("height 11 should be absent (empty stored time), got %q", got[11])
+	}
+	if _, ok := got[12]; ok {
+		t.Errorf("height 12 should be absent (not stored), got %q", got[12])
+	}
+
+	if _, err := db.BlockTimesForHeights("topaz", nil); err != nil {
+		t.Errorf("empty height list should be a no-op, got %v", err)
+	}
+}

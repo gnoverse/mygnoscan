@@ -83,8 +83,14 @@ func stampPackageTimes(ctx context.Context, client *IndexerClient, pkgs []Packag
 	}
 }
 
-// stampBlockTimes fetches block times for the given transactions and sets BlockTime on each.
-func stampBlockTimes(ctx context.Context, client *IndexerClient, txs []Transaction) {
+// stampBlockTimes sets BlockTime on each transaction, preferring stored times.
+//
+// Asking the indexer for each block is the dominant cost of list endpoints — a
+// public indexer answers in roughly a quarter second, so a page spanning 50
+// distinct blocks spends over a second on timestamps alone. The syncer already
+// stores block_time, so the indexer is only consulted for whatever is not
+// already known locally.
+func (a *API) stampBlockTimes(ctx context.Context, network string, client *IndexerClient, txs []Transaction) {
 	if len(txs) == 0 {
 		return
 	}
@@ -98,10 +104,26 @@ func stampBlockTimes(ctx context.Context, client *IndexerClient, txs []Transacti
 			heights = append(heights, tx.BlockHeight)
 		}
 	}
-	bt, err := client.GetBlockTimesForHeights(ctx, heights)
-	if err != nil {
-		return
+
+	bt, err := a.db.BlockTimesForHeights(network, heights)
+	if err != nil || bt == nil {
+		bt = make(map[int]string, len(heights))
 	}
+
+	missing := heights[:0:0]
+	for _, h := range heights {
+		if bt[h] == "" {
+			missing = append(missing, h)
+		}
+	}
+	if len(missing) > 0 && client != nil {
+		if fetched, err := client.GetBlockTimesForHeights(ctx, missing); err == nil {
+			for h, t := range fetched {
+				bt[h] = t
+			}
+		}
+	}
+
 	for i := range txs {
 		txs[i].BlockTime = bt[txs[i].BlockHeight]
 	}
@@ -463,7 +485,7 @@ func (a *API) HandleTxs(w http.ResponseWriter, r *http.Request) {
 		}
 		total := len(txs)
 		if limit <= 0 {
-			stampBlockTimes(r.Context(), client, txs)
+			a.stampBlockTimes(r.Context(), network, client, txs)
 			jsonResponse(w, map[string]any{"items": txs, "total": total})
 			return
 		}
@@ -476,7 +498,7 @@ func (a *API) HandleTxs(w http.ResponseWriter, r *http.Request) {
 		}
 		page := txs[offset:end]
 		// Stamp only what is being returned, not everything that was fetched.
-		stampBlockTimes(r.Context(), client, page)
+		a.stampBlockTimes(r.Context(), network, client, page)
 		jsonResponse(w, map[string]any{"items": page, "total": total})
 		return
 	}
@@ -497,7 +519,7 @@ func (a *API) HandleTxs(w http.ResponseWriter, r *http.Request) {
 			// Block times are needed before sorting: across networks, heights
 			// from different chains are not comparable and only the timestamp
 			// orders them.
-			stampBlockTimes(ctx, c, txs)
+			a.stampBlockTimes(ctx, n.ID, c, txs)
 			out := make([]netTx, 0, len(txs))
 			for _, tx := range txs {
 				tx.Network = n.ID
@@ -549,7 +571,7 @@ func (a *API) HandleAddress(w http.ResponseWriter, r *http.Request) {
 				if err != nil {
 					return nil, err
 				}
-				stampBlockTimes(ctx, c, netTxs)
+				a.stampBlockTimes(ctx, n.ID, c, netTxs)
 				for i := range netTxs {
 					netTxs[i].Network = n.ID
 				}
