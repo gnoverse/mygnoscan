@@ -380,3 +380,45 @@ func TestGetGasStatsUsesStoredTransactions(t *testing.T) {
 		t.Errorf("type = %q, want MsgCall resolved from the call row", stats.TopTxs[0].Type)
 	}
 }
+
+func TestUpsertTransactionsIsBatchedAndIdempotent(t *testing.T) {
+	db, err := NewDB(filepath.Join(t.TempDir(), "batch.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	rows := []TxRow{
+		{Hash: "A", BlockHeight: 1, BlockTime: "t1", GasUsed: 10, GasWanted: 20, GasFee: 1, Success: true},
+		{Hash: "B", BlockHeight: 2, BlockTime: "t2", GasUsed: 30, GasWanted: 40, GasFee: 2, Success: false},
+	}
+	if err := db.UpsertTransactions("topaz", rows); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	var count, gas int
+	if err := db.db.QueryRow(
+		`SELECT COUNT(*), COALESCE(SUM(gas_used),0) FROM transactions WHERE network='topaz'`).
+		Scan(&count, &gas); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if count != 2 || gas != 40 {
+		t.Errorf("count/gas = %d/%d, want 2/40", count, gas)
+	}
+
+	// Re-running a backfill pass must not duplicate or corrupt rows.
+	if err := db.UpsertTransactions("topaz", rows); err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+	if err := db.db.QueryRow(
+		`SELECT COUNT(*) FROM transactions WHERE network='topaz'`).Scan(&count); err != nil {
+		t.Fatalf("recount: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("count = %d after repeat, want 2", count)
+	}
+
+	if err := db.UpsertTransactions("topaz", nil); err != nil {
+		t.Errorf("empty batch should be a no-op, got %v", err)
+	}
+}
