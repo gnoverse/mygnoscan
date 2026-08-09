@@ -508,6 +508,50 @@ func (d *DB) HeightsMissingBlockTime(network string, limit int) ([]int, error) {
 	return heights, rows.Err()
 }
 
+// HeightsMissingTransactions returns block heights that have event rows with no
+// corresponding entry in the transactions table, newest first, capped at limit.
+//
+// The transactions table was added after the event tables, and incremental sync
+// only writes it going forward, so history synced by an older build has calls
+// and transfers recorded with no transaction row carrying their gas.
+func (d *DB) HeightsMissingTransactions(network string, limit int) ([]int, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var parts []string
+	for _, t := range []string{"packages", "calls", "msg_runs", "bank_sends"} {
+		parts = append(parts, fmt.Sprintf(`
+			SELECT DISTINCT e.block_height FROM %s e
+			WHERE e.network = ?
+			  AND NOT EXISTS (
+			    SELECT 1 FROM transactions t
+			    WHERE t.network = e.network AND t.tx_hash = e.tx_hash)`, t))
+	}
+	query := strings.Join(parts, " UNION ") + " ORDER BY block_height DESC LIMIT ?"
+
+	args := make([]any, 0, 5)
+	for i := 0; i < 4; i++ {
+		args = append(args, network)
+	}
+	args = append(args, limit)
+
+	rows, err := d.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var heights []int
+	for rows.Next() {
+		var h int
+		if err := rows.Scan(&h); err != nil {
+			return nil, err
+		}
+		heights = append(heights, h)
+	}
+	return heights, rows.Err()
+}
+
 // SetBlockTimes fills in block_time for rows at the given heights that lack it.
 // Existing values are left alone: this repairs history, it does not rewrite it.
 func (d *DB) SetBlockTimes(network string, times map[int]string) (int64, error) {
@@ -549,6 +593,140 @@ func (d *DB) SetBlockTimes(network string, times map[int]string) (int64, error) 
 		return 0, err
 	}
 	return updated, nil
+}
+
+// GasRealm is per-realm gas consumption.
+type GasRealm struct {
+	Path    string `json:"path"`
+	Gas     int    `json:"gas"`
+	Fees    int    `json:"fees"`
+	TxCount int    `json:"tx_count"`
+}
+
+// GasTx is a single expensive transaction.
+type GasTx struct {
+	Hash        string `json:"hash"`
+	BlockHeight int    `json:"block_height"`
+	GasUsed     int    `json:"gas_used"`
+	GasWanted   int    `json:"gas_wanted"`
+	Fee         int    `json:"fee"`
+	Type        string `json:"type"`
+	Detail      string `json:"detail"`
+	Success     bool   `json:"success"`
+}
+
+// GasStats aggregates gas usage for a network.
+type GasStats struct {
+	TotalTxs       int
+	TotalGasUsed   int
+	TotalGasWanted int
+	TotalFees      int
+	SuccessCount   int
+	FailCount      int
+	TopRealms      []GasRealm
+	TopTxs         []GasTx
+}
+
+// GetGasStats computes gas aggregates from stored transactions.
+//
+// Previously this was derived by downloading every transaction on the chain from
+// the indexer on each request. The transactions table already carries gas_used,
+// gas_wanted, gas_fee and success per network, so this is a handful of aggregates
+// over local data instead.
+func (d *DB) GetGasStats(network string, topN int) (*GasStats, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	where, args := "", []any{}
+	if network != "" {
+		where = " WHERE network = ?"
+		args = append(args, network)
+	}
+
+	out := &GasStats{}
+	err := d.db.QueryRow(`
+		SELECT COUNT(*),
+		       COALESCE(SUM(gas_used), 0),
+		       COALESCE(SUM(gas_wanted), 0),
+		       COALESCE(SUM(gas_fee), 0),
+		       COALESCE(SUM(CASE WHEN success THEN 1 ELSE 0 END), 0)
+		FROM transactions`+where, args...).
+		Scan(&out.TotalTxs, &out.TotalGasUsed, &out.TotalGasWanted, &out.TotalFees, &out.SuccessCount)
+	if err != nil {
+		return nil, fmt.Errorf("gas totals: %w", err)
+	}
+	out.FailCount = out.TotalTxs - out.SuccessCount
+
+	// Attribute each transaction's gas to what it touched. A transaction is
+	// joined to at most one realm here; calls and deployments are the two paths
+	// that carry a package path, and MsgRun is grouped under its caller because
+	// its ephemeral path is unique per run and would otherwise be one row each.
+	realmWhere, realmArgs := "", []any{}
+	if network != "" {
+		realmWhere = " AND t.network = ?"
+		realmArgs = append(realmArgs, network, network, network)
+	}
+	rows, err := d.db.Query(`
+		SELECT path, SUM(gas_used), SUM(gas_fee), COUNT(*) FROM (
+			SELECT c.pkg_path AS path, t.gas_used, t.gas_fee, t.tx_hash
+			  FROM calls c JOIN transactions t
+			    ON t.network = c.network AND t.tx_hash = c.tx_hash`+realmWhere+`
+			UNION ALL
+			SELECT p.path AS path, t.gas_used, t.gas_fee, t.tx_hash
+			  FROM packages p JOIN transactions t
+			    ON t.network = p.network AND t.tx_hash = p.tx_hash`+realmWhere+`
+			UNION ALL
+			SELECT 'MsgRun by ' || m.caller AS path, t.gas_used, t.gas_fee, t.tx_hash
+			  FROM msg_runs m JOIN transactions t
+			    ON t.network = m.network AND t.tx_hash = m.tx_hash`+realmWhere+`
+		) GROUP BY path ORDER BY SUM(gas_used) DESC LIMIT ?`,
+		append(realmArgs, topN)...)
+	if err != nil {
+		return nil, fmt.Errorf("gas by realm: %w", err)
+	}
+	for rows.Next() {
+		var r GasRealm
+		if err := rows.Scan(&r.Path, &r.Gas, &r.Fees, &r.TxCount); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		out.TopRealms = append(out.TopRealms, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Most expensive transactions, with the type and target resolved from
+	// whichever table recorded the message.
+	txRows, err := d.db.Query(`
+		SELECT t.tx_hash, t.block_height, t.gas_used, t.gas_wanted, t.gas_fee, t.success,
+		  COALESCE(
+		    (SELECT 'MsgCall' FROM calls c WHERE c.network = t.network AND c.tx_hash = t.tx_hash LIMIT 1),
+		    (SELECT 'MsgAddPackage' FROM packages p WHERE p.network = t.network AND p.tx_hash = t.tx_hash LIMIT 1),
+		    (SELECT 'MsgRun' FROM msg_runs m WHERE m.network = t.network AND m.tx_hash = t.tx_hash LIMIT 1),
+		    (SELECT 'BankMsgSend' FROM bank_sends b WHERE b.network = t.network AND b.tx_hash = t.tx_hash LIMIT 1),
+		    ''),
+		  COALESCE(
+		    (SELECT c.pkg_path || '::' || c.func_name FROM calls c WHERE c.network = t.network AND c.tx_hash = t.tx_hash LIMIT 1),
+		    (SELECT p.path FROM packages p WHERE p.network = t.network AND p.tx_hash = t.tx_hash LIMIT 1),
+		    (SELECT 'MsgRun by ' || m.caller FROM msg_runs m WHERE m.network = t.network AND m.tx_hash = t.tx_hash LIMIT 1),
+		    '')
+		FROM transactions t`+where+`
+		ORDER BY t.gas_used DESC LIMIT ?`, append(args, topN)...)
+	if err != nil {
+		return nil, fmt.Errorf("top gas transactions: %w", err)
+	}
+	defer txRows.Close()
+	for txRows.Next() {
+		var t GasTx
+		if err := txRows.Scan(&t.Hash, &t.BlockHeight, &t.GasUsed, &t.GasWanted,
+			&t.Fee, &t.Success, &t.Type, &t.Detail); err != nil {
+			return nil, err
+		}
+		out.TopTxs = append(out.TopTxs, t)
+	}
+	return out, txRows.Err()
 }
 
 // MaxBlockHeight returns the highest block height stored for a network, or 0 if

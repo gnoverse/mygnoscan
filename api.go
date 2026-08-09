@@ -1000,151 +1000,32 @@ func (a *API) HandleStorage(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) HandleGas(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
-	client := a.clientFor(network)
-	if client == nil {
-		jsonError(w, "no client available", 500)
-		return
-	}
-	txs, err := client.GetRecentTransactions(r.Context(), 0)
+
+	// Computed from stored transactions rather than by downloading the chain:
+	// the numbers here are presented as all-time totals, so they cannot be
+	// approximated from a recent window.
+	stats, err := a.db.GetGasStats(network, 20)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
 	}
 
-	var totalGasUsed, totalGasWanted, totalFees int
-	var successCount, failCount int
-	type RealmGas struct {
-		Path    string `json:"path"`
-		Gas     int    `json:"gas"`
-		Fees    int    `json:"fees"`
-		TxCount int    `json:"tx_count"`
-	}
-	type TopTx struct {
-		Hash        string `json:"hash"`
-		BlockHeight int    `json:"block_height"`
-		GasUsed     int    `json:"gas_used"`
-		GasWanted   int    `json:"gas_wanted"`
-		Fee         int    `json:"fee"`
-		Type        string `json:"type"`
-		Detail      string `json:"detail"`
-		Success     bool   `json:"success"`
-	}
-	realmMap := make(map[string]*RealmGas)
-
-	for _, tx := range txs {
-		totalGasUsed += tx.GasUsed
-		totalGasWanted += tx.GasWanted
-		if tx.GasFee != nil {
-			totalFees += tx.GasFee.Amount
-		}
-		if tx.Success {
-			successCount++
-		} else {
-			failCount++
-		}
-		for _, m := range tx.Messages {
-			path := m.Value.PkgPath
-			if path == "" && m.Value.Package != nil {
-				path = m.Value.Package.Path
-			}
-			// Ephemeral packages (MsgRun): aggregate by caller address
-			if strings.Contains(path, "/e/") {
-				caller := m.Value.Caller
-				if caller == "" && m.Value.Creator != "" {
-					caller = m.Value.Creator
-				}
-				if caller != "" {
-					path = "MsgRun by " + caller
-				}
-			}
-			if path != "" {
-				rg, ok := realmMap[path]
-				if !ok {
-					rg = &RealmGas{Path: path}
-					realmMap[path] = rg
-				}
-				rg.Gas += tx.GasUsed
-				rg.TxCount++
-				if tx.GasFee != nil {
-					rg.Fees += tx.GasFee.Amount
-				}
-			}
-		}
-	}
-
-	// Sort realms by gas
-	var topRealms []RealmGas
-	for _, rg := range realmMap {
-		topRealms = append(topRealms, *rg)
-	}
-	sort.Slice(topRealms, func(i, j int) bool { return topRealms[i].Gas > topRealms[j].Gas })
-	if len(topRealms) > 20 {
-		topRealms = topRealms[:20]
-	}
-
-	// Top txs by gas
-	sorted := make([]Transaction, len(txs))
-	copy(sorted, txs)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].GasUsed > sorted[j].GasUsed })
-	var topTxs []TopTx
-	for _, tx := range sorted {
-		if len(topTxs) >= 20 {
-			break
-		}
-		typ := ""
-		detail := ""
-		for _, m := range tx.Messages {
-			typ = m.Value.Typename
-			if m.Value.PkgPath != "" {
-				detail = m.Value.PkgPath
-				if m.Value.Func != "" {
-					detail += "::" + m.Value.Func
-				}
-			} else if m.Value.Package != nil {
-				p := m.Value.Package.Path
-				if strings.Contains(p, "/e/") {
-					// Ephemeral: show caller instead
-					caller := m.Value.Caller
-					if caller != "" {
-						detail = "MsgRun by " + caller
-					} else {
-						detail = p
-					}
-				} else {
-					detail = p
-				}
-			}
-		}
-		fee := 0
-		if tx.GasFee != nil {
-			fee = tx.GasFee.Amount
-		}
-		topTxs = append(topTxs, TopTx{
-			Hash: tx.Hash, BlockHeight: tx.BlockHeight,
-			GasUsed: tx.GasUsed, GasWanted: tx.GasWanted,
-			Fee: fee, Type: typ, Detail: detail, Success: tx.Success,
-		})
-	}
-
-	// Total source bytes from DB
-	totalStorageBytes := a.db.TotalSourceBytes(network)
-
 	avgGasPerTx := 0
-	if len(txs) > 0 {
-		avgGasPerTx = totalGasUsed / len(txs)
+	if stats.TotalTxs > 0 {
+		avgGasPerTx = stats.TotalGasUsed / stats.TotalTxs
 	}
 
 	jsonResponse(w, map[string]any{
-		"total_txs":          len(txs),
-		"total_gas_used":     totalGasUsed,
-		"total_gas_wanted":   totalGasWanted,
-		"total_fees":         totalFees,
+		"total_txs":          stats.TotalTxs,
+		"total_gas_used":     stats.TotalGasUsed,
+		"total_gas_wanted":   stats.TotalGasWanted,
+		"total_fees":         stats.TotalFees,
 		"avg_gas_per_tx":     avgGasPerTx,
-		"success_count":      successCount,
-		"fail_count":         failCount,
-		"total_source_bytes": totalStorageBytes,
-		"top_realms":         topRealms,
-		"top_txs":            topTxs,
+		"success_count":      stats.SuccessCount,
+		"fail_count":         stats.FailCount,
+		"total_source_bytes": a.db.TotalSourceBytes(network),
+		"top_realms":         stats.TopRealms,
+		"top_txs":            stats.TopTxs,
 	})
 }
 

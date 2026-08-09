@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sync"
 )
 
 type Syncer struct {
@@ -29,6 +30,7 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 	}
 	s.warnOnHeightRegression(ctx)
 	s.backfillBlockTimes(ctx)
+	s.backfillTransactions(ctx)
 	if err := s.syncPackages(ctx); err != nil {
 		return err
 	}
@@ -110,6 +112,12 @@ func (s *Syncer) syncPackages(ctx context.Context) error {
 // cannot stall startup or hammer a public indexer.
 const backfillBatch = 200
 
+// Transaction repair is one indexer request per block, so it moves in smaller steps.
+const (
+	backfillTxBatch     = 100
+	backfillConcurrency = 10
+)
+
 // backfillBlockTimes fills in block_time for rows written before that column
 // existed.
 //
@@ -146,6 +154,67 @@ func (s *Syncer) backfillBlockTimes(ctx context.Context) {
 		return
 	}
 	log.Printf("[%s] backfilled block_time on %d rows across %d blocks", s.networkID, updated, len(times))
+}
+
+// backfillTransactions fills in transaction rows for history that predates the
+// transactions table.
+//
+// Event tables record what happened, but gas and fee figures live only on the
+// transaction row. Without this, all-time gas totals computed from local storage
+// silently under-report — on a live instance, 37 transactions out of 2738.
+//
+// Gas cannot be reconstructed from what is already stored, so the rows have to
+// come back from the indexer. Bounded per pass, newest first, same as the
+// block_time repair.
+func (s *Syncer) backfillTransactions(ctx context.Context) {
+	heights, err := s.db.HeightsMissingTransactions(s.networkID, backfillTxBatch)
+	if err != nil {
+		log.Printf("[%s] transaction backfill: %v", s.networkID, err)
+		return
+	}
+	if len(heights) == 0 {
+		return
+	}
+
+	// One request per block, run concurrently: sequential fetches made a large
+	// gap take the better part of an hour to close.
+	type blockTxs struct {
+		txs []Transaction
+		err error
+	}
+	results := make([]blockTxs, len(heights))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, backfillConcurrency)
+	for i, h := range heights {
+		wg.Add(1)
+		go func(i, h int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			txs, err := s.client.GetTransactionsByBlock(ctx, h)
+			results[i] = blockTxs{txs: txs, err: err}
+		}(i, h)
+	}
+	wg.Wait()
+
+	var all []Transaction
+	for _, r := range results {
+		if r.err != nil {
+			// An unhealthy indexer: keep what we have and retry the rest next pass.
+			log.Printf("[%s] transaction backfill: %v", s.networkID, r.err)
+			break
+		}
+		all = append(all, r.txs...)
+	}
+	if len(all) == 0 {
+		return
+	}
+
+	blockTimes := s.fetchBlockTimes(ctx, all)
+	for _, tx := range all {
+		s.upsertTx(tx, blockTimes[tx.BlockHeight])
+	}
+	log.Printf("[%s] backfilled %d transactions across %d blocks", s.networkID, len(all), len(heights))
 }
 
 // chainFingerprint identifies a specific chain instance by its first block.

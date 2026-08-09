@@ -281,3 +281,102 @@ func TestBackfillBlockTimes(t *testing.T) {
 		t.Errorf("topaz block_time = %q, want it left untouched", topaz)
 	}
 }
+
+func TestHeightsMissingTransactions(t *testing.T) {
+	db, err := NewDB(filepath.Join(t.TempDir(), "txgap.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	// An event recorded with no transaction row behind it — the shape history
+	// synced by a build predating the transactions table is left in.
+	if err := db.InsertBankSend("gnoland1", "ORPHAN", 500, "", "g1a", "g1b", "1ugnot", true); err != nil {
+		t.Fatalf("seed orphan: %v", err)
+	}
+	// And one that is properly paired.
+	if err := db.InsertCall("gnoland1", "PAIRED", 600, "", "g1c", "gno.land/r/x", "F", true); err != nil {
+		t.Fatalf("seed call: %v", err)
+	}
+	if err := db.UpsertTransaction("gnoland1", "PAIRED", 600, "", 10, 20, 1, true); err != nil {
+		t.Fatalf("seed transaction: %v", err)
+	}
+	// Another network must not appear in the result.
+	if err := db.InsertBankSend("topaz", "OTHER", 700, "", "g1a", "g1b", "1ugnot", true); err != nil {
+		t.Fatalf("seed topaz: %v", err)
+	}
+
+	heights, err := db.HeightsMissingTransactions("gnoland1", 100)
+	if err != nil {
+		t.Fatalf("find heights: %v", err)
+	}
+	if len(heights) != 1 || heights[0] != 500 {
+		t.Fatalf("heights = %v, want [500] (only the unpaired event)", heights)
+	}
+
+	// Once the transaction row lands, the gap closes.
+	if err := db.UpsertTransaction("gnoland1", "ORPHAN", 500, "", 5, 6, 7, true); err != nil {
+		t.Fatalf("backfill transaction: %v", err)
+	}
+	heights, err = db.HeightsMissingTransactions("gnoland1", 100)
+	if err != nil {
+		t.Fatalf("find heights after backfill: %v", err)
+	}
+	if len(heights) != 0 {
+		t.Errorf("heights = %v after backfill, want none", heights)
+	}
+}
+
+func TestGetGasStatsUsesStoredTransactions(t *testing.T) {
+	db, err := NewDB(filepath.Join(t.TempDir(), "gas.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.InsertCall("topaz", "T1", 10, "", "g1c", "gno.land/r/demo/hot", "Run", true); err != nil {
+		t.Fatalf("seed call: %v", err)
+	}
+	if err := db.UpsertTransaction("topaz", "T1", 10, "", 1000, 2000, 30, true); err != nil {
+		t.Fatalf("seed tx: %v", err)
+	}
+	if err := db.InsertCall("topaz", "T2", 11, "", "g1c", "gno.land/r/demo/hot", "Run", true); err != nil {
+		t.Fatalf("seed call: %v", err)
+	}
+	if err := db.UpsertTransaction("topaz", "T2", 11, "", 500, 900, 10, false); err != nil {
+		t.Fatalf("seed tx: %v", err)
+	}
+	// A different network's gas must not leak into the totals.
+	if err := db.UpsertTransaction("gnoland1", "OTHER", 12, "", 99999, 99999, 99999, true); err != nil {
+		t.Fatalf("seed other network: %v", err)
+	}
+
+	stats, err := db.GetGasStats("topaz", 20)
+	if err != nil {
+		t.Fatalf("gas stats: %v", err)
+	}
+	if stats.TotalTxs != 2 {
+		t.Errorf("total txs = %d, want 2", stats.TotalTxs)
+	}
+	if stats.TotalGasUsed != 1500 {
+		t.Errorf("gas used = %d, want 1500", stats.TotalGasUsed)
+	}
+	if stats.TotalFees != 40 {
+		t.Errorf("fees = %d, want 40", stats.TotalFees)
+	}
+	if stats.SuccessCount != 1 || stats.FailCount != 1 {
+		t.Errorf("success/fail = %d/%d, want 1/1", stats.SuccessCount, stats.FailCount)
+	}
+	if len(stats.TopRealms) != 1 || stats.TopRealms[0].Path != "gno.land/r/demo/hot" {
+		t.Fatalf("top realms = %+v, want the one called realm", stats.TopRealms)
+	}
+	if stats.TopRealms[0].Gas != 1500 || stats.TopRealms[0].TxCount != 2 {
+		t.Errorf("realm gas/txs = %d/%d, want 1500/2", stats.TopRealms[0].Gas, stats.TopRealms[0].TxCount)
+	}
+	if len(stats.TopTxs) == 0 || stats.TopTxs[0].Hash != "T1" {
+		t.Errorf("top txs = %+v, want the most expensive first", stats.TopTxs)
+	}
+	if stats.TopTxs[0].Type != "MsgCall" {
+		t.Errorf("type = %q, want MsgCall resolved from the call row", stats.TopTxs[0].Type)
+	}
+}
