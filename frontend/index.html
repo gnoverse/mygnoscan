@@ -3377,11 +3377,40 @@ function liveIncrStat(id) {
   }
 }
 
+// Live block heights, per network. Chains are at wildly different heights, so a
+// single shared counter written by whichever event arrived last just oscillates.
+const _liveTips = {};
+
+function renderLiveBlock() {
+  const blockEl = document.getElementById('stat-block');
+  if (!blockEl) return;
+  const net = getNetwork();
+
+  if (net && net !== 'all') {
+    if (_liveTips[net] > 0) blockEl.textContent = fmtNum(_liveTips[net]);
+    return;
+  }
+
+  // Across networks there is no single "current block". Show the highest so the
+  // number is stable and monotonic, and put the real per-network tips in the
+  // tooltip rather than flickering between them.
+  const entries = Object.entries(_liveTips).filter(([, h]) => h > 0);
+  if (!entries.length) return;
+  blockEl.textContent = fmtNum(Math.max(...entries.map(([, h]) => h)));
+  blockEl.title = entries
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([n, h]) => n + ': ' + fmtNum(h))
+    .join('\n');
+}
+
 function onLiveTx(tx) {
   _liveTxCount++;
-  // Update block height in home stats
-  const blockEl = document.getElementById('stat-block');
-  if (blockEl && tx.block_height > 0) blockEl.textContent = fmtNum(tx.block_height);
+  // Track the tip per network; the display decides what to show.
+  if (tx.block_height > 0) {
+    const net = tx.network || getNetwork();
+    if (!(_liveTips[net] > tx.block_height)) _liveTips[net] = tx.block_height;
+    renderLiveBlock();
+  }
 
   // Increment stat counters
   liveIncrStat('stat-txs');
@@ -3429,8 +3458,13 @@ function onLiveTx(tx) {
 
 function onLiveBlock(block, network) {
   _liveBlockCount++;
-  const blockEl = document.getElementById('stat-block');
-  if (blockEl) blockEl.textContent = fmtNum(block.height);
+  // Same per-network tracking as onLiveTx: block events arrive more often, so
+  // this was the main source of the flicker in all-networks mode.
+  if (block.height > 0) {
+    const net = network || getNetwork();
+    if (!(_liveTips[net] > block.height)) _liveTips[net] = block.height;
+    renderLiveBlock();
+  }
 
   // Prepend to blocks page if active
   const blocksList = document.getElementById('blocks-list');
