@@ -273,3 +273,66 @@ func TestMaxBlockHeight(t *testing.T) {
 		t.Errorf("height = %d, want 42 (highest for topaz, ignoring other networks)", got)
 	}
 }
+
+func TestWalkTransactionsCoversEveryRowAcrossPages(t *testing.T) {
+	// The chain is two and a half pages deep and its blocks hold 3 transactions
+	// each, so the indexer's cap falls inside a block on every page. Every row has
+	// to arrive exactly once: a gap here is silent, permanent data loss, because
+	// the sync cursors only ever move forward.
+	fake := &truncatingTxIndexer{tip: 8500, txsPerBlock: 3}
+	srv := httptest.NewServer(fake)
+	t.Cleanup(srv.Close)
+	client := NewIndexerClient(srv.URL)
+
+	seen := make(map[string]int)
+	pages := 0
+	err := walkTransactions(context.Background(), nil, client.GetTransactionsFromHeight,
+		func(txs []Transaction) {
+			pages++
+			for _, tx := range txs {
+				seen[tx.Hash]++
+			}
+		})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if pages < 3 {
+		t.Errorf("walked %d pages for %d rows; expected the cap to force several",
+			pages, fake.tip*fake.txsPerBlock)
+	}
+	want := fake.tip * fake.txsPerBlock
+	if len(seen) != want {
+		t.Errorf("saw %d distinct transactions, want %d", len(seen), want)
+	}
+	for h := 1; h <= fake.tip; h++ {
+		for i := 0; i < fake.txsPerBlock; i++ {
+			hash := fmt.Sprintf("tx-%d-%d", h, i)
+			switch seen[hash] {
+			case 1:
+			case 0:
+				t.Fatalf("%s never arrived — the walk skipped it", hash)
+			default:
+				t.Fatalf("%s arrived %d times", hash, seen[hash])
+			}
+		}
+	}
+}
+
+func TestWalkTransactionsStopsWhenCaughtUp(t *testing.T) {
+	fake := &truncatingTxIndexer{tip: 100, txsPerBlock: 1}
+	srv := httptest.NewServer(fake)
+	t.Cleanup(srv.Close)
+
+	cursor := 100
+	calls := 0
+	err := walkTransactions(context.Background(), &cursor,
+		NewIndexerClient(srv.URL).GetTransactionsFromHeight,
+		func(txs []Transaction) { calls++ })
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if calls != 0 {
+		t.Errorf("processed %d pages while caught up, want 0", calls)
+	}
+}

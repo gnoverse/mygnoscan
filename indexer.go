@@ -29,6 +29,18 @@ type IndexerClient struct {
 // errIndexerUnavailable is returned while the breaker is open.
 var errIndexerUnavailable = errors.New("indexer unavailable, not retried yet")
 
+// errQueryTooLarge reports that a query's result set hit the indexer's element
+// cap. It describes the query, not the indexer's health.
+var errQueryTooLarge = errors.New("indexer result set hit the element cap")
+
+// indexerElementCap is the tx-indexer's server-side limit on records per query.
+// On reaching it the resolver stops iterating and returns the rows it has
+// alongside a GraphQL error, so a capped response is partial rather than empty.
+// There is no limit or offset argument to ask for the next page with
+// (getTransactions takes only `where` and `order`), which leaves the block-height
+// filter as the only way to move through a result set larger than the cap.
+const indexerElementCap = 10000
+
 const (
 	clientBreakerThreshold = 2
 	clientBreakerCooldown  = 30 * time.Second
@@ -97,8 +109,9 @@ func (c *IndexerClient) query(ctx context.Context, query string, vars map[string
 		return errIndexerUnavailable
 	}
 	err := c.doQuery(ctx, query, vars, result)
-	// Caller-side cancellation says nothing about the indexer's health.
-	if !errors.Is(err, context.Canceled) {
+	// Caller-side cancellation and a capped result set both say nothing about the
+	// indexer's health, so neither counts against the breaker.
+	if !errors.Is(err, context.Canceled) && !errors.Is(err, errQueryTooLarge) {
 		c.recordResult(err)
 	}
 	return err
@@ -134,6 +147,19 @@ func (c *IndexerClient) doQuery(ctx context.Context, query string, vars map[stri
 	}
 
 	if len(gqlResp.Errors) > 0 {
+		for _, e := range gqlResp.Errors {
+			if !strings.Contains(e.Message, "max elements per query") {
+				continue
+			}
+			// The resolver stops iterating at the cap and returns the rows it
+			// already has alongside this error, so decode the partial page before
+			// reporting it. Only this error carries usable data — for anything
+			// else `data` is meaningless and must not reach the caller.
+			if err := json.Unmarshal(gqlResp.Data, result); err != nil {
+				return fmt.Errorf("decode capped response: %w", err)
+			}
+			return fmt.Errorf("%w: %s", errQueryTooLarge, e.Message)
+		}
 		return fmt.Errorf("graphql error: %s", gqlResp.Errors[0].Message)
 	}
 
@@ -367,32 +393,79 @@ const txFields = `
 	}
 `
 
-// GetAllPackages fetches all MsgAddPackage transactions.
-func (c *IndexerClient) GetAllPackages(ctx context.Context, lastHeight *int,
-) ([]Transaction, error) {
-
+// transactionsFromHeight fetches one page of transactions above lastHeight (from
+// genesis when nil), oldest first. truncated reports that the indexer stopped at
+// its element cap and more rows remain; resume by passing the block height of the
+// last returned row.
+//
+// The cap is the page size. The resolver returns the rows it has alongside its
+// error, so there is nothing to size or guess at: ask for everything above the
+// cursor and take what comes back.
+//
+// ASC ordering is load-bearing, not cosmetic. Truncation keeps the *first* rows
+// the resolver iterated, so ascending gives the contiguous next page directly
+// above the cursor. Descending would hand back the newest rows instead — and
+// since the sync cursors are derived from the highest stored block height,
+// storing those would jump the cursor to the tip and orphan everything between,
+// silently and permanently.
+func (c *IndexerClient) transactionsFromHeight(
+	ctx context.Context,
+	lastHeight *int,
+	extraWhere, fields string,
+) (txs []Transaction, truncated bool, err error) {
 	var result struct {
 		GetTransactions []Transaction `json:"getTransactions"`
 	}
 
-	where := `messages: { value: { MsgAddPackage: {} } }`
-
+	heightWhere := ""
 	if lastHeight != nil {
-		where = fmt.Sprintf(`
-			block_height: { gt: %d }
-			messages: { value: { MsgAddPackage: {} } }
-		`, *lastHeight)
+		heightWhere = fmt.Sprintf(`block_height: { gt: %d }`, *lastHeight)
 	}
-
 	q := fmt.Sprintf(`{
 		getTransactions(
-			where: { %s }
+			where: { %s %s }
 			order: { heightAndIndex: ASC }
 		) { %s }
-	}`, where, txFields)
+	}`, heightWhere, extraWhere, fields)
 
-	err := c.query(ctx, q, nil, &result)
-	return result.GetTransactions, err
+	err = c.query(ctx, q, nil, &result)
+	if err != nil && !errors.Is(err, errQueryTooLarge) {
+		return nil, false, err
+	}
+	if err == nil {
+		return result.GetTransactions, false, nil
+	}
+
+	// Truncated. The cap can fall inside a block, and the caller resumes with an
+	// exclusive `gt` on the last row's height, which would skip the rest of that
+	// block — so give back only the heights known to be complete.
+	txs = dropTrailingHeight(result.GetTransactions)
+	if len(txs) == 0 {
+		return nil, false, fmt.Errorf(
+			"a single block holds more than %d matching transactions: %w", indexerElementCap, err)
+	}
+	return txs, true, nil
+}
+
+// dropTrailingHeight removes the rows sharing the highest block height in an
+// ascending page, which is the one truncation may have cut in half.
+func dropTrailingHeight(txs []Transaction) []Transaction {
+	if len(txs) == 0 {
+		return txs
+	}
+	last := txs[len(txs)-1].BlockHeight
+	end := len(txs)
+	for end > 0 && txs[end-1].BlockHeight == last {
+		end--
+	}
+	return txs[:end]
+}
+
+// GetAllPackages fetches a page of MsgAddPackage transactions above lastHeight.
+// See transactionsFromHeight for the paging contract.
+func (c *IndexerClient) GetAllPackages(ctx context.Context, lastHeight *int) ([]Transaction, bool, error) {
+	return c.transactionsFromHeight(ctx, lastHeight,
+		`messages: { value: { MsgAddPackage: {} } }`, txFields)
 }
 
 // GetRecentTransactions fetches the most recent transactions, limited to maxResults.
@@ -480,39 +553,10 @@ func (c *IndexerClient) recentTransactionsWindowed(
 	}
 }
 
-func (c *IndexerClient) GetRecentTransactionsFromHeight(ctx context.Context, lastHeight *int) ([]Transaction, error) {
-	var result struct {
-		GetTransactions []Transaction `json:"getTransactions"`
-	}
-
-	where := ""
-
-	if lastHeight != nil {
-		where = fmt.Sprintf(`block_height: { gt: %d }`, *lastHeight)
-	}
-
-	// if where is empty, avoid trailing comma / invalid GraphQL
-	whereClause := ""
-	if where != "" {
-		whereClause = fmt.Sprintf("where: { %s }", where)
-	} else {
-		whereClause = "where: {}"
-	}
-
-	q := fmt.Sprintf(`{
-		getTransactions(
-			%s
-			order: { heightAndIndex: DESC }
-		) { %s }
-	}`, whereClause, txFieldsLight)
-
-	if err := c.query(ctx, q, nil, &result); err != nil {
-		return nil, err
-	}
-
-	txs := result.GetTransactions
-
-	return txs, nil
+// GetTransactionsFromHeight fetches a page of transactions above lastHeight.
+// See transactionsFromHeight for the paging contract.
+func (c *IndexerClient) GetTransactionsFromHeight(ctx context.Context, lastHeight *int) ([]Transaction, bool, error) {
+	return c.transactionsFromHeight(ctx, lastHeight, "", txFieldsLight)
 }
 
 // GetTransactionsByPkgPath fetches MsgCall transactions for a specific package.
@@ -577,34 +621,11 @@ func (c *IndexerClient) GetTransactionsByAddress(ctx context.Context, addr strin
 	return result.GetTransactions, err
 }
 
-// GetMsgRunTransactions fetches all MsgRun transactions.
-func (c *IndexerClient) GetMsgRunTransactions(
-	ctx context.Context,
-	lastHeight *int,
-) ([]Transaction, error) {
-
-	var result struct {
-		GetTransactions []Transaction `json:"getTransactions"`
-	}
-
-	where := `messages: { value: { MsgRun: {} } }`
-
-	if lastHeight != nil {
-		where = fmt.Sprintf(`
-			block_height: { gt: %d }
-			messages: { value: { MsgRun: {} } }
-		`, *lastHeight)
-	}
-
-	q := fmt.Sprintf(`{
-		getTransactions(
-			where: { %s }
-			order: { heightAndIndex: DESC }
-		) { %s }
-	}`, where, txFields)
-
-	err := c.query(ctx, q, nil, &result)
-	return result.GetTransactions, err
+// GetMsgRunTransactions fetches a page of MsgRun transactions above lastHeight.
+// See transactionsFromHeight for the paging contract.
+func (c *IndexerClient) GetMsgRunTransactions(ctx context.Context, lastHeight *int) ([]Transaction, bool, error) {
+	return c.transactionsFromHeight(ctx, lastHeight,
+		`messages: { value: { MsgRun: {} } }`, txFields)
 }
 
 type Block struct {
