@@ -43,8 +43,18 @@ silent fallback, because an instance pointed at the wrong chain looks healthy.
 explorer needs lives here: transactions by various filters, blocks, latest height.
 
 **`syncer.go`** — the background loop, one per network, every 30s. Each pass
-checks chain identity, then syncs packages, calls/sends, and msg_runs. Cursors come
-from the highest stored height, so a pass only fetches what is new.
+checks chain identity, syncs blocks, then syncs packages, calls/sends, and
+msg_runs. Cursors come from the highest stored height, so a pass only fetches
+what is new.
+
+Block sync is the one part with two cursors, both derived from the `blocks` table
+itself: head sync walks forward from `MAX(height)` to the tip, and a backfill
+walks backward from `MIN(height)`, bounded per pass so a multi-million-block
+history spreads over many passes instead of stalling everything behind it.
+Backward rather than forward, so the dashboard's recent window populates first.
+The stored range stays contiguous, which is what lets both cursors be derived
+rather than stored. The backfill stops at genesis, or at a pruned floor once a
+single-block probe confirms the indexer really has nothing below it.
 
 **`analyzer.go`** — takes `MsgAddPackage` source and extracts
 `import "gno.land/..."` statements by regex, then writes package, file and
@@ -70,7 +80,9 @@ file, with D3 for the dependency graph. Routing is client-side; the server serve
    packages, files and dependency edges. `MsgCall`, `MsgRun` and `BankMsgSend`
    become `calls`, `msg_runs` and `bank_sends` rows. Every transaction also becomes
    a `transactions` row with its gas and success status.
-3. Block times are fetched per unique height and stamped onto the rows.
+3. Block times are fetched per unique height and stamped onto the rows. Blocks
+   themselves are stored separately by the block sync above, with the proposer
+   address interned into `proposers`, and back the block charts.
 4. Handlers read SQLite, and for a few endpoints query the indexer or RPC live.
 5. The frontend calls `/api/*` and renders.
 

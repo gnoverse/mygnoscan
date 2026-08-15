@@ -166,11 +166,19 @@ This table is the single source of truth for remaining work. Update it as each b
 - [x] **Batch 1 — shell + zero-persistence charts.** Persistence: none. ECharts via CDN, dashboards view,
       section sub-nav, window picker, chart lifecycle, `ⓘ` tooltip primitive, `?window=` resolver +
       `monthly` bucket. Six charts above.
-- [ ] **Batch 2 — `blocks` table.** Persist `height, time, proposer, num_txs` in the syncer.
-      Unlocks: block-time histogram, blocks/day, proposer distribution (map proposer → moniker via the
-      existing `r/gnops/valopers` logic in `HandleValidators`), activity heatmap (hour × day-of-week),
-      new addresses (first-seen), gas-per-tx histogram, function-call heatmap with realm selector,
-      DAU/WAU/MAU.
+- [x] **Batch 2a — `blocks` table.** Persist `height, time, proposer_id, num_txs`, plus a `proposers`
+      lookup, in the syncer. Unlocks: block-time histogram, blocks/bucket, proposer distribution (map
+      proposer → moniker via the existing `r/gnops/valopers` logic in `HandleValidators`). Also carries
+      the §10.2 config widening. Design:
+      [`2026-08-13-dashboards-batch-2a-blocks-design.md`](2026-08-13-dashboards-batch-2a-blocks-design.md).
+- [ ] **Batch 2b — no schema change.** Activity heatmap (hour × day-of-week), new addresses
+      (first-seen), gas-per-tx histogram, function-call heatmap with realm selector, DAU/WAU/MAU.
+      These read `block_time`, already denormalized onto `calls`/`transactions`/`bank_sends`/`packages`.
+
+      > **Correction:** this row originally listed all eight charts under a single "batch 2 — `blocks`
+      > table". Only the three in 2a need it; the five in 2b need no schema change at all. The row also
+      > implied migration risk — adding new tables via `CREATE TABLE IF NOT EXISTS` never touches the
+      > `packages_new` rebuild path `AGENTS.md` warns about.
 - [ ] **Batch 3 — `storage_events` table.** Persist `StorageDepositEvent` / `StorageUnlockEvent`
       (`bytes_delta`, fee, `pkg_path`) from `TxResponse.Events`; the fields already exist in `indexer.go`'s
       `TxEvent`. Unlocks: storage growth (cumulative area), top-consumers treemap, deposit-locked vs

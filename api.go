@@ -824,6 +824,10 @@ func (a *API) HandleBlock(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err.Error(), 404)
 		return
 	}
+	if block == nil {
+		jsonError(w, fmt.Sprintf("block not found: %d", height), 404)
+		return
+	}
 	// Also get transactions in this block
 	txs, _ := client.GetTransactionsByBlock(r.Context(), height)
 	jsonResponse(w, map[string]any{
@@ -1294,4 +1298,57 @@ func (a *API) HandleTimeSeriesActiveAddresses(w http.ResponseWriter, r *http.Req
 		pts = []ActiveAddressTimePoint{}
 	}
 	jsonResponse(w, pts)
+}
+
+func (a *API) HandleTimeSeriesBlocks(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	days, granularity := parseTimeseriesParams(r)
+	pts, err := a.db.GetBlockTimeSeries(network, granularity, days)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	if pts == nil {
+		pts = []BlockTimePoint{}
+	}
+	jsonResponse(w, pts)
+}
+
+func (a *API) HandleBlockTimeHistogram(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	days, _ := parseTimeseriesParams(r)
+	bins, err := a.db.GetBlockTimeHistogram(network, days)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	if bins == nil {
+		bins = []BlockTimeBin{}
+	}
+	jsonResponse(w, bins)
+}
+
+func (a *API) HandleBlockProposers(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	days, _ := parseTimeseriesParams(r)
+	topN, _ := strconv.Atoi(r.URL.Query().Get("topN"))
+	props, err := a.db.GetBlockProposers(network, days, topN)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	if props == nil {
+		props = []ProposerCount{}
+	}
+	jsonResponse(w, props)
+}
+
+func (a *API) HandleBlockCoverage(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	cov, err := a.db.GetBlockCoverage(network)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	jsonResponse(w, cov)
 }

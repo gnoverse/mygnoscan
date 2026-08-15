@@ -10,10 +10,11 @@ import (
 )
 
 type Syncer struct {
-	client    *IndexerClient
-	db        *DB
-	analyzer  *Analyzer
-	networkID string
+	client      *IndexerClient
+	db          *DB
+	analyzer    *Analyzer
+	networkID   string
+	proposerIDs map[string]int64 // address -> interned id, memoised across passes
 }
 
 func NewSyncer(client *IndexerClient, db *DB, analyzer *Analyzer, networkID string) *Syncer {
@@ -29,6 +30,7 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 		return fmt.Errorf("checkChainReset error: %w", err)
 	}
 	s.warnOnHeightRegression(ctx)
+	s.syncBlocks(ctx)
 	s.backfillBlockTimes(ctx)
 	s.backfillTransactions(ctx)
 	if err := s.syncPackages(ctx); err != nil {
@@ -278,6 +280,9 @@ func (s *Syncer) chainFingerprint(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if block == nil {
+		return "", errors.New("block 1 not found")
+	}
 	if block.Hash == "" {
 		return "", errors.New("block 1 has no hash")
 	}
@@ -328,6 +333,10 @@ func (s *Syncer) checkChainReset(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("discard data after chain reset: %w", err)
 	}
+	// The proposer memo now points at deleted rows. Keeping it would write every
+	// subsequent block with a dangling proposer_id, and GetBlockProposers joins
+	// on that id, so those blocks would silently vanish from the aggregate.
+	s.proposerIDs = nil
 	log.Printf("[%s] removed %d rows, re-syncing from the new genesis", s.networkID, deleted)
 
 	return s.db.SetSyncState(key, current)
@@ -349,6 +358,192 @@ func (s *Syncer) warnOnHeightRegression(ctx context.Context) {
 		log.Printf("[%s] indexer tip %d is below stored height %d on the same chain; sync will not advance until the indexer catches up",
 			s.networkID, remote, stored)
 	}
+}
+
+// Page size measured against the live indexer: 5,000 blocks in ~500ms / 684KB.
+// The per-pass budget bounds one SyncAll pass to ~100k blocks (~10s) so a full
+// 3.3M-block backfill spreads over ~33 passes instead of stalling package,
+// call and msg-run syncing behind a single 5-6 minute run.
+const (
+	blockPageSize     = 5000
+	blockPagesPerPass = 20
+)
+
+func blocksBackfillDoneKey(network string) string {
+	return "blocks_backfill_done:" + network
+}
+
+// syncBlocks keeps the blocks table current and backfills history.
+//
+// Two cursors, both derived from the table itself: head sync walks forward from
+// MAX(height) to the tip, backfill walks backward from MIN(height). Because the
+// table always holds a contiguous height range, neither cursor can be fooled by
+// a gap — nothing may insert blocks outside that range.
+//
+// Backward rather than forward: filling oldest-first would leave the dashboard's
+// default 90d window empty until the backfill nearly finished.
+func (s *Syncer) syncBlocks(ctx context.Context) {
+	tip, err := s.client.LatestBlockHeight(ctx)
+	if err != nil {
+		log.Printf("[%s] syncBlocks: tip: %v", s.networkID, err)
+		return
+	}
+
+	minH, maxH, ok, err := s.db.BlockHeightBounds(s.networkID)
+	if err != nil {
+		log.Printf("[%s] syncBlocks: bounds: %v", s.networkID, err)
+		return
+	}
+
+	// One budget shared across seeding, head sync, and backfill: the point of
+	// bounding a pass is a cap on total blocks fetched, not just on the
+	// backfill loop, so every phase below draws from the same pagesLeft.
+	pagesLeft := blockPagesPerPass
+
+	if !ok {
+		// Seed at the tip so recent windows populate immediately.
+		from := tip - blockPageSize + 1
+		if from < 1 {
+			from = 1
+		}
+		if !s.fetchBlockPage(ctx, from, tip) {
+			return
+		}
+		pagesLeft--
+		minH, maxH, ok, err = s.db.BlockHeightBounds(s.networkID)
+		if err != nil || !ok {
+			return
+		}
+	}
+
+	// Head sync: catch up to the tip.
+	if maxH < tip && pagesLeft > 0 {
+		to := maxH + blockPageSize
+		if to > tip {
+			to = tip
+		}
+		s.fetchBlockPage(ctx, maxH+1, to)
+		pagesLeft--
+	}
+
+	// Backfill: walk down until genesis or an empty page, bounded per pass.
+	if done, _ := s.db.GetSyncState(blocksBackfillDoneKey(s.networkID)); done == "1" {
+		return
+	}
+	reachedFloor := false
+	for i := 0; i < pagesLeft && minH > 1; i++ {
+		to := minH - 1
+		from := to - blockPageSize + 1
+		if from < 1 {
+			from = 1
+		}
+		if !s.fetchBlockPage(ctx, from, to) {
+			return
+		}
+		newMin, _, ok, err := s.db.BlockHeightBounds(s.networkID)
+		if err != nil || !ok {
+			return
+		}
+		if newMin >= minH {
+			// The page returned nothing new. That alone doesn't distinguish "the
+			// indexer prunes below here" from "a replica still catching up (or a
+			// load balancer fronting a partially-populated node) served an empty
+			// range this once" — both come back as an empty getBlocks: [] with
+			// HTTP 200. Marking done on the wrong one is worse than not marking
+			// it at all: the coverage endpoint would then report complete: true
+			// while history is actually missing, silently and permanently, since
+			// nothing ever revisits a range once backfill has passed it.
+			//
+			// Confirm with a direct probe at the boundary height. A retry here
+			// costs one query and, on a genuinely pruned floor, would come back
+			// empty again anyway.
+			block, perr := s.client.GetBlock(ctx, minH-1)
+			if perr != nil {
+				log.Printf("[%s] syncBlocks: floor probe at height %d failed: %v; retrying next pass", s.networkID, minH-1, perr)
+				return
+			}
+			if block != nil {
+				log.Printf("[%s] syncBlocks: empty page %d-%d but probe found height %d; treating as transient, retrying next pass", s.networkID, from, to, minH-1)
+				return
+			}
+			reachedFloor = true
+			break
+		}
+		minH = newMin
+	}
+	if minH <= 1 || reachedFloor {
+		if err := s.db.SetSyncState(blocksBackfillDoneKey(s.networkID), "1"); err != nil {
+			log.Printf("[%s] syncBlocks: mark done: %v", s.networkID, err)
+			return
+		}
+		reason := "reached genesis"
+		if reachedFloor {
+			reason = "pruned floor confirmed by probe"
+		}
+		log.Printf("[%s] syncBlocks: backfill done (%s), floor height %d", s.networkID, reason, minH)
+	}
+}
+
+// proposerID returns the interned id for an address, memoised in the syncer so
+// a 5,000-block page costs one query per *distinct* proposer instead of two per
+// block. gno.land runs a handful of validators, so the map stays tiny.
+func (s *Syncer) proposerID(address string) (int64, error) {
+	if s.proposerIDs == nil {
+		s.proposerIDs = make(map[string]int64)
+	}
+	if id, ok := s.proposerIDs[address]; ok {
+		return id, nil
+	}
+	id, err := s.db.InternProposer(s.networkID, address)
+	if err != nil {
+		return 0, err
+	}
+	s.proposerIDs[address] = id
+	return id, nil
+}
+
+// fetchBlockPage stores one height range. Returns false when the page failed,
+// so the caller stops and retries next pass rather than spinning.
+//
+// The whole page is written in one UpsertBlocks call: per-row writes would hold
+// and release the write lock 5,000 times, and the comment on UpsertTransactions
+// records that read requests already queue behind a per-row backfill of a
+// hundred rows.
+//
+// A page is all-or-nothing: if any row's proposer lookup fails, the page is
+// abandoned rather than written with that row missing. Writing the rest would
+// leave a silent hole in the stored range that no later pass ever revisits —
+// head sync only extends above MAX(height) and backfill only extends below
+// MIN(height), so a gap in the middle is permanent and undetectable. Retrying
+// the whole page next pass costs nothing (UpsertBlocks is idempotent) and
+// keeps the contiguous-range invariant the two cursors depend on.
+func (s *Syncer) fetchBlockPage(ctx context.Context, from, to int) bool {
+	blocks, err := s.client.GetBlocksInRange(ctx, from, to)
+	if err != nil {
+		log.Printf("[%s] syncBlocks: range %d-%d: %v", s.networkID, from, to, err)
+		return false
+	}
+	if len(blocks) == 0 {
+		return true
+	}
+
+	rows := make([]BlockRow, 0, len(blocks))
+	for _, b := range blocks {
+		var pid int64
+		if b.ProposerAddressRaw != "" {
+			pid, err = s.proposerID(b.ProposerAddressRaw)
+			if err != nil {
+				log.Printf("[%s] syncBlocks: intern proposer for range %d-%d: %v", s.networkID, from, to, err)
+				return false
+			}
+		}
+		rows = append(rows, BlockRow{Height: b.Height, Time: b.Time, ProposerID: pid, NumTxs: b.NumTxs})
+	}
+	if err := s.db.UpsertBlocks(s.networkID, rows); err != nil {
+		log.Printf("[%s] syncBlocks: upsert range %d-%d: %v", s.networkID, from, to, err)
+		return false
+	}
+	return true
 }
 
 func (s *Syncer) getLastBlockHeight(ctx context.Context, tableName string) (*int, error) {

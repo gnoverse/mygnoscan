@@ -758,7 +758,12 @@ func (c *IndexerClient) GetBlocksByHeights(ctx context.Context, heights []int) (
 	return m, nil
 }
 
-// GetBlock fetches a single block by height.
+// GetBlock fetches a single block by height. A nil, nil return means the
+// query succeeded but the indexer has nothing at that height — genesis not
+// yet reached from the other side, or a pruned/nonexistent height. Callers
+// that need to tell "confirmed absent" apart from "could not ask" (network
+// error, indexer down) rely on this distinction; do not collapse it back into
+// a single error.
 func (c *IndexerClient) GetBlock(ctx context.Context, height int) (*Block, error) {
 	var result struct {
 		GetBlocks []Block `json:"getBlocks"`
@@ -773,7 +778,7 @@ func (c *IndexerClient) GetBlock(ctx context.Context, height int) (*Block, error
 		return nil, err
 	}
 	if len(result.GetBlocks) == 0 {
-		return nil, fmt.Errorf("block not found: %d", height)
+		return nil, nil
 	}
 	return &result.GetBlocks[0], nil
 }
