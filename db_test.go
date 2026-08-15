@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // oldSchemaNoBlockTime is the schema as it existed after the network column was
@@ -502,5 +503,46 @@ func TestBackfillSkipsGenesisRows(t *testing.T) {
 		if h == 0 {
 			t.Error("block time backfill returned genesis height 0")
 		}
+	}
+}
+
+func TestTimeseriesFormatMonthly(t *testing.T) {
+	sqlFmt, step, truncFn := timeseriesFormat("monthly")
+
+	if sqlFmt != "%Y-%m" {
+		t.Errorf("sqlFmt = %q, want %q", sqlFmt, "%Y-%m")
+	}
+	// Must be at least the longest month, or the fillBuckets loop below stalls.
+	if step < 31*24*time.Hour {
+		t.Errorf("step = %v, want >= 31 days", step)
+	}
+
+	got := truncFn(time.Date(2026, 3, 17, 9, 30, 45, 0, time.UTC))
+	want := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Errorf("truncFn = %v, want %v", got, want)
+	}
+}
+
+func TestBucketKeyMonthly(t *testing.T) {
+	got := bucketKey(time.Date(2026, 3, 17, 9, 0, 0, 0, time.UTC), "monthly")
+	if got != "2026-03" {
+		t.Errorf("bucketKey = %q, want %q", got, "2026-03")
+	}
+}
+
+// The fillBuckets loop advances with cur = truncFn(cur.Add(step)). If a monthly
+// step ever truncates back into the month it started in, the loop never
+// terminates and the request hangs. Walk two years, including a leap February.
+func TestMonthlyStepAlwaysAdvances(t *testing.T) {
+	_, step, truncFn := timeseriesFormat("monthly")
+
+	cur := truncFn(time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC))
+	for i := 0; i < 24; i++ {
+		next := truncFn(cur.Add(step))
+		if !next.After(cur) {
+			t.Fatalf("monthly step did not advance from %v (got %v)", cur, next)
+		}
+		cur = next
 	}
 }

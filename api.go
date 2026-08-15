@@ -1105,17 +1105,56 @@ func fetchBalance(ctx context.Context, addr, rpcURL string) string {
 	return strings.Trim(string(decoded), "\"")
 }
 
+// allWindowDays bounds the "all" window. gno.land's genesis is comfortably
+// inside this, and a finite bound keeps the monthly bucket loop terminating.
+const allWindowDays = 3650
+
+// windowSpecs maps a spec §8 window name onto the (days, granularity) pair the
+// time-series queries already take. See the design doc's window table.
+var windowSpecs = map[string]struct {
+	days        int
+	granularity string
+}{
+	"24h": {1, "hourly"},
+	"7d":  {7, "hourly"},
+	"30d": {30, "daily"},
+	"90d": {90, "daily"},
+	"1y":  {365, "weekly"},
+	"all": {allWindowDays, "monthly"},
+}
+
+// parseTimeseriesParams resolves the time range for a time-series request.
+// ?window= is the current contract; ?days= and ?granularity= predate it and
+// still work, and win when both are supplied.
 func parseTimeseriesParams(r *http.Request) (days int, granularity string) {
-	days, _ = strconv.Atoi(r.URL.Query().Get("days"))
+	q := r.URL.Query()
+	days, _ = strconv.Atoi(q.Get("days"))
+	granularity = q.Get("granularity")
+
+	if spec, ok := windowSpecs[strings.ToLower(q.Get("window"))]; ok {
+		if days <= 0 {
+			days = spec.days
+		}
+		if granularity == "" {
+			granularity = spec.granularity
+		}
+	}
+
 	if days <= 0 {
 		days = 30
 	}
-	if days > 365 {
+	// The 365-day cap keeps hourly/daily/weekly bucket counts sane. The monthly
+	// bucket exists precisely to span longer ranges, so it is exempt — but is
+	// still bounded by allWindowDays.
+	if days > 365 && granularity != "monthly" {
 		days = 365
 	}
-	granularity = r.URL.Query().Get("granularity")
+	if days > allWindowDays {
+		days = allWindowDays
+	}
+
 	switch granularity {
-	case "hourly", "daily", "weekly":
+	case "hourly", "daily", "weekly", "monthly":
 	default:
 		granularity = "daily"
 	}

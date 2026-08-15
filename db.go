@@ -1628,7 +1628,7 @@ type CallerTimePoint struct {
 }
 
 // timeseriesFormat returns the SQLite strftime pattern, step duration, and truncation function
-// for daily/hourly/weekly granularity.
+// for hourly/daily/weekly/monthly granularity.
 func timeseriesFormat(granularity string) (sqlFmt string, step time.Duration, truncFn func(time.Time) time.Time) {
 	switch granularity {
 	case "hourly":
@@ -1642,6 +1642,18 @@ func timeseriesFormat(granularity string) (sqlFmt string, step time.Duration, tr
 				d = 7
 			}
 			return time.Date(t.Year(), t.Month(), t.Day()-d+1, 0, 0, 0, 0, time.UTC)
+		}
+	case "monthly":
+		// The loop in fillBuckets truncates cur.Add(step) with truncFn, which
+		// re-truncates to the 1st of the month — so the step only needs to
+		// push cur into a later month, not span a fixed number of days. The
+		// 1st of any month plus 31 days always lands in a later month (Jan 1
+		// -> Feb 1; the shortest case, Feb 1 -> Mar 4), so exactly 31*24h
+		// suffices even though it equals rather than exceeds the longest
+		// month. This guards a loop inside a request handler against never
+		// advancing, so keep the invariant intact if this changes.
+		return "%Y-%m", 31 * 24 * time.Hour, func(t time.Time) time.Time {
+			return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, time.UTC)
 		}
 	default:
 		return "%Y-%m-%d", 24 * time.Hour, func(t time.Time) time.Time {
@@ -1657,6 +1669,8 @@ func bucketKey(t time.Time, granularity string) string {
 	case "weekly":
 		year, week := t.UTC().ISOWeek()
 		return fmt.Sprintf("%d-W%02d", year, week)
+	case "monthly":
+		return t.UTC().Format("2006-01")
 	default:
 		return t.UTC().Format("2006-01-02")
 	}

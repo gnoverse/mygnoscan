@@ -67,13 +67,24 @@ per-message filters (route/type/params), and **event filters**.
 
 ---
 
-## 3. What mygnoscan already derives & shows  *(branch: `main`)*
+## 3. What mygnoscan already derives & shows
 
 Stack: Go binary + embedded vanilla-JS SPA (`frontend/index.html`, single file), local **SQLite** cache
 (`modernc.org/sqlite v1.48.1`), syncer that pulls tx-indexer GraphQL into SQLite, REST `/api/*` layer.
-**Only one charting/viz library is loaded: D3.js v7 — and it is used for exactly one thing.**
+Two charting libraries are loaded from CDN: **D3.js v7** (dependency graph only) and **Chart.js 4**
+(time-series line/bar charts on the `analytics`, `gas` and `sanity` views).
 
-SQLite tables: `packages, package_files, dependencies, calls, msg_runs, bank_sends, sync_state`.
+SQLite tables: `packages, package_files, dependencies, calls, msg_runs, bank_sends, transactions,
+sync_state`.
+
+**Already built** (this section previously described an earlier state — corrected 2026-08-13):
+- `transactions` carries `gas_used`, `gas_wanted`, `gas_fee`, `success`, `block_time` — gas/fee persistence
+  is done.
+- `block_time` is denormalized onto `calls`, `packages`, `msg_runs`, `bank_sends` and `transactions`, with
+  supporting indexes, so rows are bucketable by chain time without a separate `blocks` table.
+- Eight `/api/timeseries/*` endpoints exist (`transactions`, `packages`, `callers`, `gas`, `storage`,
+  `storage/realms`, `health`, `active-addresses`), taking `?days=&granularity=` rather than the `?window=`
+  contract in §8.
 
 Views/pages present: `home, realms, packages, txs, blocks, accounts, tokens, validators, govdao, gas,
 analytics, events` + detail views `block/{h}, realm/{path} (7 tabs), tx/{hash}, address/{addr}`.
@@ -91,15 +102,22 @@ What's actually visualized:
     `r/gnops/valopers` moniker registry (for block-proposer labels), **not** `r/sys/validators` power.
 - Live feed via SSE polling (3s) for new blocks/txs.
 
-**This means the charting backlog below is almost entirely greenfield.** Concretely, what does NOT exist yet:
-- **No time-series charting at all** (no Chart.js/ECharts) — no tx-over-time, gas-over-time, growth curves.
-- **No treemap, heatmap, sankey, or histogram** — no library that can draw them.
-- **No `/api/timeseries/*` endpoints** — the backend currently returns snapshots/top-N tables, not bucketed
-  series; daily/weekly bucketing has to be added to `db.go`/`api.go`.
-- **No WebGL graph** — D3 force layout handles the dependency graph (hundreds of nodes) but **will not render
-  100k+ nodes**; caller/transfer networks need a WebGL renderer (sigma.js v3 / regl / deck.gl / cosmograph).
+**What does NOT exist yet:**
+- **No `blocks` table.** `proposer_address_raw` and `num_txs` are fetched by `indexer.go` but never stored —
+  so no proposer distribution, no blocks/day, and no consecutive-block deltas for a block-time histogram.
+- **No `storage_events` table.** Note that `GetStorageTimeSeries` is misleadingly named: it sums
+  `LENGTH(pf.body)`, i.e. deployed *source-code* bytes, **not** `StorageDepositEvent.bytes_delta`. Storage
+  economics (P1 #11–14) is greenfield.
+- **No `events` table** — no `GnoEvent` persistence, so every realm-specific dashboard and the event-type
+  treemap are blocked.
+- **No pre-aggregated edge tables** (`transfer_edges`, `caller_edges`) → no network graphs.
+- **No treemap, heatmap, sankey, or WebGL graph** — Chart.js cannot draw them; the caller/transfer networks
+  need ECharts (+ echarts-gl) or a dedicated WebGL renderer (sigma.js v3 / deck.gl / cosmograph).
 - Balances (beyond `/api/bankstats` total supply), validator voting power, and live proposal tallies are
   **not sourced**.
+
+> Implementation plan for closing these gaps:
+> [`docs/superpowers/specs/2026-08-13-chain-analytics-dashboards-design.md`](docs/superpowers/specs/2026-08-13-chain-analytics-dashboards-design.md).
 
 ---
 
@@ -193,12 +211,13 @@ specific `type`+`attrs` per realm and accumulate state. A few need chain RPC for
 
 ## 5. Recommended build order
 
-1. **Add the viz toolkit (greenfield — only D3 is present today)** — pull in a library covering
-   time-series + treemap/heatmap/sankey/histogram in one dep (**ECharts** is the strongest single-dep fit and
-   keeps the no-build-step / CDN model) and a **WebGL graph renderer** (**sigma.js v3 + graphology** for
-   100k+ nodes, or **cosmograph/deck.gl** for GPU force layout). The existing D3 dependency graph can stay as-is.
+1. **Add the viz toolkit** — Chart.js covers line/bar but not treemap/heatmap/sankey/WebGL, so pull in a
+   library covering the rest in one dep (**ECharts** is the strongest single-dep fit and keeps the
+   no-build-step / CDN model), plus a **WebGL graph renderer** (**echarts-gl**, or **sigma.js v3 +
+   graphology** for 100k+ nodes). The existing D3 dependency graph and Chart.js views can stay as-is.
    This step is a prerequisite for almost everything below.
-   **Also add `/api/timeseries/*` endpoints** with daily/weekly bucketing in `db.go`/`api.go` — they don't exist yet.
+   **Also extend the existing `/api/timeseries/*` endpoints** from `?days=&granularity=` to the `?window=`
+   + adaptive-bucket contract in §8.
 2. **Ship the P0 pulse dashboard** — it's all available data; biggest "understand the chain" payoff per effort.
 3. **Storage treemap + economics (P1 #11–14)** — directly serves your "storage economics view" goal; data is live.
 4. **WebGL caller & transfer graphs (P2)** — the flagship differentiator; data exists, only the renderer is new.
