@@ -13,6 +13,7 @@ One static binary and one SQLite file. No runtime dependencies.
 | `-indexer` | — | single network tx-indexer GraphQL URL |
 | `-rpc` | — | single network RPC URL, needed for account balances |
 | `-sync` | `true` | run the background sync |
+| `-block-history-days` | `90` | days of block history to backfill. `0` backfills the full chain; a negative value stores no blocks at all |
 
 ## Configuration
 
@@ -132,15 +133,29 @@ the build carries no version information at all.
   a public endpoint.
 - **The database grows with source code**, since full `.gno` file bodies are stored.
   Expect tens of MB per busy network.
-- **Every block is stored**, at roughly 130 bytes each including its index — about
-  **430 MB per network** at mainnet's ~3.3M blocks, and the built-in defaults
-  configure two networks. This is on top of the source-code storage above, and it
-  is not optional in this release.
+- **Blocks cost roughly 130 bytes each** including their index — about **430 MB per
+  network** at mainnet's ~3.3M blocks, on top of the source-code storage above.
+  `-block-history-days` bounds **the initial backfill depth only** — how far back
+  it walks from the tip before stopping. It does not bound total storage: head
+  sync keeps appending new blocks at the tip for as long as the process runs, and
+  nothing ever deletes a stored block, so a server run for a year at
+  `-block-history-days=90` ends up holding a year of blocks *plus* the original 90
+  days, not 90 days. The default of 90 keeps the initial backfill to what the
+  dashboards' default window actually shows, `0` backfills the whole chain, and a
+  negative value declines block storage entirely (the block charts then render
+  empty). The startup log line says which mode is in effect.
+  **Lowering the flag later reclaims nothing** — existing rows are never pruned.
+  **Raising it** (including to `0`) past the depth an earlier, capped backfill
+  already completed at makes that backfill resume from where it stopped, walking
+  further back automatically; the change takes effect on the next sync pass, no
+  manual intervention needed.
 - **The block backfill runs automatically** on startup, bounded per pass so it
   cannot stall the rest of the sync. It walks backward from the tip and takes
-  roughly 16 minutes to cover a mainnet-sized chain. Until it finishes, block
-  charts cover only recent history and say so; `/api/blocks/coverage` reports the
-  stored range and whether it is complete.
+  roughly 16 minutes to cover a mainnet-sized chain at `-block-history-days=0`.
+  It logs its position each pass and its termination reason — genesis, a pruned
+  indexer floor, or the configured depth. Until it finishes, block charts cover
+  only recent history and say so; `/api/blocks/coverage` reports the stored range
+  and whether it is complete.
 - **WAL mode is on**, so back up the `-wal` and `-shm` files alongside the database,
   or take the backup with the service stopped.
 

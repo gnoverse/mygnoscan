@@ -116,6 +116,9 @@ tr.total-row td { font-weight: bold; color: var(--accent); }
 .dash-bar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
 .dash-grp { display: inline-flex; align-items: center; gap: 6px; }
 .dash-bar .label { font-size: 11px; color: var(--fg2); text-transform: uppercase; letter-spacing: 1px; }
+/* A realm path can be 60+ characters, and a select sizes itself to its widest
+   option, so an uncapped one spans half the card. */
+.dash-select { max-width: min(320px, 100%); }
 .dash-seg { display: inline-flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
 .dash-seg button { background: var(--bg2); color: var(--fg2); border: none; border-left: 1px solid var(--border); padding: 4px 10px; cursor: pointer; font-family: var(--mono); font-size: 11px; }
 .dash-seg button:first-child { border-left: none; }
@@ -148,7 +151,7 @@ footer .container { display: flex; justify-content: space-between; align-items: 
 footer a { color: var(--fg2); }
 footer a:hover { color: var(--accent); }
 /* Network selector */
-.network-select { background: var(--bg2); border: 1px solid var(--border); color: var(--fg); padding: 4px 8px; border-radius: 4px; font-family: var(--mono); font-size: 12px; cursor: pointer; outline: none; }
+.network-select, .dash-select { background: var(--bg2); border: 1px solid var(--border); color: var(--fg); padding: 4px 8px; border-radius: 4px; font-family: var(--mono); font-size: 12px; cursor: pointer; outline: none; }
 .network-select:focus { border-color: var(--accent); }
 /* Network badges */
 .net-badge { display: inline-block; padding: 1px 5px; border-radius: 2px; font-size: 10px; font-weight: bold; margin-left: 4px; vertical-align: middle; }
@@ -3518,6 +3521,14 @@ const DASH_AXIS = {
   splitLine: { lineStyle: { color: '#1e1e1e' } },
 };
 const DASH_WINDOWS = ['24h', '7d', '30d', '90d', '1y', 'all'];
+// DASH_WINDOW_DAYS mirrors api.go's windowSpecs day counts, so the coverage
+// note below can tell whether stored block history reaches back as far as the
+// selected window claims to cover without asking the server. 'all' uses the
+// same generous ceiling the server falls back to (allWindowDays) when it has
+// no real span to measure — for block history that is effectively always
+// "not there yet", which is the point: an 'all' window is never truly
+// complete while backfill is capped or the indexer is pruned.
+const DASH_WINDOW_DAYS = { '24h': 1, '7d': 7, '30d': 30, '90d': 90, '1y': 365, 'all': 3650 };
 let _dashWindow = '90d';
 let _dashSection = null;
 let _dashGen = 0;
@@ -3584,9 +3595,51 @@ function dashCompactNumber(v) {
   if (abs >= 1e3) return (n / 1e3).toFixed(abs % 1e3 === 0 ? 0 : 1) + 'k';
   return String(n);
 }
+// dashHeatmap builds the shared parts of a heatmap card: the visualMap legend
+// and the emphasis border. `values` sizes the colour scale — a fixed max would
+// wash out a quiet chain and clip a busy one.
+//
+// A heatmap needs its own grid: the default reserves no room at the bottom for
+// the horizontal visualMap, and `height` is what stops the cells from growing
+// tall enough to overlap it.
+function dashHeatmapGrid(left) {
+  return { left: left, right: 20, top: 20, bottom: 44, height: '68%' };
+}
+function dashVisualMap(values, colors) {
+  let max = 0;
+  values.forEach(v => { if (v > max) max = v; });
+  return {
+    // A max of 0 (an all-empty grid) makes ECharts render every cell at the
+    // scale's top colour, which reads as "uniformly busy" — the exact inverse
+    // of the truth. Flooring at 1 keeps an empty grid uniformly dark.
+    min: 0, max: max || 1,
+    calculable: true, orient: 'horizontal', left: 'center', bottom: 0,
+    inRange: { color: colors },
+    textStyle: { color: '#8a8a8a', fontSize: 10 },
+  };
+}
+const DASH_DOWS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 function cumulative(values) {
   let sum = 0;
   return values.map(v => (sum += (v || 0)));
+}
+// dashTooltipNode builds an ECharts tooltip as a real DOM node instead of an
+// HTML string. ECharts' default tooltip renderMode is 'html', and a custom
+// `formatter` that returns a string is written into the tooltip node's
+// innerHTML with no escaping of its own — only ECharts' built-in default
+// formatting is escaped. Any line here that embeds attacker-controlled text
+// (e.g. a realm's func_name, which the chain lets a caller set to anything)
+// must go through this rather than through string concatenation, exactly like
+// every other piece of chart UI: the frontend builds DOM, never HTML strings.
+// ECharts accepts an HTMLElement return value from a formatter, which is what
+// makes this possible.
+function dashTooltipNode(lines) {
+  const node = el('div');
+  lines.forEach((line, i) => {
+    if (i > 0) node.appendChild(el('br'));
+    node.appendChild(document.createTextNode(line));
+  });
+  return node;
 }
 async function dashApi(path, chartWindow) {
   const w = chartWindow || _dashWindow;
@@ -3667,7 +3720,7 @@ const DASHBOARDS = [
       {
         id: 'active-addresses',
         title: 'active addresses per bucket',
-        why: 'Engagement, split by what each address did. This counts addresses active within each bucket only. Rolling 7- and 30-day active counts need trailing-window queries and arrive in a later batch.',
+        why: 'Engagement, split by what each address did. This counts addresses active within each bucket only. Total includes MsgRun authors, who are not broken out as their own line here.',
         fetch: w => dashApi('timeseries/active-addresses', w),
         opt: rows => dashBase({
           tooltip: { trigger: 'axis' },
@@ -3703,6 +3756,7 @@ const DASHBOARDS = [
         id: 'block-time-histogram',
         title: 'block-time distribution',
         window: '7d',
+        mode: 'B',
         why: 'Consensus health. A tight cluster around the target interval is healthy; a fat right tail means the chain is stalling under load. Pinned to 7 days because recent consensus behaviour is what matters here, so the window picker above does not change it.',
         networkScoped: true,
         fetch: w => dashApi('blocks/time-histogram', w),
@@ -3717,6 +3771,7 @@ const DASHBOARDS = [
         id: 'block-proposers',
         title: 'block proposers',
         wide: true,
+        mode: 'B',
         state: { topN: 15 },
         why: 'Decentralisation. Blocks proposed per validator over the window — a heavily skewed bar means a few validators dominate block production. Names come from the r/gnops/valopers registry; validators that never registered a moniker show as truncated addresses.',
         networkScoped: true,
@@ -3751,6 +3806,60 @@ const DASHBOARDS = [
             series: [{ type: 'bar', data: rows.map(r => r.blocks).reverse(), itemStyle: { color: DASH_PAL[0] } }],
           });
         },
+      },
+      {
+        id: 'new-addresses',
+        title: 'new addresses per bucket',
+        why: 'User acquisition rather than user activity. An address is counted in the bucket it was first seen on-chain, ever — so an address that has been transacting for months never reappears here, however busy it is. First-seen is computed across all indexed history, not just the selected window.',
+        fetch: w => dashApi('timeseries/new-addresses', w),
+        opt: rows => dashBase({
+          tooltip: { trigger: 'axis' },
+          xAxis: dashCatAxisBars(rows.map(r => r.time)),
+          yAxis: dashValAxis('addresses'),
+          series: [{ type: 'bar', data: rows.map(r => r.new_addresses), itemStyle: { color: DASH_PAL[4] } }],
+        }),
+      },
+      {
+        id: 'active-rolling',
+        title: 'active addresses — DAU / WAU / MAU',
+        wide: true,
+        why: 'Stickiness. DAU is addresses active that day; WAU and MAU are the distinct addresses active over the trailing 7 and 30 days, so they are always at least DAU and flatten out when the same people keep coming back. A DAU line hugging MAU means a small loyal set; a wide gap means one-off visitors. Always plotted per day whatever window is selected — a trailing 30-day count bucketed hourly or monthly would not mean anything.',
+        fetch: w => dashApi('timeseries/active-rolling', w),
+        opt: rows => dashBase({
+          tooltip: { trigger: 'axis' },
+          legend: dashLegend(['DAU', 'WAU', 'MAU']),
+          xAxis: dashCatAxis(rows.map(r => r.time)),
+          yAxis: dashValAxis('addresses'),
+          series: [
+            { name: 'DAU', type: 'line', smooth: true, showSymbol: false, data: rows.map(r => r.dau) },
+            { name: 'WAU', type: 'line', smooth: true, showSymbol: false, data: rows.map(r => r.wau) },
+            { name: 'MAU', type: 'line', smooth: true, showSymbol: false, data: rows.map(r => r.mau) },
+          ],
+        }),
+      },
+      {
+        id: 'activity-heatmap',
+        title: 'activity heatmap — hour x day-of-week',
+        wide: true,
+        mode: 'B',
+        why: 'When the chain is actually alive. Every message in the window is dropped into its UTC hour and weekday, so the bright band is the community timezone and the Sat/Sun rows show whether usage is human or automated. The grid is always 24 hours by 7 days, but the window picker’s selection is rounded down to whole weeks so every weekday column gets the same number of occurrences: 90d covers 84 days, 30d covers 28, and anything under a week (24h, 7d) covers a full 7 days — so those two produce identical charts.',
+        fetch: w => dashApi('activity/heatmap', w),
+        opt: rows => dashBase({
+          grid: dashHeatmapGrid(50),
+          tooltip: {
+            position: 'top',
+            formatter: p => DASH_DOWS[p.data[1]] + ' ' + String(p.data[0]).padStart(2, '0') + ':00 UTC<br/>' +
+              p.data[2] + ' messages',
+          },
+          xAxis: dashAxisMerge(DASH_AXIS, { type: 'category', data: Array.from({ length: 24 }, (_, h) => String(h).padStart(2, '0')), splitArea: { show: true } }),
+          yAxis: dashAxisMerge(DASH_AXIS, { type: 'category', data: DASH_DOWS, splitArea: { show: true } }),
+          visualMap: dashVisualMap(rows.map(r => r.messages), ['#141414', '#1f5e58', '#4ecdc4']),
+          series: [{
+            type: 'heatmap',
+            data: rows.map(r => [r.hour, r.dow, r.messages]),
+            emphasis: { itemStyle: { borderColor: '#fff', borderWidth: 1 } },
+          }],
+        }),
       },
     ],
   },
@@ -3807,6 +3916,104 @@ const DASHBOARDS = [
           ],
         }),
       },
+      {
+        id: 'gas-per-tx-histogram',
+        title: 'gas-used-per-transaction distribution',
+        mode: 'B',
+        why: 'What a typical transaction costs to execute. A long right tail means a few expensive realms dominate block space and are worth optimising; a tight bulk is a predictable fee market. This is the only chart here counting transactions rather than messages — gas is charged per transaction. Transactions whose gas was never recorded are excluded rather than counted as zero.',
+        fetch: w => dashApi('gas/per-tx-histogram', w),
+        opt: rows => dashBase({
+          tooltip: { trigger: 'axis' },
+          // Every bin gets a label (interval: 0) — ECharts otherwise drops two
+          // labels in three at this width and the axis stops being readable.
+          // Rotating them needs the extra grid bottom, and the card has no axis
+          // name because the rotated labels would collide with it.
+          grid: { left: 60, right: 56, top: 30, bottom: 56 },
+          xAxis: dashAxisMerge(dashCatAxisBars(rows.map(r => r.bin)), { axisLabel: { interval: 0, rotate: 35 } }),
+          yAxis: dashValAxis('transactions'),
+          series: [{ type: 'bar', data: rows.map(r => r.txs), itemStyle: { color: DASH_PAL[1] } }],
+        }),
+      },
+    ],
+  },
+  {
+    id: 'realms',
+    title: 'realms',
+    // The section's only chart is fixed at the last 14 days and ignores the
+    // window entirely, so the picker would re-render on every click without
+    // changing anything.
+    windowed: false,
+    charts: [
+      {
+        id: 'function-heatmap',
+        title: 'function-call heatmap — by realm',
+        wide: true,
+        mode: 'B',
+        state: {},
+        // Scoped to one network on purpose. pkg_path is per-chain, so grouping
+        // by it across networks would merge two different realms that happen to
+        // share a path -- the failure AGENTS.md names explicitly -- and the
+        // realm selector would list one entry standing for both.
+        networkScoped: true,
+        why: 'What people actually do inside a realm. Each row is one of that realm\'s exported functions, each column a day; colour is the call count. Hot rows are the paths worth optimising, dark rows are code nobody calls. Fixed at the last 14 days and the 20 busiest functions — daily columns stop being readable past a fortnight.',
+        controls: (bar, rerender, state) => {
+          bar.appendChild(el('span', { className: 'label' }, 'realm'));
+          const sel = el('select', { className: 'dash-select' });
+          (state.realms || []).forEach(p => {
+            const o = el('option', { value: p }, p);
+            if (p === state.realm) o.selected = true;
+            sel.appendChild(o);
+          });
+          sel.addEventListener('change', () => { state.realm = sel.value; rerender(); });
+          bar.appendChild(sel);
+        },
+        fetch: async function () {
+          this.state = this.state || {};
+          // The realm list is refetched on every render so a network switch or
+          // a fresh deploy cannot leave the selector offering realms that no
+          // longer have calls. It is one small indexed GROUP BY.
+          const realms = await api('calls/realms?limit=100');
+          this.state.realms = realms;
+          if (!this.state.realm || realms.indexOf(this.state.realm) === -1) {
+            this.state.realm = realms[0] || '';
+          }
+          if (!this.state.realm) return [];
+          return api('calls/function-heatmap?realm=' + encodeURIComponent(this.state.realm));
+        },
+        opt: rows => {
+          // Server order is function-major, busiest function first. Rebuild the
+          // axes from that order rather than sorting here, so the two agree.
+          const funcs = [], days = [];
+          rows.forEach(r => {
+            if (funcs.indexOf(r.func) === -1) funcs.push(r.func);
+            if (days.indexOf(r.day) === -1) days.push(r.day);
+          });
+          // Busiest first puts the hottest row at the top of an ECharts
+          // category axis only after reversing, since it draws bottom-up.
+          const yFuncs = funcs.slice().reverse();
+          return dashBase({
+            grid: dashHeatmapGrid(150),
+            tooltip: {
+              position: 'top',
+              // func_name is attacker-controlled (see dashTooltipNode) \u2014 it comes
+              // verbatim from whatever function name a MsgCall's signer chose, so
+              // it must never be interpolated into an HTML string.
+              formatter: p => dashTooltipNode([
+                funcs[funcs.length - 1 - p.data[1]] + ' \u00b7 ' + days[p.data[0]],
+                p.data[2] + ' calls',
+              ]),
+            },
+            xAxis: dashAxisMerge(DASH_AXIS, { type: 'category', data: days.map(d => d.slice(5)), splitArea: { show: true } }),
+            yAxis: dashAxisMerge(DASH_AXIS, { type: 'category', data: yFuncs, splitArea: { show: true } }),
+            visualMap: dashVisualMap(rows.map(r => r.calls), ['#141414', '#5e4a1f', '#ffd43b']),
+            series: [{
+              type: 'heatmap',
+              data: rows.map(r => [days.indexOf(r.day), yFuncs.indexOf(r.func), r.calls]),
+              emphasis: { itemStyle: { borderColor: '#fff', borderWidth: 1 } },
+            }],
+          });
+        },
+      },
     ],
   },
 ];
@@ -3847,6 +4054,20 @@ function dashGranularityOf(rows) {
 async function renderDashChart(chart, gen) {
   const host = document.getElementById('dash-chart-' + chart.id);
   if (!host) return;
+
+  const controlsBar = document.getElementById('dash-controls-' + chart.id);
+  const renderControls = () => {
+    if (!chart.controls || !controlsBar) return;
+    controlsBar.textContent = '';
+    chart.state = chart.state || {};
+    chart.controls(controlsBar, () => renderDashChart(chart, _dashGen), chart.state);
+  };
+  // Rendered up front, before any of the exits below, so a control like the
+  // realm selector stays live on every path — a network-scoped bail, a fetch
+  // failure, or an empty result — rather than only appearing once a chart
+  // successfully draws.
+  renderControls();
+
   if (chart.networkScoped && getNetwork() === 'all') {
     // Three of the four block queries are not meaningfully aggregatable across
     // chains (interleaved heights, merged proposer identities, a union
@@ -3872,12 +4093,20 @@ async function renderDashChart(chart, gen) {
     return;
   }
   if (gen !== _dashGen) return;
+  // The fetch may have refreshed chart.state (e.g. the function heatmap's
+  // realm list) even though it returned nothing to plot, so re-render with
+  // whatever is now current before the empty-data exit below.
+  renderControls();
   if (!rows || rows.length === 0) {
     host.textContent = '';
     host.appendChild(el('div', { className: 'dash-msg' }, 'no data in this window'));
     return;
   }
-  rows = trimLeadingEmptyRows(rows);
+  // Mode B rows are not a time series — they are histogram bins or heatmap
+  // cells whose position IS their meaning. Trimming leading empty ones would
+  // shift every remaining cell onto the wrong axis slot. Only mode A (a
+  // bucketed series, where a leading gap is dead space) is trimmed.
+  if (chart.mode !== 'B') rows = trimLeadingEmptyRows(rows);
   // If the error or empty-data path above already ran for this host, it
   // cleared the host's contents with textContent = '' but left an ECharts
   // instance registered against that node. echarts.init(host) would then
@@ -3889,14 +4118,7 @@ async function renderDashChart(chart, gen) {
   const ctx = { window: chart.window || _dashWindow, granularity: dashGranularityOf(rows) };
   inst.setOption(chart.opt(rows, ctx), true);
   _dashCharts[chart.id] = inst;
-  if (chart.controls) {
-    const bar = document.getElementById('dash-controls-' + chart.id);
-    if (bar) {
-      bar.textContent = '';
-      chart.state = chart.state || {};
-      chart.controls(bar, () => renderDashChart(chart, _dashGen), chart.state);
-    }
-  }
+  renderControls();
 }
 
 // trimLeadingEmptyRows drops leading all-zero rows (e.g. window=all's
@@ -3962,23 +4184,38 @@ function loadDashboards() {
   const urlSection = new URLSearchParams(window.location.search).get('section');
   _dashSection = sections.some(s => s.id === urlSection) ? urlSection : sections[0].id;
 
-  const bar = el('div', { className: 'dash-bar' }, dashSubnav(sections), dashWindowPicker());
+  const section = sections.find(s => s.id === _dashSection);
+  const barParts = [dashSubnav(sections)];
+  // A section can opt out of the window picker when none of its charts honour
+  // it — otherwise clicking a window button re-renders with no visible effect.
+  if (section.windowed !== false) barParts.push(dashWindowPicker());
+  const bar = el('div', { className: 'dash-bar' }, ...barParts);
   root.appendChild(bar);
 
-  const section = sections.find(s => s.id === _dashSection);
   const grid = el('div', { className: 'dash-grid' });
   section.charts.forEach(c => grid.appendChild(dashCard(c)));
   root.appendChild(grid);
   // A 90d window showing three days of blocks is indistinguishable from a
-  // chain that was down. Say which it is while the backfill is still running.
-  // Skipped in the all-networks state: the block charts themselves render
-  // "select a specific network" there and never fetch, so a coverage note
-  // would be commenting on charts that aren't even trying to show data.
+  // chain that was down. Say what the charts can actually show whenever
+  // stored history doesn't reach back as far as the selected window would
+  // need — whether that's because backfill is still running, it stopped at a
+  // configured -block-history-days cap, or the indexer is pruned. Checking
+  // actual coverage against the window (rather than trusting cov.complete) is
+  // the point: a capped backfill sets the same "done" flag GetBlockCoverage
+  // reports as complete, so complete alone can't tell a truncated history
+  // from a full one. Skipped in the all-networks state: the block charts
+  // themselves render "select a specific network" there and never fetch, so a
+  // coverage note would be commenting on charts that aren't even trying to
+  // show data.
   if (section.charts.some(c => c.id.startsWith('block')) && getNetwork() !== 'all') {
     api('blocks/coverage').then(cov => {
-      if (!cov || cov.complete || !cov.min_time) return;
+      if (!cov || !cov.min_time) return;
+      const windowDays = DASH_WINDOW_DAYS[_dashWindow] || 90;
+      const windowStart = Date.now() - windowDays * 86400000;
+      const minTime = Date.parse(cov.min_time);
+      if (isNaN(minTime) || minTime <= windowStart) return;
       const note = el('div', { className: 'dash-note' },
-        'history backfilling — block charts currently cover ' +
+        'block history covers ' +
         cov.min_time.slice(0, 10) + ' to ' + cov.max_time.slice(0, 10));
       // insertBefore(note, grid) is safe even if grid were ever stale (e.g. a
       // superseded render) only because insertBefore throws NotFoundError on

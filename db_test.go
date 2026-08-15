@@ -2,7 +2,9 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -729,5 +731,714 @@ func TestGetBlockCoverage(t *testing.T) {
 	}
 	if cov.MinTime == "" || cov.MaxTime == "" {
 		t.Errorf("times not populated: %+v", cov)
+	}
+}
+
+// --- batch 2b ---
+
+// rfc3339 formats a test timestamp the way the syncer stores them.
+func rfc3339(t time.Time) string { return t.UTC().Format(time.RFC3339) }
+
+func TestGetActivityHeatmapShape(t *testing.T) {
+	db := newTestDB(t)
+	// 2026-08-10 is a Monday; 14:00 UTC on it must land at (hour 14, dow 0).
+	monday := time.Date(2026, 8, 10, 14, 0, 0, 0, time.UTC)
+	// Anchor relative to now so the day-window filter cannot exclude the rows,
+	// while keeping the weekday fixed: step back whole weeks from a known Monday
+	// until the timestamp is in the past but inside a 30-day window.
+	ts := monday
+	for ts.After(time.Now().UTC()) {
+		ts = ts.AddDate(0, 0, -7)
+	}
+	for ts.Before(time.Now().UTC().AddDate(0, 0, -20)) {
+		ts = ts.AddDate(0, 0, 7)
+	}
+	if ts.After(time.Now().UTC()) {
+		t.Skip("no Monday 14:00 UTC inside the test window right now")
+	}
+	wantDow := (int(ts.Weekday()) + 6) % 7
+
+	for i := range 3 {
+		if err := db.InsertCall("gnoland1", fmt.Sprintf("h%d", i), 1+i, rfc3339(ts), "g1a", "gno.land/r/x", "F", true); err != nil {
+			t.Fatalf("insert call: %v", err)
+		}
+	}
+	if err := db.InsertBankSend("gnoland1", "s1", 9, rfc3339(ts), "g1b", "g1c", "1ugnot", true); err != nil {
+		t.Fatalf("insert send: %v", err)
+	}
+	// Another network's rows must not appear in a network-scoped read.
+	if err := db.InsertCall("test12", "o1", 1, rfc3339(ts), "g1z", "gno.land/r/x", "F", true); err != nil {
+		t.Fatalf("insert other: %v", err)
+	}
+
+	cells, err := db.GetActivityHeatmap("gnoland1", 30)
+	if err != nil {
+		t.Fatalf("heatmap: %v", err)
+	}
+	if len(cells) != 24*7 {
+		t.Fatalf("got %d cells, want the full 24x7 grid", len(cells))
+	}
+	total := 0
+	for _, c := range cells {
+		if c.Hour < 0 || c.Hour > 23 || c.Dow < 0 || c.Dow > 6 {
+			t.Fatalf("cell out of range: %+v", c)
+		}
+		total += c.Messages
+		if c.Hour == 14 && c.Dow == wantDow && c.Messages != 4 {
+			t.Errorf("cell (14, %d) = %d messages, want 4 (3 calls + 1 send)", wantDow, c.Messages)
+		}
+	}
+	if total != 4 {
+		t.Errorf("grid total = %d, want 4 — another network's rows leaked in", total)
+	}
+}
+
+func TestGetNewAddressTimeSeriesCountsFirstSeenOnly(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now().UTC()
+	old := now.AddDate(0, 0, -20)
+	recent := now.AddDate(0, 0, -2)
+
+	// g1old first appears outside the 7-day window, then again inside it: it is
+	// acquisition for the old bucket only, and must not be counted twice.
+	mustCall(t, db, "gnoland1", "t1", 1, old, "g1old", "gno.land/r/x", "F")
+	mustCall(t, db, "gnoland1", "t2", 2, recent, "g1old", "gno.land/r/x", "F")
+	mustCall(t, db, "gnoland1", "t3", 3, recent, "g1new", "gno.land/r/x", "F")
+
+	pts, err := db.GetNewAddressTimeSeries("gnoland1", "daily", 7)
+	if err != nil {
+		t.Fatalf("new addresses: %v", err)
+	}
+	total := 0
+	for _, p := range pts {
+		total += p.NewAddresses
+	}
+	if total != 1 {
+		t.Errorf("new addresses over 7d = %d, want 1 (g1new only; g1old was first seen 20d ago)", total)
+	}
+
+	// Widening the window past g1old's first appearance must pick it up.
+	pts, err = db.GetNewAddressTimeSeries("gnoland1", "daily", 30)
+	if err != nil {
+		t.Fatalf("new addresses 30d: %v", err)
+	}
+	total = 0
+	for _, p := range pts {
+		total += p.NewAddresses
+	}
+	if total != 2 {
+		t.Errorf("new addresses over 30d = %d, want 2", total)
+	}
+}
+
+func TestGetRollingActiveTimeSeries(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now().UTC()
+
+	// One address active 20 days ago, one active today. On today's point DAU
+	// and WAU see only the recent one; MAU's 30-day window sees both.
+	mustCall(t, db, "gnoland1", "a1", 1, now.AddDate(0, 0, -20), "g1old", "gno.land/r/x", "F")
+	mustCall(t, db, "gnoland1", "a2", 2, now.Add(-1*time.Hour), "g1now", "gno.land/r/x", "F")
+
+	pts, err := db.GetRollingActiveTimeSeries("gnoland1", 10)
+	if err != nil {
+		t.Fatalf("rolling: %v", err)
+	}
+	if len(pts) != 11 {
+		t.Fatalf("got %d points, want 11 (days+1)", len(pts))
+	}
+	last := pts[len(pts)-1]
+	if last.Time != now.Format("2006-01-02") {
+		t.Errorf("last point = %q, want today (%s)", last.Time, now.Format("2006-01-02"))
+	}
+	if last.DAU != 1 {
+		t.Errorf("DAU = %d, want 1", last.DAU)
+	}
+	if last.WAU != 1 {
+		t.Errorf("WAU = %d, want 1 — the 20-day-old address is outside the 7-day window", last.WAU)
+	}
+	if last.MAU != 2 {
+		t.Errorf("MAU = %d, want 2 — the 30-day window must reach back before the requested range", last.MAU)
+	}
+	for _, p := range pts {
+		if p.DAU > p.WAU || p.WAU > p.MAU {
+			t.Errorf("%s: DAU %d <= WAU %d <= MAU %d violated", p.Time, p.DAU, p.WAU, p.MAU)
+		}
+	}
+}
+
+func TestGetRollingActiveTimeSeriesFloorsShortWindows(t *testing.T) {
+	db := newTestDB(t)
+	pts, err := db.GetRollingActiveTimeSeries("gnoland1", 1)
+	if err != nil {
+		t.Fatalf("rolling: %v", err)
+	}
+	if len(pts) != rollingMinDays+1 {
+		t.Errorf("got %d points for a 1-day request, want %d — a single column is not a shape", len(pts), rollingMinDays+1)
+	}
+}
+
+func TestGetGasPerTxHistogram(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now().UTC()
+
+	cases := []struct {
+		hash    string
+		gasUsed int
+		bin     string
+	}{
+		{"g1", 50_000, "<100k"},
+		{"g2", 100_000, "100k-500k"}, // lower edge is inclusive
+		{"g3", 750_000, "500k-1M"},
+		{"g4", 65_000_000, "50M-100M"},
+		{"g5", 900_000_000, ">=500M"},
+	}
+	for i, c := range cases {
+		if err := db.UpsertTransaction("gnoland1", c.hash, i+1, rfc3339(now.Add(-time.Hour)), c.gasUsed, c.gasUsed, 1, true); err != nil {
+			t.Fatalf("upsert tx: %v", err)
+		}
+	}
+	// gas_used = 0 is the never-backfilled default, not a free transaction.
+	if err := db.UpsertTransaction("gnoland1", "zero", 99, rfc3339(now.Add(-time.Hour)), 0, 0, 0, true); err != nil {
+		t.Fatalf("upsert zero tx: %v", err)
+	}
+
+	bins, err := db.GetGasPerTxHistogram("gnoland1", 7)
+	if err != nil {
+		t.Fatalf("histogram: %v", err)
+	}
+	if len(bins) != len(GasPerTxBinOrder) {
+		t.Fatalf("got %d bins, want the full fixed set of %d", len(bins), len(GasPerTxBinOrder))
+	}
+	got := map[string]int{}
+	total := 0
+	for i, b := range bins {
+		if b.Bin != GasPerTxBinOrder[i] {
+			t.Errorf("bin %d = %q, want %q — order is the x-axis", i, b.Bin, GasPerTxBinOrder[i])
+		}
+		got[b.Bin] = b.Txs
+		total += b.Txs
+	}
+	if total != len(cases) {
+		t.Errorf("total = %d, want %d — the gas_used=0 row must be excluded", total, len(cases))
+	}
+	for _, c := range cases {
+		if got[c.bin] != 1 {
+			t.Errorf("gas %d landed outside bin %q (all bins: %v)", c.gasUsed, c.bin, got)
+		}
+	}
+}
+
+func TestGetFunctionCallHeatmapIsAZeroFilledGrid(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now().UTC()
+
+	mustCall(t, db, "gnoland1", "f1", 1, now.Add(-2*time.Hour), "g1a", "gno.land/r/hot", "Busy")
+	mustCall(t, db, "gnoland1", "f2", 2, now.Add(-3*time.Hour), "g1b", "gno.land/r/hot", "Busy")
+	mustCall(t, db, "gnoland1", "f3", 3, now.Add(-4*time.Hour), "g1c", "gno.land/r/hot", "Quiet")
+	// A different realm, and the same path on another network: neither may show.
+	mustCall(t, db, "gnoland1", "f4", 4, now.Add(-2*time.Hour), "g1d", "gno.land/r/other", "Elsewhere")
+	mustCall(t, db, "test12", "f5", 5, now.Add(-2*time.Hour), "g1e", "gno.land/r/hot", "OtherChain")
+
+	cells, err := db.GetFunctionCallHeatmap("gnoland1", "gno.land/r/hot", 14)
+	if err != nil {
+		t.Fatalf("heatmap: %v", err)
+	}
+	if len(cells) != 2*14 {
+		t.Fatalf("got %d cells, want 2 functions x 14 days zero-filled", len(cells))
+	}
+	if cells[0].Func != "Busy" {
+		t.Errorf("first function = %q, want Busy (busiest first)", cells[0].Func)
+	}
+	byFunc := map[string]int{}
+	days := map[string]bool{}
+	for _, c := range cells {
+		byFunc[c.Func] += c.Calls
+		days[c.Day] = true
+	}
+	if len(days) != 14 {
+		t.Errorf("got %d distinct days, want 14", len(days))
+	}
+	if byFunc["Busy"] != 2 || byFunc["Quiet"] != 1 {
+		t.Errorf("call totals = %v, want Busy 2 / Quiet 1 — another realm or network leaked in", byFunc)
+	}
+	if _, ok := byFunc["OtherChain"]; ok {
+		t.Error("a same-path realm on another network leaked into the grid")
+	}
+
+	// An unknown realm is empty, not an error, so the card says "no data".
+	empty, err := db.GetFunctionCallHeatmap("gnoland1", "gno.land/r/nope", 14)
+	if err != nil || len(empty) != 0 {
+		t.Errorf("unknown realm: %d cells, err %v; want 0 and nil", len(empty), err)
+	}
+}
+
+func TestGetRealmsWithCallsIsOrderedAndScoped(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now().UTC()
+
+	for i := range 3 {
+		mustCall(t, db, "gnoland1", fmt.Sprintf("r%d", i), i+1, now.Add(-time.Hour), "g1a", "gno.land/r/busy", "F")
+	}
+	mustCall(t, db, "gnoland1", "rq", 10, now.Add(-time.Hour), "g1a", "gno.land/r/quiet", "F")
+	mustCall(t, db, "test12", "rx", 11, now.Add(-time.Hour), "g1a", "gno.land/r/elsewhere", "F")
+
+	got, err := db.GetRealmsWithCalls("gnoland1", 14, 0)
+	if err != nil {
+		t.Fatalf("realms: %v", err)
+	}
+	want := []string{"gno.land/r/busy", "gno.land/r/quiet"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("realm %d = %q, want %q (busiest first, other networks excluded)", i, got[i], want[i])
+		}
+	}
+}
+
+// --- Fix 1: one malformed block_time row must not 500 the whole chart ---
+//
+// block_time is nullable TEXT and the window predicate is a string comparison,
+// so "not-a-timestamp" >= "2026-...": 'n' > '2' passes it. strftime() then
+// yields NULL for that row, which used to fail rows.Scan outright. These tests
+// insert exactly that value — the same one
+// TestNetworkDataStartPropagatesUnparseableTimestamp uses — alongside good
+// rows and assert the call succeeds and the good data still comes through.
+
+func TestGetActivityHeatmapSkipsUnparseableBlockTime(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now().UTC()
+
+	mustCall(t, db, "gnoland1", "good", 1, now.Add(-time.Hour), "g1a", "gno.land/r/x", "F")
+	if err := db.InsertCall("gnoland1", "bad", 2, "not-a-timestamp", "g1b", "gno.land/r/x", "F", true); err != nil {
+		t.Fatalf("insert bad row: %v", err)
+	}
+
+	cells, err := db.GetActivityHeatmap("gnoland1", 7)
+	if err != nil {
+		t.Fatalf("heatmap errored on one bad row: %v", err)
+	}
+	total := 0
+	for _, c := range cells {
+		total += c.Messages
+	}
+	if total != 1 {
+		t.Errorf("total = %d, want 1 (the good row); the bad row should be skipped, not counted", total)
+	}
+}
+
+func TestGetNewAddressTimeSeriesSkipsUnparseableBlockTime(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now().UTC()
+
+	mustCall(t, db, "gnoland1", "good", 1, now.Add(-time.Hour), "g1good", "gno.land/r/x", "F")
+	if err := db.InsertCall("gnoland1", "bad", 2, "not-a-timestamp", "g1bad", "gno.land/r/x", "F", true); err != nil {
+		t.Fatalf("insert bad row: %v", err)
+	}
+
+	pts, err := db.GetNewAddressTimeSeries("gnoland1", "daily", 7)
+	if err != nil {
+		t.Fatalf("new addresses errored on one bad row: %v", err)
+	}
+	total := 0
+	for _, p := range pts {
+		total += p.NewAddresses
+	}
+	if total != 1 {
+		t.Errorf("total = %d, want 1 (g1good only); the bad row should be skipped, not counted or errored", total)
+	}
+}
+
+func TestGetRollingActiveTimeSeriesSkipsUnparseableBlockTime(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now().UTC()
+
+	mustCall(t, db, "gnoland1", "good", 1, now, "g1good", "gno.land/r/x", "F")
+	if err := db.InsertCall("gnoland1", "bad", 2, "not-a-timestamp", "g1bad", "gno.land/r/x", "F", true); err != nil {
+		t.Fatalf("insert bad row: %v", err)
+	}
+
+	pts, err := db.GetRollingActiveTimeSeries("gnoland1", 7)
+	if err != nil {
+		t.Fatalf("rolling errored on one bad row: %v", err)
+	}
+	last := pts[len(pts)-1]
+	if last.DAU != 1 {
+		t.Errorf("DAU = %d, want 1 (g1good only); the bad row should be skipped, not counted", last.DAU)
+	}
+}
+
+func TestGetFunctionCallHeatmapSkipsUnparseableBlockTime(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now().UTC()
+
+	mustCall(t, db, "gnoland1", "good", 1, now.Add(-time.Hour), "g1a", "gno.land/r/x", "Good")
+	if err := db.InsertCall("gnoland1", "bad", 2, "not-a-timestamp", "g1b", "gno.land/r/x", "Bad", true); err != nil {
+		t.Fatalf("insert bad row: %v", err)
+	}
+
+	cells, err := db.GetFunctionCallHeatmap("gnoland1", "gno.land/r/x", 14)
+	if err != nil {
+		t.Fatalf("function heatmap errored on one bad row: %v", err)
+	}
+	byFunc := map[string]int{}
+	for _, c := range cells {
+		byFunc[c.Func] += c.Calls
+	}
+	if byFunc["Good"] != 1 {
+		t.Errorf("Good calls = %d, want 1", byFunc["Good"])
+	}
+	if _, ok := byFunc["Bad"]; ok {
+		t.Errorf("the bad row's function should not appear at all: %v", byFunc)
+	}
+}
+
+// --- Fix 5: the heatmap window must be a whole number of weeks ---
+
+func TestGetActivityHeatmapSnapsWindowToWholeWeeks(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now().UTC()
+
+	// One call on each of the last 90 days. A raw 90-day window spans 12.857
+	// weeks, so some weekday columns pick up 13 occurrences of that weekday
+	// while others only pick up 12 — a systematic inflation. Snapped down to
+	// a whole number of weeks (90/7 = 12 weeks = 84 days), every weekday
+	// column sees exactly 12 occurrences, so all seven totals must match.
+	//
+	// Each timestamp is nudged a minute earlier than the exact day boundary.
+	// GetActivityHeatmap computes its own "now" a moment after this test
+	// captured its own, so an unnudged timestamp sitting exactly on the
+	// 84-day cutoff could land on either side of the boundary depending on
+	// that gap — a one-minute margin keeps every row's window membership
+	// deterministic while leaving the daily bucketing untouched.
+	for i := 0; i < 90; i++ {
+		ts := now.AddDate(0, 0, -i).Add(-time.Minute)
+		if err := db.InsertCall("gnoland1", fmt.Sprintf("d%d", i), i+1, rfc3339(ts), "g1a", "gno.land/r/x", "F", true); err != nil {
+			t.Fatalf("insert call %d: %v", i, err)
+		}
+	}
+
+	cells, err := db.GetActivityHeatmap("gnoland1", 90)
+	if err != nil {
+		t.Fatalf("heatmap: %v", err)
+	}
+	perDow := make(map[int]int)
+	for _, c := range cells {
+		perDow[c.Dow] += c.Messages
+	}
+	total := 0
+	for _, n := range perDow {
+		total += n
+	}
+	if total == 0 {
+		t.Fatal("no messages counted at all")
+	}
+	var want int
+	allEqual := true
+	for dow := 0; dow < 7; dow++ {
+		n := perDow[dow]
+		if dow == 0 {
+			want = n
+		} else if n != want {
+			allEqual = false
+		}
+	}
+	if !allEqual {
+		t.Errorf("weekday totals are not equal — window is not a whole number of weeks: Mon=%d Tue=%d Wed=%d Thu=%d Fri=%d Sat=%d Sun=%d",
+			perDow[0], perDow[1], perDow[2], perDow[3], perDow[4], perDow[5], perDow[6])
+	}
+}
+
+// --- Fix 4: the active-address definition must agree across both endpoints ---
+
+func TestActiveAddressAndActivityHeatmapAgreeOnMsgRuns(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now().UTC()
+
+	if err := db.InsertMsgRun("gnoland1", "r1", 1, rfc3339(now.Add(-time.Hour)), "g1runner", "source", true); err != nil {
+		t.Fatalf("insert msg run: %v", err)
+	}
+
+	pts, err := db.GetActiveAddressTimeSeries("gnoland1", "daily", 7)
+	if err != nil {
+		t.Fatalf("active addresses: %v", err)
+	}
+	total := 0
+	for _, p := range pts {
+		total += p.TotalActive
+	}
+	if total != 1 {
+		t.Errorf("GetActiveAddressTimeSeries total_active = %d, want 1 — msg_runs.caller must count as an active address", total)
+	}
+
+	cells, err := db.GetActivityHeatmap("gnoland1", 7)
+	if err != nil {
+		t.Fatalf("heatmap: %v", err)
+	}
+	heatmapTotal := 0
+	for _, c := range cells {
+		heatmapTotal += c.Messages
+	}
+	if heatmapTotal != total {
+		t.Errorf("heatmap total = %d, active-address total = %d — the two endpoints disagree on the same fixture and window", heatmapTotal, total)
+	}
+}
+
+// --- Fix 7: ?limit= on the realm selector must be capped ---
+
+func TestGetRealmsWithCallsCapsLimit(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now().UTC()
+
+	for i := 0; i < realmsWithCallsMaxLimit+20; i++ {
+		mustCall(t, db, "gnoland1", fmt.Sprintf("c%d", i), i+1, now.Add(-time.Hour), "g1a", fmt.Sprintf("gno.land/r/x%d", i), "F")
+	}
+
+	got, err := db.GetRealmsWithCalls("gnoland1", 14, realmsWithCallsMaxLimit+20)
+	if err != nil {
+		t.Fatalf("realms: %v", err)
+	}
+	if len(got) != realmsWithCallsMaxLimit {
+		t.Errorf("got %d realms, want the cap of %d", len(got), realmsWithCallsMaxLimit)
+	}
+}
+
+// --- Fix 6: network == "" (networkParam's "all networks") must union, not empty ---
+
+func TestGetActivityHeatmapAllNetworks(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now().UTC()
+
+	mustCall(t, db, "gnoland1", "a1", 1, now.Add(-time.Hour), "g1a", "gno.land/r/x", "F")
+	mustCall(t, db, "test12", "a2", 2, now.Add(-time.Hour), "g1b", "gno.land/r/x", "F")
+
+	cells, err := db.GetActivityHeatmap("", 7)
+	if err != nil {
+		t.Fatalf("heatmap: %v", err)
+	}
+	total := 0
+	for _, c := range cells {
+		total += c.Messages
+	}
+	if total != 2 {
+		t.Errorf("total = %d, want 2 (the union of both networks)", total)
+	}
+}
+
+func TestGetNewAddressTimeSeriesAllNetworks(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now().UTC()
+
+	mustCall(t, db, "gnoland1", "a1", 1, now.Add(-time.Hour), "g1a", "gno.land/r/x", "F")
+	mustCall(t, db, "test12", "a2", 2, now.Add(-time.Hour), "g1b", "gno.land/r/x", "F")
+
+	pts, err := db.GetNewAddressTimeSeries("", "daily", 7)
+	if err != nil {
+		t.Fatalf("new addresses: %v", err)
+	}
+	total := 0
+	for _, p := range pts {
+		total += p.NewAddresses
+	}
+	if total != 2 {
+		t.Errorf("total = %d, want 2 (one new address per network)", total)
+	}
+}
+
+func TestGetRollingActiveTimeSeriesAllNetworks(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now().UTC()
+
+	mustCall(t, db, "gnoland1", "a1", 1, now, "g1a", "gno.land/r/x", "F")
+	mustCall(t, db, "test12", "a2", 2, now, "g1b", "gno.land/r/x", "F")
+
+	pts, err := db.GetRollingActiveTimeSeries("", 7)
+	if err != nil {
+		t.Fatalf("rolling: %v", err)
+	}
+	last := pts[len(pts)-1]
+	if last.DAU != 2 {
+		t.Errorf("DAU = %d, want 2 (the union of both networks)", last.DAU)
+	}
+}
+
+func TestGetGasPerTxHistogramAllNetworks(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now().UTC()
+
+	if err := db.UpsertTransaction("gnoland1", "t1", 1, rfc3339(now.Add(-time.Hour)), 50_000, 50_000, 1, true); err != nil {
+		t.Fatalf("upsert tx 1: %v", err)
+	}
+	if err := db.UpsertTransaction("test12", "t2", 2, rfc3339(now.Add(-time.Hour)), 50_000, 50_000, 1, true); err != nil {
+		t.Fatalf("upsert tx 2: %v", err)
+	}
+
+	bins, err := db.GetGasPerTxHistogram("", 7)
+	if err != nil {
+		t.Fatalf("histogram: %v", err)
+	}
+	total := 0
+	for _, b := range bins {
+		total += b.Txs
+	}
+	if total != 2 {
+		t.Errorf("total = %d, want 2 (the union of both networks)", total)
+	}
+}
+
+func TestGetRealmsWithCallsAllNetworks(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now().UTC()
+
+	mustCall(t, db, "gnoland1", "a1", 1, now.Add(-time.Hour), "g1a", "gno.land/r/x", "F")
+	mustCall(t, db, "test12", "a2", 2, now.Add(-time.Hour), "g1b", "gno.land/r/y", "F")
+
+	got, err := db.GetRealmsWithCalls("", 14, 0)
+	if err != nil {
+		t.Fatalf("realms: %v", err)
+	}
+	want := map[string]bool{"gno.land/r/x": true, "gno.land/r/y": true}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want both realms across both networks", got)
+	}
+	for _, p := range got {
+		if !want[p] {
+			t.Errorf("unexpected realm %q", p)
+		}
+	}
+}
+
+func TestGetFunctionCallHeatmapAllNetworks(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now().UTC()
+
+	mustCall(t, db, "gnoland1", "a1", 1, now.Add(-time.Hour), "g1a", "gno.land/r/x", "F1")
+	mustCall(t, db, "test12", "a2", 2, now.Add(-time.Hour), "g1b", "gno.land/r/x", "F2")
+
+	cells, err := db.GetFunctionCallHeatmap("", "gno.land/r/x", 14)
+	if err != nil {
+		t.Fatalf("heatmap: %v", err)
+	}
+	byFunc := map[string]int{}
+	for _, c := range cells {
+		byFunc[c.Func] += c.Calls
+	}
+	if byFunc["F1"] != 1 || byFunc["F2"] != 1 {
+		t.Errorf("call totals = %v, want F1: 1, F2: 1 (the union of both networks)", byFunc)
+	}
+}
+
+func mustCall(t *testing.T, db *DB, network, hash string, height int, ts time.Time, caller, pkgPath, fn string) {
+	t.Helper()
+	if err := db.InsertCall(network, hash, height, rfc3339(ts), caller, pkgPath, fn, true); err != nil {
+		t.Fatalf("insert call: %v", err)
+	}
+}
+
+func TestOldestBlockTime(t *testing.T) {
+	db := newTestDB(t)
+
+	if _, ok, err := db.OldestBlockTime("gnoland1"); err != nil || ok {
+		t.Fatalf("empty table: ok = %v, err = %v; want false, nil", ok, err)
+	}
+
+	base := time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Second)
+	seedBlocks(t, db, "gnoland1", "g1aaa", base, []float64{0, 60, 120})
+	seedBlocks(t, db, "test12", "g1bbb", base.Add(-48*time.Hour), []float64{0})
+
+	got, ok, err := db.OldestBlockTime("gnoland1")
+	if err != nil || !ok {
+		t.Fatalf("ok = %v, err = %v", ok, err)
+	}
+	if !got.Equal(base) {
+		t.Errorf("oldest = %s, want %s — another network's older block leaked in", got, base)
+	}
+}
+
+func TestNetworkDataStart(t *testing.T) {
+	db := newTestDB(t)
+
+	if _, ok, err := db.NetworkDataStart("gnoland1"); err != nil || ok {
+		t.Fatalf("empty database: ok = %v, err = %v; want ok=false, err=nil", ok, err)
+	}
+
+	oldest := "2026-08-07T12:00:00Z"
+	newer := "2026-08-14T12:00:00Z"
+	if err := db.InsertCall("gnoland1", "TX1", 10, newer, "g1a", "gno.land/r/demo/foo", "Bar", true); err != nil {
+		t.Fatalf("insert call: %v", err)
+	}
+	// The earliest datum lives in a different table than the latest, so a
+	// single-table MIN would miss it.
+	if err := db.UpsertPackage("gnoland1", "gno.land/r/demo/foo", "foo", "g1c", "TX0", 5, oldest, true, 1); err != nil {
+		t.Fatalf("upsert package: %v", err)
+	}
+	// Another network's earlier data must not move this network's start.
+	if err := db.InsertCall("test12", "TX2", 1, "2020-01-01T00:00:00Z", "g1b", "gno.land/r/demo/bar", "Baz", true); err != nil {
+		t.Fatalf("insert other network call: %v", err)
+	}
+
+	got, ok, err := db.NetworkDataStart("gnoland1")
+	if err != nil || !ok {
+		t.Fatalf("ok = %v, err = %v; want ok=true, err=nil", ok, err)
+	}
+	want, _ := time.Parse(time.RFC3339, oldest)
+	if !got.Equal(want) {
+		t.Errorf("start = %v, want %v (a different network's rows leaked in)", got, want)
+	}
+}
+
+// TestNetworkDataStartAllNetworks covers network == "", which networkParam
+// uses for both a missing ?network and ?network=all, and which is the
+// frontend's default state. The SQL builder takes a different shape on this
+// path — it omits the per-subquery network filter entirely — so it needs its
+// own coverage rather than relying on the scoped case above.
+func TestNetworkDataStartAllNetworks(t *testing.T) {
+	db := newTestDB(t)
+
+	earlier := "2020-01-01T00:00:00Z"
+	later := "2026-08-14T12:00:00Z"
+	if err := db.InsertCall("gnoland1", "TX1", 10, later, "g1a", "gno.land/r/demo/foo", "Bar", true); err != nil {
+		t.Fatalf("insert call on gnoland1: %v", err)
+	}
+	if err := db.InsertCall("test12", "TX2", 1, earlier, "g1b", "gno.land/r/demo/bar", "Baz", true); err != nil {
+		t.Fatalf("insert call on test12: %v", err)
+	}
+
+	got, ok, err := db.NetworkDataStart("")
+	if err != nil || !ok {
+		t.Fatalf("ok = %v, err = %v; want ok=true, err=nil", ok, err)
+	}
+	want, _ := time.Parse(time.RFC3339, earlier)
+	if !got.Equal(want) {
+		t.Errorf("start = %v, want %v (the minimum across every configured network)", got, want)
+	}
+}
+
+// TestNetworkDataStartLogsUnparseableTimestamp is Fix 6's coverage: a row
+// that fails to parse must not silently produce ok=false with no signal.
+// There's no exported hook to observe the log line from here, so this test
+// exists mainly to pin down the documented behaviour (ok=false, err=nil) and
+// as a place future contributors can extend if a hook is added later.
+func TestNetworkDataStartPropagatesUnparseableTimestamp(t *testing.T) {
+	// AGENTS.md: query-path readers return errors rather than swallowing them
+	// and reporting a zero value. A chain whose timestamps stopped parsing must
+	// surface that, not silently render a fixed multi-year window forever.
+	db := newTestDB(t)
+
+	if err := db.InsertCall("gnoland1", "TX1", 1, "not-a-timestamp", "g1a", "gno.land/r/demo/foo", "Bar", true); err != nil {
+		t.Fatalf("insert call: %v", err)
+	}
+
+	got, ok, err := db.NetworkDataStart("gnoland1")
+	if err == nil {
+		t.Fatalf("got = %v, ok = %v, err = nil; want a non-nil error", got, ok)
+	}
+	if ok {
+		t.Errorf("ok = true, want false alongside the error")
+	}
+	if !strings.Contains(err.Error(), "not-a-timestamp") {
+		t.Errorf("error %q does not name the offending value", err)
 	}
 }
