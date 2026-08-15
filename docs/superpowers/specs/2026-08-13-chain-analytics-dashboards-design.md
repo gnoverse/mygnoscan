@@ -216,10 +216,16 @@ This table is the single source of truth for remaining work. Update it as each b
       > table". Only the three in 2a need it; the five in 2b need no schema change at all. The row also
       > implied migration risk — adding new tables via `CREATE TABLE IF NOT EXISTS` never touches the
       > `packages_new` rebuild path `AGENTS.md` warns about.
-- [ ] **Batch 3 — `storage_events` table.** Persist `StorageDepositEvent` / `StorageUnlockEvent`
-      (`bytes_delta`, fee, `pkg_path`) from `TxResponse.Events`; the fields already exist in `indexer.go`'s
-      `TxEvent`. Unlocks: storage growth (cumulative area), top-consumers treemap, deposit-locked vs
-      refunded, net storage delta per realm. Rename or retire the misleading `GetStorageTimeSeries`.
+- [ ] **Batch 3 — `storage_events` table.** Persist `StorageDepositEvent` / `StorageUnlockEvent` from
+      `TxResponse.Events`, which `txFieldsLight` already fetches on every sync pass. Unlocks: cumulative
+      storage growth, top-consumers treemap, deposited vs released, net delta per realm — plus retiring the
+      misleading `GetStorageTimeSeries` and migrating the sanity view onto the real metric. Design:
+      [`2026-08-15-dashboards-batch-3-storage-design.md`](2026-08-15-dashboards-batch-3-storage-design.md).
+
+      > **Correction:** this row proposed `PRIMARY KEY (network, tx_hash, pkg_path, kind)`. Measurement
+      > killed it — 13 of 201 real transactions emit two or more events sharing both `kind` and `pkg_path`,
+      > so that key silently drops events and under-counts bytes. The key needs the event's ordinal within
+      > the transaction.
 - [ ] **Batch 4 — `transfer_edges` / `caller_edges` rollups.** Per recap §7: day-collapsed edge tables built
       in the syncer, plus `GET /api/graph/transfers` and `/api/graph/callers` doing window / top-N / ego /
       parallel-edge-collapse **in SQL**, returning pre-pruned graphs. Unlocks: value-transfer force graph with
@@ -293,8 +299,11 @@ Not blocking batch 1. Each is owned by the batch that first hits it.
   already returns; batch 2 should settle the vocabulary.
 - **Batch 2 — what counts as an "active" address?** Whether bank-send *receivers* count, and whether failed
   txs count.
-- **Batch 3 — negative cumulative bytes.** Storage deposits predate some state; whether to floor the
-  cumulative curve at zero.
+- ~~**Batch 3 — negative cumulative bytes.**~~ **Resolved: do not floor.** Measured against the live
+  indexer, `StorageDepositEvent.bytes_delta` is positive and `StorageUnlockEvent.bytes_delta` is negative,
+  so `SUM` is already a correct net figure. With full history a cumulative sum cannot go negative, meaning a
+  negative value signals events summed against pruned history — worth surfacing, not hiding. For the
+  per-realm net-delta chart, negative is the point: it is what pruning looks like.
 - **Batch 4 — renderer for the caller graph.** echarts-gl `graphGL` (single dep, no node labels, ~100k
   ceiling) versus sigma.js v3 + graphology (labels, better at scale). Also the node count past which layout
   must be precomputed server-side and shipped as coordinates.
