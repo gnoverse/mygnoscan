@@ -59,6 +59,7 @@ unparseable `days` value does not count as supplying it, since
 | `GET /api/realm/{path...}` | detail for one package: metadata, source files, imports, dependents, callers, MsgRun references |
 | `GET /api/deps/{path...}` | dependency graph as `{path: [imports]}`. `dir=dependents` reverses direction |
 | `GET /api/storage/{path...}` | storage events for a package |
+| `GET /api/storage/consumers` | `{pkg_path, deposited, released, net}` per realm over the window, ordered by `net` descending. Accepts `window`/`days` (no `granularity`). `topN` caps the row count (default 20, capped at 100). `released` is negative and nothing is floored at zero, so a realm that pruned more than it stored has a negative `net` |
 | `GET /api/events/{path...}` | events emitted by a package |
 
 ## Transactions and blocks
@@ -103,14 +104,17 @@ All accept `days` and `granularity`.
 | `GET /api/timeseries/gas` | gas consumption |
 | `GET /api/timeseries/active-addresses` | active addresses |
 | `GET /api/timeseries/health` | chain health indicators |
-| `GET /api/timeseries/storage` | storage growth. `realm=<path>` scopes it to one realm |
-| `GET /api/timeseries/storage/realms` | realms that have storage data, for populating a selector |
+| `GET /api/timeseries/storage` | `{time, deposited, released, net}` per bucket, from `storage_events` (chain-state bytes, not source-code bytes). `released` is negative and nothing is floored at zero, so a bucket that pruned more than it stored nets negative. `realm=<path>` scopes it to one realm |
+| `GET /api/timeseries/storage/realms` | realms that have storage events in the window, for populating a selector |
 | `GET /api/timeseries/blocks` | blocks and transactions per bucket. **Single-network** |
 | `GET /api/timeseries/new-addresses` | addresses seen on-chain for the first time, bucketed by that first appearance. First-seen is derived over all indexed history, so widening the window never relabels an old address as new |
 | `GET /api/timeseries/active-rolling` | `dau`, `wau`, `mau` — distinct active addresses over trailing 1/7/30-day windows. **Always daily**: `granularity` is ignored, because the three windows are day-defined. A request shorter than 7 days is widened to 7, and capped at 365 regardless of `window`/`days`/`granularity` |
 
 `storage` and `calls/function-heatmap` are the only endpoints that accept a
 `realm` parameter; there is no general per-realm activity time series.
+`timeseries/storage`, `timeseries/storage/realms`, and `storage/consumers` are
+all **single-network** in the dashboard — none of them are meaningfully
+aggregatable across chains, since `pkg_path` is only unique within a network.
 
 An **active address** is one that authored a message — a caller, a package
 creator, a `MsgRun` caller, or a bank-send sender. Bank-send *receivers* do not

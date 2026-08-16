@@ -382,3 +382,23 @@ func TestHandleCallRealmsValidatesLimit(t *testing.T) {
 		t.Fatalf("garbage limit: status = %d, want 200", w.Code)
 	}
 }
+
+func TestStorageConsumersRouteBeatsTheRealmWildcard(t *testing.T) {
+	// /api/storage/{path...} is registered too; the literal must win, or the
+	// consumers endpoint would be handled as a realm named "consumers".
+	mux := http.NewServeMux()
+	hit := ""
+	mux.HandleFunc("GET /api/storage/{path...}", func(http.ResponseWriter, *http.Request) { hit = "wildcard" })
+	mux.HandleFunc("GET /api/storage/consumers", func(http.ResponseWriter, *http.Request) { hit = "consumers" })
+
+	for _, tc := range []struct{ path, want string }{
+		{"/api/storage/consumers", "consumers"},
+		{"/api/storage/r/demo/foo", "wildcard"},
+	} {
+		hit = ""
+		mux.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", tc.path, nil))
+		if hit != tc.want {
+			t.Errorf("%s routed to %q, want %q", tc.path, hit, tc.want)
+		}
+	}
+}

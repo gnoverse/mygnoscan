@@ -47,6 +47,9 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 	if err := s.syncCalls(ctx); err != nil {
 		return fmt.Errorf("sync calls error: %w", err)
 	}
+	if err := s.syncStorageEvents(ctx); err != nil {
+		return err
+	}
 	return s.syncMsgRuns(ctx)
 }
 
@@ -739,6 +742,92 @@ func (s *Syncer) syncCalls(ctx context.Context) error {
 	log.Printf("[%s] synced %d calls, %d sends", s.networkID, callCount, sendCount)
 	if err != nil {
 		return fmt.Errorf("getTransactionsFromHeight error : %w", err)
+	}
+	return nil
+}
+
+// storageEventRows extracts the storage events from one transaction.
+//
+// The index recorded is the event's position in the transaction's FULL event
+// list, so a later batch persisting GnoEvent rows can share the numbering
+// rather than renumbering these.
+func storageEventRows(tx Transaction, blockTime string) []StorageEventRow {
+	if tx.Response == nil {
+		return nil
+	}
+	var out []StorageEventRow
+	for i, ev := range tx.Response.Events {
+		var kind string
+		var fee *Coin
+		switch ev.Typename {
+		case "StorageDepositEvent":
+			kind, fee = "deposit", ev.FeeDelta
+		case "StorageUnlockEvent":
+			kind, fee = "unlock", ev.FeeRefund
+		default:
+			continue
+		}
+		amount, denom := 0, ""
+		if fee != nil {
+			amount, denom = fee.Amount, fee.Denom
+		}
+		out = append(out, StorageEventRow{
+			TxHash:      tx.Hash,
+			EventIndex:  i,
+			BlockHeight: tx.BlockHeight,
+			BlockTime:   blockTime,
+			PkgPath:     ev.PkgPath,
+			Kind:        kind,
+			BytesDelta:  ev.BytesDelta,
+			FeeAmount:   amount,
+			FeeDenom:    denom,
+		})
+	}
+	return out
+}
+
+// syncStorageEvents fills the storage_events table.
+//
+// It walks transactions from its own cursor rather than piggybacking on
+// syncCalls' walk. Piggybacking would cost no extra fetching, but that walk's
+// cursor comes from the calls table, so on any database already synced to the
+// tip it would fetch nothing and leave storage_events permanently empty.
+func (s *Syncer) syncStorageEvents(ctx context.Context) error {
+	last, ok, err := s.db.StorageEventsLastHeight(s.networkID)
+	if err != nil {
+		return fmt.Errorf("storage events cursor: %w", err)
+	}
+	var from *int
+	if ok {
+		from = &last
+	}
+
+	count := 0
+	sawFailure := false
+	err = walkTransactions(ctx, from, s.client.GetTransactionsFromHeight, func(txs []Transaction) {
+		if sawFailure {
+			return
+		}
+		times := s.fetchBlockTimes(ctx, txs)
+		var rows []StorageEventRow
+		for _, tx := range txs {
+			rows = append(rows, storageEventRows(tx, times[tx.BlockHeight])...)
+		}
+		if len(rows) == 0 {
+			return
+		}
+		if err := s.db.UpsertStorageEvents(s.networkID, rows); err != nil {
+			log.Printf("[%s] syncStorageEvents: upsert %d rows: %v", s.networkID, len(rows), err)
+			sawFailure = true
+			return
+		}
+		count += len(rows)
+	})
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		log.Printf("[%s] syncStorageEvents: stored %d events", s.networkID, count)
 	}
 	return nil
 }

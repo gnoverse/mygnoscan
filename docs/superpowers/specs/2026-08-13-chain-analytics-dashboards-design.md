@@ -216,7 +216,7 @@ This table is the single source of truth for remaining work. Update it as each b
       > table". Only the three in 2a need it; the five in 2b need no schema change at all. The row also
       > implied migration risk — adding new tables via `CREATE TABLE IF NOT EXISTS` never touches the
       > `packages_new` rebuild path `AGENTS.md` warns about.
-- [ ] **Batch 3 — `storage_events` table.** Persist `StorageDepositEvent` / `StorageUnlockEvent` from
+- [x] **Batch 3 — `storage_events` table.** Persist `StorageDepositEvent` / `StorageUnlockEvent` from
       `TxResponse.Events`, which `txFieldsLight` already fetches on every sync pass. Unlocks: cumulative
       storage growth, top-consumers treemap, deposited vs released, net delta per realm — plus retiring the
       misleading `GetStorageTimeSeries` and migrating the sanity view onto the real metric. Design:

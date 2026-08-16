@@ -309,6 +309,20 @@ func initSchema(db *sql.DB) error {
 			PRIMARY KEY (network, height)
 		) WITHOUT ROWID;
 
+		CREATE TABLE IF NOT EXISTS storage_events (
+			network      TEXT NOT NULL DEFAULT 'gnoland1',
+			tx_hash      TEXT NOT NULL,
+			event_index  INTEGER NOT NULL,
+			block_height INTEGER NOT NULL,
+			block_time   TEXT,
+			pkg_path     TEXT NOT NULL,
+			kind         TEXT NOT NULL,
+			bytes_delta  INTEGER NOT NULL,
+			fee_amount   INTEGER NOT NULL DEFAULT 0,
+			fee_denom    TEXT,
+			PRIMARY KEY (network, tx_hash, event_index)
+		);
+
 		CREATE INDEX IF NOT EXISTS idx_txs_height ON transactions(network, block_height);
 		CREATE INDEX IF NOT EXISTS idx_calls_pkg ON calls(pkg_path);
 		CREATE INDEX IF NOT EXISTS idx_calls_caller ON calls(caller);
@@ -328,6 +342,8 @@ func initSchema(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_sends_block_time  ON bank_sends(network, block_time);
 		CREATE INDEX IF NOT EXISTS idx_txs_block_time    ON transactions(network, block_time);
 		CREATE INDEX IF NOT EXISTS idx_blocks_time ON blocks(network, time);
+		CREATE INDEX IF NOT EXISTS idx_storage_events_time ON storage_events(network, block_time);
+		CREATE INDEX IF NOT EXISTS idx_storage_events_pkg  ON storage_events(network, pkg_path);
 	`)
 	return err
 }
@@ -496,7 +512,7 @@ func (d *DB) DeleteNetworkData(network string) (int64, error) {
 
 // blockTimeTables lists tables whose rows carry a block_time worth backfilling.
 // package_files and dependencies have no height of their own.
-var backfillTables = []string{"packages", "calls", "msg_runs", "bank_sends", "transactions"}
+var backfillTables = []string{"packages", "calls", "msg_runs", "bank_sends", "transactions", "storage_events"}
 
 // HeightsMissingBlockTime returns block heights that have rows with no
 // block_time, oldest first, capped at limit.
@@ -1954,86 +1970,6 @@ func (d *DB) GetCallerTimeSeries(network, granularity string, days int) ([]Calle
 	), nil
 }
 
-type StorageTimePoint struct {
-	Time          string `json:"time"`
-	BytesAdded    int    `json:"bytes_added"`
-	FilesAdded    int    `json:"files_added"`
-	PackagesAdded int    `json:"packages_added"`
-}
-
-func (d *DB) GetStorageTimeSeries(network, realmPath, granularity string, days int) ([]StorageTimePoint, error) {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	sqlFmt, step, truncFn := timeseriesFormat(granularity)
-	startTime := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
-
-	extraFilters := ""
-	args := []any{startTime}
-	if network != "" {
-		extraFilters += " AND p.network = ?"
-		args = append(args, network)
-	}
-	if realmPath != "" {
-		extraFilters += " AND p.path = ?"
-		args = append(args, realmPath)
-	}
-
-	q := fmt.Sprintf(
-		"SELECT strftime('%s', p.block_time) as bucket,"+
-			" SUM(LENGTH(pf.body)) as bytes_added,"+
-			" COUNT(*) as files_added,"+
-			" COUNT(DISTINCT p.path) as packages_added"+
-			" FROM package_files pf"+
-			" JOIN packages p ON p.network = pf.network AND p.path = pf.package_path"+
-			" WHERE p.block_time >= ?%s"+
-			" GROUP BY bucket ORDER BY bucket ASC",
-		sqlFmt, extraFilters)
-
-	rows, err := d.db.Query(q, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	type row struct {
-		bucket        string
-		bytesAdded    int
-		filesAdded    int
-		packagesAdded int
-	}
-	buckets := make(map[string]*row)
-	for rows.Next() {
-		var r row
-		if err := rows.Scan(&r.bucket, &r.bytesAdded, &r.filesAdded, &r.packagesAdded); err != nil {
-			return nil, err
-		}
-		buckets[r.bucket] = &r
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	now := time.Now().UTC()
-	start := truncFn(now.AddDate(0, 0, -days))
-	end := truncFn(now)
-	var out []StorageTimePoint
-	for cur := start; !cur.After(end); cur = truncFn(cur.Add(step)) {
-		k := bucketKey(cur, granularity)
-		if r, ok := buckets[k]; ok {
-			out = append(out, StorageTimePoint{
-				Time:          k,
-				BytesAdded:    r.bytesAdded,
-				FilesAdded:    r.filesAdded,
-				PackagesAdded: r.packagesAdded,
-			})
-		} else {
-			out = append(out, StorageTimePoint{Time: k})
-		}
-	}
-	return out, nil
-}
-
 func (d *DB) UpsertTransaction(network, txHash string, blockHeight int, blockTime string, gasUsed, gasWanted, gasFee int, success bool) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -2307,34 +2243,6 @@ func (d *DB) GetHealthTimeSeries(network, granularity string, days int) ([]Healt
 		}
 	}
 	return out, nil
-}
-
-func (d *DB) GetRealmsWithStorage(network string, days int) ([]string, error) {
-	startTime := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
-	q := `SELECT DISTINCT p.path
-		FROM package_files pf
-		JOIN packages p ON p.network = pf.network AND p.path = pf.package_path
-		WHERE p.block_time >= ? AND p.is_realm = 1`
-	args := []any{startTime}
-	if network != "" {
-		q += " AND p.network = ?"
-		args = append(args, network)
-	}
-	q += " ORDER BY p.path ASC"
-	rows, err := d.db.Query(q, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var paths []string
-	for rows.Next() {
-		var path string
-		if err := rows.Scan(&path); err != nil {
-			return nil, err
-		}
-		paths = append(paths, path)
-	}
-	return paths, rows.Err()
 }
 
 func (d *DB) GetActiveAddressTimeSeries(network, granularity string, days int) ([]ActiveAddressTimePoint, error) {
@@ -2838,6 +2746,246 @@ func (d *DB) GetBlockCoverage(network string) (BlockCoverage, error) {
 	}
 	cov.Complete = done == "1"
 	return cov, nil
+}
+
+// --- storage events ---
+
+// StorageEventRow is one StorageDepositEvent or StorageUnlockEvent.
+//
+// EventIndex is the event's ordinal in its transaction's FULL event list, not
+// among storage events only, so it stays stable if a later batch persists
+// GnoEvent rows from the same list. It is in the primary key because 13 of 201
+// real mainnet transactions emit two or more events sharing both kind and
+// pkg_path — a key without it silently drops events and under-counts bytes.
+type StorageEventRow struct {
+	TxHash      string
+	EventIndex  int
+	BlockHeight int
+	BlockTime   string
+	PkgPath     string
+	Kind        string // "deposit" | "unlock"
+	BytesDelta  int    // signed as the chain emits it: deposits +, unlocks -
+	FeeAmount   int
+	FeeDenom    string
+}
+
+// UpsertStorageEvents writes many events under a single lock and a single
+// SQLite transaction, mirroring UpsertTransactions and UpsertBlocks.
+//
+// Not an optimisation: one observed transaction emitted 58 storage events, and
+// the comment on UpsertTransactions records that per-row writes made read
+// requests queue behind a backfill of a hundred rows.
+func (d *DB) UpsertStorageEvents(network string, rows []StorageEventRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO storage_events
+			(network, tx_hash, event_index, block_height, block_time, pkg_path, kind, bytes_delta, fee_amount, fee_denom)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (network, tx_hash, event_index) DO UPDATE SET
+			block_time  = excluded.block_time,
+			bytes_delta = excluded.bytes_delta,
+			fee_amount  = excluded.fee_amount,
+			fee_denom   = excluded.fee_denom`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, r := range rows {
+		if _, err := stmt.Exec(network, r.TxHash, r.EventIndex, r.BlockHeight, r.BlockTime,
+			r.PkgPath, r.Kind, r.BytesDelta, r.FeeAmount, r.FeeDenom); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// StorageEventsLastHeight is the highest block height with a stored event for
+// this network. The syncer derives its cursor from this rather than from
+// separate state; ok is false when the network has none.
+func (d *DB) StorageEventsLastHeight(network string) (int, bool, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var h sql.NullInt64
+	err := d.db.QueryRow(
+		`SELECT MAX(block_height) FROM storage_events WHERE network = ?`, network,
+	).Scan(&h)
+	if err != nil {
+		return 0, false, err
+	}
+	if !h.Valid {
+		return 0, false, nil
+	}
+	return int(h.Int64), true, nil
+}
+
+type StoragePoint struct {
+	Time      string `json:"time"`
+	Deposited int    `json:"deposited"`
+	Released  int    `json:"released"` // negative, as the chain emits it
+	Net       int    `json:"net"`
+}
+
+type StorageConsumer struct {
+	PkgPath   string `json:"pkg_path"`
+	Deposited int    `json:"deposited"`
+	Released  int    `json:"released"`
+	Net       int    `json:"net"`
+}
+
+// GetStorageTimeSeries buckets chain-state storage change over time.
+//
+// This replaces a reader of the same name that summed LENGTH(package_files.body)
+// — deployed source-code bytes, which is a different quantity from the state a
+// realm pays a deposit to hold. Nothing is floored: a negative net is a real
+// signal, either a realm pruning state or events summed against pruned history.
+func (d *DB) GetStorageTimeSeries(network, realmPath, granularity string, days int) ([]StoragePoint, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	sqlFmt, step, truncFn := timeseriesFormat(granularity)
+	start := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
+
+	filter := ""
+	args := []any{start}
+	if network != "" {
+		filter += " AND network = ?"
+		args = append(args, network)
+	}
+	if realmPath != "" {
+		filter += " AND pkg_path = ?"
+		args = append(args, realmPath)
+	}
+
+	q := fmt.Sprintf(`
+		SELECT strftime('%s', block_time) AS bucket,
+		       COALESCE(SUM(CASE WHEN bytes_delta > 0 THEN bytes_delta ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN bytes_delta < 0 THEN bytes_delta ELSE 0 END), 0),
+		       COALESCE(SUM(bytes_delta), 0)
+		FROM storage_events
+		WHERE block_time >= ?%s
+		GROUP BY bucket ORDER BY bucket ASC`, sqlFmt, filter)
+
+	rows, err := d.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	buckets := make(map[string]*StoragePoint)
+	for rows.Next() {
+		var bucket sql.NullString
+		var dep, rel, net int
+		if err := rows.Scan(&bucket, &dep, &rel, &net); err != nil {
+			return nil, err
+		}
+		// A row whose block_time will not parse yields a NULL bucket: string
+		// comparison lets garbage past the window filter. Skip the row rather
+		// than failing the whole chart.
+		if !bucket.Valid || bucket.String == "" {
+			continue
+		}
+		p := StoragePoint{Time: bucket.String, Deposited: dep, Released: rel, Net: net}
+		buckets[p.Time] = &p
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return fillBuckets(buckets, days, granularity, step, truncFn,
+		func(k string) StoragePoint { return StoragePoint{Time: k} },
+		func(p *StoragePoint) {}), nil
+}
+
+// GetStorageConsumers aggregates storage change per realm, biggest net first.
+func (d *DB) GetStorageConsumers(network string, days, topN int) ([]StorageConsumer, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	if topN <= 0 {
+		topN = 20
+	}
+	if topN > 100 {
+		topN = 100
+	}
+	start := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
+
+	filter := ""
+	args := []any{start}
+	if network != "" {
+		filter = " AND network = ?"
+		args = append(args, network)
+	}
+	args = append(args, topN)
+
+	q := fmt.Sprintf(`
+		SELECT pkg_path,
+		       COALESCE(SUM(CASE WHEN bytes_delta > 0 THEN bytes_delta ELSE 0 END), 0) AS deposited,
+		       COALESCE(SUM(CASE WHEN bytes_delta < 0 THEN bytes_delta ELSE 0 END), 0) AS released,
+		       COALESCE(SUM(bytes_delta), 0) AS net
+		FROM storage_events
+		WHERE block_time >= ?%s
+		GROUP BY pkg_path ORDER BY ABS(net) DESC LIMIT ?`, filter)
+
+	rows, err := d.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []StorageConsumer
+	for rows.Next() {
+		var c StorageConsumer
+		if err := rows.Scan(&c.PkgPath, &c.Deposited, &c.Released, &c.Net); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// GetRealmsWithStorage lists realms that have storage events in the window.
+// It used to list realms that had package_files, which is a different set.
+func (d *DB) GetRealmsWithStorage(network string, days int) ([]string, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	start := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
+	filter := ""
+	args := []any{start}
+	if network != "" {
+		filter = " AND network = ?"
+		args = append(args, network)
+	}
+
+	rows, err := d.db.Query(
+		`SELECT DISTINCT pkg_path FROM storage_events WHERE block_time >= ?`+filter+` ORDER BY pkg_path`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 // --- batch 2b: activity rhythm, acquisition, distributions ---

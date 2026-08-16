@@ -1294,7 +1294,7 @@ func (a *API) HandleTimeSeriesStorage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if pts == nil {
-		pts = []StorageTimePoint{}
+		pts = []StoragePoint{}
 	}
 	jsonResponse(w, pts)
 }
@@ -1311,6 +1311,21 @@ func (a *API) HandleStorageRealms(w http.ResponseWriter, r *http.Request) {
 		paths = []string{}
 	}
 	jsonResponse(w, paths)
+}
+
+func (a *API) HandleStorageConsumers(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	days, _ := a.resolveTimeseriesParams(r, network)
+	topN, _ := strconv.Atoi(r.URL.Query().Get("topN"))
+	rows, err := a.db.GetStorageConsumers(network, days, topN)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	if rows == nil {
+		rows = []StorageConsumer{}
+	}
+	jsonResponse(w, rows)
 }
 
 func (a *API) HandleTimeSeriesGas(w http.ResponseWriter, r *http.Request) {

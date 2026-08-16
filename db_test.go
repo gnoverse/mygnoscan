@@ -285,6 +285,54 @@ func TestBackfillBlockTimes(t *testing.T) {
 	}
 }
 
+func TestBackfillCoversStorageEvents(t *testing.T) {
+	// storage_events joined backfillTables after a review found that a
+	// transient fetchBlockTimes failure stamps rows with BlockTime: "" that
+	// every reader's `block_time >= ?` filter then hides forever, and the
+	// standing backfill pass never saw the table because it wasn't listed.
+	db, err := NewDB(filepath.Join(t.TempDir(), "backfill-storage.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.UpsertStorageEvents("gnoland1", []StorageEventRow{{
+		TxHash: "TX1", EventIndex: 0, BlockHeight: 100, BlockTime: "",
+		PkgPath: "gno.land/r/demo/foo", Kind: "deposit", BytesDelta: 10,
+	}}); err != nil {
+		t.Fatalf("seed storage event: %v", err)
+	}
+
+	heights, err := db.HeightsMissingBlockTime("gnoland1", 200)
+	if err != nil {
+		t.Fatalf("find heights: %v", err)
+	}
+	if len(heights) != 1 || heights[0] != 100 {
+		t.Fatalf("heights = %v, want [100]", heights)
+	}
+
+	updated, err := db.SetBlockTimes("gnoland1", map[int]string{100: "2026-01-01T00:00:00Z"})
+	if err != nil {
+		t.Fatalf("set block times: %v", err)
+	}
+	if updated != 1 {
+		t.Errorf("updated %d rows, want 1", updated)
+	}
+
+	var got string
+	if err := db.db.QueryRow(
+		`SELECT block_time FROM storage_events WHERE network = 'gnoland1'`).Scan(&got); err != nil {
+		t.Fatalf("read storage_events: %v", err)
+	}
+	if got != "2026-01-01T00:00:00Z" {
+		t.Errorf("block_time = %q, want the backfilled value", got)
+	}
+
+	if h, err := db.HeightsMissingBlockTime("gnoland1", 200); err != nil || len(h) != 0 {
+		t.Errorf("after backfill heights = %v (err %v), want none", h, err)
+	}
+}
+
 func TestHeightsMissingTransactions(t *testing.T) {
 	db, err := NewDB(filepath.Join(t.TempDir(), "txgap.db"))
 	if err != nil {
@@ -1440,5 +1488,261 @@ func TestNetworkDataStartPropagatesUnparseableTimestamp(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not-a-timestamp") {
 		t.Errorf("error %q does not name the offending value", err)
+	}
+}
+
+func TestUpsertStorageEventsKeepsSamePkgPathEvents(t *testing.T) {
+	// 13 of 201 real mainnet transactions emit two or more storage events
+	// sharing BOTH kind and pkg_path. A key of (network, tx_hash, pkg_path,
+	// kind) would collapse them and under-count bytes; event_index is what
+	// keeps them distinct.
+	db := newTestDB(t)
+
+	rows := []StorageEventRow{
+		{TxHash: "TX1", EventIndex: 0, BlockHeight: 10, BlockTime: "2026-08-10T00:00:00Z",
+			PkgPath: "gno.land/r/demo/foo", Kind: "deposit", BytesDelta: 100, FeeAmount: 10000, FeeDenom: "ugnot"},
+		{TxHash: "TX1", EventIndex: 1, BlockHeight: 10, BlockTime: "2026-08-10T00:00:00Z",
+			PkgPath: "gno.land/r/demo/foo", Kind: "deposit", BytesDelta: 250, FeeAmount: 25000, FeeDenom: "ugnot"},
+	}
+	if err := db.UpsertStorageEvents("gnoland1", rows); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	var n, total int
+	if err := db.db.QueryRow(
+		`SELECT COUNT(*), COALESCE(SUM(bytes_delta), 0) FROM storage_events WHERE network = ?`, "gnoland1",
+	).Scan(&n, &total); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("row count = %d, want 2 — the second event was collapsed", n)
+	}
+	if total != 350 {
+		t.Errorf("summed bytes_delta = %d, want 350", total)
+	}
+}
+
+func TestUpsertStorageEventsIsIdempotent(t *testing.T) {
+	// One observed transaction emitted 58 storage events; re-syncing a page
+	// must be a no-op.
+	db := newTestDB(t)
+
+	rows := make([]StorageEventRow, 0, 58)
+	for i := 0; i < 58; i++ {
+		rows = append(rows, StorageEventRow{
+			TxHash: "TXBIG", EventIndex: i, BlockHeight: 20, BlockTime: "2026-08-11T00:00:00Z",
+			PkgPath: "gno.land/r/demo/bar", Kind: "deposit", BytesDelta: 10, FeeAmount: 1000, FeeDenom: "ugnot",
+		})
+	}
+	for i := 0; i < 3; i++ {
+		if err := db.UpsertStorageEvents("gnoland1", rows); err != nil {
+			t.Fatalf("upsert %d: %v", i, err)
+		}
+	}
+
+	var n int
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM storage_events WHERE network = ?`, "gnoland1").Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 58 {
+		t.Errorf("row count = %d, want 58 after three identical upserts", n)
+	}
+}
+
+func TestStorageEventsLastHeight(t *testing.T) {
+	db := newTestDB(t)
+
+	if _, ok, err := db.StorageEventsLastHeight("gnoland1"); err != nil || ok {
+		t.Fatalf("empty: ok = %v, err = %v; want ok=false, err=nil", ok, err)
+	}
+
+	if err := db.UpsertStorageEvents("gnoland1", []StorageEventRow{
+		{TxHash: "TX1", EventIndex: 0, BlockHeight: 5, BlockTime: "2026-08-10T00:00:00Z",
+			PkgPath: "gno.land/r/demo/foo", Kind: "deposit", BytesDelta: 1},
+		{TxHash: "TX2", EventIndex: 0, BlockHeight: 42, BlockTime: "2026-08-11T00:00:00Z",
+			PkgPath: "gno.land/r/demo/foo", Kind: "deposit", BytesDelta: 1},
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	// Another network's higher height must not move this network's cursor.
+	if err := db.UpsertStorageEvents("test12", []StorageEventRow{
+		{TxHash: "TX3", EventIndex: 0, BlockHeight: 9999, BlockTime: "2026-08-11T00:00:00Z",
+			PkgPath: "gno.land/r/demo/foo", Kind: "deposit", BytesDelta: 1},
+	}); err != nil {
+		t.Fatalf("upsert other network: %v", err)
+	}
+
+	h, ok, err := db.StorageEventsLastHeight("gnoland1")
+	if err != nil || !ok {
+		t.Fatalf("ok = %v, err = %v; want ok=true, err=nil", ok, err)
+	}
+	if h != 42 {
+		t.Errorf("last height = %d, want 42 — another network's rows leaked in", h)
+	}
+}
+
+// seedStorage writes one event, defaulting the stamp to now so window filters
+// include it.
+func seedStorage(t *testing.T, db *DB, network, tx string, idx int, pkg, kind string, bytes int, at time.Time) {
+	t.Helper()
+	err := db.UpsertStorageEvents(network, []StorageEventRow{{
+		TxHash: tx, EventIndex: idx, BlockHeight: 100 + idx,
+		BlockTime: at.UTC().Format(time.RFC3339), PkgPath: pkg, Kind: kind,
+		BytesDelta: bytes, FeeAmount: bytes * 100, FeeDenom: "ugnot",
+	}})
+	if err != nil {
+		t.Fatalf("seed storage: %v", err)
+	}
+}
+
+func TestGetStorageTimeSeriesNetsDepositsAgainstUnlocks(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now().UTC().Add(-2 * time.Hour)
+
+	seedStorage(t, db, "gnoland1", "TX1", 0, "gno.land/r/demo/foo", "deposit", 1000, now)
+	seedStorage(t, db, "gnoland1", "TX1", 1, "gno.land/r/demo/foo", "unlock", -400, now)
+
+	pts, err := db.GetStorageTimeSeries("gnoland1", "", "daily", 7)
+	if err != nil {
+		t.Fatalf("series: %v", err)
+	}
+	var dep, rel, net int
+	for _, p := range pts {
+		dep += p.Deposited
+		rel += p.Released
+		net += p.Net
+	}
+	if dep != 1000 {
+		t.Errorf("deposited = %d, want 1000", dep)
+	}
+	// Released stays negative, as the chain emits it.
+	if rel != -400 {
+		t.Errorf("released = %d, want -400 (kept negative)", rel)
+	}
+	if net != 600 {
+		t.Errorf("net = %d, want 600", net)
+	}
+}
+
+func TestGetStorageTimeSeriesAllowsNegativeNet(t *testing.T) {
+	// A window catching an unlock whose deposit predates it nets negative, and
+	// that must survive rather than being floored at zero — it is the signal
+	// that events are being summed against history we do not have.
+	db := newTestDB(t)
+	now := time.Now().UTC().Add(-2 * time.Hour)
+	seedStorage(t, db, "gnoland1", "TX1", 0, "gno.land/r/demo/foo", "unlock", -8192, now)
+
+	pts, err := db.GetStorageTimeSeries("gnoland1", "", "daily", 7)
+	if err != nil {
+		t.Fatalf("series: %v", err)
+	}
+	net := 0
+	for _, p := range pts {
+		net += p.Net
+	}
+	if net != -8192 {
+		t.Errorf("net = %d, want -8192 (not floored)", net)
+	}
+}
+
+func TestGetStorageTimeSeriesSkipsMalformedBlockTime(t *testing.T) {
+	// block_time is nullable TEXT compared as a string, so 'not-a-timestamp'
+	// passes the window predicate and strftime yields NULL. Batch 2b shipped a
+	// 500 from exactly this; the row must be skipped instead.
+	db := newTestDB(t)
+	now := time.Now().UTC().Add(-2 * time.Hour)
+	seedStorage(t, db, "gnoland1", "TX1", 0, "gno.land/r/demo/foo", "deposit", 500, now)
+	if err := db.UpsertStorageEvents("gnoland1", []StorageEventRow{{
+		TxHash: "TXBAD", EventIndex: 0, BlockHeight: 999, BlockTime: "not-a-timestamp",
+		PkgPath: "gno.land/r/demo/foo", Kind: "deposit", BytesDelta: 7,
+	}}); err != nil {
+		t.Fatalf("seed bad row: %v", err)
+	}
+
+	pts, err := db.GetStorageTimeSeries("gnoland1", "", "daily", 7)
+	if err != nil {
+		t.Fatalf("series returned an error instead of skipping the bad row: %v", err)
+	}
+	dep := 0
+	for _, p := range pts {
+		dep += p.Deposited
+	}
+	if dep != 500 {
+		t.Errorf("deposited = %d, want 500 (the good row only)", dep)
+	}
+}
+
+func TestGetStorageConsumersIsNetworkScoped(t *testing.T) {
+	// Realm paths collide across chains, so merging two networks under one
+	// label would be actively wrong.
+	db := newTestDB(t)
+	now := time.Now().UTC().Add(-2 * time.Hour)
+	seedStorage(t, db, "gnoland1", "TX1", 0, "gno.land/r/gnoland/blog", "deposit", 1000, now)
+	seedStorage(t, db, "test12", "TX2", 0, "gno.land/r/gnoland/blog", "deposit", 9999, now)
+
+	got, err := db.GetStorageConsumers("gnoland1", 7, 10)
+	if err != nil {
+		t.Fatalf("consumers: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d consumers, want 1", len(got))
+	}
+	if got[0].PkgPath != "gno.land/r/gnoland/blog" || got[0].Net != 1000 {
+		t.Errorf("consumer = %+v, want blog with net 1000 — the other network leaked in", got[0])
+	}
+}
+
+func TestGetStorageConsumersSurvivesLimitOnAbsNet(t *testing.T) {
+	// Both storage charts' copy claims the net-delta chart surfaces realms the
+	// treemap can't — big negative-net releasers. `ORDER BY net DESC` buried
+	// them at the bottom of the ordering, so topN truncated them away first.
+	// Ordering by ABS(net) keeps the biggest movers in either direction.
+	db := newTestDB(t)
+	now := time.Now().UTC().Add(-2 * time.Hour)
+
+	// Two small positive movers plus one large negative mover; topN=2 must
+	// keep the negative one instead of the two small deposits.
+	seedStorage(t, db, "gnoland1", "TX1", 0, "gno.land/r/demo/small1", "deposit", 50, now)
+	seedStorage(t, db, "gnoland1", "TX2", 0, "gno.land/r/demo/small2", "deposit", 40, now)
+	seedStorage(t, db, "gnoland1", "TX3", 0, "gno.land/r/demo/bignegative", "unlock", -900, now)
+
+	got, err := db.GetStorageConsumers("gnoland1", 7, 2)
+	if err != nil {
+		t.Fatalf("consumers: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d consumers, want 2 (topN)", len(got))
+	}
+	var sawNegative bool
+	for _, c := range got {
+		if c.PkgPath == "gno.land/r/demo/bignegative" {
+			sawNegative = true
+			if c.Net != -900 {
+				t.Errorf("bignegative net = %d, want -900", c.Net)
+			}
+		}
+	}
+	if !sawNegative {
+		t.Errorf("consumers = %+v, want the large negative-net realm to survive the limit", got)
+	}
+}
+
+func TestGetRealmsWithStorageComesFromEvents(t *testing.T) {
+	// It used to list realms with package_files; it must now list realms that
+	// actually have storage events.
+	db := newTestDB(t)
+	now := time.Now().UTC().Add(-2 * time.Hour)
+	seedStorage(t, db, "gnoland1", "TX1", 0, "gno.land/r/demo/withevents", "deposit", 10, now)
+	if err := db.UpsertPackage("gnoland1", "gno.land/r/demo/noevents", "noevents", "g1c", "TX9", 1,
+		now.Format(time.RFC3339), true, 1); err != nil {
+		t.Fatalf("upsert package: %v", err)
+	}
+
+	realms, err := db.GetRealmsWithStorage("gnoland1", 7)
+	if err != nil {
+		t.Fatalf("realms: %v", err)
+	}
+	if len(realms) != 1 || realms[0] != "gno.land/r/demo/withevents" {
+		t.Errorf("realms = %v, want just the one with storage events", realms)
 	}
 }

@@ -29,6 +29,10 @@ type fakeIndexer struct {
 	rangeCalls       int
 
 	forceEmptyRangeOnce bool // next range (gt:/lt:) query returns [] regardless of blockLo/blockHi
+
+	storageLo, storageHi int // heights served with a storage-deposit event
+	storagePageSize      int // 0 = serve the whole range in one page; >0 forces truncation
+	storagePoisonHeight  int // 0 = none; this height's event carries a pkg_path a test-only DB trigger rejects
 }
 
 func (f *fakeIndexer) set(hash string, height int) {
@@ -150,9 +154,78 @@ func (f *fakeIndexer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"data":{"getBlocks":[]}}`)
 
 	default:
-		// Any transaction query: no results, so sync is a no-op.
+		if f.storageHi > 0 && strings.Contains(query, "getTransactions") {
+			f.serveStorageTxs(w, query)
+			return
+		}
+		// Any other transaction query: no results, so sync is a no-op.
 		fmt.Fprint(w, `{"data":{"getTransactions":[]}}`)
 	}
+}
+
+// setStorageTxs makes the fake serve one transaction per height in [lo, hi],
+// each carrying a single StorageDepositEvent.
+func (f *fakeIndexer) setStorageTxs(lo, hi int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.storageLo, f.storageHi = lo, hi
+	if hi > f.latestHeight {
+		f.latestHeight = hi
+	}
+}
+
+// setStoragePageSize forces serveStorageTxs to truncate at n heights per
+// response (reporting the indexer's "max elements per query" error, exactly
+// as the real resolver does), so a single syncStorageEvents pass walks
+// several pages instead of one.
+func (f *fakeIndexer) setStoragePageSize(n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.storagePageSize = n
+}
+
+// setStoragePoisonHeight makes the event at this height carry a pkg_path that
+// a test-only DB trigger (see the caller) rejects, so the page containing it
+// fails to upsert.
+func (f *fakeIndexer) setStoragePoisonHeight(h int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.storagePoisonHeight = h
+}
+
+// serveStorageTxs renders a getTransactions response for the configured range,
+// honouring the `block_height: { gt: N }` cursor the syncer sends. When
+// storagePageSize is set and more heights remain than that, it truncates and
+// reports the indexer's element-cap error the same way transactionsFromHeight
+// expects, forcing the walk to resume for another page.
+func (f *fakeIndexer) serveStorageTxs(w http.ResponseWriter, query string) {
+	from := intAfter(query, "gt:") + 1
+	if from < f.storageLo {
+		from = f.storageLo
+	}
+	to := f.storageHi
+	truncated := false
+	if f.storagePageSize > 0 && to-from+1 > f.storagePageSize {
+		to = from + f.storagePageSize - 1
+		truncated = true
+	}
+	var parts []string
+	for h := from; h <= to; h++ {
+		pkg := "gno.land/r/demo/foo"
+		if h == f.storagePoisonHeight {
+			pkg = "gno.land/r/demo/POISON"
+		}
+		parts = append(parts, fmt.Sprintf(
+			`{"hash":"TX%d","success":true,"block_height":%d,"messages":[],`+
+				`"response":{"events":[{"__typename":"StorageDepositEvent","pkg_path":%q,`+
+				`"bytes_delta":100,"fee_delta":{"amount":10000,"denom":"ugnot"}}]}}`, h, h, pkg))
+	}
+	if truncated {
+		fmt.Fprintf(w, `{"data":{"getTransactions":[%s]},"errors":[{"message":"max elements per query (%d)"}]}`,
+			strings.Join(parts, ","), f.storagePageSize)
+		return
+	}
+	fmt.Fprintf(w, `{"data":{"getTransactions":[%s]}}`, strings.Join(parts, ","))
 }
 
 // newTestSyncer wires a syncer against a fake indexer and a real temp database.
@@ -196,6 +269,12 @@ func seedNetwork(t *testing.T, db *DB, network string, height int) {
 	}
 	if err := db.UpsertTransaction(network, "TXHASH", height, "", 100, 200, 1, true); err != nil {
 		t.Fatalf("upsert transaction: %v", err)
+	}
+	if err := db.UpsertStorageEvents(network, []StorageEventRow{{
+		TxHash: "TXHASH", EventIndex: 0, BlockHeight: height, BlockTime: "",
+		PkgPath: "gno.land/r/demo/foo", Kind: "deposit", BytesDelta: 10,
+	}}); err != nil {
+		t.Fatalf("upsert storage event: %v", err)
 	}
 	proposerID, err := db.InternProposer(network, "g1proposer")
 	if err != nil {
@@ -896,5 +975,129 @@ func TestSyncBlocksCanBeDeclined(t *testing.T) {
 	}
 	if fake.rangeCalls != 0 {
 		t.Errorf("made %d indexer range queries with block sync declined, want 0", fake.rangeCalls)
+	}
+}
+
+func TestStorageEventRowsIndexesAgainstTheFullEventList(t *testing.T) {
+	// event_index is the ordinal in the transaction's FULL event list, not
+	// among storage events only, so a later batch persisting GnoEvent rows can
+	// share the numbering. A GnoEvent sitting between two storage events must
+	// therefore leave a gap in the indexes we store.
+	tx := Transaction{
+		Hash:        "TX1",
+		BlockHeight: 7,
+		Response: &TxResponse{Events: []TxEvent{
+			{Typename: "GnoEvent", Type: "Transfer"},
+			{Typename: "StorageDepositEvent", PkgPath: "gno.land/r/demo/foo", BytesDelta: 100,
+				FeeDelta: &Coin{Amount: 10000, Denom: "ugnot"}},
+			{Typename: "GnoEvent", Type: "Approval"},
+			{Typename: "StorageUnlockEvent", PkgPath: "gno.land/r/demo/foo", BytesDelta: -40,
+				FeeRefund: &Coin{Amount: 4000, Denom: "ugnot"}},
+		}},
+	}
+
+	rows := storageEventRows(tx, "2026-08-12T00:00:00Z")
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows, want 2 (only the storage events)", len(rows))
+	}
+	if rows[0].EventIndex != 1 || rows[1].EventIndex != 3 {
+		t.Errorf("event indexes = %d, %d; want 1, 3 — indexed against the full list",
+			rows[0].EventIndex, rows[1].EventIndex)
+	}
+	if rows[0].Kind != "deposit" || rows[0].BytesDelta != 100 || rows[0].FeeAmount != 10000 {
+		t.Errorf("deposit row = %+v", rows[0])
+	}
+	// Unlocks carry fee_refund, not fee_delta, and a negative bytes_delta.
+	if rows[1].Kind != "unlock" || rows[1].BytesDelta != -40 || rows[1].FeeAmount != 4000 {
+		t.Errorf("unlock row = %+v", rows[1])
+	}
+	if rows[0].BlockTime != "2026-08-12T00:00:00Z" || rows[0].BlockHeight != 7 {
+		t.Errorf("block stamp not carried: %+v", rows[0])
+	}
+}
+
+func TestStorageEventRowsToleratesNilResponse(t *testing.T) {
+	// Transaction.Response is a pointer and the indexer can omit it.
+	if rows := storageEventRows(Transaction{Hash: "TX1"}, "2026-08-12T00:00:00Z"); len(rows) != 0 {
+		t.Errorf("got %d rows from a nil Response, want 0", len(rows))
+	}
+}
+
+func TestSyncStorageEventsStoresAndResumes(t *testing.T) {
+	s, fake, db := newTestSyncer(t, "gnoland1")
+	fake.setStorageTxs(10, 12)
+
+	if err := s.syncStorageEvents(context.Background()); err != nil {
+		t.Fatalf("first pass: %v", err)
+	}
+	h1, ok, err := db.StorageEventsLastHeight("gnoland1")
+	if err != nil || !ok {
+		t.Fatalf("after first pass: ok = %v, err = %v", ok, err)
+	}
+	if h1 != 12 {
+		t.Errorf("cursor = %d, want 12", h1)
+	}
+
+	// A second pass with nothing new must not error and must not move backward.
+	if err := s.syncStorageEvents(context.Background()); err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	h2, _, _ := db.StorageEventsLastHeight("gnoland1")
+	if h2 != h1 {
+		t.Errorf("cursor moved from %d to %d on an empty pass", h1, h2)
+	}
+}
+
+// TestSyncStorageEventsStopsAtFirstFailedPage exercises the sawFailure
+// short-circuit directly: a page that fails to upsert must stop the whole
+// pass from writing any later page, even one that would otherwise succeed,
+// so the persisted cursor stays below the failure and the next pass retries
+// it instead of the gap being skipped forever.
+//
+// A test-only trigger stands in for "the upsert failed" — the real failure
+// mode (a transient DB error) can't be forced to land on one specific page
+// through the real client without touching production code, so this pins a
+// poison pkg_path a BEFORE INSERT trigger rejects to a chosen height instead.
+// That reproduces the same observable shape: one page's upsert returns an
+// error and the walk must not write anything past it.
+func TestSyncStorageEventsStopsAtFirstFailedPage(t *testing.T) {
+	s, fake, db := newTestSyncer(t, "gnoland1")
+
+	if _, err := db.db.Exec(`
+		CREATE TRIGGER test_poison_storage_events
+		BEFORE INSERT ON storage_events
+		WHEN NEW.pkg_path = 'gno.land/r/demo/POISON'
+		BEGIN
+			SELECT RAISE(ABORT, 'forced test failure');
+		END;`); err != nil {
+		t.Fatalf("install poison trigger: %v", err)
+	}
+
+	// Heights 1-12, forced into 4-height pages: [1-3] ok, [4-6] poisoned at 6
+	// (the whole page rolls back), [7-9] and [10-12] would succeed on their
+	// own but must never be written because sawFailure short-circuits them.
+	fake.setStorageTxs(1, 12)
+	fake.setStoragePageSize(4)
+	fake.setStoragePoisonHeight(6)
+
+	if err := s.syncStorageEvents(context.Background()); err != nil {
+		t.Fatalf("syncStorageEvents returned an error instead of logging and stopping: %v", err)
+	}
+
+	last, ok, err := db.StorageEventsLastHeight("gnoland1")
+	if err != nil {
+		t.Fatalf("cursor: %v", err)
+	}
+	if !ok || last != 3 {
+		t.Fatalf("cursor = (%d, %v), want (3, true) — only the page before the failure committed", last, ok)
+	}
+
+	var n int
+	if err := db.db.QueryRow(
+		`SELECT COUNT(*) FROM storage_events WHERE network = 'gnoland1' AND block_height >= 4`).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("found %d rows at height >= 4, want 0 — a later good page got written past the failure", n)
 	}
 }
