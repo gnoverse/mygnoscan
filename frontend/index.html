@@ -651,6 +651,15 @@ function onNetworkChange() {
   const sel = document.getElementById('network-select');
   const n = sel.value;
   setNetwork(n);
+  // transfer-graph's drilled-into ego address lives on the module-level
+  // DASHBOARDS array, so it survives a network switch even though it's
+  // meaningless there (an address from network A almost certainly has no
+  // edges on network B). Persisting it across a *window* change is correct
+  // and intentional — only a network switch should reset it.
+  const transferGraph = DASHBOARDS
+    .flatMap(s => s.charts)
+    .find(c => c.id === 'transfer-graph');
+  if (transferGraph && transferGraph.state) transferGraph.state.ego = null;
   const params = new URLSearchParams(window.location.search);
   if (n && n !== 'all') { params.set('network', n); } else { params.delete('network'); }
   const newUrl = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
@@ -4266,14 +4275,22 @@ const DASHBOARDS = [
         opt: graph => {
           const ids = new Set();
           graph.edges.forEach(e => { ids.add(e.from); ids.add(e.to); });
-          // ECharts' sankey rejects a graph with a cycle. address A -> B and
-          // B -> A both existing is common (mutual sends) and would otherwise
-          // throw; keep only the heavier direction of each pair.
+          // ECharts' sankey rejects any graph with a cycle — not just simple
+          // A<->B mutual-send pairs, but longer cycles (A->B->C->A) and
+          // self-loops (A->A, which real chain data does contain via
+          // self-transfers). Dropping self-loops and then orienting every
+          // remaining edge along a fixed total order over addresses
+          // (alphabetical) guarantees a DAG regardless of how many edges or
+          // how long a cycle they'd otherwise form, while still surfacing the
+          // combined value moved between each pair.
           const seen = new Map();
           graph.edges.forEach(e => {
-            const key = [e.from, e.to].sort().join('|');
-            const cur = seen.get(key);
-            if (!cur || e.value > cur.value) seen.set(key, e);
+            if (e.from === e.to) return;
+            const [lo, hi] = [e.from, e.to].sort();
+            const key = lo + '|' + hi;
+            const cur = seen.get(key) || { from: lo, to: hi, value: 0 };
+            cur.value += e.value;
+            seen.set(key, cur);
           });
           return dashBase({
             tooltip: {
@@ -4437,7 +4454,22 @@ async function renderDashChart(chart, gen) {
   if (existing) existing.dispose();
   const inst = echarts.init(host);
   const ctx = { window: chart.window || _dashWindow, granularity: dashGranularityOf(rows) };
-  inst.setOption(chart.opt(rows, ctx), true);
+  try {
+    // setOption can throw synchronously for reasons opt() has no way to
+    // predict from data alone — e.g. caller-graph's `graphGL` series type is
+    // only registered if the echarts-gl CDN script loaded; if that script
+    // failed (blocked, slow, network hiccup) while the main echarts script
+    // succeeded, setOption throws here rather than in opt(). Catching it here
+    // covers that case for every chart uniformly instead of special-casing
+    // caller-graph.
+    inst.setOption(chart.opt(rows, ctx), true);
+  } catch (err) {
+    console.error('setOption failed for chart', chart.id, err);
+    inst.dispose();
+    host.textContent = '';
+    host.appendChild(el('div', { className: 'dash-msg' }, 'could not load this chart'));
+    return;
+  }
   _dashCharts[chart.id] = inst;
   if (chart.id === 'transfer-graph') {
     inst.on('click', params => {
