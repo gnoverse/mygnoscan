@@ -123,6 +123,22 @@ tr.total-row td { font-weight: bold; color: var(--accent); }
 .dash-seg button { background: var(--bg2); color: var(--fg2); border: none; border-left: 1px solid var(--border); padding: 4px 10px; cursor: pointer; font-family: var(--mono); font-size: 11px; }
 .dash-seg button:first-child { border-left: none; }
 .dash-seg button.on { background: var(--accent); color: var(--bg); font-weight: bold; }
+.entity-picker { display: flex; flex-direction: column; gap: 8px; }
+.entity-search { width: 100%; max-width: 320px; background: var(--bg2); color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: 5px 8px; font-family: var(--mono); font-size: 12px; }
+.entity-tags { display: flex; flex-wrap: wrap; gap: 6px; min-height: 22px; }
+.entity-tag { display: inline-flex; align-items: center; gap: 4px; background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; padding: 2px 4px 2px 10px; font-size: 11px; }
+.entity-tag button { background: none; border: none; color: var(--fg2); cursor: pointer; font-size: 13px; line-height: 1; padding: 2px 6px; }
+.entity-tag button:hover { color: var(--fg); }
+.entity-table-wrap { max-height: 320px; overflow-y: auto; border: 1px solid var(--border); border-radius: 4px; }
+.entity-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.entity-table th { position: sticky; top: 0; background: var(--bg2); text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+.entity-table td { padding: 5px 8px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.entity-table tr.selected td { background: rgba(78,205,196,0.12); }
+.entity-table tr:hover td { background: var(--bg2); }
+.entity-actions { display: flex; justify-content: space-between; align-items: center; }
+.entity-actions button { background: var(--accent); color: var(--bg); border: none; border-radius: 4px; padding: 6px 14px; font-family: var(--mono); font-size: 12px; font-weight: bold; cursor: pointer; }
+.entity-actions button:disabled { background: var(--bg2); color: var(--fg2); cursor: not-allowed; }
+.entity-actions .back { background: var(--bg2); color: var(--fg); }
 /* Info tooltip: a real button so it works on keyboard and touch, not title= */
 .info { position: relative; display: inline-flex; }
 .info-btn { background: none; border: 1px solid var(--border); color: var(--fg2); border-radius: 50%; width: 16px; height: 16px; font-size: 10px; line-height: 1; padding: 0; cursor: help; font-family: var(--mono); }
@@ -3613,6 +3629,13 @@ function dashCompactNumber(v) {
   if (abs >= 1e3) return (n / 1e3).toFixed(abs % 1e3 === 0 ? 0 : 1) + 'k';
   return String(n);
 }
+function debounce(fn, ms) {
+  let t;
+  return (...args) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), ms);
+  };
+}
 // dashHeatmap builds the shared parts of a heatmap card: the visualMap legend
 // and the emphasis border. `values` sizes the colour scale — a fixed max would
 // wash out a quiet chain and clip a busy one.
@@ -4387,6 +4410,124 @@ function dashGranularityOf(rows) {
   if (/^\d{4}-\d{2}-\d{2}T\d{2}$/.test(t)) return 'hourly';
   if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return 'daily';
   return 'unknown';
+}
+
+// renderEntityPicker drives the table+search+selection+"see graph" flow
+// shared by the network section's three charts. It owns `host`'s entire
+// DOM subtree and switches between a table view and each chart's own graph
+// rendering (via opts.renderGraph, which is that chart's pre-existing
+// ECharts-option-building code, unchanged).
+async function renderEntityPicker(host, opts) {
+  const st = opts.state;
+  host.textContent = '';
+
+  const tagsRow = el('div', { className: 'entity-tags' });
+  st.selected.forEach(id => {
+    const tag = el('span', { className: 'entity-tag' }, el('span', {}, id));
+    const x = el('button', { type: 'button', 'aria-label': 'remove ' + id }, '×');
+    x.addEventListener('click', () => {
+      st.selected.delete(id);
+      if (st.view === 'graph' && st.selected.size === 0) st.view = 'table';
+      opts.rerender();
+    });
+    tag.appendChild(x);
+    tagsRow.appendChild(tag);
+  });
+  host.appendChild(tagsRow);
+
+  if (st.view === 'graph') {
+    renderGraphView(host, opts);
+    return;
+  }
+  renderTableView(host, opts);
+}
+
+async function renderTableView(host, opts) {
+  const st = opts.state;
+
+  const search = el('input', {
+    className: 'entity-search',
+    type: 'text',
+    placeholder: 'search address or realm…',
+    value: st.searchQuery || '',
+  });
+  const debouncedSearch = debounce(q => { st.searchQuery = q; opts.rerender(); }, 300);
+  search.addEventListener('input', () => debouncedSearch(search.value.trim()));
+  host.appendChild(search);
+
+  const tableWrap = el('div', { className: 'entity-table-wrap' });
+  const msg = el('div', { className: 'dash-msg' }, 'loading…');
+  tableWrap.appendChild(msg);
+  host.appendChild(tableWrap);
+
+  const actions = el('div', { className: 'entity-actions' });
+  const seeGraphBtn = el('button', { type: 'button' }, 'see graph (' + st.selected.size + ' selected)');
+  seeGraphBtn.disabled = st.selected.size === 0;
+  seeGraphBtn.addEventListener('click', () => { st.view = 'graph'; opts.rerender(); });
+  actions.appendChild(seeGraphBtn);
+  host.appendChild(actions);
+
+  let rows;
+  try {
+    rows = st.searchQuery ? await opts.fetchSearch(st.searchQuery) : await opts.fetchRank(100);
+  } catch (err) {
+    tableWrap.textContent = '';
+    tableWrap.appendChild(el('div', { className: 'dash-msg' }, 'could not load this table'));
+    return;
+  }
+
+  tableWrap.textContent = '';
+  if (!rows || rows.length === 0) {
+    tableWrap.appendChild(el('div', { className: 'dash-msg' }, st.searchQuery ? 'no matches' : 'no data in this window'));
+    return;
+  }
+
+  const table = el('table', { className: 'entity-table' });
+  const thead = el('thead', {}, el('tr', {}, ...opts.columns.map(c => el('th', {}, c.label))));
+  table.appendChild(thead);
+  const tbody = el('tbody');
+  rows.forEach(row => {
+    const id = opts.idOf(row);
+    const tr = el('tr', { className: st.selected.has(id) ? 'selected' : '' },
+      ...opts.columns.map(c => el('td', {}, c.format ? c.format(row) : String(row[c.key]))));
+    tr.addEventListener('click', () => {
+      if (st.selected.has(id)) {
+        st.selected.delete(id);
+      } else if (st.selected.size < 20) {
+        st.selected.add(id);
+      }
+      opts.rerender();
+    });
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  tableWrap.appendChild(table);
+}
+
+async function renderGraphView(host, opts) {
+  const st = opts.state;
+
+  const actions = el('div', { className: 'entity-actions' });
+  const backBtn = el('button', { type: 'button', className: 'back' }, '← back to table');
+  backBtn.addEventListener('click', () => { st.view = 'table'; opts.rerender(); });
+  actions.appendChild(backBtn);
+  host.appendChild(actions);
+
+  const canvasHost = el('div', { className: 'dash-chart', style: { minHeight: '360px' } });
+  host.appendChild(canvasHost);
+
+  let graphData;
+  try {
+    graphData = await opts.fetchGraph(Array.from(st.selected));
+  } catch (err) {
+    canvasHost.appendChild(el('div', { className: 'dash-msg' }, 'could not load this chart'));
+    return;
+  }
+  opts.renderGraph(canvasHost, graphData, st.selected, id => {
+    st.selected.delete(id);
+    if (st.selected.size === 0) st.view = 'table';
+    opts.rerender();
+  });
 }
 
 async function renderDashChart(chart, gen) {
