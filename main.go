@@ -160,6 +160,8 @@ func run() error {
 	mux.HandleFunc("GET /api/calls/function-heatmap", api.HandleFunctionCallHeatmap)
 	mux.HandleFunc("GET /api/graph/transfers", api.HandleGraphTransfers)
 	mux.HandleFunc("GET /api/graph/callers", api.HandleGraphCallers)
+	mux.HandleFunc("GET /api/graph/transfers/ranking", api.HandleGraphTransfersRanking)
+	mux.HandleFunc("GET /api/graph/callers/ranking", api.HandleGraphCallersRanking)
 	mux.HandleFunc("GET /api/gas", api.HandleGas)
 	mux.HandleFunc("GET /api/bankstats", api.HandleBankStats)
 	mux.HandleFunc("GET /api/storage/consumers", api.HandleStorageConsumers)

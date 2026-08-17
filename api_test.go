@@ -463,3 +463,150 @@ func TestHandleGraphCallersSerializesEmptyAsArrays(t *testing.T) {
 		t.Errorf("nodes/edges = %v / %v, want [] not null on an empty network", body.Nodes, body.Edges)
 	}
 }
+
+func TestHandleGraphTransfersRankingSerializesEmptyAsArray(t *testing.T) {
+	api := &API{db: newTestDB(t)}
+
+	w := httptest.NewRecorder()
+	api.HandleGraphTransfersRanking(w, httptest.NewRequest("GET", "/api/graph/transfers/ranking?network=gnoland1&window=90d", nil))
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var rows []TransferRankRow
+	if err := json.Unmarshal(w.Body.Bytes(), &rows); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if rows == nil {
+		t.Error("rows is nil, want [] on an empty network")
+	}
+}
+
+func TestHandleGraphTransfersRankingSearchParam(t *testing.T) {
+	db := newTestDB(t)
+	seedTransferEdge(t, db, "gnoland1", "g1needle", "g1b", time.Now().UTC().Format("2006-01-02"), 100, 1)
+	api := &API{db: db}
+
+	w := httptest.NewRecorder()
+	api.HandleGraphTransfersRanking(w, httptest.NewRequest("GET", "/api/graph/transfers/ranking?network=gnoland1&window=90d&search=needle", nil))
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var rows []TransferRankRow
+	if err := json.Unmarshal(w.Body.Bytes(), &rows); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Address != "g1needle" {
+		t.Errorf("rows = %+v, want just g1needle", rows)
+	}
+}
+
+func TestHandleGraphCallersRankingSerializesEmptyAsArray(t *testing.T) {
+	api := &API{db: newTestDB(t)}
+
+	w := httptest.NewRecorder()
+	api.HandleGraphCallersRanking(w, httptest.NewRequest("GET", "/api/graph/callers/ranking?network=gnoland1&window=90d", nil))
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var rows []CallerRankRow
+	if err := json.Unmarshal(w.Body.Bytes(), &rows); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if rows == nil {
+		t.Error("rows is nil, want [] on an empty network")
+	}
+}
+
+func TestHandleGraphTransfersAddressesParam(t *testing.T) {
+	db := newTestDB(t)
+	seedTransferEdge(t, db, "gnoland1", "g1a", "g1b", time.Now().UTC().Format("2006-01-02"), 100, 1)
+	seedTransferEdge(t, db, "gnoland1", "g1a", "g1c", time.Now().UTC().Format("2006-01-02"), 999, 1)
+	api := &API{db: db}
+
+	w := httptest.NewRecorder()
+	api.HandleGraphTransfers(w, httptest.NewRequest("GET", "/api/graph/transfers?network=gnoland1&window=90d&addresses=g1a,g1b", nil))
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var body struct {
+		Edges []GraphEdge `json:"edges"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Edges) != 1 {
+		t.Errorf("edges = %+v, want 1 (only the g1a-g1b pair was selected)", body.Edges)
+	}
+}
+
+func TestHandleGraphCallersEntitiesParam(t *testing.T) {
+	db := newTestDB(t)
+	seedCallerEdge(t, db, "gnoland1", "g1a", "gno.land/r/demo/foo", time.Now().UTC().Format("2006-01-02"), 5)
+	api := &API{db: db}
+
+	w := httptest.NewRecorder()
+	api.HandleGraphCallers(w, httptest.NewRequest("GET", "/api/graph/callers?network=gnoland1&window=90d&entities=g1a,gno.land/r/demo/foo", nil))
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var body struct {
+		Edges []CallerGraphEdge `json:"edges"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Edges) != 1 {
+		t.Errorf("edges = %+v, want 1", body.Edges)
+	}
+}
+
+func TestHandleGraphTransfersAddressesTakesPrecedenceOverEgoAndTopN(t *testing.T) {
+	// Sanity check on param precedence: addresses must win even if topN/ego
+	// are also present on the query string (a stray leftover from a prior
+	// request state, say), matching GetTransferGraph's documented dispatch
+	// order.
+	db := newTestDB(t)
+	seedTransferEdge(t, db, "gnoland1", "g1a", "g1b", time.Now().UTC().Format("2006-01-02"), 100, 1)
+	api := &API{db: db}
+
+	w := httptest.NewRecorder()
+	api.HandleGraphTransfers(w, httptest.NewRequest(
+		"GET", "/api/graph/transfers?network=gnoland1&window=90d&topN=5&ego=g1a&addresses=g1a,g1b", nil))
+	var body struct {
+		Edges []GraphEdge `json:"edges"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &body)
+	if len(body.Edges) != 1 {
+		t.Errorf("edges = %+v, want the addresses-mode result", body.Edges)
+	}
+}
+
+// TestHandleGraphTransfersNoAddressesParamReturnsTopNMode verifies the
+// nil-vs-empty-slice contract: splitCommaList("") MUST return nil, not
+// []string{}, so that GetTransferGraph's nil-check for "no selection" works.
+// Without this contract, every request without an ?addresses= param would
+// incorrectly enter selected-set mode and return empty.
+func TestHandleGraphTransfersNoAddressesParamReturnsTopNMode(t *testing.T) {
+	db := newTestDB(t)
+	// Seed some transfer data
+	seedTransferEdge(t, db, "gnoland1", "g1a", "g1b", time.Now().UTC().Format("2006-01-02"), 100, 1)
+	seedTransferEdge(t, db, "gnoland1", "g1c", "g1d", time.Now().UTC().Format("2006-01-02"), 200, 1)
+	api := &API{db: db}
+
+	w := httptest.NewRecorder()
+	// Request WITHOUT ?addresses= param should get topN mode, which is non-empty given the seeded data
+	api.HandleGraphTransfers(w, httptest.NewRequest("GET", "/api/graph/transfers?network=gnoland1&window=90d", nil))
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var body struct {
+		Edges []GraphEdge `json:"edges"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// topN mode with seeded data should NOT be empty
+	if len(body.Edges) == 0 {
+		t.Errorf("got 0 edges in topN mode (bad: indicates split incorrectly entered selected-set mode), want > 0 given seeded data")
+	}
+}

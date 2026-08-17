@@ -1574,8 +1574,9 @@ func (a *API) HandleGraphTransfers(w http.ResponseWriter, r *http.Request) {
 	topN, _ := strconv.Atoi(r.URL.Query().Get("topN"))
 	minValue, _ := strconv.ParseInt(r.URL.Query().Get("min_value"), 10, 64)
 	ego := r.URL.Query().Get("ego")
+	addresses := splitCommaList(r.URL.Query().Get("addresses"))
 
-	g, err := a.db.GetTransferGraph(network, days, topN, minValue, ego)
+	g, err := a.db.GetTransferGraph(network, days, topN, minValue, ego, addresses)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
@@ -1594,8 +1595,9 @@ func (a *API) HandleGraphCallers(w http.ResponseWriter, r *http.Request) {
 	days, _ := a.resolveTimeseriesParams(r, network)
 	topN, _ := strconv.Atoi(r.URL.Query().Get("topN"))
 	minCalls, _ := strconv.Atoi(r.URL.Query().Get("min_calls"))
+	entities := splitCommaList(r.URL.Query().Get("entities"))
 
-	g, err := a.db.GetCallerGraph(network, days, topN, minCalls)
+	g, err := a.db.GetCallerGraph(network, days, topN, minCalls, entities)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
@@ -1607,4 +1609,55 @@ func (a *API) HandleGraphCallers(w http.ResponseWriter, r *http.Request) {
 		g.Edges = []CallerGraphEdge{}
 	}
 	jsonResponse(w, g)
+}
+
+// splitCommaList splits a comma-separated query param into a trimmed,
+// non-empty slice. An empty input string returns nil (not an empty slice),
+// which callers rely on: GetTransferGraph/GetCallerGraph both treat a nil
+// selection as "no explicit selection", falling through to ego/topN mode.
+func splitCommaList(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func (a *API) HandleGraphTransfersRanking(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	days, _ := a.resolveTimeseriesParams(r, network)
+	topN, _ := strconv.Atoi(r.URL.Query().Get("topN"))
+	search := strings.TrimSpace(r.URL.Query().Get("search"))
+
+	rows, err := a.db.GetTransferRanking(network, days, topN, search)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	if rows == nil {
+		rows = []TransferRankRow{}
+	}
+	jsonResponse(w, rows)
+}
+
+func (a *API) HandleGraphCallersRanking(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	days, _ := a.resolveTimeseriesParams(r, network)
+	topN, _ := strconv.Atoi(r.URL.Query().Get("topN"))
+	search := strings.TrimSpace(r.URL.Query().Get("search"))
+
+	rows, err := a.db.GetCallerRanking(network, days, topN, search)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	if rows == nil {
+		rows = []CallerRankRow{}
+	}
+	jsonResponse(w, rows)
 }
