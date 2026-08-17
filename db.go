@@ -2989,6 +2989,76 @@ func (d *DB) CallerEdgesLastHeight(network string) (int, bool, error) {
 	return int(h.Int64), true, nil
 }
 
+// RollupBankSendsSince aggregates bank_sends rows with block_height >
+// sinceHeight into day-collapsed transfer edges, for the syncer to fold into
+// transfer_edges. Only successful sends count: a failed BankMsgSend moved no
+// value on chain.
+func (d *DB) RollupBankSendsSince(network string, sinceHeight int) ([]TransferEdgeRow, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	rows, err := d.db.Query(`
+		SELECT from_address, to_address, date(block_time) AS day,
+		       COALESCE(SUM(CAST(REPLACE(REPLACE(amount, 'ugnot', ''), '"', '') AS INTEGER)), 0),
+		       COUNT(*), MAX(block_height)
+		FROM bank_sends
+		WHERE network = ? AND block_height > ? AND success = 1
+		GROUP BY from_address, to_address, day`, network, sinceHeight)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []TransferEdgeRow
+	for rows.Next() {
+		var r TransferEdgeRow
+		var day sql.NullString
+		if err := rows.Scan(&r.FromAddress, &r.ToAddress, &day, &r.TotalValue, &r.TxCount, &r.LastHeight); err != nil {
+			return nil, err
+		}
+		// A row whose block_time will not parse yields a NULL day from date();
+		// skip it rather than corrupting a real bucket or failing the pass.
+		if !day.Valid || day.String == "" {
+			continue
+		}
+		r.Day = day.String
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// RollupCallsSince aggregates calls rows with block_height > sinceHeight into
+// day-collapsed caller edges, for the syncer to fold into caller_edges.
+func (d *DB) RollupCallsSince(network string, sinceHeight int) ([]CallerEdgeRow, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	rows, err := d.db.Query(`
+		SELECT caller, pkg_path, date(block_time) AS day, COUNT(*), MAX(block_height)
+		FROM calls
+		WHERE network = ? AND block_height > ? AND success = 1
+		GROUP BY caller, pkg_path, day`, network, sinceHeight)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []CallerEdgeRow
+	for rows.Next() {
+		var r CallerEdgeRow
+		var day sql.NullString
+		if err := rows.Scan(&r.Caller, &r.PkgPath, &day, &r.Calls, &r.LastHeight); err != nil {
+			return nil, err
+		}
+		if !day.Valid || day.String == "" {
+			continue
+		}
+		r.Day = day.String
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 type StoragePoint struct {
 	Time      string `json:"time"`
 	Deposited int    `json:"deposited"`

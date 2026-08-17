@@ -1866,3 +1866,103 @@ func TestCallerEdgesLastHeightIsNetworkScoped(t *testing.T) {
 		t.Errorf("last height = %d, want 7 — another network's rows leaked in", h)
 	}
 }
+
+func TestRollupBankSendsSinceCollapsesByDayAndFiltersFailures(t *testing.T) {
+	db := newTestDB(t)
+
+	// Two sends same day/pair -> one bucket. One send a different day -> a
+	// second bucket. One failed send -> excluded entirely (no value moved).
+	if err := db.InsertBankSend("gnoland1", "TX1", 10, "2026-08-10T00:00:00Z", "g1a", "g1b", "100ugnot", true); err != nil {
+		t.Fatalf("send 1: %v", err)
+	}
+	if err := db.InsertBankSend("gnoland1", "TX2", 11, "2026-08-10T05:00:00Z", "g1a", "g1b", "50ugnot", true); err != nil {
+		t.Fatalf("send 2: %v", err)
+	}
+	if err := db.InsertBankSend("gnoland1", "TX3", 12, "2026-08-11T00:00:00Z", "g1a", "g1b", "25ugnot", true); err != nil {
+		t.Fatalf("send 3: %v", err)
+	}
+	if err := db.InsertBankSend("gnoland1", "TX4", 13, "2026-08-11T01:00:00Z", "g1a", "g1b", "999ugnot", false); err != nil {
+		t.Fatalf("failed send: %v", err)
+	}
+
+	rows, err := db.RollupBankSendsSince("gnoland1", 0)
+	if err != nil {
+		t.Fatalf("rollup: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("got %d rollup rows, want 2 (one per day)", len(rows))
+	}
+	byDay := map[string]TransferEdgeRow{}
+	for _, r := range rows {
+		byDay[r.Day] = r
+	}
+	if r := byDay["2026-08-10"]; r.TotalValue != 150 || r.TxCount != 2 || r.LastHeight != 11 {
+		t.Errorf("2026-08-10 row = %+v, want total=150 count=2 height=11", r)
+	}
+	if r := byDay["2026-08-11"]; r.TotalValue != 25 || r.TxCount != 1 || r.LastHeight != 12 {
+		t.Errorf("2026-08-11 row = %+v, want total=25 count=1 height=12 (failed send excluded)", r)
+	}
+}
+
+func TestRollupBankSendsSinceRespectsCursor(t *testing.T) {
+	db := newTestDB(t)
+	if err := db.InsertBankSend("gnoland1", "TX1", 10, "2026-08-10T00:00:00Z", "g1a", "g1b", "100ugnot", true); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if err := db.InsertBankSend("gnoland1", "TX2", 20, "2026-08-11T00:00:00Z", "g1a", "g1b", "200ugnot", true); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	rows, err := db.RollupBankSendsSince("gnoland1", 10)
+	if err != nil {
+		t.Fatalf("rollup: %v", err)
+	}
+	if len(rows) != 1 || rows[0].TotalValue != 200 {
+		t.Errorf("rows = %+v, want just the height-20 send (height > 10)", rows)
+	}
+}
+
+func TestRollupBankSendsSinceSkipsMalformedBlockTime(t *testing.T) {
+	// block_time is nullable TEXT compared as a string; a malformed value
+	// yields a NULL day from date(), which must be skipped rather than
+	// crashing the pass or corrupting a real day's bucket.
+	db := newTestDB(t)
+	if err := db.InsertBankSend("gnoland1", "TX1", 10, "2026-08-10T00:00:00Z", "g1a", "g1b", "100ugnot", true); err != nil {
+		t.Fatalf("good send: %v", err)
+	}
+	if err := db.InsertBankSend("gnoland1", "TX2", 11, "not-a-timestamp", "g1a", "g1b", "999ugnot", true); err != nil {
+		t.Fatalf("bad send: %v", err)
+	}
+
+	rows, err := db.RollupBankSendsSince("gnoland1", 0)
+	if err != nil {
+		t.Fatalf("rollup returned an error instead of skipping the bad row: %v", err)
+	}
+	if len(rows) != 1 || rows[0].TotalValue != 100 {
+		t.Errorf("rows = %+v, want just the good row", rows)
+	}
+}
+
+func TestRollupCallsSinceCollapsesByDay(t *testing.T) {
+	db := newTestDB(t)
+	if err := db.InsertCall("gnoland1", "TX1", 10, "2026-08-10T00:00:00Z", "g1a", "gno.land/r/demo/foo", "Post", true); err != nil {
+		t.Fatalf("call 1: %v", err)
+	}
+	if err := db.InsertCall("gnoland1", "TX2", 11, "2026-08-10T05:00:00Z", "g1a", "gno.land/r/demo/foo", "Edit", true); err != nil {
+		t.Fatalf("call 2: %v", err)
+	}
+	if err := db.InsertCall("gnoland1", "TX3", 12, "2026-08-10T06:00:00Z", "g1a", "gno.land/r/demo/foo", "Post", false); err != nil {
+		t.Fatalf("failed call: %v", err)
+	}
+
+	rows, err := db.RollupCallsSince("gnoland1", 0)
+	if err != nil {
+		t.Fatalf("rollup: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+	if rows[0].Calls != 2 || rows[0].LastHeight != 11 {
+		t.Errorf("row = %+v, want calls=2 height=11 (failed call excluded)", rows[0])
+	}
+}
