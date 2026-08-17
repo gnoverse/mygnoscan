@@ -4094,3 +4094,139 @@ func (d *DB) GetCallerGraph(network string, days, topN, minCalls int) (CallerGra
 	}
 	return CallerGraph{Nodes: nodes, Edges: edges}, nil
 }
+
+// --- network graph ranking ---
+
+// searchResultCap bounds a search query's result count regardless of how
+// many rows match — a broad or empty search term must not return an
+// unbounded payload.
+const searchResultCap = 50
+
+type TransferRankRow struct {
+	Address  string `json:"address"`
+	Sent     int64  `json:"sent"`
+	Received int64  `json:"received"`
+	Volume   int64  `json:"volume"` // sent + received
+}
+
+// GetTransferRanking ranks addresses by total volume (sent+received) in the
+// window, splitting sent/received for the table UI. search, when non-empty,
+// replaces the topN cutoff with a bounded substring match, so an address
+// outside the top ranking can still be found and selected.
+func (d *DB) GetTransferRanking(network string, days, topN int, search string) ([]TransferRankRow, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	start := time.Now().UTC().AddDate(0, 0, -days).Format("2006-01-02")
+
+	base := `
+		SELECT addr, COALESCE(SUM(sent), 0), COALESCE(SUM(received), 0) FROM (
+			SELECT from_address AS addr, total_value AS sent, 0 AS received FROM transfer_edges WHERE network = ? AND day >= ?
+			UNION ALL
+			SELECT to_address AS addr, 0 AS sent, total_value AS received FROM transfer_edges WHERE network = ? AND day >= ?
+		)`
+
+	var rows *sql.Rows
+	var err error
+	if search != "" {
+		rows, err = d.db.Query(base+`
+			WHERE addr LIKE '%'||?||'%'
+			GROUP BY addr ORDER BY SUM(sent)+SUM(received) DESC LIMIT ?`,
+			network, start, network, start, search, searchResultCap)
+	} else {
+		if topN <= 0 {
+			topN = 100
+		}
+		if topN > 1000 {
+			topN = 1000
+		}
+		rows, err = d.db.Query(base+`
+			GROUP BY addr ORDER BY SUM(sent)+SUM(received) DESC LIMIT ?`,
+			network, start, network, start, topN)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []TransferRankRow
+	for rows.Next() {
+		var r TransferRankRow
+		if err := rows.Scan(&r.Address, &r.Sent, &r.Received); err != nil {
+			return nil, err
+		}
+		r.Volume = r.Sent + r.Received
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if out == nil {
+		out = []TransferRankRow{}
+	}
+	return out, nil
+}
+
+type CallerRankRow struct {
+	ID    string `json:"id"`
+	Type  string `json:"type"` // "caller" | "realm"
+	Calls int    `json:"calls"`
+}
+
+// GetCallerRanking ranks callers and realms together by call volume. Unlike
+// GetCallerGraph's topN mode (which only ranks callers, then shows whichever
+// realms they happen to call), this independently ranks realms by their own
+// total — a heavily-called realm surfaces even if no single caller in the
+// top ranking is the one calling it.
+func (d *DB) GetCallerRanking(network string, days, topN int, search string) ([]CallerRankRow, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	start := time.Now().UTC().AddDate(0, 0, -days).Format("2006-01-02")
+
+	base := `
+		SELECT id, type, SUM(calls) FROM (
+			SELECT caller AS id, 'caller' AS type, calls FROM caller_edges WHERE network = ? AND day >= ?
+			UNION ALL
+			SELECT pkg_path AS id, 'realm' AS type, calls FROM caller_edges WHERE network = ? AND day >= ?
+		)`
+
+	var rows *sql.Rows
+	var err error
+	if search != "" {
+		rows, err = d.db.Query(base+`
+			WHERE id LIKE '%'||?||'%'
+			GROUP BY id, type ORDER BY SUM(calls) DESC LIMIT ?`,
+			network, start, network, start, search, searchResultCap)
+	} else {
+		if topN <= 0 {
+			topN = 200
+		}
+		if topN > 1000 {
+			topN = 1000
+		}
+		rows, err = d.db.Query(base+`
+			GROUP BY id, type ORDER BY SUM(calls) DESC LIMIT ?`,
+			network, start, network, start, topN)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []CallerRankRow
+	for rows.Next() {
+		var r CallerRankRow
+		if err := rows.Scan(&r.ID, &r.Type, &r.Calls); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if out == nil {
+		out = []CallerRankRow{}
+	}
+	return out, nil
+}

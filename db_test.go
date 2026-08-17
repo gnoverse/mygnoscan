@@ -2092,3 +2092,147 @@ func TestGetCallerGraphTopNAndNodeTypes(t *testing.T) {
 		t.Errorf("nodes = %+v, want at least one caller node and one realm node", g.Nodes)
 	}
 }
+
+func TestGetTransferRankingSplitsSentReceived(t *testing.T) {
+	db := newTestDB(t)
+	today := time.Now().UTC().Format("2006-01-02")
+	seedTransferEdge(t, db, "gnoland1", "g1a", "g1b", today, 1000, 1)
+	seedTransferEdge(t, db, "gnoland1", "g1b", "g1a", today, 300, 1)
+
+	rows, err := db.GetTransferRanking("gnoland1", 7, 10, "")
+	if err != nil {
+		t.Fatalf("ranking: %v", err)
+	}
+	byAddr := map[string]TransferRankRow{}
+	for _, r := range rows {
+		byAddr[r.Address] = r
+	}
+	if a := byAddr["g1a"]; a.Sent != 1000 || a.Received != 300 || a.Volume != 1300 {
+		t.Errorf("g1a = %+v, want sent=1000 received=300 volume=1300", a)
+	}
+	if b := byAddr["g1b"]; b.Sent != 300 || b.Received != 1000 || b.Volume != 1300 {
+		t.Errorf("g1b = %+v, want sent=300 received=1000 volume=1300", b)
+	}
+}
+
+func TestGetTransferRankingSearchFindsOutsideTopN(t *testing.T) {
+	db := newTestDB(t)
+	today := time.Now().UTC().Format("2006-01-02")
+	// g1a and g1b dwarf g1z in volume; a topN=2 ranking would never surface g1z.
+	seedTransferEdge(t, db, "gnoland1", "g1a", "g1b", today, 100000, 1)
+	seedTransferEdge(t, db, "gnoland1", "g1b", "g1a", today, 90000, 1)
+	seedTransferEdge(t, db, "gnoland1", "g1z", "g1a", today, 5, 1)
+
+	ranked, err := db.GetTransferRanking("gnoland1", 7, 2, "")
+	if err != nil {
+		t.Fatalf("ranking: %v", err)
+	}
+	for _, r := range ranked {
+		if r.Address == "g1z" {
+			t.Fatalf("g1z appeared in the top-2 ranking; test setup is wrong")
+		}
+	}
+
+	found, err := db.GetTransferRanking("gnoland1", 7, 0, "g1z")
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(found) != 1 || found[0].Address != "g1z" {
+		t.Errorf("search results = %+v, want just g1z", found)
+	}
+}
+
+func TestGetTransferRankingSearchIsBoundedAndParameterized(t *testing.T) {
+	db := newTestDB(t)
+	today := time.Now().UTC().Format("2006-01-02")
+	// A search term containing a single quote must not break the query or
+	// inject SQL — it must be treated as a literal, bound value.
+	seedTransferEdge(t, db, "gnoland1", "g1a", "g1b", today, 100, 1)
+
+	rows, err := db.GetTransferRanking("gnoland1", 7, 0, "g1a'; DROP TABLE transfer_edges; --")
+	if err != nil {
+		t.Fatalf("search with a quote in the term errored instead of treating it as a literal: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("rows = %+v, want none — the literal term does not match any address", rows)
+	}
+	// The table must still exist and be queryable.
+	if _, err := db.GetTransferRanking("gnoland1", 7, 10, ""); err != nil {
+		t.Fatalf("transfer_edges appears to have been dropped: %v", err)
+	}
+}
+
+func TestGetTransferRankingSearchIsCapped(t *testing.T) {
+	db := newTestDB(t)
+	today := time.Now().UTC().Format("2006-01-02")
+	for i := 0; i < 60; i++ {
+		seedTransferEdge(t, db, "gnoland1", fmt.Sprintf("g1match%02d", i), "g1counterparty", today, 10, 1)
+	}
+
+	rows, err := db.GetTransferRanking("gnoland1", 7, 0, "g1match")
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(rows) != searchResultCap {
+		t.Errorf("got %d results, want the cap of %d", len(rows), searchResultCap)
+	}
+}
+
+func TestGetTransferRankingIsNetworkScoped(t *testing.T) {
+	db := newTestDB(t)
+	today := time.Now().UTC().Format("2006-01-02")
+	seedTransferEdge(t, db, "gnoland1", "g1a", "g1b", today, 100, 1)
+	seedTransferEdge(t, db, "test12", "g1a", "g1b", today, 99999, 1)
+
+	rows, err := db.GetTransferRanking("gnoland1", 7, 10, "")
+	if err != nil {
+		t.Fatalf("ranking: %v", err)
+	}
+	for _, r := range rows {
+		if r.Volume >= 99999 {
+			t.Errorf("row %+v looks like it includes test12's volume — network scoping leaked", r)
+		}
+	}
+}
+
+func TestGetCallerRankingCombinesCallersAndRealmsIndependently(t *testing.T) {
+	// A realm called by many small callers should rank on its own total, not
+	// be limited to appearing only alongside a single top-ranked caller.
+	db := newTestDB(t)
+	today := time.Now().UTC().Format("2006-01-02")
+	for i := 0; i < 5; i++ {
+		seedCallerEdge(t, db, "gnoland1", fmt.Sprintf("g1caller%d", i), "gno.land/r/popular", today, 100)
+	}
+	seedCallerEdge(t, db, "gnoland1", "g1biggestcaller", "gno.land/r/rare", today, 50)
+
+	rows, err := db.GetCallerRanking("gnoland1", 7, 10, "")
+	if err != nil {
+		t.Fatalf("ranking: %v", err)
+	}
+	byID := map[string]CallerRankRow{}
+	for _, r := range rows {
+		byID[r.ID] = r
+	}
+	popular, ok := byID["gno.land/r/popular"]
+	if !ok || popular.Type != "realm" || popular.Calls != 500 {
+		t.Errorf("gno.land/r/popular = %+v (ok=%v), want type=realm calls=500", popular, ok)
+	}
+	if popular.Calls <= byID["g1biggestcaller"].Calls {
+		t.Errorf("popular realm's combined calls (%d) should exceed the single biggest caller's (%d)",
+			popular.Calls, byID["g1biggestcaller"].Calls)
+	}
+}
+
+func TestGetCallerRankingSearch(t *testing.T) {
+	db := newTestDB(t)
+	today := time.Now().UTC().Format("2006-01-02")
+	seedCallerEdge(t, db, "gnoland1", "g1a", "gno.land/r/demo/needle", today, 1)
+
+	rows, err := db.GetCallerRanking("gnoland1", 7, 0, "needle")
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ID != "gno.land/r/demo/needle" || rows[0].Type != "realm" {
+		t.Errorf("rows = %+v, want just the realm", rows)
+	}
+}
