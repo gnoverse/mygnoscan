@@ -667,15 +667,19 @@ function onNetworkChange() {
   const sel = document.getElementById('network-select');
   const n = sel.value;
   setNetwork(n);
-  // transfer-graph's drilled-into ego address lives on the module-level
-  // DASHBOARDS array, so it survives a network switch even though it's
-  // meaningless there (an address from network A almost certainly has no
-  // edges on network B). Persisting it across a *window* change is correct
-  // and intentional — only a network switch should reset it.
-  const transferGraph = DASHBOARDS
-    .flatMap(s => s.charts)
-    .find(c => c.id === 'transfer-graph');
-  if (transferGraph && transferGraph.state) transferGraph.state.ego = null;
+  // The three network-section charts hold selection/view state on the
+  // module-level DASHBOARDS array, so it survives a network switch even
+  // though a selection from network A is almost certainly meaningless on
+  // network B. Persisting it across a *window* change is correct and
+  // intentional — only a network switch should reset it.
+  ['transfer-graph', 'token-flow-sankey', 'caller-graph'].forEach(id => {
+    const chart = DASHBOARDS.flatMap(s => s.charts).find(c => c.id === id);
+    if (chart && chart.state) {
+      chart.state.view = 'table';
+      chart.state.selected = new Set();
+      chart.state.searchQuery = '';
+    }
+  });
   const params = new URLSearchParams(window.location.search);
   if (n && n !== 'all') { params.set('network', n); } else { params.delete('network'); }
   const newUrl = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
@@ -4236,54 +4240,25 @@ const DASHBOARDS = [
         id: 'transfer-graph',
         title: 'value-transfer network',
         wide: true,
-        mode: 'B',
         networkScoped: true,
-        state: { ego: null },
-        why: 'Who sends GNOT to whom. Node size is total volume in the window; edge width is the value moved between that pair. Starts on the top 100 addresses by volume — click a node to drill into its direct counterparties only (1 hop), and use "back to overview" to return.',
-        controls: (bar, rerender, state) => {
-          if (!state.ego) return;
-          const btn = el('button', { type: 'button' }, '← back to overview');
-          btn.addEventListener('click', () => { state.ego = null; rerender(); });
-          bar.appendChild(btn);
-        },
-        fetch: function (w) {
-          this.state = this.state || {};
-          const q = this.state.ego
-            ? 'ego=' + encodeURIComponent(this.state.ego)
-            : 'topN=100';
-          return dashApi('graph/transfers?' + q, w);
-        },
-        opt: function (graph) {
-          const maxVol = graph.nodes.reduce((m, n) => Math.max(m, n.volume), 1);
-          const maxVal = graph.edges.reduce((m, e) => Math.max(m, e.value), 1);
+        state: { view: 'table', selected: new Set(), searchQuery: '' },
+        why: 'Who sends GNOT to whom. Search or browse the ranking below, select up to 20 addresses (click a row, or the × on a tag to remove one), then "see graph" for the flows between exactly your selection. Node size is total volume in the window; edge width is the value moved between that pair.',
+        render: function (host, controlsBar, state) {
           const chart = this;
-          return dashBase({
-            tooltip: {
-              formatter: p => dashTooltipNode(
-                p.dataType === 'edge'
-                  ? [p.data.source + ' → ' + p.data.target, String(p.data.value) + ' ugnot']
-                  : [p.data.name, 'volume ' + p.data.value]
-              ),
-            },
-            series: [{
-              type: 'graph',
-              layout: 'force',
-              roam: true,
-              draggable: true,
-              force: { repulsion: 120, edgeLength: [40, 160] },
-              label: { show: false },
-              // Node size scales 8-32px by volume share; a flat radius would
-              // make every address look equally significant.
-              data: graph.nodes.map(n => ({
-                id: n.id, name: n.id, value: n.volume,
-                symbolSize: 8 + 24 * (n.volume / maxVol),
-                itemStyle: { color: n.id === chart.state.ego ? DASH_PAL[1] : DASH_PAL[0] },
-              })),
-              edges: graph.edges.map(e => ({
-                source: e.from, target: e.to, value: e.value,
-                lineStyle: { width: 1 + 5 * (e.value / maxVal), color: '#3a3a3a', curveness: 0.1 },
-              })),
-            }],
+          renderEntityPicker(host, {
+            state,
+            fetchRank: topN => dashApi('graph/transfers/ranking?topN=' + topN, chart.window),
+            fetchSearch: q => dashApi('graph/transfers/ranking?search=' + encodeURIComponent(q), chart.window),
+            fetchGraph: ids => dashApi('graph/transfers?addresses=' + ids.map(encodeURIComponent).join(','), chart.window),
+            columns: [
+              { key: 'address', label: 'address' },
+              { key: 'sent', label: 'sent', format: r => dashCompactNumber(r.sent) },
+              { key: 'received', label: 'received', format: r => dashCompactNumber(r.received) },
+              { key: 'volume', label: 'volume', format: r => dashCompactNumber(r.volume) },
+            ],
+            idOf: r => r.address,
+            renderGraph: (canvasHost, graph, selectedIds, onDeselect) => renderTransferForceGraph(canvasHost, graph, selectedIds, onDeselect),
+            rerender: () => renderDashChart(chart, _dashGen),
           });
         },
       },
@@ -4291,43 +4266,25 @@ const DASHBOARDS = [
         id: 'token-flow-sankey',
         title: 'token flow (top senders → receivers)',
         wide: true,
-        mode: 'B',
         networkScoped: true,
-        why: 'The same top-100-by-volume subgraph as the network graph above, reshaped as a sankey: link width is value moved from sender to receiver. Reads best for spotting where GNOT concentrates — hubs show up as wide bands.',
-        fetch: w => dashApi('graph/transfers?topN=100', w),
-        opt: graph => {
-          const ids = new Set();
-          graph.edges.forEach(e => { ids.add(e.from); ids.add(e.to); });
-          // ECharts' sankey rejects any graph with a cycle — not just simple
-          // A<->B mutual-send pairs, but longer cycles (A->B->C->A) and
-          // self-loops (A->A, which real chain data does contain via
-          // self-transfers). Dropping self-loops and then orienting every
-          // remaining edge along a fixed total order over addresses
-          // (alphabetical) guarantees a DAG regardless of how many edges or
-          // how long a cycle they'd otherwise form, while still surfacing the
-          // combined value moved between each pair.
-          const seen = new Map();
-          graph.edges.forEach(e => {
-            if (e.from === e.to) return;
-            const [lo, hi] = [e.from, e.to].sort();
-            const key = lo + '|' + hi;
-            const cur = seen.get(key) || { from: lo, to: hi, value: 0 };
-            cur.value += e.value;
-            seen.set(key, cur);
-          });
-          return dashBase({
-            tooltip: {
-              formatter: p => dashTooltipNode([p.data.source + ' → ' + p.data.target, String(p.data.value) + ' ugnot']),
-            },
-            series: [{
-              type: 'sankey',
-              emphasis: { focus: 'adjacency' },
-              data: Array.from(ids).map(id => ({ name: id })),
-              links: Array.from(seen.values()).map(e => ({ source: e.from, target: e.to, value: e.value })),
-              lineStyle: { color: 'gradient', curveness: 0.5 },
-              itemStyle: { color: DASH_PAL[0], borderColor: '#2a2a2a' },
-              label: { color: '#888', fontSize: 10 },
-            }],
+        state: { view: 'table', selected: new Set(), searchQuery: '' },
+        why: 'Search or browse the ranking below, select up to 20 addresses, then "see graph" for a sankey of value moved between exactly your selection. Link width is value moved from sender to receiver.',
+        render: function (host, controlsBar, state) {
+          const chart = this;
+          renderEntityPicker(host, {
+            state,
+            fetchRank: topN => dashApi('graph/transfers/ranking?topN=' + topN, chart.window),
+            fetchSearch: q => dashApi('graph/transfers/ranking?search=' + encodeURIComponent(q), chart.window),
+            fetchGraph: ids => dashApi('graph/transfers?addresses=' + ids.map(encodeURIComponent).join(','), chart.window),
+            columns: [
+              { key: 'address', label: 'address' },
+              { key: 'sent', label: 'sent', format: r => dashCompactNumber(r.sent) },
+              { key: 'received', label: 'received', format: r => dashCompactNumber(r.received) },
+              { key: 'volume', label: 'volume', format: r => dashCompactNumber(r.volume) },
+            ],
+            idOf: r => r.address,
+            renderGraph: (canvasHost, graph, selectedIds, onDeselect) => renderTokenFlowSankey(canvasHost, graph, selectedIds, onDeselect),
+            rerender: () => renderDashChart(chart, _dashGen),
           });
         },
       },
@@ -4412,6 +4369,112 @@ function dashGranularityOf(rows) {
   return 'unknown';
 }
 
+function renderTransferForceGraph(canvasHost, graph, selectedIds, onDeselect) {
+  if (!graph.nodes || graph.nodes.length === 0) {
+    canvasHost.appendChild(el('div', { className: 'dash-msg' }, 'no data for this selection'));
+    return;
+  }
+  const maxVol = graph.nodes.reduce((m, n) => Math.max(m, n.volume), 1);
+  const maxVal = graph.edges.reduce((m, e) => Math.max(m, e.value), 1);
+
+  const existing = echarts.getInstanceByDom(canvasHost);
+  if (existing) existing.dispose();
+  const inst = echarts.init(canvasHost);
+  try {
+    inst.setOption(dashBase({
+      tooltip: {
+        formatter: p => dashTooltipNode(
+          p.dataType === 'edge'
+            ? [p.data.source + ' → ' + p.data.target, String(p.data.value) + ' ugnot']
+            : [p.data.name, 'volume ' + p.data.value]
+        ),
+      },
+      series: [{
+        type: 'graph',
+        layout: 'force',
+        roam: true,
+        draggable: true,
+        force: { repulsion: 120, edgeLength: [40, 160] },
+        label: { show: false },
+        data: graph.nodes.map(n => ({
+          id: n.id, name: n.id, value: n.volume,
+          symbolSize: 8 + 24 * (n.volume / maxVol),
+          itemStyle: { color: DASH_PAL[0] },
+        })),
+        edges: graph.edges.map(e => ({
+          source: e.from, target: e.to, value: e.value,
+          lineStyle: { width: 1 + 5 * (e.value / maxVal), color: '#3a3a3a', curveness: 0.1 },
+        })),
+      }],
+    }), true);
+  } catch (err) {
+    console.error('setOption failed for transfer-graph', err);
+    inst.dispose();
+    canvasHost.appendChild(el('div', { className: 'dash-msg' }, 'could not load this chart'));
+    return;
+  }
+  _dashCharts['transfer-graph'] = inst;
+  inst.on('click', params => {
+    if (params.dataType === 'node') onDeselect(params.data.id);
+  });
+}
+
+function renderTokenFlowSankey(canvasHost, graph, selectedIds, onDeselect) {
+  if (!graph.edges || graph.edges.length === 0) {
+    canvasHost.appendChild(el('div', { className: 'dash-msg' }, 'no flow between this selection'));
+    return;
+  }
+  const ids = new Set();
+  graph.edges.forEach(e => { ids.add(e.from); ids.add(e.to); });
+  // ECharts' sankey rejects any graph with a cycle — not just simple A<->B
+  // mutual-send pairs, but longer cycles and self-loops (real chain data can
+  // contain self-transfers). Dropping self-loops and orienting every
+  // remaining edge along a fixed total order over addresses guarantees a DAG
+  // regardless of how many edges or how long a cycle they'd otherwise form.
+  const seen = new Map();
+  graph.edges.forEach(e => {
+    if (e.from === e.to) return;
+    const [lo, hi] = [e.from, e.to].sort();
+    const key = lo + '|' + hi;
+    const cur = seen.get(key) || { from: lo, to: hi, value: 0 };
+    cur.value += e.value;
+    seen.set(key, cur);
+  });
+  if (seen.size === 0) {
+    canvasHost.appendChild(el('div', { className: 'dash-msg' }, 'no flow between this selection'));
+    return;
+  }
+
+  const existing = echarts.getInstanceByDom(canvasHost);
+  if (existing) existing.dispose();
+  const inst = echarts.init(canvasHost);
+  try {
+    inst.setOption(dashBase({
+      tooltip: {
+        formatter: p => dashTooltipNode([p.data.source + ' → ' + p.data.target, String(p.data.value) + ' ugnot']),
+      },
+      series: [{
+        type: 'sankey',
+        emphasis: { focus: 'adjacency' },
+        data: Array.from(ids).map(id => ({ name: id })),
+        links: Array.from(seen.values()).map(e => ({ source: e.from, target: e.to, value: e.value })),
+        lineStyle: { color: 'gradient', curveness: 0.5 },
+        itemStyle: { color: DASH_PAL[0], borderColor: '#2a2a2a' },
+        label: { color: '#888', fontSize: 10 },
+      }],
+    }), true);
+  } catch (err) {
+    console.error('setOption failed for token-flow-sankey', err);
+    inst.dispose();
+    canvasHost.appendChild(el('div', { className: 'dash-msg' }, 'could not load this chart'));
+    return;
+  }
+  _dashCharts['token-flow-sankey'] = inst;
+  inst.on('click', params => {
+    if (params.dataType === 'node') onDeselect(params.data.name);
+  });
+}
+
 // renderEntityPicker drives the table+search+selection+"see graph" flow
 // shared by the network section's three charts. It owns `host`'s entire
 // DOM subtree and switches between a table view and each chart's own graph
@@ -4420,6 +4483,7 @@ function dashGranularityOf(rows) {
 async function renderEntityPicker(host, opts) {
   const st = opts.state;
   host.textContent = '';
+  host.classList.add('entity-picker');
 
   const tagsRow = el('div', { className: 'entity-tags' });
   st.selected.forEach(id => {
@@ -4534,6 +4598,18 @@ async function renderDashChart(chart, gen) {
   const host = document.getElementById('dash-chart-' + chart.id);
   if (!host) return;
 
+  if (chart.render) {
+    if (chart.networkScoped && getNetwork() === 'all') {
+      host.textContent = '';
+      host.appendChild(el('div', { className: 'dash-msg' }, 'select a specific network to see this chart'));
+      return;
+    }
+    const controlsBar = document.getElementById('dash-controls-' + chart.id);
+    chart.state = chart.state || {};
+    chart.render(host, controlsBar, chart.state);
+    return;
+  }
+
   const controlsBar = document.getElementById('dash-controls-' + chart.id);
   const renderControls = () => {
     if (!chart.controls || !controlsBar) return;
@@ -4612,14 +4688,6 @@ async function renderDashChart(chart, gen) {
     return;
   }
   _dashCharts[chart.id] = inst;
-  if (chart.id === 'transfer-graph') {
-    inst.on('click', params => {
-      if (params.dataType !== 'node') return;
-      chart.state = chart.state || {};
-      chart.state.ego = params.data.id;
-      renderDashChart(chart, _dashGen);
-    });
-  }
   renderControls();
 }
 
