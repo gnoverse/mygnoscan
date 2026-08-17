@@ -4292,43 +4292,24 @@ const DASHBOARDS = [
         id: 'caller-graph',
         title: 'caller → realm graph',
         wide: true,
-        mode: 'B',
         networkScoped: true,
-        why: 'Who calls into which realms. Blue nodes are calling addresses, teal nodes are realms; edge width is call volume. Rendered in WebGL (no ego drill-down yet) since this graph can have more nodes than the force-directed canvas view above comfortably lays out.',
-        fetch: w => dashApi('graph/callers?topN=300', w),
-        opt: graph => {
-          if (graph.nodes.length === 0) {
-            // echarts-gl's graphGL series throws "The texture attached to
-            // color buffer is not a valid" when handed an empty node/edge
-            // set (it still allocates a WebGL render target). Render a
-            // blank chart instead of invoking that broken path.
-            return dashBase({ series: [] });
-          }
-          const maxN = graph.nodes.reduce((m, n) => Math.max(m, n.calls), 1);
-          const maxE = graph.edges.reduce((m, e) => Math.max(m, e.calls), 1);
-          return dashBase({
-            tooltip: {
-              formatter: p => dashTooltipNode(
-                p.dataType === 'edge'
-                  ? [p.data.source + ' → ' + p.data.target, p.data.value + ' calls']
-                  : [p.data.name, p.data.value + ' calls']
-              ),
-            },
-            series: [{
-              type: 'graphGL',
-              layout: 'forceAtlas2',
-              forceAtlas2: { steps: 5, stopThreshold: 1 },
-              label: { show: false },
-              data: graph.nodes.map(n => ({
-                id: n.id, name: n.id, value: n.calls,
-                symbolSize: 6 + 18 * (n.calls / maxN),
-                itemStyle: { color: n.type === 'realm' ? DASH_PAL[0] : DASH_PAL[5] },
-              })),
-              edges: graph.edges.map(e => ({
-                source: e.caller, target: e.pkg_path, value: e.calls,
-                lineStyle: { width: 1 + 3 * (e.calls / maxE), color: '#3a3a3a' },
-              })),
-            }],
+        state: { view: 'table', selected: new Set(), searchQuery: '' },
+        why: 'Search or browse callers and realms together, ranked by call volume. Select up to 20 (mix callers and realms — a selection of only one type shows no edges, since a caller only ever connects to a realm, never to another caller) then "see graph" for the calls between exactly your selection.',
+        render: function (host, controlsBar, state) {
+          const chart = this;
+          renderEntityPicker(host, {
+            state,
+            fetchRank: topN => dashApi('graph/callers/ranking?topN=' + topN, chart.window),
+            fetchSearch: q => dashApi('graph/callers/ranking?search=' + encodeURIComponent(q), chart.window),
+            fetchGraph: ids => dashApi('graph/callers?entities=' + ids.map(encodeURIComponent).join(','), chart.window),
+            columns: [
+              { key: 'id', label: 'address / realm' },
+              { key: 'type', label: 'type' },
+              { key: 'calls', label: 'calls', format: r => dashCompactNumber(r.calls) },
+            ],
+            idOf: r => r.id,
+            renderGraph: (canvasHost, graph, selectedIds, onDeselect) => renderCallerGraph(canvasHost, graph, selectedIds, onDeselect),
+            rerender: () => renderDashChart(chart, _dashGen),
           });
         },
       },
@@ -4472,6 +4453,62 @@ function renderTokenFlowSankey(canvasHost, graph, selectedIds, onDeselect) {
   _dashCharts['token-flow-sankey'] = inst;
   inst.on('click', params => {
     if (params.dataType === 'node') onDeselect(params.data.name);
+  });
+}
+
+function renderCallerGraph(canvasHost, graph, selectedIds, onDeselect) {
+  if (!graph.nodes || graph.nodes.length === 0) {
+    canvasHost.appendChild(el('div', { className: 'dash-msg' }, 'no data for this selection'));
+    return;
+  }
+  if (graph.edges.length === 0) {
+    // caller_edges is bipartite: an all-caller or all-realm selection is a
+    // legitimate zero-edge result, not a load failure — say so plainly
+    // rather than rendering an empty WebGL canvas or the generic error.
+    canvasHost.appendChild(el('div', { className: 'dash-msg' },
+      'no calls between this selection — pick at least one caller and one realm'));
+    return;
+  }
+  const maxN = graph.nodes.reduce((m, n) => Math.max(m, n.calls), 1);
+  const maxE = graph.edges.reduce((m, e) => Math.max(m, e.calls), 1);
+
+  const existing = echarts.getInstanceByDom(canvasHost);
+  if (existing) existing.dispose();
+  const inst = echarts.init(canvasHost);
+  try {
+    inst.setOption(dashBase({
+      tooltip: {
+        formatter: p => dashTooltipNode(
+          p.dataType === 'edge'
+            ? [p.data.source + ' → ' + p.data.target, p.data.value + ' calls']
+            : [p.data.name, p.data.value + ' calls']
+        ),
+      },
+      series: [{
+        type: 'graphGL',
+        layout: 'forceAtlas2',
+        forceAtlas2: { steps: 5, stopThreshold: 1 },
+        label: { show: false },
+        data: graph.nodes.map(n => ({
+          id: n.id, name: n.id, value: n.calls,
+          symbolSize: 6 + 18 * (n.calls / maxN),
+          itemStyle: { color: n.type === 'realm' ? DASH_PAL[0] : DASH_PAL[5] },
+        })),
+        edges: graph.edges.map(e => ({
+          source: e.caller, target: e.pkg_path, value: e.calls,
+          lineStyle: { width: 1 + 3 * (e.calls / maxE), color: '#3a3a3a' },
+        })),
+      }],
+    }), true);
+  } catch (err) {
+    console.error('setOption failed for caller-graph', err);
+    inst.dispose();
+    canvasHost.appendChild(el('div', { className: 'dash-msg' }, 'could not load this chart'));
+    return;
+  }
+  _dashCharts['caller-graph'] = inst;
+  inst.on('click', params => {
+    if (params.dataType === 'node') onDeselect(params.data.id);
   });
 }
 
