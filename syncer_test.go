@@ -1101,3 +1101,81 @@ func TestSyncStorageEventsStopsAtFirstFailedPage(t *testing.T) {
 		t.Errorf("found %d rows at height >= 4, want 0 — a later good page got written past the failure", n)
 	}
 }
+
+func TestSyncTransferEdgesRollsUpAndResumes(t *testing.T) {
+	s, _, db := newTestSyncer(t, "gnoland1")
+
+	if err := db.InsertBankSend("gnoland1", "TX1", 10, "2026-08-10T00:00:00Z", "g1a", "g1b", "100ugnot", true); err != nil {
+		t.Fatalf("seed send: %v", err)
+	}
+	if err := s.syncTransferEdges(context.Background()); err != nil {
+		t.Fatalf("first pass: %v", err)
+	}
+
+	h1, ok, err := db.TransferEdgesLastHeight("gnoland1")
+	if err != nil || !ok || h1 != 10 {
+		t.Fatalf("cursor after first pass = %d, ok=%v, err=%v; want 10, true, nil", h1, ok, err)
+	}
+	var total int64
+	if err := db.db.QueryRow(`SELECT total_value FROM transfer_edges WHERE network = 'gnoland1' AND day = '2026-08-10'`).Scan(&total); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if total != 100 {
+		t.Errorf("total_value = %d, want 100", total)
+	}
+
+	// A second pass with no new sends must be a no-op, not an error, and must
+	// not move the cursor backward or double-count.
+	if err := s.syncTransferEdges(context.Background()); err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	h2, _, _ := db.TransferEdgesLastHeight("gnoland1")
+	if h2 != h1 {
+		t.Errorf("cursor moved from %d to %d on an empty pass", h1, h2)
+	}
+	db.db.QueryRow(`SELECT total_value FROM transfer_edges WHERE network = 'gnoland1' AND day = '2026-08-10'`).Scan(&total)
+	if total != 100 {
+		t.Errorf("total_value = %d after empty second pass, want unchanged 100", total)
+	}
+
+	// A third send lands after the cursor: it must be picked up, and the
+	// existing bucket must accumulate rather than reset.
+	if err := db.InsertBankSend("gnoland1", "TX2", 15, "2026-08-10T06:00:00Z", "g1a", "g1b", "50ugnot", true); err != nil {
+		t.Fatalf("seed send 2: %v", err)
+	}
+	if err := s.syncTransferEdges(context.Background()); err != nil {
+		t.Fatalf("third pass: %v", err)
+	}
+	h3, _, _ := db.TransferEdgesLastHeight("gnoland1")
+	if h3 != 15 {
+		t.Errorf("cursor after third pass = %d, want 15", h3)
+	}
+	db.db.QueryRow(`SELECT total_value FROM transfer_edges WHERE network = 'gnoland1' AND day = '2026-08-10'`).Scan(&total)
+	if total != 150 {
+		t.Errorf("total_value = %d after third pass, want 150", total)
+	}
+}
+
+func TestSyncCallerEdgesRollsUpAndResumes(t *testing.T) {
+	s, _, db := newTestSyncer(t, "gnoland1")
+
+	if err := db.InsertCall("gnoland1", "TX1", 10, "2026-08-10T00:00:00Z", "g1a", "gno.land/r/demo/foo", "Post", true); err != nil {
+		t.Fatalf("seed call: %v", err)
+	}
+	if err := s.syncCallerEdges(context.Background()); err != nil {
+		t.Fatalf("first pass: %v", err)
+	}
+
+	h1, ok, err := db.CallerEdgesLastHeight("gnoland1")
+	if err != nil || !ok || h1 != 10 {
+		t.Fatalf("cursor = %d, ok=%v, err=%v; want 10, true, nil", h1, ok, err)
+	}
+
+	if err := s.syncCallerEdges(context.Background()); err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	h2, _, _ := db.CallerEdgesLastHeight("gnoland1")
+	if h2 != h1 {
+		t.Errorf("cursor moved from %d to %d on an empty pass", h1, h2)
+	}
+}

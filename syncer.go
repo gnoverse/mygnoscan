@@ -50,6 +50,12 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 	if err := s.syncStorageEvents(ctx); err != nil {
 		return err
 	}
+	if err := s.syncTransferEdges(ctx); err != nil {
+		return fmt.Errorf("syncTransferEdges error: %w", err)
+	}
+	if err := s.syncCallerEdges(ctx); err != nil {
+		return fmt.Errorf("syncCallerEdges error: %w", err)
+	}
 	return s.syncMsgRuns(ctx)
 }
 
@@ -829,6 +835,61 @@ func (s *Syncer) syncStorageEvents(ctx context.Context) error {
 	if count > 0 {
 		log.Printf("[%s] syncStorageEvents: stored %d events", s.networkID, count)
 	}
+	return nil
+}
+
+// syncTransferEdges folds newly-synced bank_sends rows into transfer_edges.
+//
+// Unlike every other sync pass, this reads local SQLite rather than walking
+// the indexer: bank_sends is already fully populated by syncCalls, so there
+// is no fetch to make, only a local GROUP BY.
+func (s *Syncer) syncTransferEdges(ctx context.Context) error {
+	last, ok, err := s.db.TransferEdgesLastHeight(s.networkID)
+	if err != nil {
+		return fmt.Errorf("transfer edges cursor: %w", err)
+	}
+	from := 0
+	if ok {
+		from = last
+	}
+
+	rows, err := s.db.RollupBankSendsSince(s.networkID, from)
+	if err != nil {
+		return fmt.Errorf("rollup bank sends: %w", err)
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	if err := s.db.UpsertTransferEdges(s.networkID, rows); err != nil {
+		return fmt.Errorf("upsert transfer edges: %w", err)
+	}
+	log.Printf("[%s] syncTransferEdges: rolled up %d edges", s.networkID, len(rows))
+	return nil
+}
+
+// syncCallerEdges folds newly-synced calls rows into caller_edges. Same
+// local-read shape as syncTransferEdges.
+func (s *Syncer) syncCallerEdges(ctx context.Context) error {
+	last, ok, err := s.db.CallerEdgesLastHeight(s.networkID)
+	if err != nil {
+		return fmt.Errorf("caller edges cursor: %w", err)
+	}
+	from := 0
+	if ok {
+		from = last
+	}
+
+	rows, err := s.db.RollupCallsSince(s.networkID, from)
+	if err != nil {
+		return fmt.Errorf("rollup calls: %w", err)
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	if err := s.db.UpsertCallerEdges(s.networkID, rows); err != nil {
+		return fmt.Errorf("upsert caller edges: %w", err)
+	}
+	log.Printf("[%s] syncCallerEdges: rolled up %d edges", s.networkID, len(rows))
 	return nil
 }
 
