@@ -402,3 +402,64 @@ func TestStorageConsumersRouteBeatsTheRealmWildcard(t *testing.T) {
 		}
 	}
 }
+
+func TestHandleGraphTransfersSerializesEmptyAsArrays(t *testing.T) {
+	api := &API{db: newTestDB(t)}
+
+	w := httptest.NewRecorder()
+	api.HandleGraphTransfers(w, httptest.NewRequest("GET", "/api/graph/transfers?network=gnoland1&window=90d", nil))
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var body struct {
+		Nodes []GraphNode `json:"nodes"`
+		Edges []GraphEdge `json:"edges"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Nodes == nil || body.Edges == nil {
+		t.Errorf("nodes/edges = %v / %v, want [] not null on an empty network", body.Nodes, body.Edges)
+	}
+}
+
+func TestHandleGraphTransfersEgoParam(t *testing.T) {
+	db := newTestDB(t)
+	seedTransferEdge(t, db, "gnoland1", "g1a", "g1b", time.Now().UTC().Format("2006-01-02"), 100, 1)
+	api := &API{db: db}
+
+	w := httptest.NewRecorder()
+	api.HandleGraphTransfers(w, httptest.NewRequest("GET", "/api/graph/transfers?network=gnoland1&window=90d&ego=g1a", nil))
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var body struct {
+		Edges []GraphEdge `json:"edges"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Edges) != 1 {
+		t.Errorf("edges = %+v, want 1 (g1a's ego neighborhood)", body.Edges)
+	}
+}
+
+func TestHandleGraphCallersSerializesEmptyAsArrays(t *testing.T) {
+	api := &API{db: newTestDB(t)}
+
+	w := httptest.NewRecorder()
+	api.HandleGraphCallers(w, httptest.NewRequest("GET", "/api/graph/callers?network=gnoland1&window=90d", nil))
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var body struct {
+		Nodes []CallerGraphNode `json:"nodes"`
+		Edges []CallerGraphEdge `json:"edges"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Nodes == nil || body.Edges == nil {
+		t.Errorf("nodes/edges = %v / %v, want [] not null on an empty network", body.Nodes, body.Edges)
+	}
+}

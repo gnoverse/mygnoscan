@@ -1567,3 +1567,44 @@ func (a *API) HandleFunctionCallHeatmap(w http.ResponseWriter, r *http.Request) 
 	}
 	jsonResponse(w, cells)
 }
+
+func (a *API) HandleGraphTransfers(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	days, _ := a.resolveTimeseriesParams(r, network)
+	topN, _ := strconv.Atoi(r.URL.Query().Get("topN"))
+	minValue, _ := strconv.ParseInt(r.URL.Query().Get("min_value"), 10, 64)
+	ego := r.URL.Query().Get("ego")
+
+	g, err := a.db.GetTransferGraph(network, days, topN, minValue, ego)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	if g.Nodes == nil {
+		g.Nodes = []GraphNode{}
+	}
+	if g.Edges == nil {
+		g.Edges = []GraphEdge{}
+	}
+	jsonResponse(w, g)
+}
+
+func (a *API) HandleGraphCallers(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	days, _ := a.resolveTimeseriesParams(r, network)
+	topN, _ := strconv.Atoi(r.URL.Query().Get("topN"))
+	minCalls, _ := strconv.Atoi(r.URL.Query().Get("min_calls"))
+
+	g, err := a.db.GetCallerGraph(network, days, topN, minCalls)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	if g.Nodes == nil {
+		g.Nodes = []CallerGraphNode{}
+	}
+	if g.Edges == nil {
+		g.Edges = []CallerGraphEdge{}
+	}
+	jsonResponse(w, g)
+}
