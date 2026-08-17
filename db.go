@@ -3830,17 +3830,26 @@ type TransferGraph struct {
 	Edges []GraphEdge `json:"edges"`
 }
 
-// GetTransferGraph returns a scoped view of the value-transfer network: the
-// top-N addresses by volume in the window (ego == ""), or the 1-hop
-// neighborhood of one address (ego set). Both are bounded per query
-// regardless of chain size, which is what lets this be shipped to the
-// browser at all — see the design's §7-derived scoping rule.
-func (d *DB) GetTransferGraph(network string, days, topN int, minValue int64, ego string) (TransferGraph, error) {
+// maxSelectedEntities bounds an explicit selection (addresses or
+// caller/realm entities) — extras are silently dropped, matching the
+// existing topN-clamping convention rather than a 400 error.
+const maxSelectedEntities = 20
+
+// GetTransferGraph returns a scoped view of the value-transfer network:
+// the top-N addresses by volume (topN mode), the 1-hop neighborhood of one
+// address (ego mode), or the induced subgraph over an explicit address list
+// (addresses mode — checked first, since an explicit selection is the most
+// specific request). All three are bounded per query regardless of chain
+// size, which is what lets this be shipped to the browser at all.
+func (d *DB) GetTransferGraph(network string, days, topN int, minValue int64, ego string, addresses []string) (TransferGraph, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
 	start := time.Now().UTC().AddDate(0, 0, -days).Format("2006-01-02")
 
+	if len(addresses) > 0 {
+		return d.selectedTransferGraph(network, start, addresses, minValue)
+	}
 	if ego != "" {
 		return d.egoTransferGraph(network, start, ego, minValue)
 	}
@@ -3886,9 +3895,27 @@ func (d *DB) topNTransferGraph(network, start string, topN int, minValue int64) 
 		return TransferGraph{Nodes: []GraphNode{}, Edges: []GraphEdge{}}, nil
 	}
 
-	// Parallel-edge collapse: same-pair edges across multiple days in the
-	// window sum at read time. Both endpoints must be in the top-N set, or a
-	// high-volume node would drag in every low-volume address it ever touched.
+	edges, err := d.edgesAmongSet(network, start, order, minValue)
+	if err != nil {
+		return TransferGraph{}, err
+	}
+
+	nodes := make([]GraphNode, 0, len(order))
+	for _, a := range order {
+		nodes = append(nodes, GraphNode{ID: a, Volume: nodeVol[a]})
+	}
+	return TransferGraph{Nodes: nodes, Edges: edges}, nil
+}
+
+// edgesAmongSet collapses transfer_edges into edges where BOTH endpoints are
+// in order, summing same-pair edges across days in the window. This is the
+// query both the top-N ranking path and the explicit-selection path run —
+// the only difference between them is how order was obtained: a ranking
+// query's result, or the caller's explicit selection.
+func (d *DB) edgesAmongSet(network, start string, order []string, minValue int64) ([]GraphEdge, error) {
+	if len(order) == 0 {
+		return []GraphEdge{}, nil
+	}
 	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(order)), ",")
 	args := make([]any, 0, 2+2*len(order)+1)
 	args = append(args, network, start)
@@ -3908,30 +3935,79 @@ func (d *DB) topNTransferGraph(network, start string, topN int, minValue int64) 
 		HAVING SUM(total_value) >= ?
 		ORDER BY SUM(total_value) DESC`, placeholders, placeholders)
 
-	edgeRows, err := d.db.Query(q, args...)
+	rows, err := d.db.Query(q, args...)
 	if err != nil {
-		return TransferGraph{}, err
+		return nil, err
 	}
-	defer edgeRows.Close()
+	defer rows.Close()
 
 	var edges []GraphEdge
-	for edgeRows.Next() {
+	for rows.Next() {
 		var e GraphEdge
-		if err := edgeRows.Scan(&e.From, &e.To, &e.Value, &e.TxCount); err != nil {
-			return TransferGraph{}, err
+		if err := rows.Scan(&e.From, &e.To, &e.Value, &e.TxCount); err != nil {
+			return nil, err
 		}
 		edges = append(edges, e)
 	}
-	if err := edgeRows.Err(); err != nil {
-		return TransferGraph{}, err
-	}
-
-	nodes := make([]GraphNode, 0, len(order))
-	for _, a := range order {
-		nodes = append(nodes, GraphNode{ID: a, Volume: nodeVol[a]})
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	if edges == nil {
 		edges = []GraphEdge{}
+	}
+	return edges, nil
+}
+
+// selectedTransferGraph returns the induced subgraph over exactly the given
+// addresses.
+func (d *DB) selectedTransferGraph(network, start string, addresses []string, minValue int64) (TransferGraph, error) {
+	if len(addresses) > maxSelectedEntities {
+		addresses = addresses[:maxSelectedEntities]
+	}
+	if len(addresses) == 0 {
+		return TransferGraph{Nodes: []GraphNode{}, Edges: []GraphEdge{}}, nil
+	}
+
+	edges, err := d.edgesAmongSet(network, start, addresses, minValue)
+	if err != nil {
+		return TransferGraph{}, err
+	}
+
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(addresses)), ",")
+	args := make([]any, 0, 4+len(addresses))
+	args = append(args, network, start, network, start)
+	for _, a := range addresses {
+		args = append(args, a)
+	}
+
+	volRows, err := d.db.Query(fmt.Sprintf(`
+		SELECT addr, COALESCE(SUM(sent), 0) + COALESCE(SUM(received), 0) FROM (
+			SELECT from_address AS addr, total_value AS sent, 0 AS received FROM transfer_edges WHERE network = ? AND day >= ?
+			UNION ALL
+			SELECT to_address AS addr, 0 AS sent, total_value AS received FROM transfer_edges WHERE network = ? AND day >= ?
+		) WHERE addr IN (%s)
+		GROUP BY addr`, placeholders), args...)
+	if err != nil {
+		return TransferGraph{}, err
+	}
+	defer volRows.Close()
+
+	vol := map[string]int64{}
+	for volRows.Next() {
+		var addr string
+		var v int64
+		if err := volRows.Scan(&addr, &v); err != nil {
+			return TransferGraph{}, err
+		}
+		vol[addr] = v
+	}
+	if err := volRows.Err(); err != nil {
+		return TransferGraph{}, err
+	}
+
+	nodes := make([]GraphNode, 0, len(addresses))
+	for _, a := range addresses {
+		nodes = append(nodes, GraphNode{ID: a, Volume: vol[a]}) // 0 if no matching activity in-window
 	}
 	return TransferGraph{Nodes: nodes, Edges: edges}, nil
 }
@@ -4002,13 +4078,89 @@ type CallerGraph struct {
 	Edges []CallerGraphEdge `json:"edges"`
 }
 
+// selectedCallerGraph returns the induced subgraph over exactly the given
+// entities (a mix of caller addresses and realm paths). Edges require BOTH
+// the caller and the realm to be in the selected set — caller_edges is
+// bipartite, so an all-caller or all-realm selection yields zero edges by
+// construction, not by bug.
+func (d *DB) selectedCallerGraph(network, start string, entities []string, minCalls int) (CallerGraph, error) {
+	if len(entities) > maxSelectedEntities {
+		entities = entities[:maxSelectedEntities]
+	}
+	if len(entities) == 0 {
+		return CallerGraph{Nodes: []CallerGraphNode{}, Edges: []CallerGraphEdge{}}, nil
+	}
+
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(entities)), ",")
+	args := make([]any, 0, 2+2*len(entities)+1)
+	args = append(args, network, start)
+	for _, e := range entities {
+		args = append(args, e)
+	}
+	for _, e := range entities {
+		args = append(args, e)
+	}
+	args = append(args, minCalls)
+
+	q := fmt.Sprintf(`
+		SELECT caller, pkg_path, SUM(calls)
+		FROM caller_edges
+		WHERE network = ? AND day >= ? AND caller IN (%s) AND pkg_path IN (%s)
+		GROUP BY caller, pkg_path
+		HAVING SUM(calls) >= ?
+		ORDER BY SUM(calls) DESC`, placeholders, placeholders)
+
+	rows, err := d.db.Query(q, args...)
+	if err != nil {
+		return CallerGraph{}, err
+	}
+	defer rows.Close()
+
+	callCount := map[string]int{}
+	var edges []CallerGraphEdge
+	for rows.Next() {
+		var e CallerGraphEdge
+		if err := rows.Scan(&e.Caller, &e.PkgPath, &e.Calls); err != nil {
+			return CallerGraph{}, err
+		}
+		edges = append(edges, e)
+		callCount[e.Caller] += e.Calls
+		callCount[e.PkgPath] += e.Calls
+	}
+	if err := rows.Err(); err != nil {
+		return CallerGraph{}, err
+	}
+
+	nodes := make([]CallerGraphNode, 0, len(entities))
+	for _, e := range entities {
+		// pkg_path values always look like "gno.land/r/..." (they contain a
+		// slash); bech32 addresses never do. This mirrors how the rest of the
+		// codebase already distinguishes the two without a lookup.
+		typ := "caller"
+		if strings.Contains(e, "/") {
+			typ = "realm"
+		}
+		nodes = append(nodes, CallerGraphNode{ID: e, Type: typ, Calls: callCount[e]})
+	}
+	if edges == nil {
+		edges = []CallerGraphEdge{}
+	}
+	return CallerGraph{Nodes: nodes, Edges: edges}, nil
+}
+
 // GetCallerGraph returns the top-N callers by call volume in the window and
 // the realms they called, with edges collapsed across days. No ego mode in
 // this batch — extending it later is a straightforward addition behind the
 // same shape, not required for the first ship.
-func (d *DB) GetCallerGraph(network string, days, topN, minCalls int) (CallerGraph, error) {
+func (d *DB) GetCallerGraph(network string, days, topN, minCalls int, entities []string) (CallerGraph, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
+
+	start := time.Now().UTC().AddDate(0, 0, -days).Format("2006-01-02")
+
+	if len(entities) > 0 {
+		return d.selectedCallerGraph(network, start, entities, minCalls)
+	}
 
 	if topN <= 0 {
 		topN = 200
@@ -4016,7 +4168,6 @@ func (d *DB) GetCallerGraph(network string, days, topN, minCalls int) (CallerGra
 	if topN > 1000 {
 		topN = 1000
 	}
-	start := time.Now().UTC().AddDate(0, 0, -days).Format("2006-01-02")
 
 	callerRows, err := d.db.Query(`
 		SELECT caller, SUM(calls) FROM caller_edges WHERE network = ? AND day >= ?

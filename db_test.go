@@ -1987,7 +1987,7 @@ func TestGetTransferGraphTopNKeepsOnlyEdgesBetweenTopAddresses(t *testing.T) {
 	seedTransferEdge(t, db, "gnoland1", "g1b", "g1a", today, 900, 1)
 	seedTransferEdge(t, db, "gnoland1", "g1a", "g1c", today, 5, 1)
 
-	g, err := db.GetTransferGraph("gnoland1", 7, 2, 0, "")
+	g, err := db.GetTransferGraph("gnoland1", 7, 2, 0, "", nil)
 	if err != nil {
 		t.Fatalf("graph: %v", err)
 	}
@@ -2010,7 +2010,7 @@ func TestGetTransferGraphMinValueFiltersDustEdges(t *testing.T) {
 	seedTransferEdge(t, db, "gnoland1", "g1a", "g1b", today, 1000, 1)
 	seedTransferEdge(t, db, "gnoland1", "g1a", "g1c", today, 5, 1)
 
-	g, err := db.GetTransferGraph("gnoland1", 7, 100, 100, "")
+	g, err := db.GetTransferGraph("gnoland1", 7, 100, 100, "", nil)
 	if err != nil {
 		t.Fatalf("graph: %v", err)
 	}
@@ -2025,7 +2025,7 @@ func TestGetTransferGraphEgoModeReturnsOneHopNeighborhoodOnly(t *testing.T) {
 	seedTransferEdge(t, db, "gnoland1", "g1a", "g1b", today, 100, 1) // direct neighbor
 	seedTransferEdge(t, db, "gnoland1", "g1b", "g1c", today, 999, 1) // 2 hops from g1a — must not appear
 
-	g, err := db.GetTransferGraph("gnoland1", 7, 0, 0, "g1a")
+	g, err := db.GetTransferGraph("gnoland1", 7, 0, 0, "g1a", nil)
 	if err != nil {
 		t.Fatalf("graph: %v", err)
 	}
@@ -2048,7 +2048,7 @@ func TestGetTransferGraphIsNetworkScoped(t *testing.T) {
 	seedTransferEdge(t, db, "gnoland1", "g1a", "g1b", today, 100, 1)
 	seedTransferEdge(t, db, "test12", "g1a", "g1b", today, 99999, 1)
 
-	g, err := db.GetTransferGraph("gnoland1", 7, 10, 0, "")
+	g, err := db.GetTransferGraph("gnoland1", 7, 10, 0, "", nil)
 	if err != nil {
 		t.Fatalf("graph: %v", err)
 	}
@@ -2072,7 +2072,7 @@ func TestGetCallerGraphTopNAndNodeTypes(t *testing.T) {
 	seedCallerEdge(t, db, "gnoland1", "g1a", "gno.land/r/demo/foo", today, 50)
 	seedCallerEdge(t, db, "gnoland1", "g1b", "gno.land/r/demo/foo", today, 1)
 
-	g, err := db.GetCallerGraph("gnoland1", 7, 1, 0)
+	g, err := db.GetCallerGraph("gnoland1", 7, 1, 0, nil)
 	if err != nil {
 		t.Fatalf("graph: %v", err)
 	}
@@ -2234,5 +2234,97 @@ func TestGetCallerRankingSearch(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].ID != "gno.land/r/demo/needle" || rows[0].Type != "realm" {
 		t.Errorf("rows = %+v, want just the realm", rows)
+	}
+}
+
+func TestSelectedTransferGraphOnlyIncludesEdgesBetweenSelectedAddresses(t *testing.T) {
+	db := newTestDB(t)
+	today := time.Now().UTC().Format("2006-01-02")
+	seedTransferEdge(t, db, "gnoland1", "g1a", "g1b", today, 100, 1)
+	seedTransferEdge(t, db, "gnoland1", "g1a", "g1c", today, 999, 1) // g1c is not selected
+
+	g, err := db.GetTransferGraph("gnoland1", 7, 0, 0, "", []string{"g1a", "g1b"})
+	if err != nil {
+		t.Fatalf("graph: %v", err)
+	}
+	if len(g.Edges) != 1 || g.Edges[0].To == "g1c" {
+		t.Fatalf("edges = %+v, want just the g1a->g1b edge (g1c was not selected)", g.Edges)
+	}
+	if len(g.Nodes) != 2 {
+		t.Errorf("nodes = %+v, want exactly the 2 selected addresses", g.Nodes)
+	}
+}
+
+func TestSelectedTransferGraphCapsAtMaxSelectedEntities(t *testing.T) {
+	db := newTestDB(t)
+	today := time.Now().UTC().Format("2006-01-02")
+	addrs := make([]string, 0, maxSelectedEntities+5)
+	for i := 0; i < maxSelectedEntities+5; i++ {
+		addrs = append(addrs, fmt.Sprintf("g1addr%02d", i))
+	}
+	seedTransferEdge(t, db, "gnoland1", addrs[0], addrs[1], today, 10, 1)
+
+	g, err := db.GetTransferGraph("gnoland1", 7, 0, 0, "", addrs)
+	if err != nil {
+		t.Fatalf("graph: %v", err)
+	}
+	if len(g.Nodes) != maxSelectedEntities {
+		t.Errorf("got %d nodes, want the cap of %d (extras silently dropped)", len(g.Nodes), maxSelectedEntities)
+	}
+}
+
+func TestSelectedTransferGraphEmptySelectionReturnsEmpty(t *testing.T) {
+	db := newTestDB(t)
+	g, err := db.GetTransferGraph("gnoland1", 7, 0, 0, "", []string{})
+	if err != nil {
+		t.Fatalf("graph: %v", err)
+	}
+	if len(g.Nodes) != 0 || len(g.Edges) != 0 {
+		t.Errorf("got %+v, want empty (an empty explicit selection is not the same as topN mode)", g)
+	}
+}
+
+func TestSelectedCallerGraphRequiresBothEndpointsSelected(t *testing.T) {
+	// caller_edges is bipartite: a selection of callers-only must yield zero
+	// edges, since no realm was selected for any edge to land on.
+	db := newTestDB(t)
+	today := time.Now().UTC().Format("2006-01-02")
+	seedCallerEdge(t, db, "gnoland1", "g1a", "gno.land/r/demo/foo", today, 5)
+
+	g, err := db.GetCallerGraph("gnoland1", 7, 0, 0, []string{"g1a"})
+	if err != nil {
+		t.Fatalf("graph: %v", err)
+	}
+	if len(g.Edges) != 0 {
+		t.Errorf("edges = %+v, want none (only a caller was selected, no realm)", g.Edges)
+	}
+	if len(g.Nodes) != 1 || g.Nodes[0].Type != "caller" {
+		t.Errorf("nodes = %+v, want the one caller node, typed correctly even with zero edges", g.Nodes)
+	}
+
+	g2, err := db.GetCallerGraph("gnoland1", 7, 0, 0, []string{"g1a", "gno.land/r/demo/foo"})
+	if err != nil {
+		t.Fatalf("graph with both selected: %v", err)
+	}
+	if len(g2.Edges) != 1 {
+		t.Errorf("edges = %+v, want 1 now that both endpoints are selected", g2.Edges)
+	}
+}
+
+func TestSelectedCallerGraphTypesEntitiesCorrectly(t *testing.T) {
+	db := newTestDB(t)
+	g, err := db.GetCallerGraph("gnoland1", 7, 0, 0, []string{"g1a", "gno.land/r/demo/foo"})
+	if err != nil {
+		t.Fatalf("graph: %v", err)
+	}
+	byID := map[string]CallerGraphNode{}
+	for _, n := range g.Nodes {
+		byID[n.ID] = n
+	}
+	if byID["g1a"].Type != "caller" {
+		t.Errorf("g1a typed as %q, want caller", byID["g1a"].Type)
+	}
+	if byID["gno.land/r/demo/foo"].Type != "realm" {
+		t.Errorf("gno.land/r/demo/foo typed as %q, want realm", byID["gno.land/r/demo/foo"].Type)
 	}
 }
