@@ -3847,7 +3847,7 @@ func (d *DB) GetTransferGraph(network string, days, topN int, minValue int64, eg
 
 	start := time.Now().UTC().AddDate(0, 0, -days).Format("2006-01-02")
 
-	if len(addresses) > 0 {
+	if addresses != nil {
 		return d.selectedTransferGraph(network, start, addresses, minValue)
 	}
 	if ego != "" {
@@ -4158,7 +4158,7 @@ func (d *DB) GetCallerGraph(network string, days, topN, minCalls int, entities [
 
 	start := time.Now().UTC().AddDate(0, 0, -days).Format("2006-01-02")
 
-	if len(entities) > 0 {
+	if entities != nil {
 		return d.selectedCallerGraph(network, start, entities, minCalls)
 	}
 

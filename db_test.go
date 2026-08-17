@@ -2275,7 +2275,30 @@ func TestSelectedTransferGraphCapsAtMaxSelectedEntities(t *testing.T) {
 
 func TestSelectedTransferGraphEmptySelectionReturnsEmpty(t *testing.T) {
 	db := newTestDB(t)
+	today := time.Now().UTC().Format("2006-01-02")
+	// Seed other data so topN mode would return a non-empty graph if the
+	// dispatch mistakenly fell through to it instead of honoring the
+	// explicit (non-nil) empty selection.
+	seedTransferEdge(t, db, "gnoland1", "g1a", "g1b", today, 100, 1)
+
 	g, err := db.GetTransferGraph("gnoland1", 7, 0, 0, "", []string{})
+	if err != nil {
+		t.Fatalf("graph: %v", err)
+	}
+	if len(g.Nodes) != 0 || len(g.Edges) != 0 {
+		t.Errorf("got %+v, want empty (an empty explicit selection is not the same as topN mode)", g)
+	}
+}
+
+func TestSelectedCallerGraphEmptySelectionReturnsEmpty(t *testing.T) {
+	db := newTestDB(t)
+	today := time.Now().UTC().Format("2006-01-02")
+	// Seed other data so topN mode would return a non-empty graph if the
+	// dispatch mistakenly fell through to it instead of honoring the
+	// explicit (non-nil) empty selection.
+	seedCallerEdge(t, db, "gnoland1", "g1a", "gno.land/r/demo/foo", today, 5)
+
+	g, err := db.GetCallerGraph("gnoland1", 7, 0, 0, []string{})
 	if err != nil {
 		t.Fatalf("graph: %v", err)
 	}
