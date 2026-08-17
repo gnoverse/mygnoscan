@@ -3805,12 +3805,25 @@ const DASHBOARDS = [
           return rows;
         },
         opt: rows => {
-          const labels = rows.map(r => _valMonikers[r.address] || truncAddr(r.address));
+          const labels = rows.map(r => _valMonikers[r.address] || truncAddr(r.address)).reverse();
+          const addrs = rows.map(r => r.address).reverse();
           return dashBase({
             grid: { left: 130, right: 20, top: 10, bottom: 28 },
-            tooltip: { trigger: 'axis' },
+            tooltip: {
+              trigger: 'axis',
+              // Always show the full address alongside the moniker (or the
+              // truncated address, if the validator never registered one) —
+              // the bar label alone can't fit both.
+              formatter: params => {
+                const addr = addrs[params[0].dataIndex];
+                const moniker = _valMonikers[addr];
+                const lines = moniker ? [moniker, addr] : [addr];
+                lines.push(params[0].value + ' blocks');
+                return dashTooltipNode(lines);
+              },
+            },
             xAxis: dashValAxis('blocks'),
-            yAxis: dashCatAxisBars(labels.slice().reverse()),
+            yAxis: dashCatAxisBars(labels),
             series: [{ type: 'bar', data: rows.map(r => r.blocks).reverse(), itemStyle: { color: DASH_PAL[0] } }],
           });
         },
