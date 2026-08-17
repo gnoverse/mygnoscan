@@ -3947,8 +3947,30 @@ const DASHBOARDS = [
         title: 'cumulative storage growth',
         window: 'all',
         networkScoped: true,
+        state: { realm: '' },
         why: 'How much chain state realms are paying to hold, summed across all indexed history. State only grows unless a realm prunes, so the slope is the long-run cost driver. Pinned to the full range: a running total over a partial window understates the real figure. A downward slope means realms released more than they stored.',
-        fetch: w => dashApi('timeseries/storage', w),
+        controls: (bar, rerender, state) => {
+          bar.appendChild(el('span', { className: 'label' }, 'realm'));
+          const sel = el('select', { className: 'dash-select' });
+          sel.appendChild(el('option', { value: '' }, 'all realms'));
+          (state.realms || []).forEach(p => {
+            const o = el('option', { value: p }, p);
+            if (p === state.realm) o.selected = true;
+            sel.appendChild(o);
+          });
+          sel.addEventListener('change', () => { state.realm = sel.value; rerender(); });
+          bar.appendChild(sel);
+        },
+        fetch: async function (w) {
+          this.state = this.state || {};
+          // Refetched every render so a network switch or a fresh deploy cannot
+          // leave the selector offering a realm with no storage events anymore.
+          const realms = await dashApi('timeseries/storage/realms', w);
+          this.state.realms = realms;
+          if (this.state.realm && realms.indexOf(this.state.realm) === -1) this.state.realm = '';
+          const path = this.state.realm ? 'timeseries/storage?realm=' + encodeURIComponent(this.state.realm) : 'timeseries/storage';
+          return dashApi(path, w);
+        },
         opt: rows => dashBase({
           tooltip: { trigger: 'axis' },
           xAxis: dashCatAxis(rows.map(r => r.time)),
@@ -3965,8 +3987,28 @@ const DASHBOARDS = [
         id: 'storage-deposit-release',
         title: 'storage deposited vs released',
         networkScoped: true,
+        state: { realm: '' },
         why: 'Deposits lock GNOT when a realm grows chain state; releases refund it when state is pruned. Released bars sit below zero because the chain emits them as negative deltas. At 100 ugnot per byte, the bar heights are also the fee flow.',
-        fetch: w => dashApi('timeseries/storage', w),
+        controls: (bar, rerender, state) => {
+          bar.appendChild(el('span', { className: 'label' }, 'realm'));
+          const sel = el('select', { className: 'dash-select' });
+          sel.appendChild(el('option', { value: '' }, 'all realms'));
+          (state.realms || []).forEach(p => {
+            const o = el('option', { value: p }, p);
+            if (p === state.realm) o.selected = true;
+            sel.appendChild(o);
+          });
+          sel.addEventListener('change', () => { state.realm = sel.value; rerender(); });
+          bar.appendChild(sel);
+        },
+        fetch: async function (w) {
+          this.state = this.state || {};
+          const realms = await dashApi('timeseries/storage/realms', w);
+          this.state.realms = realms;
+          if (this.state.realm && realms.indexOf(this.state.realm) === -1) this.state.realm = '';
+          const path = this.state.realm ? 'timeseries/storage?realm=' + encodeURIComponent(this.state.realm) : 'timeseries/storage';
+          return dashApi(path, w);
+        },
         opt: rows => dashBase({
           tooltip: { trigger: 'axis' },
           legend: dashLegend(['deposited', 'released']),
