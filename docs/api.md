@@ -161,7 +161,7 @@ declined, these three endpoints return empty rather than failing.
 
 | endpoint | description |
 |---|---|
-| `GET /api/graph/transfers?network=&window=&topN=&min_value=&ego=&hops=` | top-N addresses by transfer volume in the window (or the 1-hop neighborhood of `ego`, which ignores `topN`). Returns `{nodes: [{id, volume}], edges: [{from, to, value, tx_count}]}`. `topN` defaults to 100, capped at 1000. `hops` is accepted but only `1` has an effect in this batch |
+| `GET /api/graph/transfers?network=&window=&topN=&min_value=&ego=` | top-N addresses by transfer volume in the window (or the 1-hop neighborhood of `ego`, which ignores `topN`). Returns `{nodes: [{id, volume}], edges: [{from, to, value, tx_count}]}`. `topN` defaults to 100, capped at 1000. There is no `hops` parameter — the `ego` neighborhood is hardcoded to 1 hop |
 | `GET /api/graph/callers?network=&window=&topN=&min_calls=` | top-N callers by call volume and the realms they called. Returns `{nodes: [{id, type, calls}], edges: [{caller, pkg_path, calls}]}` where `type` is `"caller"` or `"realm"`. `topN` defaults to 200, capped at 1000. No `ego` support yet |
 
 ## Search

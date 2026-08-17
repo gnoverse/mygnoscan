@@ -4300,6 +4300,13 @@ const DASHBOARDS = [
         why: 'Who calls into which realms. Blue nodes are calling addresses, teal nodes are realms; edge width is call volume. Rendered in WebGL (no ego drill-down yet) since this graph can have more nodes than the force-directed canvas view above comfortably lays out.',
         fetch: w => dashApi('graph/callers?topN=300', w),
         opt: graph => {
+          if (graph.nodes.length === 0) {
+            // echarts-gl's graphGL series throws "The texture attached to
+            // color buffer is not a valid" when handed an empty node/edge
+            // set (it still allocates a WebGL render target). Render a
+            // blank chart instead of invoking that broken path.
+            return dashBase({ series: [] });
+          }
           const maxN = graph.nodes.reduce((m, n) => Math.max(m, n.calls), 1);
           const maxE = graph.edges.reduce((m, e) => Math.max(m, e.calls), 1);
           return dashBase({
