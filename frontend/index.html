@@ -123,7 +123,7 @@ tr.total-row td { font-weight: bold; color: var(--accent); }
 .dash-seg button { background: var(--bg2); color: var(--fg2); border: none; border-left: 1px solid var(--border); padding: 4px 10px; cursor: pointer; font-family: var(--mono); font-size: 11px; }
 .dash-seg button:first-child { border-left: none; }
 .dash-seg button.on { background: var(--accent); color: var(--bg); font-weight: bold; }
-.entity-picker { display: flex; flex-direction: column; gap: 8px; }
+.entity-picker { display: flex; flex-direction: column; gap: 8px; height: auto; min-height: 300px; }
 .entity-search { width: 100%; max-width: 320px; background: var(--bg2); color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: 5px 8px; font-family: var(--mono); font-size: 12px; }
 .entity-tags { display: flex; flex-wrap: wrap; gap: 6px; min-height: 22px; }
 .entity-tag { display: inline-flex; align-items: center; gap: 4px; background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; padding: 2px 4px 2px 10px; font-size: 11px; }
@@ -4241,12 +4241,14 @@ const DASHBOARDS = [
         title: 'value-transfer network',
         wide: true,
         networkScoped: true,
-        state: { view: 'table', selected: new Set(), searchQuery: '' },
+        state: { view: 'table', selected: new Set(), searchQuery: '', rows: undefined, rowsKey: undefined },
         why: 'Who sends GNOT to whom. Search or browse the ranking below, select up to 20 addresses (click a row, or the × on a tag to remove one), then "see graph" for the flows between exactly your selection. Node size is total volume in the window; edge width is the value moved between that pair.',
-        render: function (host, controlsBar, state) {
+        render: function (host, controlsBar, state, gen) {
           const chart = this;
           renderEntityPicker(host, {
             state,
+            gen,
+            window: chart.window,
             fetchRank: topN => dashApi('graph/transfers/ranking?topN=' + topN, chart.window),
             fetchSearch: q => dashApi('graph/transfers/ranking?search=' + encodeURIComponent(q), chart.window),
             fetchGraph: ids => dashApi('graph/transfers?addresses=' + ids.map(encodeURIComponent).join(','), chart.window),
@@ -4267,12 +4269,14 @@ const DASHBOARDS = [
         title: 'token flow (top senders → receivers)',
         wide: true,
         networkScoped: true,
-        state: { view: 'table', selected: new Set(), searchQuery: '' },
+        state: { view: 'table', selected: new Set(), searchQuery: '', rows: undefined, rowsKey: undefined },
         why: 'Search or browse the ranking below, select up to 20 addresses, then "see graph" for a sankey of value moved between exactly your selection. Link width is value moved from sender to receiver.',
-        render: function (host, controlsBar, state) {
+        render: function (host, controlsBar, state, gen) {
           const chart = this;
           renderEntityPicker(host, {
             state,
+            gen,
+            window: chart.window,
             fetchRank: topN => dashApi('graph/transfers/ranking?topN=' + topN, chart.window),
             fetchSearch: q => dashApi('graph/transfers/ranking?search=' + encodeURIComponent(q), chart.window),
             fetchGraph: ids => dashApi('graph/transfers?addresses=' + ids.map(encodeURIComponent).join(','), chart.window),
@@ -4293,12 +4297,14 @@ const DASHBOARDS = [
         title: 'caller → realm graph',
         wide: true,
         networkScoped: true,
-        state: { view: 'table', selected: new Set(), searchQuery: '' },
+        state: { view: 'table', selected: new Set(), searchQuery: '', rows: undefined, rowsKey: undefined },
         why: 'Search or browse callers and realms together, ranked by call volume. Select up to 20 (mix callers and realms — a selection of only one type shows no edges, since a caller only ever connects to a realm, never to another caller) then "see graph" for the calls between exactly your selection.',
-        render: function (host, controlsBar, state) {
+        render: function (host, controlsBar, state, gen) {
           const chart = this;
           renderEntityPicker(host, {
             state,
+            gen,
+            window: chart.window,
             fetchRank: topN => dashApi('graph/callers/ranking?topN=' + topN, chart.window),
             fetchSearch: q => dashApi('graph/callers/ranking?search=' + encodeURIComponent(q), chart.window),
             fetchGraph: ids => dashApi('graph/callers?entities=' + ids.map(encodeURIComponent).join(','), chart.window),
@@ -4519,6 +4525,18 @@ function renderCallerGraph(canvasHost, graph, selectedIds, onDeselect) {
 // ECharts-option-building code, unchanged).
 async function renderEntityPicker(host, opts) {
   const st = opts.state;
+  // A prior render may have left a live ECharts instance (possibly WebGL,
+  // for caller-graph) attached to a canvas inside this host — the graph
+  // view's canvasHost is rebuilt fresh on every render, so the "dispose
+  // existing instance at this DOM node" guard inside renderTransferForceGraph
+  // et al. never matches. Dispose it here, before clearing the host, so
+  // graph->table transitions and tag removals while in graph view don't leak
+  // a chart instance (and, for graphGL, a GPU context) per cycle.
+  const prevCanvas = host.querySelector('.dash-chart');
+  if (prevCanvas) {
+    const prevInst = echarts.getInstanceByDom(prevCanvas);
+    if (prevInst && !prevInst.isDisposed()) prevInst.dispose();
+  }
   host.textContent = '';
   host.classList.add('entity-picker');
 
@@ -4546,19 +4564,36 @@ async function renderEntityPicker(host, opts) {
 async function renderTableView(host, opts) {
   const st = opts.state;
 
+  // Rows are cached on state, keyed by whatever can change what the server
+  // would return. A selection-only rerender (row click, tag removal) keeps
+  // the same key, so it repaints from the cache instead of re-fetching —
+  // per spec §3.2, selection must stay pure client-side state until "see
+  // graph" is clicked.
+  const rowsKey = (st.searchQuery || '') + '|' + (opts.window || _dashWindow) + '|' + getNetwork();
+
+  // The debounced search handler flags this right before calling rerender()
+  // so this render pass knows the search box was mid-typing and should get
+  // focus (and caret position) restored once the new input element exists —
+  // rebuilding the DOM subtree otherwise silently drops focus 300ms after
+  // the user stops typing.
+  const wasSearchFocused = !!st._searchInputWasFocused;
+  st._searchInputWasFocused = false;
+
   const search = el('input', {
     className: 'entity-search',
     type: 'text',
     placeholder: 'search address or realm…',
     value: st.searchQuery || '',
   });
-  const debouncedSearch = debounce(q => { st.searchQuery = q; opts.rerender(); }, 300);
+  const debouncedSearch = debounce(q => {
+    st.searchQuery = q;
+    st._searchInputWasFocused = true;
+    opts.rerender();
+  }, 300);
   search.addEventListener('input', () => debouncedSearch(search.value.trim()));
   host.appendChild(search);
 
   const tableWrap = el('div', { className: 'entity-table-wrap' });
-  const msg = el('div', { className: 'dash-msg' }, 'loading…');
-  tableWrap.appendChild(msg);
   host.appendChild(tableWrap);
 
   const actions = el('div', { className: 'entity-actions' });
@@ -4568,41 +4603,67 @@ async function renderTableView(host, opts) {
   actions.appendChild(seeGraphBtn);
   host.appendChild(actions);
 
+  const restoreSearchFocus = () => {
+    if (!wasSearchFocused) return;
+    const pos = search.value.length;
+    search.focus();
+    search.setSelectionRange(pos, pos);
+  };
+
+  const paintRows = rows => {
+    tableWrap.textContent = '';
+    if (!rows || rows.length === 0) {
+      tableWrap.appendChild(el('div', { className: 'dash-msg' }, st.searchQuery ? 'no matches' : 'no data in this window'));
+      return;
+    }
+    const table = el('table', { className: 'entity-table' });
+    const thead = el('thead', {}, el('tr', {}, ...opts.columns.map(c => el('th', {}, c.label))));
+    table.appendChild(thead);
+    const tbody = el('tbody');
+    rows.forEach(row => {
+      const id = opts.idOf(row);
+      const tr = el('tr', { className: st.selected.has(id) ? 'selected' : '' },
+        ...opts.columns.map(c => el('td', {}, c.format ? c.format(row) : String(row[c.key]))));
+      tr.addEventListener('click', () => {
+        if (st.selected.has(id)) {
+          st.selected.delete(id);
+        } else if (st.selected.size < 20) {
+          st.selected.add(id);
+        }
+        opts.rerender();
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    tableWrap.appendChild(table);
+  };
+
+  if (st.rowsKey === rowsKey && st.rows) {
+    paintRows(st.rows);
+    restoreSearchFocus();
+    return;
+  }
+
+  tableWrap.appendChild(el('div', { className: 'dash-msg' }, 'loading…'));
+
   let rows;
   try {
     rows = st.searchQuery ? await opts.fetchSearch(st.searchQuery) : await opts.fetchRank(100);
   } catch (err) {
+    // A newer render (window/network switch, or another search keystroke)
+    // may have started while this fetch was in flight — bail before
+    // touching the DOM so a stale response can't clobber the live view.
+    if (opts.gen !== _dashGen) return;
     tableWrap.textContent = '';
     tableWrap.appendChild(el('div', { className: 'dash-msg' }, 'could not load this table'));
     return;
   }
+  if (opts.gen !== _dashGen) return;
 
-  tableWrap.textContent = '';
-  if (!rows || rows.length === 0) {
-    tableWrap.appendChild(el('div', { className: 'dash-msg' }, st.searchQuery ? 'no matches' : 'no data in this window'));
-    return;
-  }
-
-  const table = el('table', { className: 'entity-table' });
-  const thead = el('thead', {}, el('tr', {}, ...opts.columns.map(c => el('th', {}, c.label))));
-  table.appendChild(thead);
-  const tbody = el('tbody');
-  rows.forEach(row => {
-    const id = opts.idOf(row);
-    const tr = el('tr', { className: st.selected.has(id) ? 'selected' : '' },
-      ...opts.columns.map(c => el('td', {}, c.format ? c.format(row) : String(row[c.key]))));
-    tr.addEventListener('click', () => {
-      if (st.selected.has(id)) {
-        st.selected.delete(id);
-      } else if (st.selected.size < 20) {
-        st.selected.add(id);
-      }
-      opts.rerender();
-    });
-    tbody.appendChild(tr);
-  });
-  table.appendChild(tbody);
-  tableWrap.appendChild(table);
+  st.rows = rows;
+  st.rowsKey = rowsKey;
+  paintRows(rows);
+  restoreSearchFocus();
 }
 
 async function renderGraphView(host, opts) {
@@ -4621,9 +4682,11 @@ async function renderGraphView(host, opts) {
   try {
     graphData = await opts.fetchGraph(Array.from(st.selected));
   } catch (err) {
+    if (opts.gen !== _dashGen) return;
     canvasHost.appendChild(el('div', { className: 'dash-msg' }, 'could not load this chart'));
     return;
   }
+  if (opts.gen !== _dashGen) return;
   opts.renderGraph(canvasHost, graphData, st.selected, id => {
     st.selected.delete(id);
     if (st.selected.size === 0) st.view = 'table';
@@ -4643,7 +4706,7 @@ async function renderDashChart(chart, gen) {
     }
     const controlsBar = document.getElementById('dash-controls-' + chart.id);
     chart.state = chart.state || {};
-    chart.render(host, controlsBar, chart.state);
+    chart.render(host, controlsBar, chart.state, gen);
     return;
   }
 
