@@ -3810,3 +3810,287 @@ func (d *DB) GetFunctionCallHeatmap(network, pkgPath string, days int) ([]FuncCa
 	}
 	return out, nil
 }
+
+// --- network graphs ---
+
+type GraphNode struct {
+	ID     string `json:"id"`
+	Volume int64  `json:"volume"`
+}
+
+type GraphEdge struct {
+	From    string `json:"from"`
+	To      string `json:"to"`
+	Value   int64  `json:"value"`
+	TxCount int    `json:"tx_count"`
+}
+
+type TransferGraph struct {
+	Nodes []GraphNode `json:"nodes"`
+	Edges []GraphEdge `json:"edges"`
+}
+
+// GetTransferGraph returns a scoped view of the value-transfer network: the
+// top-N addresses by volume in the window (ego == ""), or the 1-hop
+// neighborhood of one address (ego set). Both are bounded per query
+// regardless of chain size, which is what lets this be shipped to the
+// browser at all — see the design's §7-derived scoping rule.
+func (d *DB) GetTransferGraph(network string, days, topN int, minValue int64, ego string) (TransferGraph, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	start := time.Now().UTC().AddDate(0, 0, -days).Format("2006-01-02")
+
+	if ego != "" {
+		return d.egoTransferGraph(network, start, ego, minValue)
+	}
+	if topN <= 0 {
+		topN = 100
+	}
+	if topN > 1000 {
+		topN = 1000
+	}
+	return d.topNTransferGraph(network, start, topN, minValue)
+}
+
+func (d *DB) topNTransferGraph(network, start string, topN int, minValue int64) (TransferGraph, error) {
+	addrRows, err := d.db.Query(`
+		SELECT addr, SUM(vol) FROM (
+			SELECT from_address AS addr, total_value AS vol FROM transfer_edges WHERE network = ? AND day >= ?
+			UNION ALL
+			SELECT to_address AS addr, total_value AS vol FROM transfer_edges WHERE network = ? AND day >= ?
+		) GROUP BY addr ORDER BY SUM(vol) DESC LIMIT ?`,
+		network, start, network, start, topN)
+	if err != nil {
+		return TransferGraph{}, err
+	}
+	nodeVol := map[string]int64{}
+	var order []string
+	for addrRows.Next() {
+		var addr string
+		var vol int64
+		if err := addrRows.Scan(&addr, &vol); err != nil {
+			addrRows.Close()
+			return TransferGraph{}, err
+		}
+		nodeVol[addr] = vol
+		order = append(order, addr)
+	}
+	if err := addrRows.Err(); err != nil {
+		addrRows.Close()
+		return TransferGraph{}, err
+	}
+	addrRows.Close()
+
+	if len(order) == 0 {
+		return TransferGraph{Nodes: []GraphNode{}, Edges: []GraphEdge{}}, nil
+	}
+
+	// Parallel-edge collapse: same-pair edges across multiple days in the
+	// window sum at read time. Both endpoints must be in the top-N set, or a
+	// high-volume node would drag in every low-volume address it ever touched.
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(order)), ",")
+	args := make([]any, 0, 2+2*len(order)+1)
+	args = append(args, network, start)
+	for _, a := range order {
+		args = append(args, a)
+	}
+	for _, a := range order {
+		args = append(args, a)
+	}
+	args = append(args, minValue)
+
+	q := fmt.Sprintf(`
+		SELECT from_address, to_address, SUM(total_value), SUM(tx_count)
+		FROM transfer_edges
+		WHERE network = ? AND day >= ? AND from_address IN (%s) AND to_address IN (%s)
+		GROUP BY from_address, to_address
+		HAVING SUM(total_value) >= ?
+		ORDER BY SUM(total_value) DESC`, placeholders, placeholders)
+
+	edgeRows, err := d.db.Query(q, args...)
+	if err != nil {
+		return TransferGraph{}, err
+	}
+	defer edgeRows.Close()
+
+	var edges []GraphEdge
+	for edgeRows.Next() {
+		var e GraphEdge
+		if err := edgeRows.Scan(&e.From, &e.To, &e.Value, &e.TxCount); err != nil {
+			return TransferGraph{}, err
+		}
+		edges = append(edges, e)
+	}
+	if err := edgeRows.Err(); err != nil {
+		return TransferGraph{}, err
+	}
+
+	nodes := make([]GraphNode, 0, len(order))
+	for _, a := range order {
+		nodes = append(nodes, GraphNode{ID: a, Volume: nodeVol[a]})
+	}
+	if edges == nil {
+		edges = []GraphEdge{}
+	}
+	return TransferGraph{Nodes: nodes, Edges: edges}, nil
+}
+
+func (d *DB) egoTransferGraph(network, start, ego string, minValue int64) (TransferGraph, error) {
+	rows, err := d.db.Query(`
+		SELECT from_address, to_address, SUM(total_value), SUM(tx_count)
+		FROM transfer_edges
+		WHERE network = ? AND day >= ? AND (from_address = ? OR to_address = ?)
+		GROUP BY from_address, to_address
+		HAVING SUM(total_value) >= ?
+		ORDER BY SUM(total_value) DESC`, network, start, ego, ego, minValue)
+	if err != nil {
+		return TransferGraph{}, err
+	}
+	defer rows.Close()
+
+	nodeVol := map[string]int64{}
+	var edges []GraphEdge
+	for rows.Next() {
+		var e GraphEdge
+		if err := rows.Scan(&e.From, &e.To, &e.Value, &e.TxCount); err != nil {
+			return TransferGraph{}, err
+		}
+		edges = append(edges, e)
+		other := e.To
+		if e.From != ego {
+			other = e.From
+		}
+		nodeVol[other] += e.Value
+		nodeVol[ego] += e.Value
+	}
+	if err := rows.Err(); err != nil {
+		return TransferGraph{}, err
+	}
+
+	nodes := make([]GraphNode, 0, len(nodeVol)+1)
+	if _, ok := nodeVol[ego]; !ok {
+		nodeVol[ego] = 0 // the ego node still renders even with zero matching edges
+	}
+	nodes = append(nodes, GraphNode{ID: ego, Volume: nodeVol[ego]})
+	for addr, vol := range nodeVol {
+		if addr == ego {
+			continue
+		}
+		nodes = append(nodes, GraphNode{ID: addr, Volume: vol})
+	}
+	if edges == nil {
+		edges = []GraphEdge{}
+	}
+	return TransferGraph{Nodes: nodes, Edges: edges}, nil
+}
+
+type CallerGraphNode struct {
+	ID    string `json:"id"`
+	Type  string `json:"type"` // "caller" | "realm"
+	Calls int    `json:"calls"`
+}
+
+type CallerGraphEdge struct {
+	Caller  string `json:"caller"`
+	PkgPath string `json:"pkg_path"`
+	Calls   int    `json:"calls"`
+}
+
+type CallerGraph struct {
+	Nodes []CallerGraphNode `json:"nodes"`
+	Edges []CallerGraphEdge `json:"edges"`
+}
+
+// GetCallerGraph returns the top-N callers by call volume in the window and
+// the realms they called, with edges collapsed across days. No ego mode in
+// this batch — extending it later is a straightforward addition behind the
+// same shape, not required for the first ship.
+func (d *DB) GetCallerGraph(network string, days, topN, minCalls int) (CallerGraph, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	if topN <= 0 {
+		topN = 200
+	}
+	if topN > 1000 {
+		topN = 1000
+	}
+	start := time.Now().UTC().AddDate(0, 0, -days).Format("2006-01-02")
+
+	callerRows, err := d.db.Query(`
+		SELECT caller, SUM(calls) FROM caller_edges WHERE network = ? AND day >= ?
+		GROUP BY caller ORDER BY SUM(calls) DESC LIMIT ?`, network, start, topN)
+	if err != nil {
+		return CallerGraph{}, err
+	}
+	callerCalls := map[string]int{}
+	var callers []string
+	for callerRows.Next() {
+		var c string
+		var n int
+		if err := callerRows.Scan(&c, &n); err != nil {
+			callerRows.Close()
+			return CallerGraph{}, err
+		}
+		callerCalls[c] = n
+		callers = append(callers, c)
+	}
+	if err := callerRows.Err(); err != nil {
+		callerRows.Close()
+		return CallerGraph{}, err
+	}
+	callerRows.Close()
+
+	if len(callers) == 0 {
+		return CallerGraph{Nodes: []CallerGraphNode{}, Edges: []CallerGraphEdge{}}, nil
+	}
+
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(callers)), ",")
+	args := make([]any, 0, 2+len(callers)+1)
+	args = append(args, network, start)
+	for _, c := range callers {
+		args = append(args, c)
+	}
+	args = append(args, minCalls)
+
+	q := fmt.Sprintf(`
+		SELECT caller, pkg_path, SUM(calls)
+		FROM caller_edges
+		WHERE network = ? AND day >= ? AND caller IN (%s)
+		GROUP BY caller, pkg_path
+		HAVING SUM(calls) >= ?
+		ORDER BY SUM(calls) DESC`, placeholders)
+
+	edgeRows, err := d.db.Query(q, args...)
+	if err != nil {
+		return CallerGraph{}, err
+	}
+	defer edgeRows.Close()
+
+	realmCalls := map[string]int{}
+	var edges []CallerGraphEdge
+	for edgeRows.Next() {
+		var e CallerGraphEdge
+		if err := edgeRows.Scan(&e.Caller, &e.PkgPath, &e.Calls); err != nil {
+			return CallerGraph{}, err
+		}
+		edges = append(edges, e)
+		realmCalls[e.PkgPath] += e.Calls
+	}
+	if err := edgeRows.Err(); err != nil {
+		return CallerGraph{}, err
+	}
+
+	nodes := make([]CallerGraphNode, 0, len(callers)+len(realmCalls))
+	for _, c := range callers {
+		nodes = append(nodes, CallerGraphNode{ID: c, Type: "caller", Calls: callerCalls[c]})
+	}
+	for pkg, n := range realmCalls {
+		nodes = append(nodes, CallerGraphNode{ID: pkg, Type: "realm", Calls: n})
+	}
+	if edges == nil {
+		edges = []CallerGraphEdge{}
+	}
+	return CallerGraph{Nodes: nodes, Edges: edges}, nil
+}

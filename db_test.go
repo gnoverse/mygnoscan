@@ -1966,3 +1966,129 @@ func TestRollupCallsSinceCollapsesByDay(t *testing.T) {
 		t.Errorf("row = %+v, want calls=2 height=11 (failed call excluded)", rows[0])
 	}
 }
+
+func seedTransferEdge(t *testing.T, db *DB, network, from, to, day string, value int64, txCount int) {
+	t.Helper()
+	if err := db.UpsertTransferEdges(network, []TransferEdgeRow{
+		{FromAddress: from, ToAddress: to, Day: day, TotalValue: value, TxCount: txCount, LastHeight: 1},
+	}); err != nil {
+		t.Fatalf("seed transfer edge: %v", err)
+	}
+}
+
+func TestGetTransferGraphTopNKeepsOnlyEdgesBetweenTopAddresses(t *testing.T) {
+	db := newTestDB(t)
+	today := time.Now().UTC().Format("2006-01-02")
+
+	// g1a and g1b are the two biggest by volume; g1c is small and trades only
+	// with g1a. With topN=2, the g1a<->g1c edge must be dropped because g1c
+	// did not make the top-N set, even though g1a did.
+	seedTransferEdge(t, db, "gnoland1", "g1a", "g1b", today, 1000, 1)
+	seedTransferEdge(t, db, "gnoland1", "g1b", "g1a", today, 900, 1)
+	seedTransferEdge(t, db, "gnoland1", "g1a", "g1c", today, 5, 1)
+
+	g, err := db.GetTransferGraph("gnoland1", 7, 2, 0, "")
+	if err != nil {
+		t.Fatalf("graph: %v", err)
+	}
+	if len(g.Nodes) != 2 {
+		t.Fatalf("got %d nodes, want 2 (top-2 by volume)", len(g.Nodes))
+	}
+	if len(g.Edges) != 2 {
+		t.Fatalf("got %d edges, want 2 (both directions between g1a/g1b only)", len(g.Edges))
+	}
+	for _, e := range g.Edges {
+		if e.To == "g1c" || e.From == "g1c" {
+			t.Errorf("edge %+v touches g1c, which is not in the top-N set", e)
+		}
+	}
+}
+
+func TestGetTransferGraphMinValueFiltersDustEdges(t *testing.T) {
+	db := newTestDB(t)
+	today := time.Now().UTC().Format("2006-01-02")
+	seedTransferEdge(t, db, "gnoland1", "g1a", "g1b", today, 1000, 1)
+	seedTransferEdge(t, db, "gnoland1", "g1a", "g1c", today, 5, 1)
+
+	g, err := db.GetTransferGraph("gnoland1", 7, 100, 100, "")
+	if err != nil {
+		t.Fatalf("graph: %v", err)
+	}
+	if len(g.Edges) != 1 || g.Edges[0].Value != 1000 {
+		t.Errorf("edges = %+v, want just the 1000-value edge (min_value=100 drops the 5-value one)", g.Edges)
+	}
+}
+
+func TestGetTransferGraphEgoModeReturnsOneHopNeighborhoodOnly(t *testing.T) {
+	db := newTestDB(t)
+	today := time.Now().UTC().Format("2006-01-02")
+	seedTransferEdge(t, db, "gnoland1", "g1a", "g1b", today, 100, 1) // direct neighbor
+	seedTransferEdge(t, db, "gnoland1", "g1b", "g1c", today, 999, 1) // 2 hops from g1a — must not appear
+
+	g, err := db.GetTransferGraph("gnoland1", 7, 0, 0, "g1a")
+	if err != nil {
+		t.Fatalf("graph: %v", err)
+	}
+	if len(g.Edges) != 1 {
+		t.Fatalf("got %d edges, want 1 (only g1a's direct edge)", len(g.Edges))
+	}
+	if g.Edges[0].From != "g1a" && g.Edges[0].To != "g1a" {
+		t.Errorf("edge %+v does not touch the ego address", g.Edges[0])
+	}
+	for _, e := range g.Edges {
+		if e.From == "g1c" || e.To == "g1c" {
+			t.Errorf("2-hop neighbor g1c leaked into a 1-hop ego view: %+v", e)
+		}
+	}
+}
+
+func TestGetTransferGraphIsNetworkScoped(t *testing.T) {
+	db := newTestDB(t)
+	today := time.Now().UTC().Format("2006-01-02")
+	seedTransferEdge(t, db, "gnoland1", "g1a", "g1b", today, 100, 1)
+	seedTransferEdge(t, db, "test12", "g1a", "g1b", today, 99999, 1)
+
+	g, err := db.GetTransferGraph("gnoland1", 7, 10, 0, "")
+	if err != nil {
+		t.Fatalf("graph: %v", err)
+	}
+	if len(g.Edges) != 1 || g.Edges[0].Value != 100 {
+		t.Errorf("edges = %+v, want just gnoland1's edge — test12 leaked in", g.Edges)
+	}
+}
+
+func seedCallerEdge(t *testing.T, db *DB, network, caller, pkgPath, day string, calls int) {
+	t.Helper()
+	if err := db.UpsertCallerEdges(network, []CallerEdgeRow{
+		{Caller: caller, PkgPath: pkgPath, Day: day, Calls: calls, LastHeight: 1},
+	}); err != nil {
+		t.Fatalf("seed caller edge: %v", err)
+	}
+}
+
+func TestGetCallerGraphTopNAndNodeTypes(t *testing.T) {
+	db := newTestDB(t)
+	today := time.Now().UTC().Format("2006-01-02")
+	seedCallerEdge(t, db, "gnoland1", "g1a", "gno.land/r/demo/foo", today, 50)
+	seedCallerEdge(t, db, "gnoland1", "g1b", "gno.land/r/demo/foo", today, 1)
+
+	g, err := db.GetCallerGraph("gnoland1", 7, 1, 0)
+	if err != nil {
+		t.Fatalf("graph: %v", err)
+	}
+	if len(g.Edges) != 1 || g.Edges[0].Caller != "g1a" {
+		t.Fatalf("edges = %+v, want just g1a's edge (top-1 caller)", g.Edges)
+	}
+	var sawCaller, sawRealm bool
+	for _, n := range g.Nodes {
+		if n.Type == "caller" {
+			sawCaller = true
+		}
+		if n.Type == "realm" {
+			sawRealm = true
+		}
+	}
+	if !sawCaller || !sawRealm {
+		t.Errorf("nodes = %+v, want at least one caller node and one realm node", g.Nodes)
+	}
+}
