@@ -226,7 +226,7 @@ This table is the single source of truth for remaining work. Update it as each b
       > killed it — 13 of 201 real transactions emit two or more events sharing both `kind` and `pkg_path`,
       > so that key silently drops events and under-counts bytes. The key needs the event's ordinal within
       > the transaction.
-- [ ] **Batch 4 — `transfer_edges` / `caller_edges` rollups.** Per recap §7: day-collapsed edge tables built
+- [x] **Batch 4 — `transfer_edges` / `caller_edges` rollups.** Per recap §7: day-collapsed edge tables built
       in the syncer, plus `GET /api/graph/transfers` and `/api/graph/callers` doing window / top-N / ego /
       parallel-edge-collapse **in SQL**, returning pre-pruned graphs. Unlocks: value-transfer force graph with
       click-to-focus ego drill-down, token-flow sankey, caller→realm WebGL graph.
@@ -304,9 +304,10 @@ Not blocking batch 1. Each is owned by the batch that first hits it.
   so `SUM` is already a correct net figure. With full history a cumulative sum cannot go negative, meaning a
   negative value signals events summed against pruned history — worth surfacing, not hiding. For the
   per-realm net-delta chart, negative is the point: it is what pruning looks like.
-- **Batch 4 — renderer for the caller graph.** echarts-gl `graphGL` (single dep, no node labels, ~100k
-  ceiling) versus sigma.js v3 + graphology (labels, better at scale). Also the node count past which layout
-  must be precomputed server-side and shipped as coordinates.
+- ~~**Batch 4 — renderer for the caller graph.**~~ **Resolved: echarts-gl `graphGL`.** No new dependency;
+  WebGL force layout covers realistic per-network caller-graph sizes well within its ~100k-node ceiling, and
+  this batch's top-N/ego-style scoping keeps requests far below that regardless. See
+  [`2026-08-17-dashboards-batch-4-network-design.md`](2026-08-17-dashboards-batch-4-network-design.md) §5.
 - **Batch 5 — event names are unverified.** The recap lists *likely* event types and attribute keys for
   r/sys/users, boards2 and gov/dao, not confirmed ones. Verify against the deployed realms before writing
   parsing code. Also: store all events or an allow-list (DB-size tradeoff).

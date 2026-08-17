@@ -4291,6 +4291,43 @@ const DASHBOARDS = [
           });
         },
       },
+      {
+        id: 'caller-graph',
+        title: 'caller → realm graph',
+        wide: true,
+        mode: 'B',
+        networkScoped: true,
+        why: 'Who calls into which realms. Blue nodes are calling addresses, teal nodes are realms; edge width is call volume. Rendered in WebGL (no ego drill-down yet) since this graph can have more nodes than the force-directed canvas view above comfortably lays out.',
+        fetch: w => dashApi('graph/callers?topN=300', w),
+        opt: graph => {
+          const maxN = graph.nodes.reduce((m, n) => Math.max(m, n.calls), 1);
+          const maxE = graph.edges.reduce((m, e) => Math.max(m, e.calls), 1);
+          return dashBase({
+            tooltip: {
+              formatter: p => dashTooltipNode(
+                p.dataType === 'edge'
+                  ? [p.data.source + ' → ' + p.data.target, p.data.value + ' calls']
+                  : [p.data.name, p.data.value + ' calls']
+              ),
+            },
+            series: [{
+              type: 'graphGL',
+              layout: 'forceAtlas2',
+              forceAtlas2: { steps: 5, stopThreshold: 1 },
+              label: { show: false },
+              data: graph.nodes.map(n => ({
+                id: n.id, name: n.id, value: n.calls,
+                symbolSize: 6 + 18 * (n.calls / maxN),
+                itemStyle: { color: n.type === 'realm' ? DASH_PAL[0] : DASH_PAL[5] },
+              })),
+              edges: graph.edges.map(e => ({
+                source: e.caller, target: e.pkg_path, value: e.calls,
+                lineStyle: { width: 1 + 3 * (e.calls / maxE), color: '#3a3a3a' },
+              })),
+            }],
+          });
+        },
+      },
     ],
   },
 ];
