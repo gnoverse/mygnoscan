@@ -323,6 +323,27 @@ func initSchema(db *sql.DB) error {
 			PRIMARY KEY (network, tx_hash, event_index)
 		);
 
+		CREATE TABLE IF NOT EXISTS transfer_edges (
+			network      TEXT NOT NULL DEFAULT 'gnoland1',
+			from_address TEXT NOT NULL,
+			to_address   TEXT NOT NULL,
+			day          TEXT NOT NULL,
+			total_value  INTEGER NOT NULL DEFAULT 0,
+			tx_count     INTEGER NOT NULL DEFAULT 0,
+			last_height  INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (network, from_address, to_address, day)
+		);
+
+		CREATE TABLE IF NOT EXISTS caller_edges (
+			network     TEXT NOT NULL DEFAULT 'gnoland1',
+			caller      TEXT NOT NULL,
+			pkg_path    TEXT NOT NULL,
+			day         TEXT NOT NULL,
+			calls       INTEGER NOT NULL DEFAULT 0,
+			last_height INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (network, caller, pkg_path, day)
+		);
+
 		CREATE INDEX IF NOT EXISTS idx_txs_height ON transactions(network, block_height);
 		CREATE INDEX IF NOT EXISTS idx_calls_pkg ON calls(pkg_path);
 		CREATE INDEX IF NOT EXISTS idx_calls_caller ON calls(caller);
@@ -344,6 +365,11 @@ func initSchema(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_blocks_time ON blocks(network, time);
 		CREATE INDEX IF NOT EXISTS idx_storage_events_time ON storage_events(network, block_time);
 		CREATE INDEX IF NOT EXISTS idx_storage_events_pkg  ON storage_events(network, pkg_path);
+		CREATE INDEX IF NOT EXISTS idx_transfer_edges_day  ON transfer_edges(network, day, total_value);
+		CREATE INDEX IF NOT EXISTS idx_transfer_edges_from ON transfer_edges(network, from_address);
+		CREATE INDEX IF NOT EXISTS idx_transfer_edges_to   ON transfer_edges(network, to_address);
+		CREATE INDEX IF NOT EXISTS idx_caller_edges_day    ON caller_edges(network, day, calls);
+		CREATE INDEX IF NOT EXISTS idx_caller_edges_pkg    ON caller_edges(network, pkg_path);
 	`)
 	return err
 }
@@ -2821,6 +2847,138 @@ func (d *DB) StorageEventsLastHeight(network string) (int, bool, error) {
 	var h sql.NullInt64
 	err := d.db.QueryRow(
 		`SELECT MAX(block_height) FROM storage_events WHERE network = ?`, network,
+	).Scan(&h)
+	if err != nil {
+		return 0, false, err
+	}
+	if !h.Valid {
+		return 0, false, nil
+	}
+	return int(h.Int64), true, nil
+}
+
+// --- network graph rollups ---
+
+// TransferEdgeRow is one day's worth of value transferred between one pair of
+// addresses. LastHeight is the highest bank_sends.block_height folded into
+// this row so far; the syncer derives its cursor from MAX(last_height) rather
+// than separate state.
+type TransferEdgeRow struct {
+	FromAddress string
+	ToAddress   string
+	Day         string // 'YYYY-MM-DD'
+	TotalValue  int64  // ugnot, already parsed out of bank_sends' decorated string
+	TxCount     int
+	LastHeight  int
+}
+
+// CallerEdgeRow is one day's worth of calls from one caller into one realm.
+type CallerEdgeRow struct {
+	Caller     string
+	PkgPath    string
+	Day        string
+	Calls      int
+	LastHeight int
+}
+
+// UpsertTransferEdges accumulates rows into transfer_edges. Additive, not
+// overwriting: a (from, to, day) bucket can be revisited by a later pass that
+// finds more bank_sends rows for a day it already partially rolled up.
+func (d *DB) UpsertTransferEdges(network string, rows []TransferEdgeRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO transfer_edges (network, from_address, to_address, day, total_value, tx_count, last_height)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (network, from_address, to_address, day) DO UPDATE SET
+			total_value = total_value + excluded.total_value,
+			tx_count    = tx_count + excluded.tx_count,
+			last_height = MAX(last_height, excluded.last_height)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, r := range rows {
+		if _, err := stmt.Exec(network, r.FromAddress, r.ToAddress, r.Day, r.TotalValue, r.TxCount, r.LastHeight); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// TransferEdgesLastHeight is the highest bank_sends height already rolled
+// into transfer_edges for this network; ok is false when the network has none.
+func (d *DB) TransferEdgesLastHeight(network string) (int, bool, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var h sql.NullInt64
+	err := d.db.QueryRow(
+		`SELECT MAX(last_height) FROM transfer_edges WHERE network = ?`, network,
+	).Scan(&h)
+	if err != nil {
+		return 0, false, err
+	}
+	if !h.Valid {
+		return 0, false, nil
+	}
+	return int(h.Int64), true, nil
+}
+
+// UpsertCallerEdges accumulates rows into caller_edges. Additive, matching
+// UpsertTransferEdges.
+func (d *DB) UpsertCallerEdges(network string, rows []CallerEdgeRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO caller_edges (network, caller, pkg_path, day, calls, last_height)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT (network, caller, pkg_path, day) DO UPDATE SET
+			calls       = calls + excluded.calls,
+			last_height = MAX(last_height, excluded.last_height)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, r := range rows {
+		if _, err := stmt.Exec(network, r.Caller, r.PkgPath, r.Day, r.Calls, r.LastHeight); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// CallerEdgesLastHeight is the highest calls height already rolled into
+// caller_edges for this network; ok is false when the network has none.
+func (d *DB) CallerEdgesLastHeight(network string) (int, bool, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var h sql.NullInt64
+	err := d.db.QueryRow(
+		`SELECT MAX(last_height) FROM caller_edges WHERE network = ?`, network,
 	).Scan(&h)
 	if err != nil {
 		return 0, false, err

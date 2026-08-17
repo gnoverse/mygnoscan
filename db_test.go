@@ -1746,3 +1746,123 @@ func TestGetRealmsWithStorageComesFromEvents(t *testing.T) {
 		t.Errorf("realms = %v, want just the one with storage events", realms)
 	}
 }
+
+func TestUpsertTransferEdgesAccumulatesAcrossRuns(t *testing.T) {
+	// The same (from, to, day) bucket can be revisited when a later sync pass
+	// finds more bank_sends rows for a day it already partially rolled up.
+	// Re-upserting must add, not overwrite.
+	db := newTestDB(t)
+
+	if err := db.UpsertTransferEdges("gnoland1", []TransferEdgeRow{
+		{FromAddress: "g1a", ToAddress: "g1b", Day: "2026-08-10", TotalValue: 100, TxCount: 1, LastHeight: 10},
+	}); err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	if err := db.UpsertTransferEdges("gnoland1", []TransferEdgeRow{
+		{FromAddress: "g1a", ToAddress: "g1b", Day: "2026-08-10", TotalValue: 50, TxCount: 1, LastHeight: 20},
+	}); err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+
+	var total, count, height int
+	err := db.db.QueryRow(
+		`SELECT total_value, tx_count, last_height FROM transfer_edges WHERE network = ? AND from_address = ? AND to_address = ? AND day = ?`,
+		"gnoland1", "g1a", "g1b", "2026-08-10",
+	).Scan(&total, &count, &height)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if total != 150 {
+		t.Errorf("total_value = %d, want 150 (accumulated, not overwritten)", total)
+	}
+	if count != 2 {
+		t.Errorf("tx_count = %d, want 2", count)
+	}
+	if height != 20 {
+		t.Errorf("last_height = %d, want 20 (the max of the two runs)", height)
+	}
+}
+
+func TestTransferEdgesLastHeightIsNetworkScoped(t *testing.T) {
+	db := newTestDB(t)
+
+	if _, ok, err := db.TransferEdgesLastHeight("gnoland1"); err != nil || ok {
+		t.Fatalf("empty: ok = %v, err = %v; want ok=false, err=nil", ok, err)
+	}
+
+	if err := db.UpsertTransferEdges("gnoland1", []TransferEdgeRow{
+		{FromAddress: "g1a", ToAddress: "g1b", Day: "2026-08-10", TotalValue: 1, TxCount: 1, LastHeight: 42},
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	// Another network's higher height must not move this network's cursor.
+	if err := db.UpsertTransferEdges("test12", []TransferEdgeRow{
+		{FromAddress: "g1x", ToAddress: "g1y", Day: "2026-08-10", TotalValue: 1, TxCount: 1, LastHeight: 9999},
+	}); err != nil {
+		t.Fatalf("upsert other network: %v", err)
+	}
+
+	h, ok, err := db.TransferEdgesLastHeight("gnoland1")
+	if err != nil || !ok {
+		t.Fatalf("ok = %v, err = %v; want ok=true, err=nil", ok, err)
+	}
+	if h != 42 {
+		t.Errorf("last height = %d, want 42 — another network's rows leaked in", h)
+	}
+}
+
+func TestUpsertCallerEdgesAccumulatesAcrossRuns(t *testing.T) {
+	db := newTestDB(t)
+
+	if err := db.UpsertCallerEdges("gnoland1", []CallerEdgeRow{
+		{Caller: "g1a", PkgPath: "gno.land/r/demo/foo", Day: "2026-08-10", Calls: 3, LastHeight: 10},
+	}); err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	if err := db.UpsertCallerEdges("gnoland1", []CallerEdgeRow{
+		{Caller: "g1a", PkgPath: "gno.land/r/demo/foo", Day: "2026-08-10", Calls: 2, LastHeight: 20},
+	}); err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+
+	var calls, height int
+	err := db.db.QueryRow(
+		`SELECT calls, last_height FROM caller_edges WHERE network = ? AND caller = ? AND pkg_path = ? AND day = ?`,
+		"gnoland1", "g1a", "gno.land/r/demo/foo", "2026-08-10",
+	).Scan(&calls, &height)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if calls != 5 {
+		t.Errorf("calls = %d, want 5 (accumulated, not overwritten)", calls)
+	}
+	if height != 20 {
+		t.Errorf("last_height = %d, want 20", height)
+	}
+}
+
+func TestCallerEdgesLastHeightIsNetworkScoped(t *testing.T) {
+	db := newTestDB(t)
+
+	if _, ok, err := db.CallerEdgesLastHeight("gnoland1"); err != nil || ok {
+		t.Fatalf("empty: ok = %v, err = %v; want ok=false, err=nil", ok, err)
+	}
+	if err := db.UpsertCallerEdges("gnoland1", []CallerEdgeRow{
+		{Caller: "g1a", PkgPath: "gno.land/r/demo/foo", Day: "2026-08-10", Calls: 1, LastHeight: 7},
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := db.UpsertCallerEdges("test12", []CallerEdgeRow{
+		{Caller: "g1x", PkgPath: "gno.land/r/demo/bar", Day: "2026-08-10", Calls: 1, LastHeight: 9999},
+	}); err != nil {
+		t.Fatalf("upsert other network: %v", err)
+	}
+
+	h, ok, err := db.CallerEdgesLastHeight("gnoland1")
+	if err != nil || !ok {
+		t.Fatalf("ok = %v, err = %v; want ok=true, err=nil", ok, err)
+	}
+	if h != 7 {
+		t.Errorf("last height = %d, want 7 — another network's rows leaked in", h)
+	}
+}
