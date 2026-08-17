@@ -29,7 +29,7 @@ are already fully populated locally by `syncCalls`. The rollup passes read **loc
 
 ```sql
 SELECT from_address, to_address, date(block_time) as day,
-       SUM(CAST(amount AS INTEGER)), COUNT(*), MAX(block_height)
+       SUM(CAST(REPLACE(REPLACE(amount, 'ugnot', ''), '"', '') AS INTEGER)), COUNT(*), MAX(block_height)
 FROM bank_sends
 WHERE network = ? AND block_height > ? AND success = 1
 GROUP BY from_address, to_address, day
@@ -51,8 +51,9 @@ CREATE TABLE IF NOT EXISTS transfer_edges (
     from_address TEXT NOT NULL,
     to_address   TEXT NOT NULL,
     day          TEXT NOT NULL,               -- 'YYYY-MM-DD', from date(block_time)
-    total_value  TEXT NOT NULL DEFAULT '0',   -- decimal string, same convention as bank_sends.amount
+    total_value  INTEGER NOT NULL DEFAULT 0,  -- ugnot, already parsed out of bank_sends' decorated string
     tx_count     INTEGER NOT NULL DEFAULT 0,
+    last_height  INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (network, from_address, to_address, day)
 );
 CREATE INDEX IF NOT EXISTS idx_transfer_edges_day  ON transfer_edges(network, day, total_value);
@@ -60,19 +61,35 @@ CREATE INDEX IF NOT EXISTS idx_transfer_edges_from ON transfer_edges(network, fr
 CREATE INDEX IF NOT EXISTS idx_transfer_edges_to   ON transfer_edges(network, to_address);
 
 CREATE TABLE IF NOT EXISTS caller_edges (
-    network  TEXT NOT NULL DEFAULT 'gnoland1',
-    caller   TEXT NOT NULL,
-    pkg_path TEXT NOT NULL,
-    day      TEXT NOT NULL,
-    calls    INTEGER NOT NULL DEFAULT 0,
+    network     TEXT NOT NULL DEFAULT 'gnoland1',
+    caller      TEXT NOT NULL,
+    pkg_path    TEXT NOT NULL,
+    day         TEXT NOT NULL,
+    calls       INTEGER NOT NULL DEFAULT 0,
+    last_height INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (network, caller, pkg_path, day)
 );
 CREATE INDEX IF NOT EXISTS idx_caller_edges_day ON caller_edges(network, day, calls);
 CREATE INDEX IF NOT EXISTS idx_caller_edges_pkg ON caller_edges(network, pkg_path);
 ```
 
-`total_value` is a decimal string summed via `CAST(amount AS INTEGER)` on read/write, matching the existing
-`amountExpr` convention used across the codebase's other volume aggregates.
+> **Correction (during planning):** the original version of this section omitted `last_height` from both
+> tables. §3 commits to a block-height cursor derived from "`MAX(block_height)` already rolled into its own
+> table" — but a rollup row spans every source row that landed in that `(pair, day)` bucket, potentially across
+> many source block heights, so the table needs a column carrying the highest source height any given rollup
+> row has absorbed. `last_height` is that column; the cursor is `MAX(last_height)` across all of a network's
+> rows. It is not part of the primary key — it is metadata about how far a row's aggregation has progressed, not
+> part of its identity.
+
+`bank_sends.amount` is stored as the raw chain string (e.g. `"1000000ugnot"`), not a bare integer — a naive
+`CAST(amount AS INTEGER)` truncates to 0. The rollup pass parses it the same way `amountExpr` does elsewhere in
+`db.go` (`CAST(REPLACE(REPLACE(amount, 'ugnot', ''), '"', '') AS INTEGER)`) once, at write time, so
+`transfer_edges.total_value` stores a plain integer and every downstream graph read is a bare `SUM`.
+
+Unlike those existing reads, the rollup pass filters source rows to `success = 1`: a failed `BankMsgSend`
+moved no value on chain, so including it in a *value-transfer graph* — as opposed to a raw send-count stat —
+would misrepresent real fund flow. (`GetBankStats`'s `TotalVolume` does not filter on success; that is a
+pre-existing, separate concern, out of scope here.)
 
 ---
 
