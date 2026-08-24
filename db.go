@@ -383,6 +383,70 @@ func (d *DB) UpsertPackageFile(network, pkgPath, fileName, body string) error {
 	return err
 }
 
+// StoredPackageRef identifies a package whose source is held locally.
+type StoredPackageRef struct {
+	Network string
+	Path    string
+}
+
+// StoredPackageRefs lists every package that has source in the database.
+//
+// Deliberately returns references rather than bodies, and takes no callback: a
+// caller iterating packages will want to write as it goes, and d.mu is not
+// reentrant — handing out source under the read lock would deadlock the first
+// caller that tried. package_files is also the largest table on a busy chain, so
+// not buffering every body is worth having anyway.
+func (d *DB) StoredPackageRefs() ([]StoredPackageRef, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	rows, err := d.db.Query(`
+		SELECT DISTINCT network, package_path
+		FROM package_files
+		ORDER BY network, package_path
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []StoredPackageRef
+	for rows.Next() {
+		var ref StoredPackageRef
+		if err := rows.Scan(&ref.Network, &ref.Path); err != nil {
+			return nil, err
+		}
+		out = append(out, ref)
+	}
+	return out, rows.Err()
+}
+
+// StoredPackageFiles returns one package's stored source.
+func (d *DB) StoredPackageFiles(network, pkgPath string) ([]MemFile, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	rows, err := d.db.Query(`
+		SELECT file_name, body FROM package_files
+		WHERE network = ? AND package_path = ?
+		ORDER BY file_name
+	`, network, pkgPath)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []MemFile
+	for rows.Next() {
+		var f MemFile
+		if err := rows.Scan(&f.Name, &f.Body); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
 // SetDependencies replaces all dependencies for a package.
 func (d *DB) SetDependencies(network, pkgPath string, imports []string) error {
 	d.mu.Lock()
