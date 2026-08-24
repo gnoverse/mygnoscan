@@ -93,3 +93,77 @@ func TestRejectUnknownNetwork(t *testing.T) {
 		})
 	}
 }
+
+// gnoEvents is the pure half of the events endpoints: pick out GnoEvents, drop
+// transactions that emitted none, and tag each row with the chain it came from.
+// The tag is what lets the merged view interleave chains and show a dot.
+func TestGnoEvents(t *testing.T) {
+	tx := func(hash string, ok bool, evs ...TxEvent) Transaction {
+		return Transaction{Hash: hash, BlockHeight: 10, BlockTime: "2026-01-01T00:00:00Z", Success: ok,
+			Response: &TxResponse{Events: evs}}
+	}
+	gno := func(typ string) TxEvent { return TxEvent{Typename: "GnoEvent", Type: typ} }
+	storage := TxEvent{Typename: "StorageDepositEvent", Type: "StorageDeposit"}
+
+	tests := []struct {
+		name     string
+		txs      []Transaction
+		wantRows int
+		wantEvs  int
+	}{
+		{
+			name:     "keeps gno events",
+			txs:      []Transaction{tx("a", true, gno("Transfer"), gno("Approval"))},
+			wantRows: 1,
+			wantEvs:  2,
+		},
+		{
+			name: "drops transactions with no gno events",
+			// A storage event is still an event, but not one this view lists.
+			txs:      []Transaction{tx("a", true, storage), tx("b", true, gno("Mint"))},
+			wantRows: 1,
+			wantEvs:  1,
+		},
+		{
+			name:     "filters non-gno events out of a mixed transaction",
+			txs:      []Transaction{tx("a", true, storage, gno("Mint"), storage)},
+			wantRows: 1,
+			wantEvs:  1,
+		},
+		{
+			name:     "a nil response is not a crash",
+			txs:      []Transaction{{Hash: "a", BlockHeight: 1}},
+			wantRows: 0,
+		},
+		{
+			name:     "no transactions",
+			txs:      nil,
+			wantRows: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := gnoEvents(tt.txs, "sapphire")
+			if len(got) != tt.wantRows {
+				t.Fatalf("got %d rows, want %d", len(got), tt.wantRows)
+			}
+			for _, r := range got {
+				if r.Network != "sapphire" {
+					t.Errorf("row %s has network %q, want sapphire", r.TxHash, r.Network)
+				}
+				if r.BlockTime == "" {
+					t.Errorf("row %s lost its timestamp — the merged view sorts on it", r.TxHash)
+				}
+				for _, ev := range r.Events {
+					if ev.Typename != "GnoEvent" {
+						t.Errorf("row %s kept a %s", r.TxHash, ev.Typename)
+					}
+				}
+			}
+			if tt.wantRows == 1 && len(got[0].Events) != tt.wantEvs {
+				t.Errorf("got %d events, want %d", len(got[0].Events), tt.wantEvs)
+			}
+		})
+	}
+}
