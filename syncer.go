@@ -26,16 +26,16 @@ const fingerprintKeyPrefix = "chain_fingerprint:"
 // SyncAll fetches all data from the indexer and processes it.
 func (s *Syncer) SyncAll(ctx context.Context) error {
 	if err := s.checkChainReset(ctx); err != nil {
-		return err
+		return fmt.Errorf("checkChainReset error: %w", err)
 	}
 	s.warnOnHeightRegression(ctx)
 	s.backfillBlockTimes(ctx)
 	s.backfillTransactions(ctx)
 	if err := s.syncPackages(ctx); err != nil {
-		return err
+		return fmt.Errorf("syncPackages error: %w", err)
 	}
 	if err := s.syncCalls(ctx); err != nil {
-		return err
+		return fmt.Errorf("sync calls error: %w", err)
 	}
 	return s.syncMsgRuns(ctx)
 }
@@ -69,42 +69,77 @@ func (s *Syncer) fetchBlockTimes(ctx context.Context, txs []Transaction) map[int
 	return m
 }
 
+// txPageFetcher fetches one page of transactions above a cursor, reporting
+// whether more remain. See IndexerClient.transactionsFromHeight.
+type txPageFetcher func(context.Context, *int) ([]Transaction, bool, error)
+
+// walkTransactions feeds every transaction above cursor to process, one indexer
+// page at a time.
+//
+// The indexer truncates a response at its element cap and says so, which makes
+// the cap the page size: each page is the contiguous next stretch above the
+// cursor, and the last row's height is where the following page starts. Threading
+// the cursor through this loop rather than re-deriving it from stored rows each
+// pass is what guarantees progress — a page whose rows land in none of the tables
+// a cursor is derived from would otherwise be fetched forever.
+func walkTransactions(
+	ctx context.Context,
+	cursor *int,
+	fetch txPageFetcher,
+	process func([]Transaction),
+) error {
+	for {
+		txs, truncated, err := fetch(ctx, cursor)
+		if err != nil {
+			return err
+		}
+		if len(txs) == 0 {
+			return nil
+		}
+
+		process(txs)
+
+		if !truncated {
+			return nil
+		}
+		next := txs[len(txs)-1].BlockHeight
+		cursor = &next
+	}
+}
+
 func (s *Syncer) syncPackages(ctx context.Context) error {
 	lastHeight, err := s.getLastBlockHeight(ctx, "packages")
 	if err != nil {
 		return err
 	}
 
-	txs, err := s.client.GetAllPackages(ctx, lastHeight)
-	if err != nil {
-		return err
-	}
-
-	times := s.fetchBlockTimes(ctx, txs)
 	count := 0
-	for _, tx := range txs {
-		bt := times[tx.BlockHeight]
-		s.upsertTx(tx, bt)
-		for _, msg := range tx.Messages {
-			if msg.Value.Typename == "MsgAddPackage" && msg.Value.Package != nil {
-				if err := s.analyzer.ProcessPackage(
-					s.networkID,
-					msg.Value.Package,
-					msg.Value.Creator,
-					tx.Hash,
-					tx.BlockHeight,
-					bt,
-					tx.Success,
-				); err != nil {
-					log.Printf("[%s] process package %s: %v", s.networkID, msg.Value.Package.Path, err)
-					continue
+	err = walkTransactions(ctx, lastHeight, s.client.GetAllPackages, func(txs []Transaction) {
+		times := s.fetchBlockTimes(ctx, txs)
+		for _, tx := range txs {
+			bt := times[tx.BlockHeight]
+			s.upsertTx(tx, bt)
+			for _, msg := range tx.Messages {
+				if msg.Value.Typename == "MsgAddPackage" && msg.Value.Package != nil {
+					if err := s.analyzer.ProcessPackage(
+						s.networkID,
+						msg.Value.Package,
+						msg.Value.Creator,
+						tx.Hash,
+						tx.BlockHeight,
+						bt,
+						tx.Success,
+					); err != nil {
+						log.Printf("[%s] process package %s: %v", s.networkID, msg.Value.Package.Path, err)
+						continue
+					}
+					count++
 				}
-				count++
 			}
 		}
-	}
+	})
 	log.Printf("[%s] synced %d packages", s.networkID, count)
-	return nil
+	return err
 }
 
 // backfillBatch bounds how many block heights are repaired per sync pass. The
@@ -355,53 +390,53 @@ func (s *Syncer) getLastRecentTransactionBlockHeight(ctx context.Context) (*int,
 func (s *Syncer) syncCalls(ctx context.Context) error {
 	lastHeight, err := s.getLastRecentTransactionBlockHeight(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("getLastRecentTransactionBlockHeight error : %w", err)
 	}
 
-	txs, err := s.client.GetRecentTransactionsFromHeight(ctx, lastHeight)
-	if err != nil {
-		return err
-	}
-
-	times := s.fetchBlockTimes(ctx, txs)
 	callCount, sendCount := 0, 0
-	for _, tx := range txs {
-		bt := times[tx.BlockHeight]
-		s.upsertTx(tx, bt)
-		for _, msg := range tx.Messages {
-			switch msg.Value.Typename {
-			case "MsgCall":
-				if err := s.analyzer.ProcessCall(
-					s.networkID,
-					tx.Hash, tx.BlockHeight,
-					bt,
-					msg.Value.Caller,
-					msg.Value.PkgPath,
-					msg.Value.Func,
-					tx.Success,
-				); err != nil {
-					log.Printf("[%s] process call: %v", s.networkID, err)
-					continue
+	err = walkTransactions(ctx, lastHeight, s.client.GetTransactionsFromHeight, func(txs []Transaction) {
+		times := s.fetchBlockTimes(ctx, txs)
+		for _, tx := range txs {
+			bt := times[tx.BlockHeight]
+			s.upsertTx(tx, bt)
+			for _, msg := range tx.Messages {
+				switch msg.Value.Typename {
+				case "MsgCall":
+					if err := s.analyzer.ProcessCall(
+						s.networkID,
+						tx.Hash, tx.BlockHeight,
+						bt,
+						msg.Value.Caller,
+						msg.Value.PkgPath,
+						msg.Value.Func,
+						tx.Success,
+					); err != nil {
+						log.Printf("[%s] process call: %v", s.networkID, err)
+						continue
+					}
+					callCount++
+				case "BankMsgSend":
+					if err := s.db.InsertBankSend(
+						s.networkID,
+						tx.Hash, tx.BlockHeight,
+						bt,
+						msg.Value.FromAddress,
+						msg.Value.ToAddress,
+						msg.Value.Amount,
+						tx.Success,
+					); err != nil {
+						log.Printf("[%s] process send: %v", s.networkID, err)
+						continue
+					}
+					sendCount++
 				}
-				callCount++
-			case "BankMsgSend":
-				if err := s.db.InsertBankSend(
-					s.networkID,
-					tx.Hash, tx.BlockHeight,
-					bt,
-					msg.Value.FromAddress,
-					msg.Value.ToAddress,
-					msg.Value.Amount,
-					tx.Success,
-				); err != nil {
-					log.Printf("[%s] process send: %v", s.networkID, err)
-					continue
-				}
-				sendCount++
 			}
 		}
-	}
+	})
 	log.Printf("[%s] synced %d calls, %d sends", s.networkID, callCount, sendCount)
+	if err != nil {
+		return fmt.Errorf("getTransactionsFromHeight error : %w", err)
+	}
 	return nil
 }
 
@@ -411,33 +446,30 @@ func (s *Syncer) syncMsgRuns(ctx context.Context) error {
 		return err
 	}
 
-	txs, err := s.client.GetMsgRunTransactions(ctx, lastHeight)
-	if err != nil {
-		return err
-	}
-
-	times := s.fetchBlockTimes(ctx, txs)
 	count := 0
-	for _, tx := range txs {
-		bt := times[tx.BlockHeight]
-		s.upsertTx(tx, bt)
-		for _, msg := range tx.Messages {
-			if msg.Value.Typename == "MsgRun" && msg.Value.Package != nil {
-				if err := s.analyzer.ProcessMsgRun(
-					s.networkID,
-					tx.Hash, tx.BlockHeight,
-					bt,
-					msg.Value.Caller,
-					msg.Value.Package.Files,
-					tx.Success,
-				); err != nil {
-					log.Printf("[%s] process msgrun: %v", s.networkID, err)
-					continue
+	err = walkTransactions(ctx, lastHeight, s.client.GetMsgRunTransactions, func(txs []Transaction) {
+		times := s.fetchBlockTimes(ctx, txs)
+		for _, tx := range txs {
+			bt := times[tx.BlockHeight]
+			s.upsertTx(tx, bt)
+			for _, msg := range tx.Messages {
+				if msg.Value.Typename == "MsgRun" && msg.Value.Package != nil {
+					if err := s.analyzer.ProcessMsgRun(
+						s.networkID,
+						tx.Hash, tx.BlockHeight,
+						bt,
+						msg.Value.Caller,
+						msg.Value.Package.Files,
+						tx.Success,
+					); err != nil {
+						log.Printf("[%s] process msgrun: %v", s.networkID, err)
+						continue
+					}
+					count++
 				}
-				count++
 			}
 		}
-	}
+	})
 	log.Printf("[%s] synced %d msg_runs", s.networkID, count)
-	return nil
+	return err
 }

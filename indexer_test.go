@@ -244,3 +244,217 @@ func TestClientBreakerShortCircuitsDeadIndexer(t *testing.T) {
 }
 
 func mustErr(_ int, err error) error { return err }
+
+// truncatingTxIndexer imitates the tx-indexer resolver: it iterates in the
+// requested order, stops at the element cap, and returns the rows it already has
+// *alongside* the error rather than refusing the query. txsPerBlock transactions
+// per block, heights 1..tip.
+type truncatingTxIndexer struct {
+	tip         int
+	txsPerBlock int
+
+	mu        sync.Mutex
+	txQueries []string
+}
+
+func (f *truncatingTxIndexer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	query := string(body)
+	w.Header().Set("Content-Type", "application/json")
+
+	if strings.Contains(query, "latestBlockHeight") {
+		fmt.Fprintf(w, `{"data":{"latestBlockHeight":%d}}`, f.tip)
+		return
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.txQueries = append(f.txQueries, query)
+
+	from, to := 0, f.tip
+	if gt := strings.Index(query, "gt:"); gt >= 0 {
+		fmt.Sscanf(strings.TrimSpace(query[gt+3:]), "%d", &from)
+	}
+	if lt := strings.Index(query, "lt:"); lt >= 0 {
+		var v int
+		fmt.Sscanf(strings.TrimSpace(query[lt+3:]), "%d", &v)
+		to = min(v-1, f.tip)
+	}
+
+	var rows []string
+	emit := func(h int) {
+		for i := 0; i < f.txsPerBlock; i++ {
+			rows = append(rows, fmt.Sprintf(`{"hash":"tx-%d-%d","block_height":%d}`, h, i, h))
+		}
+	}
+	if strings.Contains(query, "DESC") {
+		for h := to; h > from && len(rows) < indexerElementCap; h-- {
+			emit(h)
+		}
+	} else {
+		for h := from + 1; h <= to && len(rows) < indexerElementCap; h++ {
+			emit(h)
+		}
+	}
+
+	// The resolver checks its counter before appending the next row, so a result
+	// set of exactly the cap is reported as truncated too.
+	truncated := len(rows) >= indexerElementCap
+	if truncated {
+		rows = rows[:indexerElementCap]
+	}
+
+	data := fmt.Sprintf(`"data":{"getTransactions":[%s]}`, strings.Join(rows, ","))
+	if truncated {
+		fmt.Fprintf(w, `{%s,"errors":[{"message":"max elements per query reached (%d)"}]}`,
+			data, indexerElementCap)
+		return
+	}
+	fmt.Fprintf(w, `{%s}`, data)
+}
+
+// blockOf groups a page by block height, so tests can assert no block came back
+// half-populated.
+func blockOf(txs []Transaction) map[int]int {
+	per := make(map[int]int)
+	for _, tx := range txs {
+		per[tx.BlockHeight]++
+	}
+	return per
+}
+
+func TestTransactionsFromHeightPageIsWholeBlocksOnly(t *testing.T) {
+	// 3 transactions per block does not divide the cap, so truncation lands inside
+	// a block. Handing that block back half-populated would lose its remaining
+	// rows for good: the caller resumes at the last row's height with an exclusive
+	// `gt`, and the sync cursor never looks back.
+	fake := &truncatingTxIndexer{tip: 20000, txsPerBlock: 3}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+
+	txs, truncated, err := NewIndexerClient(srv.URL).GetTransactionsFromHeight(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !truncated {
+		t.Fatal("page was not reported as truncated")
+	}
+	if len(txs) == 0 || len(txs) > indexerElementCap {
+		t.Fatalf("got %d rows, want between 1 and the cap of %d", len(txs), indexerElementCap)
+	}
+
+	for h, n := range blockOf(txs) {
+		if n != fake.txsPerBlock {
+			t.Errorf("block %d came back with %d of its %d transactions", h, n, fake.txsPerBlock)
+		}
+	}
+	// The cap is 10000 and blocks hold 3, so a whole-blocks page stops at 9999.
+	if len(txs)%fake.txsPerBlock != 0 {
+		t.Errorf("page of %d rows is not a whole number of blocks", len(txs))
+	}
+}
+
+func TestTransactionsFromHeightAscendsFromTheCursor(t *testing.T) {
+	// ASC is load-bearing: truncation keeps the rows the resolver saw first, so
+	// only ascending order yields the contiguous page above the cursor. DESC would
+	// return the newest rows and orphan everything between them and the cursor.
+	fake := &truncatingTxIndexer{tip: 200, txsPerBlock: 1}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+
+	cursor := 50
+	txs, truncated, err := NewIndexerClient(srv.URL).GetTransactionsFromHeight(context.Background(), &cursor)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if truncated {
+		t.Fatal("200 blocks should fit under the cap")
+	}
+	if len(txs) != fake.tip-cursor {
+		t.Fatalf("got %d transactions, want %d", len(txs), fake.tip-cursor)
+	}
+	if txs[0].BlockHeight != cursor+1 {
+		t.Errorf("page starts at height %d, want %d — not anchored to the cursor", txs[0].BlockHeight, cursor+1)
+	}
+	for i := 1; i < len(txs); i++ {
+		if txs[i].BlockHeight < txs[i-1].BlockHeight {
+			t.Fatalf("height went backwards at %d: %d after %d", i, txs[i].BlockHeight, txs[i-1].BlockHeight)
+		}
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if q := fake.txQueries[0]; !strings.Contains(q, "ASC") {
+		t.Errorf("query is not ascending: %s", q)
+	}
+}
+
+func TestTransactionsFromHeightAtTip(t *testing.T) {
+	// Caught up: one query, nothing above the cursor, nothing more to ask for.
+	fake := &truncatingTxIndexer{tip: 500, txsPerBlock: 1}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+
+	tip := fake.tip
+	txs, truncated, err := NewIndexerClient(srv.URL).GetTransactionsFromHeight(context.Background(), &tip)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(txs) != 0 || truncated {
+		t.Errorf("got %d transactions (truncated=%v) at the tip, want 0 and false", len(txs), truncated)
+	}
+}
+
+func TestTransactionsFromHeightRejectsAnOversizedBlock(t *testing.T) {
+	// Every row shares one height, so trimming the partial trailing block leaves
+	// nothing and there is no cursor to advance to. That has to surface as an
+	// error, not as a silently empty page that ends the walk.
+	fake := &truncatingTxIndexer{tip: 1, txsPerBlock: indexerElementCap + 10}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+
+	_, _, err := NewIndexerClient(srv.URL).GetTransactionsFromHeight(context.Background(), nil)
+	if !errors.Is(err, errQueryTooLarge) {
+		t.Fatalf("got %v, want errQueryTooLarge", err)
+	}
+}
+
+func TestSyncFetchersKeepTheirFilterAndOrder(t *testing.T) {
+	// The message filter has to survive being merged with the cursor's
+	// block_height bound, and the order has to stay ascending.
+	tests := []struct {
+		name       string
+		wantFilter string
+		fetch      func(*IndexerClient, context.Context) ([]Transaction, bool, error)
+	}{
+		{"GetAllPackages", "MsgAddPackage", func(c *IndexerClient, ctx context.Context) ([]Transaction, bool, error) {
+			h := 10
+			return c.GetAllPackages(ctx, &h)
+		}},
+		{"GetMsgRunTransactions", "MsgRun", func(c *IndexerClient, ctx context.Context) ([]Transaction, bool, error) {
+			h := 10
+			return c.GetMsgRunTransactions(ctx, &h)
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &truncatingTxIndexer{tip: 100, txsPerBlock: 1}
+			srv := httptest.NewServer(fake)
+			defer srv.Close()
+
+			if _, _, err := tt.fetch(NewIndexerClient(srv.URL), context.Background()); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			fake.mu.Lock()
+			defer fake.mu.Unlock()
+			q := fake.txQueries[0]
+			for _, want := range []string{tt.wantFilter, "block_height", "gt: 10", "ASC"} {
+				if !strings.Contains(q, want) {
+					t.Errorf("query is missing %q: %s", want, q)
+				}
+			}
+		})
+	}
+}
