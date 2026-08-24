@@ -561,3 +561,47 @@ func TestRecentPageStillFailsWhenCappedPageIsTooSmall(t *testing.T) {
 		t.Fatalf("got %v, want errQueryTooLarge", err)
 	}
 }
+
+func TestClientTimeoutsAreSeparate(t *testing.T) {
+	// A page has a browser waiting on it; a sync is catching up on history and is
+	// measured against the size of the chain. Sharing one budget is what made a
+	// cold sync of sapphire impossible.
+	serve := NewIndexerClient("http://example.invalid/graphql")
+	sync := NewSyncIndexerClient("http://example.invalid/graphql")
+
+	if serve.client.Timeout != serveClientTimeout {
+		t.Errorf("serve timeout = %v, want %v", serve.client.Timeout, serveClientTimeout)
+	}
+	if sync.client.Timeout != syncClientTimeout {
+		t.Errorf("sync timeout = %v, want %v", sync.client.Timeout, syncClientTimeout)
+	}
+	if sync.client.Timeout <= serve.client.Timeout {
+		t.Errorf("sync budget %v does not exceed the serve budget %v", sync.client.Timeout, serve.client.Timeout)
+	}
+	// URL normalisation must survive the split.
+	if serve.url != sync.url || serve.url != "http://example.invalid/graphql/query" {
+		t.Errorf("urls diverged: serve=%q sync=%q", serve.url, sync.url)
+	}
+}
+
+func TestRefusedRequestNamesTheStatus(t *testing.T) {
+	// A rate-limited indexer answers with an HTML error page. Decoding it as
+	// GraphQL reports "invalid character '<'", which points at the query instead
+	// of at the status code — this cost real debugging time against sapphire.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprint(w, "<html>\n<head><title>403 Forbidden</title></head>\n</html>")
+	}))
+	defer srv.Close()
+
+	_, err := NewIndexerClient(srv.URL).LatestBlockHeight(context.Background())
+	if err == nil {
+		t.Fatal("a 403 should be an error")
+	}
+	if !strings.Contains(err.Error(), "403") {
+		t.Errorf("error does not name the status: %v", err)
+	}
+	if strings.Contains(err.Error(), "invalid character") {
+		t.Errorf("error still reads as a decode failure: %v", err)
+	}
+}

@@ -67,19 +67,43 @@ func (c *IndexerClient) recordResult(err error) {
 	}
 }
 
+// Request budgets. Serving a page and running a background sync have nothing in
+// common: one has a browser waiting on it, the other is catching up on history
+// and is measured against the size of the chain.
+//
+// Sharing one budget meant the sync inherited the page's. A cold sync of
+// sapphire asks for every MsgAddPackage with full file bodies — 32s and 12MB for
+// 368 rows — which cannot fit in ten seconds, so SyncAll failed on its first
+// step and retried the identical request every 30s forever.
+const (
+	serveClientTimeout = 10 * time.Second
+	syncClientTimeout  = 2 * time.Minute
+)
+
+// NewIndexerClient returns a client for request paths that have a caller
+// waiting. Callers add their own tighter deadlines on top of this backstop.
 func NewIndexerClient(url string) *IndexerClient {
+	return newIndexerClient(url, serveClientTimeout)
+}
+
+// NewSyncIndexerClient returns a client for the background sync loop.
+//
+// Deliberately a separate client, not just a longer timeout: the breaker is
+// per-client, so a sync struggling against a slow indexer no longer opens the
+// breaker that page queries share, and vice versa.
+func NewSyncIndexerClient(url string) *IndexerClient {
+	return newIndexerClient(url, syncClientTimeout)
+}
+
+func newIndexerClient(url string, timeout time.Duration) *IndexerClient {
 	// Normalize URL: ensure it ends with /query
 	url = strings.TrimRight(url, "/")
 	if strings.HasSuffix(url, "/graphql") {
 		url += "/query"
 	}
 	return &IndexerClient{
-		url: url,
-		client: &http.Client{
-			// A page cannot wait 30s on one indexer; callers add their own
-			// tighter deadlines on top of this backstop.
-			Timeout: 10 * time.Second,
-		},
+		url:    url,
+		client: &http.Client{Timeout: timeout},
 	}
 }
 
@@ -139,6 +163,14 @@ func (c *IndexerClient) doQuery(ctx context.Context, query string, vars map[stri
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
+	}
+
+	// Report a refused request as what it is. A rate-limited indexer answers with
+	// an HTML error page, which otherwise surfaces as "invalid character '<'" and
+	// sends the reader looking for a bug in the query rather than at the status
+	// code. Sync catch-up is exactly the traffic that earns a 403.
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("indexer returned %s: %s", resp.Status, string(respBody[:min(200, len(respBody))]))
 	}
 
 	var gqlResp gqlResponse
