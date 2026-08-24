@@ -2228,6 +2228,8 @@ type GasTimePoint struct {
 	AvgGasUsed     int     `json:"avg_gas_used"`
 	GasEfficiency  float64 `json:"gas_efficiency"`
 	AvgFee         int     `json:"avg_fee"`
+	SuccessCount   int     `json:"success_count"`
+	FailCount      int     `json:"fail_count"`
 }
 
 type SanityOverview struct {
@@ -2267,26 +2269,23 @@ func (d *DB) GetGasTimeSeries(network, granularity string, days int) ([]GasTimeP
 	sqlFmt, step, truncFn := timeseriesFormat(granularity)
 	startTime := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
 
-	netFilter := ""
-	if network != "" {
-		netFilter = " AND t.network = ?"
-	}
+	// Always scoped, so a retired network cannot show up in the series and the
+	// (network, ...) indexes stay usable for the all-networks case.
+	netFilter := " AND " + d.networkFilter("t.network", network)
 
 	q := fmt.Sprintf(
 		"SELECT strftime('%s', t.block_time) as bucket,"+
 			" SUM(t.gas_used) as total_gas_used,"+
 			" SUM(t.gas_wanted) as total_gas_wanted,"+
 			" SUM(t.gas_fee) as total_fees,"+
-			" COUNT(*) as tx_count"+
+			" COUNT(*) as tx_count,"+
+			" SUM(CASE WHEN t.success THEN 1 ELSE 0 END) as success_count"+
 			" FROM transactions t"+
 			" WHERE t.block_time >= ?%s"+
 			" GROUP BY bucket ORDER BY bucket ASC",
 		sqlFmt, netFilter)
 
 	args := []any{startTime}
-	if network != "" {
-		args = append(args, network)
-	}
 
 	rows, err := d.db.Query(q, args...)
 	if err != nil {
@@ -2300,11 +2299,12 @@ func (d *DB) GetGasTimeSeries(network, granularity string, days int) ([]GasTimeP
 		totalGasWanted int
 		totalFees      int
 		txCount        int
+		successCount   int
 	}
 	buckets := make(map[string]*row)
 	for rows.Next() {
 		var r row
-		if err := rows.Scan(&r.bucket, &r.totalGasUsed, &r.totalGasWanted, &r.totalFees, &r.txCount); err != nil {
+		if err := rows.Scan(&r.bucket, &r.totalGasUsed, &r.totalGasWanted, &r.totalFees, &r.txCount, &r.successCount); err != nil {
 			return nil, err
 		}
 		buckets[r.bucket] = &r
@@ -2339,6 +2339,8 @@ func (d *DB) GetGasTimeSeries(network, granularity string, days int) ([]GasTimeP
 				AvgGasUsed:     avg,
 				GasEfficiency:  eff,
 				AvgFee:         avgFee,
+				SuccessCount:   r.successCount,
+				FailCount:      r.txCount - r.successCount,
 			})
 		} else {
 			out = append(out, GasTimePoint{Time: k})
