@@ -927,9 +927,24 @@ func (c *IndexerClient) GetEventsByPkgPath(ctx context.Context, pkgPath string, 
 
 // GetGovDAOTransactions fetches transactions involving govdao realms.
 func (c *IndexerClient) GetGovDAOTransactions(ctx context.Context, need int) ([]Transaction, error) {
-	// A leading-wildcard LIKE cannot use an index, so this one is the most
-	// expensive of the realm filters to leave unbounded.
-	const where = `messages: { value: { MsgCall: { pkg_path: { like: "%govdao%"} } } }`
+	// The indexer's `like` is a plain substring match: `%` is matched literally,
+	// not as a wildcard. Probed against a live indexer on a realm with known
+	// calls:
+	//
+	//	like: "blog"                       -> 16 rows
+	//	like: "gno.land/r/gnoland/blog"    -> 16 rows
+	//	like: "%blog%"                     ->  0 rows
+	//	like: "gno.land/r/gnoland/blog%"   ->  0 rows
+	//
+	// So the previous pattern, "%govdao%", was unmatchable twice over: no path
+	// contains a literal percent sign, and the realm is gno.land/r/gov/dao —
+	// with a slash — so even "govdao" would have found nothing. This view has
+	// returned an empty list since it was written.
+	//
+	// "gov/dao" is specific enough: gnoswap ships gov/staker and gov/governance,
+	// which a bare "gov" would also pick up, and it keeps the versioned
+	// subpackages (gov/dao/v3/impl and friends).
+	const where = `messages: { value: { MsgCall: { pkg_path: { like: "gov/dao"} } } }`
 	return c.recentTransactionsWindowed(ctx, need, where, func() ([]Transaction, error) {
 		var result struct {
 			GetTransactions []Transaction `json:"getTransactions"`
