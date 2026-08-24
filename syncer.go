@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 )
 
@@ -31,6 +32,7 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 	s.warnOnHeightRegression(ctx)
 	s.backfillBlockTimes(ctx)
 	s.backfillTransactions(ctx)
+	s.backfillValopers(ctx)
 	if err := s.syncPackages(ctx); err != nil {
 		return fmt.Errorf("sync packages: %w", err)
 	}
@@ -390,6 +392,135 @@ func (s *Syncer) getLastRecentTransactionBlockHeight(ctx context.Context) (*int,
 	return &lastHeight, nil
 }
 
+// valopersMarker identifies the validator registration realm.
+//
+// Matched as a substring rather than a fixed path so a move between realms
+// (gnops → gov, or a versioned path) does not silently stop recording. The word
+// is specific enough that a false match is unlikely.
+const valopersMarker = "valopers"
+
+// looksLikeAddress reports whether s is a gno bech32 account address.
+func looksLikeAddress(s string) bool {
+	return strings.HasPrefix(s, "g1") && len(s) == 40
+}
+
+// valoperSubject reads the validator address and moniker out of a valopers call.
+//
+// The argument layout differs per function, and taking args[0] as the moniker —
+// which is what the frontend used to do — is right for exactly one of them:
+//
+//	Register(moniker, description, serverType, address, pubkey)
+//	UpdateMoniker(address, newMoniker)
+//	UpdateDescription(address, description)
+//	UpdateKeepRunning / UpdateServerType / UpdateSigningKey(address, value)
+//	DeleteFromAuthList(address, address)
+//
+// So for everything except Register and UpdateMoniker, args[0] is an address,
+// and the old code recorded addresses as names. It also keyed on the caller,
+// which is wrong twice over: Register carries the validator address in its
+// arguments, and an admin can update an entry that is not their own.
+//
+// moniker is empty when the call does not set a name — most of them do not.
+func valoperSubject(msg TxMessage) (address, moniker string) {
+	args := msg.Value.Args
+	switch msg.Value.Func {
+	case "Register":
+		if len(args) > 0 {
+			moniker = args[0]
+		}
+		// The address is an argument, but fall back to the caller for a shorter
+		// call than the current ABI.
+		if len(args) > 3 && looksLikeAddress(args[3]) {
+			address = args[3]
+		} else {
+			address = msg.Value.Caller
+		}
+	case "UpdateMoniker":
+		if len(args) > 1 {
+			moniker = args[1]
+		}
+		fallthrough
+	default:
+		if address == "" {
+			if len(args) > 0 && looksLikeAddress(args[0]) {
+				address = args[0]
+			} else {
+				address = msg.Value.Caller
+			}
+		}
+	}
+	return address, moniker
+}
+
+// recordValoper stores a validator registration when a call is one.
+//
+// Best effort: this feeds a display nicety, and losing one must not interrupt a
+// sync pass.
+func (s *Syncer) recordValoper(tx Transaction, msg TxMessage, blockTime string) {
+	if !strings.Contains(msg.Value.PkgPath, valopersMarker) {
+		return
+	}
+	address, moniker := valoperSubject(msg)
+	if address == "" {
+		return
+	}
+	if err := s.db.InsertValoperRegistration(
+		s.networkID, tx.Hash, tx.BlockHeight, blockTime,
+		msg.Value.Caller, msg.Value.Func, address, moniker, tx.Success,
+	); err != nil {
+		log.Printf("[%s] record valoper: %v", s.networkID, err)
+	}
+}
+
+// backfillValoperBatch bounds how many historical registrations are repaired per
+// pass. Each is one keyed request, and there are only ever a few hundred in
+// total, so this closes quickly.
+const backfillValoperBatch = 50
+
+// backfillValopers recovers monikers for valopers calls stored before
+// registrations were recorded.
+//
+// The call rows have everything except the moniker, which lives only in the
+// call's arguments. Those are recoverable one transaction at a time by hash,
+// which is a keyed lookup — unlike filtering all of history by pkg_path, which
+// costs ~30s on a busy chain however little it returns.
+func (s *Syncer) backfillValopers(ctx context.Context) {
+	hashes, err := s.db.ValoperCallsMissingRegistration(s.networkID, backfillValoperBatch)
+	if err != nil {
+		log.Printf("[%s] valoper backfill: %v", s.networkID, err)
+		return
+	}
+	if len(hashes) == 0 {
+		return
+	}
+
+	recorded := 0
+	for _, h := range hashes {
+		tx, err := s.client.GetTransactionByHash(ctx, h)
+		if err != nil {
+			// Keep what we have and retry the rest next pass.
+			log.Printf("[%s] valoper backfill: %v", s.networkID, err)
+			break
+		}
+		if tx == nil {
+			continue
+		}
+		for _, msg := range tx.Messages {
+			if msg.Value.Typename != "MsgCall" {
+				continue
+			}
+			if !strings.Contains(msg.Value.PkgPath, valopersMarker) {
+				continue
+			}
+			s.recordValoper(*tx, msg, tx.BlockTime)
+			recorded++
+		}
+	}
+	if recorded > 0 {
+		log.Printf("[%s] backfilled %d valoper registrations", s.networkID, recorded)
+	}
+}
+
 func (s *Syncer) syncCalls(ctx context.Context) error {
 	lastHeight, err := s.getLastRecentTransactionBlockHeight(ctx)
 	if err != nil {
@@ -418,6 +549,9 @@ func (s *Syncer) syncCalls(ctx context.Context) error {
 						continue
 					}
 					callCount++
+					// Args are available here and nowhere else — they are not
+					// stored on the call row. Capture the moniker while we have it.
+					s.recordValoper(tx, msg, bt)
 				case "BankMsgSend":
 					if err := s.db.InsertBankSend(
 						s.networkID,

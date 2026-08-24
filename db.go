@@ -318,6 +318,31 @@ func initSchema(db *sql.DB) error {
 			UNIQUE(network, tx_hash, from_address, to_address)
 		);
 
+		-- Validator registrations, the one thing the calls table cannot answer:
+		-- the moniker is the call's first argument, and args are not stored.
+		-- Keeping just this instead of every call's args is the difference between
+		-- a few hundred rows and a column on half a million.
+		CREATE TABLE IF NOT EXISTS valoper_registrations (
+			network TEXT NOT NULL DEFAULT 'gnoland1',
+			tx_hash TEXT NOT NULL,
+			block_height INTEGER NOT NULL,
+			block_time TEXT,
+			caller TEXT NOT NULL,
+			func_name TEXT NOT NULL,
+			-- The validator the call is about, which is not always the caller: an
+			-- admin can update someone else's entry, and Register carries the
+			-- validator address in its arguments.
+			address TEXT NOT NULL,
+			-- Empty unless the call actually sets a name. Most valopers functions
+			-- do not.
+			moniker TEXT NOT NULL,
+			success BOOLEAN NOT NULL,
+			UNIQUE(network, tx_hash, caller)
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_valoper_network_height
+			ON valoper_registrations(network, block_height DESC);
+
 		CREATE TABLE IF NOT EXISTS transactions (
 			network      TEXT NOT NULL DEFAULT 'gnoland1',
 			tx_hash      TEXT NOT NULL,
@@ -486,6 +511,103 @@ func (d *DB) InsertCall(network, txHash string, blockHeight int, blockTime, call
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`, network, txHash, blockHeight, blockTime, caller, pkgPath, funcName, success)
 	return err
+}
+
+// ValoperRegistration is one validator's registration call, flattened. The
+// moniker is the call's first argument.
+type ValoperRegistration struct {
+	TxHash      string `json:"tx_hash"`
+	BlockHeight int    `json:"block_height"`
+	BlockTime   string `json:"block_time,omitempty"`
+	Caller      string `json:"caller"`
+	Func        string `json:"func"`
+	Address     string `json:"address"`
+	Moniker     string `json:"moniker"`
+	Success     bool   `json:"success"`
+	Network     string `json:"network,omitempty"`
+}
+
+// InsertValoperRegistration records a call to a valopers realm.
+func (d *DB) InsertValoperRegistration(network, txHash string, blockHeight int, blockTime, caller, funcName, address, moniker string, success bool) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, err := d.db.Exec(`
+		INSERT OR REPLACE INTO valoper_registrations
+			(network, tx_hash, block_height, block_time, caller, func_name, address, moniker, success)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, network, txHash, blockHeight, blockTime, caller, funcName, address, moniker, success)
+	return err
+}
+
+// ValoperRegistrations returns registrations newest first.
+//
+// Served from storage rather than the indexer: filtering all of history by
+// pkg_path costs ~30s on a busy chain regardless of how little it returns,
+// because the price is the scan.
+func (d *DB) ValoperRegistrations(network string) ([]ValoperRegistration, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	rows, err := d.db.Query(`
+		SELECT network, tx_hash, block_height, COALESCE(block_time, ''), caller, func_name, address, moniker, success
+		FROM valoper_registrations
+		WHERE ` + d.networkFilter("network", network) + `
+		ORDER BY block_height DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []ValoperRegistration{}
+	for rows.Next() {
+		var v ValoperRegistration
+		if err := rows.Scan(&v.Network, &v.TxHash, &v.BlockHeight, &v.BlockTime,
+			&v.Caller, &v.Func, &v.Address, &v.Moniker, &v.Success); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// ValoperCallsMissingRegistration lists valopers calls already stored that have
+// no registration row, so the moniker can be backfilled from the indexer.
+//
+// The calls table has everything except the moniker, which only exists in the
+// call's arguments — and those were never stored. Fetching by hash is a keyed
+// lookup, so repairing history costs one cheap request per row rather than a
+// full-history scan.
+func (d *DB) ValoperCallsMissingRegistration(network string, limit int) ([]string, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	rows, err := d.db.Query(`
+		SELECT DISTINCT c.tx_hash
+		FROM calls c
+		WHERE c.pkg_path LIKE '%valopers%'
+		  AND `+d.networkFilter("c.network", network)+`
+		  AND NOT EXISTS (
+			SELECT 1 FROM valoper_registrations v
+			WHERE v.network = c.network AND v.tx_hash = c.tx_hash
+		  )
+		ORDER BY c.block_height DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
 }
 
 // InsertMsgRun records a MsgRun transaction with its source.

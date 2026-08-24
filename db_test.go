@@ -621,3 +621,92 @@ func TestNetworkFilterQuoting(t *testing.T) {
 		t.Errorf("no config: got %q, want %q", got, want)
 	}
 }
+
+// The validators view needs the moniker, which is the registration call's first
+// argument — and args are not stored on the call row. Before this table the view
+// filtered all of history by pkg_path on every request, which costs ~30s on a
+// busy chain whatever it returns.
+func TestValoperRegistrations(t *testing.T) {
+	db := newTestDB(t)
+	db.SetConfiguredNetworks([]NetworkConfig{{ID: "live"}})
+
+	if err := db.InsertValoperRegistration("live", "tx-1", 100, "2026-01-01T00:00:00Z",
+		"g1aaa", "Register", "g1aaa", "alice", true); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if err := db.InsertValoperRegistration("live", "tx-2", 200, "2026-01-02T00:00:00Z",
+		"g1bbb", "Register", "g1bbb", "bob", false); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	// A different network must not leak into the configured view.
+	if err := db.InsertValoperRegistration("other", "tx-3", 300, "",
+		"g1ccc", "Register", "g1ccc", "carol", true); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	regs, err := db.ValoperRegistrations("")
+	if err != nil {
+		t.Fatalf("ValoperRegistrations: %v", err)
+	}
+	if len(regs) != 2 {
+		t.Fatalf("got %d registrations, want 2 (an unconfigured network leaked in)", len(regs))
+	}
+	// Newest first, so the view shows recent registrations without sorting.
+	if regs[0].BlockHeight != 200 || regs[1].BlockHeight != 100 {
+		t.Errorf("order = %d,%d, want 200,100", regs[0].BlockHeight, regs[1].BlockHeight)
+	}
+	if regs[0].Moniker != "bob" || regs[0].Success {
+		t.Errorf("row = %+v, want moniker bob and success false", regs[0])
+	}
+
+	// Re-registering replaces rather than duplicating.
+	if err := db.InsertValoperRegistration("live", "tx-1", 100, "2026-01-01T00:00:00Z",
+		"g1aaa", "Register", "g1aaa", "alice-renamed", true); err != nil {
+		t.Fatalf("re-insert: %v", err)
+	}
+	regs, _ = db.ValoperRegistrations("live")
+	if len(regs) != 2 {
+		t.Fatalf("got %d registrations after re-insert, want 2", len(regs))
+	}
+	for _, r := range regs {
+		if r.Caller == "g1aaa" && r.Moniker != "alice-renamed" {
+			t.Errorf("moniker = %q, want alice-renamed", r.Moniker)
+		}
+	}
+}
+
+// The backfill finds valopers calls already stored that have no moniker yet, so
+// history can be repaired one keyed lookup at a time.
+func TestValoperCallsMissingRegistration(t *testing.T) {
+	db := newTestDB(t)
+	db.SetConfiguredNetworks([]NetworkConfig{{ID: "live"}})
+
+	mustCall := func(hash, pkgPath string, height int) {
+		t.Helper()
+		if err := db.InsertCall("live", hash, height, "2026-01-01T00:00:00Z",
+			"g1aaa", pkgPath, "Register", true); err != nil {
+			t.Fatalf("InsertCall: %v", err)
+		}
+	}
+	mustCall("tx-valoper-1", "gno.land/r/gnops/valopers", 100)
+	mustCall("tx-valoper-2", "gno.land/r/gov/valopers/v2", 200)
+	mustCall("tx-unrelated", "gno.land/r/demo/boards", 300)
+
+	missing, err := db.ValoperCallsMissingRegistration("live", 10)
+	if err != nil {
+		t.Fatalf("ValoperCallsMissingRegistration: %v", err)
+	}
+	if len(missing) != 2 {
+		t.Fatalf("got %v, want the two valopers calls only", missing)
+	}
+
+	// Once recorded, a call drops out of the work list.
+	if err := db.InsertValoperRegistration("live", "tx-valoper-1", 100, "",
+		"g1aaa", "Register", "g1aaa", "alice", true); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	missing, _ = db.ValoperCallsMissingRegistration("live", 10)
+	if len(missing) != 1 || missing[0] != "tx-valoper-2" {
+		t.Errorf("got %v, want only tx-valoper-2", missing)
+	}
+}
