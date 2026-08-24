@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -708,5 +709,79 @@ func TestValoperCallsMissingRegistration(t *testing.T) {
 	missing, _ = db.ValoperCallsMissingRegistration("live", 10)
 	if len(missing) != 1 || missing[0] != "tx-valoper-2" {
 		t.Errorf("got %v, want only tx-valoper-2", missing)
+	}
+}
+
+// The gas view's "most expensive transactions" query sorts by gas_used within a
+// network. Without an index for that the sort scans the whole table and the
+// eight correlated subqueries in its select list run far more than the twenty
+// times the LIMIT needs — 16s on a chain with 314k transactions, against a 30s
+// server write timeout.
+//
+// Asserts the plan, not a duration: a timing test would be flaky, and what
+// actually regresses is the planner losing the index.
+func TestTopGasQueryUsesAnIndex(t *testing.T) {
+	db := newTestDB(t)
+
+	const q = `
+		WITH top AS (
+			SELECT network, tx_hash, gas_used FROM transactions
+			WHERE network = ? ORDER BY gas_used DESC LIMIT 20
+		)
+		SELECT t.tx_hash, t.gas_used,
+		  COALESCE(
+		    (SELECT 'MsgCall' FROM calls c WHERE c.network = t.network AND c.tx_hash = t.tx_hash LIMIT 1),
+		    (SELECT 'MsgAddPackage' FROM packages p WHERE p.network = t.network AND p.tx_hash = t.tx_hash LIMIT 1),
+		    (SELECT 'MsgRun' FROM msg_runs m WHERE m.network = t.network AND m.tx_hash = t.tx_hash LIMIT 1),
+		    (SELECT 'BankMsgSend' FROM bank_sends b WHERE b.network = t.network AND b.tx_hash = t.tx_hash LIMIT 1),
+		    '')
+		FROM top t`
+
+	rows, err := db.db.Query("EXPLAIN QUERY PLAN "+q, "sapphire")
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	defer rows.Close()
+
+	var plan []string
+	for rows.Next() {
+		cols, err := rows.Columns()
+		if err != nil {
+			t.Fatalf("columns: %v", err)
+		}
+		vals := make([]any, len(cols))
+		for i := range vals {
+			vals[i] = new(sql.NullString)
+		}
+		if err := rows.Scan(vals...); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if s, ok := vals[len(vals)-1].(*sql.NullString); ok && s.Valid {
+			plan = append(plan, s.String)
+		}
+	}
+
+	joined := strings.Join(plan, " | ")
+
+	// The ranking must come off the index rather than a sort.
+	if !strings.Contains(joined, "idx_txs_network_gas") {
+		t.Errorf("ranking does not use idx_txs_network_gas.\nplan: %s", joined)
+	}
+	if strings.Contains(joined, "USE TEMP B-TREE FOR ORDER BY") {
+		t.Errorf("ranking still sorts in a temp b-tree.\nplan: %s", joined)
+	}
+
+	// Each type probe must be a keyed lookup. Without these the planner falls
+	// back to the block_time indexes, which lead with network only, and every
+	// probe scans that network's whole table — 2.7s instead of instant.
+	for _, idx := range []string{
+		"idx_calls_network_hash",
+		"idx_packages_network_hash",
+		"idx_msg_runs_network_hash",
+		"idx_bank_sends_network_hash",
+	} {
+		if !strings.Contains(joined, idx) {
+			t.Errorf("type probe does not use %s.\nplan: %s", idx, joined)
+		}
 	}
 }

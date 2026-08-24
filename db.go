@@ -378,6 +378,24 @@ func initSchema(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_runs_block_time   ON msg_runs(network, block_time);
 		CREATE INDEX IF NOT EXISTS idx_sends_block_time  ON bank_sends(network, block_time);
 		CREATE INDEX IF NOT EXISTS idx_txs_block_time    ON transactions(network, block_time);
+
+		-- The gas view's "most expensive transactions" sorts by gas_used within a
+		-- network and keeps 20 rows. Without this the sort cannot be served from
+		-- an index, so the eight correlated subqueries in its select list are
+		-- evaluated across the whole table rather than the twenty rows that
+		-- survive the LIMIT: 16s on a chain with 314k transactions, against a 30s
+		-- server write timeout.
+		CREATE INDEX IF NOT EXISTS idx_txs_network_gas ON transactions(network, gas_used DESC);
+
+		-- Resolving a transaction's type and target means looking it up by
+		-- (network, tx_hash) in each of these. Without a matching index the
+		-- planner falls back to the block_time indexes, which lead with network
+		-- only — so every lookup scans that network's whole table. On a chain with
+		-- 533k calls that turned twenty lookups into seconds.
+		CREATE INDEX IF NOT EXISTS idx_calls_network_hash      ON calls(network, tx_hash);
+		CREATE INDEX IF NOT EXISTS idx_packages_network_hash   ON packages(network, tx_hash);
+		CREATE INDEX IF NOT EXISTS idx_msg_runs_network_hash   ON msg_runs(network, tx_hash);
+		CREATE INDEX IF NOT EXISTS idx_bank_sends_network_hash ON bank_sends(network, tx_hash);
 	`)
 	return err
 }
@@ -968,11 +986,12 @@ func (d *DB) GetGasStats(network string, topN int) (*GasStats, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	where, args := "", []any{}
-	if network != "" {
-		where = " WHERE network = ?"
-		args = append(args, network)
-	}
+	// Always filter, even for "all networks": an empty WHERE cannot use the
+	// (network, gas_used) index, which is what makes the top-gas sort scan the
+	// whole table. Scoping to the configured set keeps the index usable and
+	// keeps retired networks out of the totals.
+	where := " WHERE " + d.networkFilter("network", network)
+	args := []any{}
 
 	out := &GasStats{}
 	err := d.db.QueryRow(`
@@ -992,11 +1011,8 @@ func (d *DB) GetGasStats(network string, topN int) (*GasStats, error) {
 	// joined to at most one realm here; calls and deployments are the two paths
 	// that carry a package path, and MsgRun is grouped under its caller because
 	// its ephemeral path is unique per run and would otherwise be one row each.
-	realmWhere, realmArgs := "", []any{}
-	if network != "" {
-		realmWhere = " AND t.network = ?"
-		realmArgs = append(realmArgs, network, network, network)
-	}
+	realmWhere := " AND " + d.networkFilter("t.network", network)
+	realmArgs := []any{}
 	rows, err := d.db.Query(`
 		SELECT path, SUM(gas_used), SUM(gas_fee), COUNT(*) FROM (
 			SELECT c.pkg_path AS path, t.gas_used, t.gas_fee, t.tx_hash
@@ -1030,7 +1046,21 @@ func (d *DB) GetGasStats(network string, topN int) (*GasStats, error) {
 
 	// Most expensive transactions, with the type and target resolved from
 	// whichever table recorded the message.
+	//
+	// The ranking is materialised first so the subqueries below are evaluated
+	// exactly topN times rather than at the planner's discretion.
+	//
+	// This is insurance, not the fix: measured, the CTE alone changed nothing
+	// (2.47s -> 2.43s). What made this query slow was the absence of a
+	// (network, tx_hash) index on the four tables it probes — see the schema.
+	// The CTE stays because it makes the intended shape explicit and bounds the
+	// damage if the planner ever loses those indexes again.
 	txRows, err := d.db.Query(`
+		WITH top AS (
+			SELECT network, tx_hash, block_height, gas_used, gas_wanted, gas_fee, success
+			FROM transactions`+where+`
+			ORDER BY gas_used DESC LIMIT ?
+		)
 		SELECT t.tx_hash, t.block_height, t.gas_used, t.gas_wanted, t.gas_fee, t.success,
 		  COALESCE(
 		    (SELECT 'MsgCall' FROM calls c WHERE c.network = t.network AND c.tx_hash = t.tx_hash LIMIT 1),
@@ -1043,8 +1073,8 @@ func (d *DB) GetGasStats(network string, topN int) (*GasStats, error) {
 		    (SELECT p.path FROM packages p WHERE p.network = t.network AND p.tx_hash = t.tx_hash LIMIT 1),
 		    (SELECT 'MsgRun by ' || m.caller FROM msg_runs m WHERE m.network = t.network AND m.tx_hash = t.tx_hash LIMIT 1),
 		    '')
-		FROM transactions t`+where+`
-		ORDER BY t.gas_used DESC LIMIT ?`, append(args, topN)...)
+		FROM top t
+		ORDER BY t.gas_used DESC`, append(args, topN)...)
 	if err != nil {
 		return nil, fmt.Errorf("top gas transactions: %w", err)
 	}
