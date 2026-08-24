@@ -175,7 +175,7 @@ func run() error {
 
 	srv := &http.Server{
 		Addr:         *listenAddr,
-		Handler:      mux,
+		Handler:      rejectUnknownNetwork(cfg.Networks, mux),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}

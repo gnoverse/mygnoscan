@@ -262,6 +262,33 @@ func (a *API) networkParam(r *http.Request) string {
 	return n
 }
 
+// rejectUnknownNetwork turns `?network=` naming an unconfigured network into a
+// 404, for API routes only.
+//
+// Left alone, an unconfigured network is not an error anywhere: handlers pass
+// the string straight through to the database, which still holds rows for every
+// network ever synced, and clientFor falls back to an arbitrary client for the
+// parts that need a live chain. A retired testnet therefore keeps answering with
+// stale local rows stamped with an unrelated chain's height — worse than a 404,
+// because it looks like data.
+//
+// Non-API routes are left alone so the SPA still loads on a stale bookmark and
+// can say so itself, rather than the browser being handed a JSON error.
+func rejectUnknownNetwork(networks []NetworkConfig, next http.Handler) http.Handler {
+	known := make(map[string]bool, len(networks))
+	for _, n := range networks {
+		known[n.ID] = true
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := r.URL.Query().Get("network")
+		if strings.HasPrefix(r.URL.Path, "/api/") && n != "" && n != "all" && !known[n] {
+			jsonError(w, "network not found", 404)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // clientFor returns the IndexerClient for a specific network, or the first available one if not found.
 func (a *API) clientFor(network string) *IndexerClient {
 	if network != "" {
