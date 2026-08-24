@@ -667,7 +667,10 @@ func TestRealmFiltersAreBounded(t *testing.T) {
 				_, err := c.GetGovDAOTransactions(context.Background(), 20)
 				return err
 			},
-			wantFilter: `like: "%govdao%"`,
+			// The indexer's `like` is a substring match with no wildcards, so
+			// the old "%govdao%" could never match: no path contains a percent
+			// sign, and the realm is gno.land/r/gov/dao with a slash.
+			wantFilter: `like: "gov/dao"`,
 		},
 	}
 

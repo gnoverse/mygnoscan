@@ -289,18 +289,23 @@ func rejectUnknownNetwork(networks []NetworkConfig, next http.Handler) http.Hand
 	})
 }
 
-// clientFor returns the IndexerClient for a specific network, or the first available one if not found.
+// clientFor returns the IndexerClient for a network, or nil when there is no
+// single right answer.
+//
+// It used to fall back to an arbitrary entry of a.clients — Go map iteration
+// order — so "all networks" silently became "one chain, chosen at random". That
+// is not a degraded answer, it is a wrong one that looks right: the home page
+// reported staging's block height (a chain with seven transactions) as the
+// global figure, /api/govdao returned null, /api/allevents served a single
+// chain's events, and the sanity dashboard presented one chain's liveness as
+// everyone's.
+//
+// Callers that need a live chain must either have a network or fan out.
 func (a *API) clientFor(network string) *IndexerClient {
-	if network != "" {
-		if c, ok := a.clients[network]; ok {
-			return c
-		}
+	if network == "" {
+		return nil
 	}
-	// fallback: first client
-	for _, c := range a.clients {
-		return c
-	}
-	return nil
+	return a.clients[network]
 }
 
 // rpcURLFor returns the RPC URL for a network (or first network with an RPC URL).
@@ -323,9 +328,13 @@ func (a *API) HandleStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Also get latest block from indexer
-	client := a.clientFor(network)
-	if client != nil {
+	// The live tip belongs to one chain. Asking for it without naming a network
+	// used to return whichever chain clientFor happened to pick, so the home
+	// page's block counter showed staging's height — a chain with seven
+	// transactions — as if it were global. With several networks in play the
+	// stored maximum stands instead: still a single number, but a deterministic
+	// one derived from every configured chain rather than a coin flip.
+	if client := a.clientFor(network); client != nil {
 		height, err := client.LatestBlockHeight(r.Context())
 		if err == nil {
 			stats.LatestBlock = height
@@ -697,6 +706,30 @@ func eventTxLimit(r *http.Request) int {
 	return limit
 }
 
+// sortTransactionsByTime orders newest first. Block height is only a fallback
+// for rows the block-time backfill has not reached: heights are per-chain, so
+// comparing them across networks lets the chain with the largest numbers win
+// every time and crowd the others out entirely.
+func sortTransactionsByTime(txs []Transaction) {
+	sort.Slice(txs, func(i, j int) bool {
+		if txs[i].BlockTime != "" && txs[j].BlockTime != "" {
+			return txs[i].BlockTime > txs[j].BlockTime
+		}
+		return txs[i].BlockHeight > txs[j].BlockHeight
+	})
+}
+
+// sortEventResultsByTime orders newest first, with the same height caveat as
+// sortTransactionsByTime.
+func sortEventResultsByTime(rows []EventResult) {
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].BlockTime != "" && rows[j].BlockTime != "" {
+			return rows[i].BlockTime > rows[j].BlockTime
+		}
+		return rows[i].BlockHeight > rows[j].BlockHeight
+	})
+}
+
 // EventResult is one transaction's GnoEvents, tagged with the chain it came from.
 type EventResult struct {
 	TxHash      string    `json:"tx_hash"`
@@ -718,6 +751,35 @@ func gnoEvents(txs []Transaction, network string) []EventResult {
 		var matched []TxEvent
 		for _, ev := range tx.Response.Events {
 			if ev.Typename == "GnoEvent" {
+				matched = append(matched, ev)
+			}
+		}
+		if len(matched) == 0 {
+			continue
+		}
+		out = append(out, EventResult{
+			TxHash:      tx.Hash,
+			BlockHeight: tx.BlockHeight,
+			BlockTime:   tx.BlockTime,
+			Success:     tx.Success,
+			Network:     network,
+			Events:      matched,
+		})
+	}
+	return out
+}
+
+// gnoEventsForPath keeps only the events a given realm emitted. The transaction
+// may carry events from several realms; the realm view wants one realm's.
+func gnoEventsForPath(txs []Transaction, network, path string) []EventResult {
+	out := make([]EventResult, 0, len(txs))
+	for _, tx := range txs {
+		if tx.Response == nil {
+			continue
+		}
+		var matched []TxEvent
+		for _, ev := range tx.Response.Events {
+			if ev.PkgPath == path {
 				matched = append(matched, ev)
 			}
 		}
@@ -769,7 +831,7 @@ func (a *API) HandleAllEvents(w http.ResponseWriter, r *http.Request) {
 	// of a Go map — so this endpoint silently served a single chain's events
 	// under an "all networks" heading, and the busiest chain was often the one
 	// left out.
-	var merged []EventResult
+	merged := []EventResult{}
 	for _, batch := range fanOut(r.Context(), a.networks, a.clients, a.health,
 		func(ctx context.Context, n NetworkConfig, c *IndexerClient) ([]EventResult, error) {
 			txs, err := c.GetRecentTransactionsWithEvents(ctx, limit)
@@ -804,13 +866,38 @@ func (a *API) HandleAllEvents(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) HandleEvents(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
-	client := a.clientFor(network)
-	if client == nil {
-		jsonError(w, "no client available", 500)
-		return
-	}
 	path := "gno.land/" + r.PathValue("path")
 	path = strings.TrimRight(path, "/")
+
+	// Same treatment as /api/allevents: query every chain rather than whichever
+	// one clientFor used to return.
+	if network == "" {
+		limit := eventTxLimit(r)
+		merged := []EventResult{}
+		for _, batch := range fanOut(r.Context(), a.networks, a.clients, a.health,
+			func(ctx context.Context, nc NetworkConfig, c *IndexerClient) ([]EventResult, error) {
+				txs, err := c.GetEventsByPkgPath(ctx, path, limit)
+				if err != nil {
+					return nil, err
+				}
+				a.stampBlockTimes(ctx, nc.ID, c, txs)
+				return gnoEventsForPath(txs, nc.ID, path), nil
+			}) {
+			merged = append(merged, batch...)
+		}
+		sortEventResultsByTime(merged)
+		if len(merged) > limit {
+			merged = merged[:limit]
+		}
+		jsonResponse(w, merged)
+		return
+	}
+
+	client := a.clientFor(network)
+	if client == nil {
+		jsonError(w, "network not found", 404)
+		return
+	}
 	// Bounded like /api/allevents, and for the same reason: unbounded, this
 	// filter scans the chain's whole history and takes ~34s on a busy one.
 	txs, err := client.GetEventsByPkgPath(r.Context(), path, eventTxLimit(r))
@@ -818,34 +905,8 @@ func (a *API) HandleEvents(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err.Error(), 500)
 		return
 	}
-	// Extract just the events for this path
-	type EventResult struct {
-		TxHash      string    `json:"tx_hash"`
-		BlockHeight int       `json:"block_height"`
-		Success     bool      `json:"success"`
-		Events      []TxEvent `json:"events"`
-	}
-	var results []EventResult
-	for _, tx := range txs {
-		if tx.Response == nil {
-			continue
-		}
-		var matched []TxEvent
-		for _, ev := range tx.Response.Events {
-			if ev.PkgPath == path {
-				matched = append(matched, ev)
-			}
-		}
-		if len(matched) > 0 {
-			results = append(results, EventResult{
-				TxHash:      tx.Hash,
-				BlockHeight: tx.BlockHeight,
-				Success:     tx.Success,
-				Events:      matched,
-			})
-		}
-	}
-	jsonResponse(w, results)
+	a.stampBlockTimes(r.Context(), network, client, txs)
+	jsonResponse(w, gnoEventsForPath(txs, network, path))
 }
 
 func (a *API) HandleBlocks(w http.ResponseWriter, r *http.Request) {
@@ -904,6 +965,13 @@ func (a *API) HandleBlocks(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) HandleBlock(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
+	// A height does not identify a block on its own: every chain has one. This
+	// used to answer from an arbitrary chain, so the same URL could return a
+	// different block on consecutive requests.
+	if network == "" {
+		jsonError(w, "a block height needs a network: add ?network=", 400)
+		return
+	}
 	client := a.clientFor(network)
 	if client == nil {
 		jsonError(w, "no client available", 500)
@@ -929,11 +997,8 @@ func (a *API) HandleBlock(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) HandleValidators(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
-	client := a.clientFor(network)
-	if client == nil {
-		jsonError(w, "no client available", 500)
-		return
-	}
+	// Served entirely from storage since #83, so no indexer client is needed —
+	// and requiring one would have made this 500 in all-networks mode.
 	regs, err := a.db.ValoperRegistrations(network)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
@@ -975,12 +1040,42 @@ func (a *API) HandleBankStats(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) HandleGovDAO(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
-	client := a.clientFor(network)
-	if client == nil {
-		jsonError(w, "no client available", 500)
+	limit := eventTxLimit(r)
+
+	// Previously this called clientFor("") for all networks, which returns an
+	// arbitrary client — and in practice returned a null body.
+	if network == "" {
+		// Non-nil so an empty result serialises as [] rather than null; the
+		// frontend iterates this and null is what it used to receive.
+		merged := []Transaction{}
+		for _, txs := range fanOut(r.Context(), a.networks, a.clients, a.health,
+			func(ctx context.Context, nc NetworkConfig, c *IndexerClient) ([]Transaction, error) {
+				txs, err := c.GetGovDAOTransactions(ctx, limit)
+				if err != nil {
+					return nil, err
+				}
+				a.stampBlockTimes(ctx, nc.ID, c, txs)
+				for i := range txs {
+					txs[i].Network = nc.ID
+				}
+				return txs, nil
+			}) {
+			merged = append(merged, txs...)
+		}
+		sortTransactionsByTime(merged)
+		if len(merged) > limit {
+			merged = merged[:limit]
+		}
+		jsonResponse(w, merged)
 		return
 	}
-	txs, err := client.GetGovDAOTransactions(r.Context(), eventTxLimit(r))
+
+	client := a.clientFor(network)
+	if client == nil {
+		jsonError(w, "network not found", 404)
+		return
+	}
+	txs, err := client.GetGovDAOTransactions(r.Context(), limit)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
@@ -1013,9 +1108,19 @@ func (a *API) HandleDeps(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) HandleStorage(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
+	// This totals storage deposits and refunds. Those are denominated amounts,
+	// and adding one chain's to another's gives a figure that describes nothing
+	// — the same category error as the summed fee totals in #86. Rather than
+	// blend them, or answer from whichever chain clientFor used to pick, ask for
+	// a network. A realm path lives on one chain in practice, so the caller
+	// always has one to give.
+	if network == "" {
+		jsonError(w, "storage figures are per-chain: add ?network=", 400)
+		return
+	}
 	client := a.clientFor(network)
 	if client == nil {
-		jsonError(w, "no client available", 500)
+		jsonError(w, "network not found", 404)
 		return
 	}
 	path := "gno.land/" + r.PathValue("path")
