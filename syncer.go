@@ -26,18 +26,21 @@ const fingerprintKeyPrefix = "chain_fingerprint:"
 // SyncAll fetches all data from the indexer and processes it.
 func (s *Syncer) SyncAll(ctx context.Context) error {
 	if err := s.checkChainReset(ctx); err != nil {
-		return fmt.Errorf("checkChainReset error: %w", err)
+		return fmt.Errorf("check chain reset: %w", err)
 	}
 	s.warnOnHeightRegression(ctx)
 	s.backfillBlockTimes(ctx)
 	s.backfillTransactions(ctx)
 	if err := s.syncPackages(ctx); err != nil {
-		return fmt.Errorf("syncPackages error: %w", err)
+		return fmt.Errorf("sync packages: %w", err)
 	}
 	if err := s.syncCalls(ctx); err != nil {
-		return fmt.Errorf("sync calls error: %w", err)
+		return fmt.Errorf("sync calls: %w", err)
 	}
-	return s.syncMsgRuns(ctx)
+	if err := s.syncMsgRuns(ctx); err != nil {
+		return fmt.Errorf("sync msg runs: %w", err)
+	}
+	return nil
 }
 
 func (s *Syncer) upsertTx(tx Transaction, blockTime string) {
@@ -390,7 +393,7 @@ func (s *Syncer) getLastRecentTransactionBlockHeight(ctx context.Context) (*int,
 func (s *Syncer) syncCalls(ctx context.Context) error {
 	lastHeight, err := s.getLastRecentTransactionBlockHeight(ctx)
 	if err != nil {
-		return fmt.Errorf("getLastRecentTransactionBlockHeight error : %w", err)
+		return fmt.Errorf("last synced call height: %w", err)
 	}
 
 	callCount, sendCount := 0, 0
@@ -435,7 +438,7 @@ func (s *Syncer) syncCalls(ctx context.Context) error {
 	})
 	log.Printf("[%s] synced %d calls, %d sends", s.networkID, callCount, sendCount)
 	if err != nil {
-		return fmt.Errorf("getTransactionsFromHeight error : %w", err)
+		return fmt.Errorf("walk transactions: %w", err)
 	}
 	return nil
 }
