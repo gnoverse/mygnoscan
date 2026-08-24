@@ -1,8 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"go/parser"
 	"go/token"
+	"log"
 	"regexp"
 	"strconv"
 	"strings"
@@ -111,6 +113,65 @@ func (a *Analyzer) ProcessPackage(network string, pkg *MemPackage, creator, txHa
 	}
 
 	return nil
+}
+
+// dependencyExtractorVersion names the extraction logic that produced the rows
+// currently in the dependencies table. Bump it whenever ExtractImports changes
+// in a way that would give a different answer, and every package is re-extracted
+// once on the next start.
+//
+// v2 replaced a regex scan for quoted gno.land paths with a real parse of the
+// import block. The regex counted commented-out imports and paths that only
+// appeared in string literals, so rows written before it carry edges that do not
+// exist.
+const dependencyExtractorVersion = "2"
+
+const dependencyExtractorKey = "dependency_extractor_version"
+
+// ReextractDependencies recomputes every package's dependencies from the source
+// already in the database, once per extractor version.
+//
+// Sync only ever moves forward from its cursor, so a package deployed before an
+// extraction change is never revisited and keeps whatever the old logic wrote.
+// package_files holds the bodies, so this needs no indexer and no network.
+func (a *Analyzer) ReextractDependencies() error {
+	done, err := a.db.GetSyncState(dependencyExtractorKey)
+	if err == nil && done == dependencyExtractorVersion {
+		return nil
+	}
+
+	refs, err := a.db.StoredPackageRefs()
+	if err != nil {
+		return err
+	}
+
+	packages, edges, failed := 0, 0, 0
+	for _, ref := range refs {
+		files, err := a.db.StoredPackageFiles(ref.Network, ref.Path)
+		if err != nil {
+			// One bad package must not abandon the pass; the version marker is
+			// only written if everything else got through, so a later start
+			// retries.
+			log.Printf("re-extract %s/%s: %v", ref.Network, ref.Path, err)
+			failed++
+			continue
+		}
+		imports := a.ExtractImports(files)
+		if err := a.db.SetDependencies(ref.Network, ref.Path, imports); err != nil {
+			log.Printf("re-extract %s/%s: %v", ref.Network, ref.Path, err)
+			failed++
+			continue
+		}
+		packages++
+		edges += len(imports)
+	}
+	if failed > 0 {
+		return fmt.Errorf("re-extracted %d packages, %d failed", packages, failed)
+	}
+
+	log.Printf("re-extracted dependencies for %d packages (%d edges) with extractor v%s",
+		packages, edges, dependencyExtractorVersion)
+	return a.db.SetSyncState(dependencyExtractorKey, dependencyExtractorVersion)
 }
 
 // ProcessCall stores a function call record.

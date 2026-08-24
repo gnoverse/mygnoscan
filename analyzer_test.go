@@ -184,3 +184,114 @@ func TestExtractMsgRunImports(t *testing.T) {
 		})
 	}
 }
+
+// seedPackage writes a package's source the way ProcessPackage would, then
+// installs dependency rows as if an older extractor had produced them.
+func seedPackage(t *testing.T, db *DB, network, path string, files []MemFile, staleEdges []string) {
+	t.Helper()
+	if err := db.UpsertPackage(network, path, "pkg", "g1creator", "tx-"+path, 1, "2026-01-01T00:00:00Z", true, len(files)); err != nil {
+		t.Fatalf("UpsertPackage: %v", err)
+	}
+	for _, f := range files {
+		if err := db.UpsertPackageFile(network, path, f.Name, f.Body); err != nil {
+			t.Fatalf("UpsertPackageFile: %v", err)
+		}
+	}
+	if err := db.SetDependencies(network, path, staleEdges); err != nil {
+		t.Fatalf("SetDependencies: %v", err)
+	}
+}
+
+// Sync only moves forward from its cursor, so packages deployed before an
+// extractor change keep whatever the old logic wrote. The regex used to count
+// commented-out imports and paths in string literals, so those phantom edges
+// would have outlived the fix without this.
+func TestReextractDependenciesReplacesStaleEdges(t *testing.T) {
+	db := newTestDB(t)
+	analyzer := NewAnalyzer(db)
+
+	src := []MemFile{{Name: "a.gno", Body: `package main
+
+// import "gno.land/r/demo/commented"
+import "gno.land/p/demo/avl"
+
+const link = "gno.land/r/demo/mentioned"
+`}}
+	// What the old regex would have written for that file.
+	seedPackage(t, db, "testnet", "gno.land/r/demo/target", src, []string{
+		"gno.land/r/demo/commented",
+		"gno.land/p/demo/avl",
+		"gno.land/r/demo/mentioned",
+	})
+
+	if got := depsOf(t, db, "testnet", "gno.land/r/demo/target"); len(got) != 3 {
+		t.Fatalf("seed failed: %v", got)
+	}
+
+	if err := analyzer.ReextractDependencies(); err != nil {
+		t.Fatalf("ReextractDependencies: %v", err)
+	}
+
+	got := depsOf(t, db, "testnet", "gno.land/r/demo/target")
+	want := []string{"gno.land/p/demo/avl"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("dependencies = %v, want %v", got, want)
+	}
+}
+
+// The pass is marked done by extractor version, so a restart does not redo it —
+// but bumping the version must.
+func TestReextractDependenciesRunsOncePerVersion(t *testing.T) {
+	db := newTestDB(t)
+	analyzer := NewAnalyzer(db)
+
+	src := []MemFile{{Name: "a.gno", Body: "package main\nimport \"gno.land/p/demo/avl\"\n"}}
+	seedPackage(t, db, "testnet", "gno.land/r/demo/target", src, []string{"gno.land/r/demo/phantom"})
+
+	if err := analyzer.ReextractDependencies(); err != nil {
+		t.Fatalf("first pass: %v", err)
+	}
+	if got, _ := db.GetSyncState(dependencyExtractorKey); got != dependencyExtractorVersion {
+		t.Fatalf("version marker = %q, want %q", got, dependencyExtractorVersion)
+	}
+
+	// Corrupt the table, then re-run: the marker means it must not be touched.
+	if err := db.SetDependencies("testnet", "gno.land/r/demo/target", []string{"gno.land/r/demo/manual"}); err != nil {
+		t.Fatalf("SetDependencies: %v", err)
+	}
+	if err := analyzer.ReextractDependencies(); err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	if got := depsOf(t, db, "testnet", "gno.land/r/demo/target"); !reflect.DeepEqual(got, []string{"gno.land/r/demo/manual"}) {
+		t.Errorf("second pass re-ran despite the version marker: %v", got)
+	}
+
+	// A new extractor version must run again.
+	if err := db.SetSyncState(dependencyExtractorKey, "0"); err != nil {
+		t.Fatalf("SetSyncState: %v", err)
+	}
+	if err := analyzer.ReextractDependencies(); err != nil {
+		t.Fatalf("third pass: %v", err)
+	}
+	if got := depsOf(t, db, "testnet", "gno.land/r/demo/target"); !reflect.DeepEqual(got, []string{"gno.land/p/demo/avl"}) {
+		t.Errorf("a bumped version did not re-extract: %v", got)
+	}
+}
+
+func depsOf(t *testing.T, db *DB, network, pkgPath string) []string {
+	t.Helper()
+	rows, err := db.db.Query(`SELECT import_path FROM dependencies WHERE network = ? AND package_path = ? ORDER BY import_path`, network, pkgPath)
+	if err != nil {
+		t.Fatalf("query dependencies: %v", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		out = append(out, s)
+	}
+	return out
+}

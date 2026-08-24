@@ -69,6 +69,16 @@ func run() error {
 	// Initialize analyzer
 	analyzer := NewAnalyzer(db)
 
+	// Recompute dependency edges when the extractor has changed. Reads only
+	// stored source, so it costs nothing on the network and is a no-op once the
+	// current version is recorded. Errors are logged, not fatal: a stale
+	// dependency graph is not a reason to refuse to start.
+	go func() {
+		if err := analyzer.ReextractDependencies(); err != nil {
+			log.Printf("re-extract dependencies: %v", err)
+		}
+	}()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
