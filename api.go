@@ -683,6 +683,20 @@ const (
 	maxEventTxs     = 2000
 )
 
+// eventTxLimit reads the caller's `limit`, falling back to a default and capped
+// at a maximum. Every event view goes through it so none of them can ask the
+// indexer for a chain's entire history.
+func eventTxLimit(r *http.Request) int {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 {
+		limit = defaultEventTxs
+	}
+	if limit > maxEventTxs {
+		limit = maxEventTxs
+	}
+	return limit
+}
+
 func (a *API) HandleAllEvents(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
 	client := a.clientFor(network)
@@ -692,13 +706,7 @@ func (a *API) HandleAllEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	// Recent transactions that have GnoEvents. Bounded by default: unbounded,
 	// this returns every event-emitting transaction the chain ever had.
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit == 0 {
-		limit = defaultEventTxs
-	}
-	if limit > maxEventTxs {
-		limit = maxEventTxs
-	}
+	limit := eventTxLimit(r)
 	txs, err := client.GetRecentTransactionsWithEvents(r.Context(), limit)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
@@ -745,7 +753,9 @@ func (a *API) HandleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	path := "gno.land/" + r.PathValue("path")
 	path = strings.TrimRight(path, "/")
-	txs, err := client.GetEventsByPkgPath(r.Context(), path)
+	// Bounded like /api/allevents, and for the same reason: unbounded, this
+	// filter scans the chain's whole history and takes ~34s on a busy one.
+	txs, err := client.GetEventsByPkgPath(r.Context(), path, eventTxLimit(r))
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
@@ -913,7 +923,7 @@ func (a *API) HandleGovDAO(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "no client available", 500)
 		return
 	}
-	txs, err := client.GetGovDAOTransactions(r.Context())
+	txs, err := client.GetGovDAOTransactions(r.Context(), eventTxLimit(r))
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return

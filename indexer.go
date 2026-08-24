@@ -831,19 +831,6 @@ func (c *IndexerClient) GetBlock(ctx context.Context, height int) (*Block, error
 }
 
 // GetTransactionsByRealm fetches calls to a specific realm function.
-func (c *IndexerClient) GetTransactionsByRealmFunc(ctx context.Context, pkgPath, funcName string) ([]Transaction, error) {
-	var result struct {
-		GetTransactions []Transaction `json:"getTransactions"`
-	}
-	q := fmt.Sprintf(`{
-		getTransactions(
-			where: { messages: { value: { MsgCall: { pkg_path: { eq: "%s" }, func: { eq: "%s" } } } } }
-			order: { heightAndIndex: DESC }
-		) { %s }
-	}`, gqlEscape(pkgPath), gqlEscape(funcName), txFieldsLight)
-	err := c.query(ctx, q, nil, &result)
-	return result.GetTransactions, err
-}
 
 // GetTransactionsByBlock fetches transactions in a specific block.
 func (c *IndexerClient) GetTransactionsByBlock(ctx context.Context, height int) ([]Transaction, error) {
@@ -936,31 +923,39 @@ func (c *IndexerClient) GetRecentTransactionsWithEvents(ctx context.Context, nee
 }
 
 // GetEventsByPkgPath fetches transactions that emitted GnoEvents for a package.
-func (c *IndexerClient) GetEventsByPkgPath(ctx context.Context, pkgPath string) ([]Transaction, error) {
-	var result struct {
-		GetTransactions []Transaction `json:"getTransactions"`
-	}
-	q := fmt.Sprintf(`{
+func (c *IndexerClient) GetEventsByPkgPath(ctx context.Context, pkgPath string, need int) ([]Transaction, error) {
+	where := fmt.Sprintf(`response: { events: { GnoEvent: { pkg_path: { eq: "%s" } } } }`, gqlEscape(pkgPath))
+	return c.recentTransactionsWindowed(ctx, need, where, func() ([]Transaction, error) {
+		var result struct {
+			GetTransactions []Transaction `json:"getTransactions"`
+		}
+		q := fmt.Sprintf(`{
 		getTransactions(
-			where: { response: { events: { GnoEvent: { pkg_path: { eq: "%s" } } } } }
+			where: { %s }
 			order: { heightAndIndex: DESC }
 		) { %s }
-	}`, gqlEscape(pkgPath), txFieldsLight)
-	err := c.query(ctx, q, nil, &result)
-	return result.GetTransactions, err
+	}`, where, txFieldsLight)
+		err := c.query(ctx, q, nil, &result)
+		return result.GetTransactions, err
+	})
 }
 
 // GetGovDAOTransactions fetches transactions involving govdao realms.
-func (c *IndexerClient) GetGovDAOTransactions(ctx context.Context) ([]Transaction, error) {
-	var result struct {
-		GetTransactions []Transaction `json:"getTransactions"`
-	}
-	q := fmt.Sprintf(`{
+func (c *IndexerClient) GetGovDAOTransactions(ctx context.Context, need int) ([]Transaction, error) {
+	// A leading-wildcard LIKE cannot use an index, so this one is the most
+	// expensive of the realm filters to leave unbounded.
+	const where = `messages: { value: { MsgCall: { pkg_path: { like: "%govdao%"} } } }`
+	return c.recentTransactionsWindowed(ctx, need, where, func() ([]Transaction, error) {
+		var result struct {
+			GetTransactions []Transaction `json:"getTransactions"`
+		}
+		q := fmt.Sprintf(`{
 		getTransactions(
-			where: { messages: { value: { MsgCall: { pkg_path: { like: "%%govdao%%"} } } } }
+			where: { %s }
 			order: { heightAndIndex: DESC }
 		) { %s }
-	}`, txFieldsLight)
-	err := c.query(ctx, q, nil, &result)
-	return result.GetTransactions, err
+	}`, where, txFieldsLight)
+		err := c.query(ctx, q, nil, &result)
+		return result.GetTransactions, err
+	})
 }

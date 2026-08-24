@@ -605,3 +605,99 @@ func TestRefusedRequestNamesTheStatus(t *testing.T) {
 		t.Errorf("error still reads as a decode failure: %v", err)
 	}
 }
+
+// recordingIndexer captures every transaction query it is sent and answers with
+// `rows` transactions at the tip, so a caller asking for fewer stops after one
+// window.
+type recordingIndexer struct {
+	tip  int
+	rows int
+
+	mu      sync.Mutex
+	queries []string
+}
+
+func (f *recordingIndexer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	// Decode rather than matching the raw body: the query travels JSON-encoded,
+	// so every quote in a filter arrives escaped.
+	var req gqlRequest
+	json.Unmarshal(body, &req)
+	query := req.Query
+	w.Header().Set("Content-Type", "application/json")
+
+	if strings.Contains(query, "latestBlockHeight") {
+		fmt.Fprintf(w, `{"data":{"latestBlockHeight":%d}}`, f.tip)
+		return
+	}
+
+	f.mu.Lock()
+	f.queries = append(f.queries, query)
+	f.mu.Unlock()
+
+	rows := make([]string, 0, f.rows)
+	for i := 0; i < f.rows; i++ {
+		rows = append(rows, fmt.Sprintf(`{"hash":"tx-%d","block_height":%d}`, i, f.tip-i))
+	}
+	fmt.Fprintf(w, `{"data":{"getTransactions":[%s]}}`, strings.Join(rows, ","))
+}
+
+// The realm-scoped filters used to run against all of history. On a busy chain
+// that costs ~34s regardless of how much comes back, because the price is the
+// scan rather than the payload — enough to blow the serve timeout and take the
+// realm events and govdao views down. Both must now bound height, and must keep
+// their filter while doing it.
+func TestRealmFiltersAreBounded(t *testing.T) {
+	tests := []struct {
+		name       string
+		call       func(*IndexerClient) error
+		wantFilter string
+	}{
+		{
+			name: "events by pkg_path",
+			call: func(c *IndexerClient) error {
+				_, err := c.GetEventsByPkgPath(context.Background(), "gno.land/r/demo/boards", 20)
+				return err
+			},
+			wantFilter: `pkg_path: { eq: "gno.land/r/demo/boards" }`,
+		},
+		{
+			name: "govdao",
+			call: func(c *IndexerClient) error {
+				_, err := c.GetGovDAOTransactions(context.Background(), 20)
+				return err
+			},
+			wantFilter: `like: "%govdao%"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &recordingIndexer{tip: 500000, rows: 50}
+			srv := httptest.NewServer(fake)
+			defer srv.Close()
+
+			if err := tt.call(NewIndexerClient(srv.URL)); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			fake.mu.Lock()
+			defer fake.mu.Unlock()
+			if len(fake.queries) == 0 {
+				t.Fatal("no transaction query was issued")
+			}
+			for i, q := range fake.queries {
+				if !strings.Contains(q, "block_height") {
+					t.Errorf("query %d has no height bound: %s", i, q)
+				}
+				if !strings.Contains(q, tt.wantFilter) {
+					t.Errorf("query %d lost its filter %q: %s", i, tt.wantFilter, q)
+				}
+			}
+			// 50 rows on offer against a need of 20: one window is enough.
+			if len(fake.queries) != 1 {
+				t.Errorf("issued %d queries, want 1 — the window widened despite having enough rows", len(fake.queries))
+			}
+		})
+	}
+}
