@@ -53,10 +53,13 @@ func run() error {
 	}
 	log.Printf("networks %v (from %s)", cfg.IDs(), cfgSource)
 
-	// Create per-network clients
+	// Create per-network clients. The sync loop gets its own, on a budget sized
+	// for catching up on history rather than for answering a page.
 	clients := make(map[string]*IndexerClient)
+	syncClients := make(map[string]*IndexerClient)
 	for _, n := range cfg.Networks {
 		clients[n.ID] = NewIndexerClient(n.IndexerURL)
+		syncClients[n.ID] = NewSyncIndexerClient(n.IndexerURL)
 	}
 
 	// Initialize analyzer
@@ -69,7 +72,7 @@ func run() error {
 	if *syncOnStart {
 		for _, n := range cfg.Networks {
 			go func(net NetworkConfig) {
-				syncer := NewSyncer(clients[net.ID], db, analyzer, net.ID)
+				syncer := NewSyncer(syncClients[net.ID], db, analyzer, net.ID)
 				log.Printf("[%s] starting initial sync...", net.ID)
 				if err := syncer.SyncAll(ctx); err != nil {
 					log.Printf("[%s] sync error: %v", net.ID, err)
