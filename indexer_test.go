@@ -458,3 +458,106 @@ func TestSyncFetchersKeepTheirFilterAndOrder(t *testing.T) {
 		})
 	}
 }
+
+// sparseTxIndexer models a chain whose transactions are all old: nothing has
+// happened for the last `tip - lastTxHeight` blocks. gno.land looks like this —
+// it returns no rows at all for its most recent 20,000 blocks — so the widening
+// loop has to walk back before it finds anything.
+type sparseTxIndexer struct {
+	tip          int
+	lastTxHeight int
+
+	mu      sync.Mutex
+	windows []int // `from` bound of each transaction query, in order
+}
+
+func (f *sparseTxIndexer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	query := string(body)
+	w.Header().Set("Content-Type", "application/json")
+
+	if strings.Contains(query, "latestBlockHeight") {
+		fmt.Fprintf(w, `{"data":{"latestBlockHeight":%d}}`, f.tip)
+		return
+	}
+
+	from := 0
+	if gt := strings.Index(query, "gt:"); gt >= 0 {
+		fmt.Sscanf(strings.TrimSpace(query[gt+3:]), "%d", &from)
+	}
+
+	f.mu.Lock()
+	f.windows = append(f.windows, from)
+	f.mu.Unlock()
+
+	var rows []string
+	for h := f.lastTxHeight; h > from; h-- {
+		rows = append(rows, fmt.Sprintf(`{"hash":"tx-%d","block_height":%d}`, h, h))
+	}
+	fmt.Fprintf(w, `{"data":{"getTransactions":[%s]}}`, strings.Join(rows, ","))
+}
+
+func TestRecentPageWidensUntilItFindsRows(t *testing.T) {
+	// The initial window is deliberately small, so a chain with no recent
+	// activity must widen several times rather than give up and report nothing.
+	fake := &sparseTxIndexer{tip: 100000, lastTxHeight: 500}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+
+	txs, err := NewIndexerClient(srv.URL).GetRecentTransactionsPage(context.Background(), 20)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(txs) < 20 {
+		t.Fatalf("got %d transactions, want at least the 20 asked for", len(txs))
+	}
+	if txs[0].BlockHeight != fake.lastTxHeight {
+		t.Errorf("newest row is height %d, want %d", txs[0].BlockHeight, fake.lastTxHeight)
+	}
+
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.windows) < 2 {
+		t.Fatalf("only %d query issued, so the window never widened", len(fake.windows))
+	}
+	// Each widening must reach strictly further back than the last.
+	for i := 1; i < len(fake.windows); i++ {
+		if fake.windows[i] >= fake.windows[i-1] {
+			t.Errorf("window %d starts at %d, no further back than %d", i, fake.windows[i], fake.windows[i-1])
+		}
+	}
+}
+
+func TestRecentPageServesACappedWindow(t *testing.T) {
+	// A dense chain overflows the element cap inside the very first window. The
+	// query is DESC, so the rows the resolver kept are the newest ones — exactly
+	// what a "recent" view wants. Returning them beats failing the request, which
+	// is what used to happen and what took /api/txs down on sapphire.
+	fake := &truncatingTxIndexer{tip: 20000, txsPerBlock: 200}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+
+	txs, err := NewIndexerClient(srv.URL).GetRecentTransactionsPage(context.Background(), 20)
+	if err != nil {
+		t.Fatalf("capped window should serve rows, not fail: %v", err)
+	}
+	if len(txs) != indexerElementCap {
+		t.Fatalf("got %d rows, want the full capped page of %d", len(txs), indexerElementCap)
+	}
+	if txs[0].BlockHeight != fake.tip {
+		t.Errorf("newest row is height %d, want the tip at %d", txs[0].BlockHeight, fake.tip)
+	}
+}
+
+func TestRecentPageStillFailsWhenCappedPageIsTooSmall(t *testing.T) {
+	// The cap only answers the question when it holds at least what was asked
+	// for. Beyond that the page is genuinely short and must not pass as complete.
+	fake := &truncatingTxIndexer{tip: 20000, txsPerBlock: 200}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+
+	_, err := NewIndexerClient(srv.URL).GetRecentTransactionsPage(context.Background(), indexerElementCap+1)
+	if !errors.Is(err, errQueryTooLarge) {
+		t.Fatalf("got %v, want errQueryTooLarge", err)
+	}
+}
