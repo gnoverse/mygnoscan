@@ -1528,7 +1528,7 @@ function renderValoperRows(container) {
   if (!wrap) return;
   wrap.textContent = '';
   const tbl = el('table');
-  tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'caller'), el('th', {}, 'function'), el('th', {}, 'moniker'), el('th', {}, 'status'))));
+  tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'validator'), el('th', {}, 'function'), el('th', {}, 'moniker'), el('th', {}, 'status'))));
   const tbody = el('tbody');
   for (const reg of (_valopersCache || [])) {
     if (!_valopersShowFailed && !reg.success) continue;
