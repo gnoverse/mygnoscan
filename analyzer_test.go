@@ -93,32 +93,61 @@ func TestExtractImports(t *testing.T) {
 	}
 }
 
-// TestExtractImportsMatchesAnyQuotedPath pins a known limitation rather than
-// endorsing it: extraction is a regex over the file body, not a parse of the
-// import block, so any quoted gno.land path anywhere in the source is reported
-// as a dependency — including ones in comments, in string literals, and in
-// imports that were commented out.
-//
-// The effect is a dependency graph that over-reports. It never misses a real
-// import, which is why this is tolerable, but a realm that merely mentions a
-// path in a string gets an edge it does not have. Changing it means parsing the
-// source properly; this test exists so that change is visible when it happens.
-func TestExtractImportsMatchesAnyQuotedPath(t *testing.T) {
+// Only real imports count. This test previously asserted the opposite — the old
+// regex reported every quoted gno.land path, so a commented-out import and a
+// path in a string literal both became dependency edges.
+func TestExtractImportsIgnoresPathsThatAreNotImports(t *testing.T) {
 	files := []MemFile{{Name: "a.gno", Body: `
 		package main
 
 		// import "gno.land/r/demo/commented"
 		import "gno.land/p/demo/avl"
 
+		// Cross-realm paths live in string literals all over gno, which is what
+		// made the old behaviour actively wrong rather than merely untidy.
 		const link = "gno.land/r/demo/mentioned"
+
+		func Render(path string) string {
+			return "see gno.land/r/demo/alsonot"
+		}
 	`}}
 
 	got := NewAnalyzer(nil).ExtractImports(files)
-	want := []string{
-		"gno.land/r/demo/commented",
-		"gno.land/p/demo/avl",
-		"gno.land/r/demo/mentioned",
+	want := []string{"gno.land/p/demo/avl"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ExtractImports() = %v, want %v", got, want)
 	}
+}
+
+// ImportsOnly stops at the end of the import block, so source that fails to
+// compile further down still reports its imports correctly. This is the common
+// shape of broken on-chain source, and it must not lose edges.
+func TestExtractImportsSurvivesAnUnparseableBody(t *testing.T) {
+	files := []MemFile{{Name: "a.gno", Body: `
+		package main
+
+		import "gno.land/p/demo/avl"
+
+		func broken( { this is not go at all }
+	`}}
+
+	got := NewAnalyzer(nil).ExtractImports(files)
+	want := []string{"gno.land/p/demo/avl"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ExtractImports() = %v, want %v", got, want)
+	}
+}
+
+// When even the package clause will not parse, fall back to scanning. It
+// over-reports, but a real import is never lost — the better failure for a graph.
+func TestExtractImportsFallsBackWhenNothingParses(t *testing.T) {
+	files := []MemFile{{Name: "a.gno", Body: `
+		}}} not go {{{
+		import "gno.land/p/demo/avl"
+	`}}
+
+	got := NewAnalyzer(nil).ExtractImports(files)
+	want := []string{"gno.land/p/demo/avl"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ExtractImports() = %v, want %v", got, want)
 	}
