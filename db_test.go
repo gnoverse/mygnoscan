@@ -2,9 +2,23 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"testing"
 )
+
+// newTestDB opens a real SQLite file in a temp dir. The driver is pure Go, so
+// this works everywhere including CI, and it exercises the actual schema rather
+// than a mock.
+func newTestDB(t *testing.T) *DB {
+	t.Helper()
+	db, err := NewDB(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewDB: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
+}
 
 // oldSchemaNoBlockTime is the schema as it existed after the network column was
 // added but before the time-series work introduced block_time. Databases in this
@@ -502,5 +516,108 @@ func TestBackfillSkipsGenesisRows(t *testing.T) {
 		if h == 0 {
 			t.Error("block time backfill returned genesis height 0")
 		}
+	}
+}
+
+// A network removed from the config keeps its rows. Without scoping, every
+// all-networks total silently counts a chain that no longer exists — on
+// production this inflated the transaction count by 4,101 and the realm count by
+// 187 the day topaz was retired.
+func TestStatsAreScopedToConfiguredNetworks(t *testing.T) {
+	db := newTestDB(t)
+
+	seed := func(network string, calls, realms int) {
+		t.Helper()
+		for i := 0; i < calls; i++ {
+			if err := db.InsertCall(network, fmt.Sprintf("%s-tx-%d", network, i), 100+i,
+				"2026-01-01T00:00:00Z", fmt.Sprintf("g1caller%d", i), "gno.land/r/demo/x", "Fn", true); err != nil {
+				t.Fatalf("seed call: %v", err)
+			}
+		}
+		for i := 0; i < realms; i++ {
+			if err := db.UpsertPackage(network, fmt.Sprintf("gno.land/r/%s/pkg%d", network, i), "pkg",
+				"g1creator", fmt.Sprintf("%s-dep-%d", network, i), 200+i, "2026-01-01T00:00:00Z", true, 1); err != nil {
+				t.Fatalf("seed package: %v", err)
+			}
+		}
+	}
+
+	seed("live", 5, 2)
+	seed("retired", 3, 1)
+
+	tests := []struct {
+		name       string
+		configured []string
+		network    string
+		wantCalls  int
+		wantRealms int
+	}{
+		{
+			name:       "all networks counts only the configured one",
+			configured: []string{"live"},
+			network:    "",
+			wantCalls:  5,
+			wantRealms: 2,
+		},
+		{
+			name:       "a named network is unaffected by the config list",
+			configured: []string{"live"},
+			network:    "live",
+			wantCalls:  5,
+			wantRealms: 2,
+		},
+		{
+			name:       "re-adding the network brings its rows back",
+			configured: []string{"live", "retired"},
+			network:    "",
+			wantCalls:  8,
+			wantRealms: 3,
+		},
+		{
+			name:       "no configuration counts everything, as before",
+			configured: nil,
+			network:    "",
+			wantCalls:  8,
+			wantRealms: 3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := make([]NetworkConfig, 0, len(tt.configured))
+			for _, id := range tt.configured {
+				cfg = append(cfg, NetworkConfig{ID: id})
+			}
+			db.SetConfiguredNetworks(cfg)
+
+			s, err := db.GetStats(tt.network)
+			if err != nil {
+				t.Fatalf("GetStats: %v", err)
+			}
+			if s.TotalCalls != tt.wantCalls {
+				t.Errorf("TotalCalls = %d, want %d", s.TotalCalls, tt.wantCalls)
+			}
+			if s.TotalRealms != tt.wantRealms {
+				t.Errorf("TotalRealms = %d, want %d", s.TotalRealms, tt.wantRealms)
+			}
+		})
+	}
+}
+
+// The filter interpolates identifiers, so a quote in a network id must not be
+// able to close the literal.
+func TestNetworkFilterQuoting(t *testing.T) {
+	db := newTestDB(t)
+	db.SetConfiguredNetworks([]NetworkConfig{{ID: "o'brien"}, {ID: "plain"}})
+
+	if got, want := db.networkFilter("network", ""), `network IN ('o''brien','plain')`; got != want {
+		t.Errorf("configured set: got %q, want %q", got, want)
+	}
+	if got, want := db.networkFilter("network", "o'brien"), `network = 'o''brien'`; got != want {
+		t.Errorf("named network: got %q, want %q", got, want)
+	}
+	db.SetConfiguredNetworks(nil)
+	if got, want := db.networkFilter("network", ""), "1=1"; got != want {
+		t.Errorf("no config: got %q, want %q", got, want)
 	}
 }

@@ -53,6 +53,10 @@ func run() error {
 	}
 	log.Printf("networks %v (from %s)", cfg.IDs(), cfgSource)
 
+	// Rows outlive a network being retired from the config, so tell the database
+	// which ones still count before anything reads an all-networks total.
+	db.SetConfiguredNetworks(cfg.Networks)
+
 	// Create per-network clients. The sync loop gets its own, on a budget sized
 	// for catching up on history rather than for answering a page.
 	clients := make(map[string]*IndexerClient)

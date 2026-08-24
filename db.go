@@ -13,6 +13,50 @@ import (
 type DB struct {
 	db *sql.DB
 	mu sync.RWMutex
+
+	// configured is the set of networks the process is running, set once at
+	// startup. Rows survive a network being retired from the config, so without
+	// this the database — not the config — decides which networks exist.
+	configured []string
+}
+
+// SetConfiguredNetworks scopes unfiltered reads to the networks currently in the
+// config. Call once at startup, before serving.
+func (d *DB) SetConfiguredNetworks(networks []NetworkConfig) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.configured = d.configured[:0]
+	for _, n := range networks {
+		d.configured = append(d.configured, n.ID)
+	}
+}
+
+// networkFilter builds a SQL condition restricting rows to one network, or to
+// the configured set when network is empty.
+//
+// Returns a bare condition, so callers supply their own WHERE or AND. When
+// nothing is configured it yields `1=1`, which keeps every call site a plain
+// concatenation rather than a branch.
+//
+// The identifiers are interpolated rather than bound. These fragments are
+// spliced into CTEs at several points, where positional parameters would have to
+// be threaded through in query order, and both sources are trusted: a named
+// network has already been checked against the config by rejectUnknownNetwork,
+// and the fallback list is the config file itself, never a request. The quote
+// doubling is belt and braces.
+func (d *DB) networkFilter(column, network string) string {
+	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+	if network != "" {
+		return column + " = " + quote(network)
+	}
+	if len(d.configured) == 0 {
+		return "1=1"
+	}
+	quoted := make([]string, 0, len(d.configured))
+	for _, n := range d.configured {
+		quoted = append(quoted, quote(n))
+	}
+	return column + " IN (" + strings.Join(quoted, ",") + ")"
 }
 
 func NewDB(path string) (*DB, error) {
@@ -1192,28 +1236,18 @@ func (d *DB) GetStats(network string) (*Stats, error) {
 	defer d.mu.RUnlock()
 
 	var s Stats
-	nf := ""
-	if network != "" {
-		nf = " WHERE network = '" + strings.ReplaceAll(network, "'", "''") + "'"
-	}
+	// One filter for every count, so a retired network cannot inflate some
+	// totals and not others.
+	nf := " WHERE " + d.networkFilter("network", network)
 	d.db.QueryRow(`SELECT COUNT(*) FROM calls` + nf).Scan(&s.TotalCalls)
 	d.db.QueryRow(`SELECT COUNT(*) FROM packages` + nf).Scan(&s.TotalDeploys)
-	if network != "" {
-		d.db.QueryRow(`SELECT COUNT(*) FROM packages WHERE is_realm = 1 AND network = ?`, network).Scan(&s.TotalRealms)
-	} else {
-		d.db.QueryRow(`SELECT COUNT(*) FROM packages WHERE is_realm = 1`).Scan(&s.TotalRealms)
-	}
+	d.db.QueryRow(`SELECT COUNT(*) FROM packages` + nf + ` AND is_realm = 1`).Scan(&s.TotalRealms)
 	s.TotalPackages = s.TotalDeploys - s.TotalRealms
 	d.db.QueryRow(`SELECT COUNT(*) FROM msg_runs` + nf).Scan(&s.TotalMsgRuns)
 	d.db.QueryRow(`SELECT COUNT(*) FROM bank_sends` + nf).Scan(&s.TotalSends)
 	s.TotalTxs = s.TotalCalls + s.TotalDeploys + s.TotalMsgRuns + s.TotalSends
-	if network != "" {
-		d.db.QueryRow(`SELECT COUNT(DISTINCT caller) FROM calls WHERE network = ?`, network).Scan(&s.UniqueCallers)
-		d.db.QueryRow(`SELECT COALESCE(MAX(block_height), 0) FROM packages WHERE network = ?`, network).Scan(&s.LatestBlock)
-	} else {
-		d.db.QueryRow(`SELECT COUNT(DISTINCT caller) FROM calls`).Scan(&s.UniqueCallers)
-		d.db.QueryRow(`SELECT COALESCE(MAX(block_height), 0) FROM packages`).Scan(&s.LatestBlock)
-	}
+	d.db.QueryRow(`SELECT COUNT(DISTINCT caller) FROM calls` + nf).Scan(&s.UniqueCallers)
+	d.db.QueryRow(`SELECT COALESCE(MAX(block_height), 0) FROM packages` + nf).Scan(&s.LatestBlock)
 	return &s, nil
 }
 
@@ -1301,12 +1335,7 @@ func (d *DB) GetActiveAccounts(network string) ([]AccountInfo, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	nFilter := ""
-	if network != "" {
-		// SQLite-safe string interpolation for CTEs
-		safe := strings.ReplaceAll(network, "'", "''")
-		nFilter = " WHERE network = '" + safe + "'"
-	}
+	nFilter := " WHERE " + d.networkFilter("network", network)
 
 	q := `
 		SELECT address, SUM(call_count), SUM(deploy_count), SUM(run_count), SUM(send_count)
@@ -1376,11 +1405,7 @@ func (d *DB) GetBankStats(network string) (*BankStats, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	nFilter := ""
-	if network != "" {
-		safe := strings.ReplaceAll(network, "'", "''")
-		nFilter = " WHERE network = '" + safe + "'"
-	}
+	nFilter := " WHERE " + d.networkFilter("network", network)
 
 	var s BankStats
 	d.db.QueryRow(`SELECT COUNT(*) FROM bank_sends` + nFilter).Scan(&s.TotalSends)
@@ -1388,11 +1413,7 @@ func (d *DB) GetBankStats(network string) (*BankStats, error) {
 	d.db.QueryRow(`SELECT COUNT(DISTINCT to_address) FROM bank_sends` + nFilter).Scan(&s.UniqueReceivers)
 	d.db.QueryRow(`SELECT ` + amountExpr + ` FROM bank_sends` + nFilter).Scan(&s.TotalVolume)
 
-	andFilter := ""
-	if network != "" {
-		safe := strings.ReplaceAll(network, "'", "''")
-		andFilter = " AND network = '" + safe + "'"
-	}
+	andFilter := " AND " + d.networkFilter("network", network)
 	d.db.QueryRow(`SELECT COUNT(DISTINCT addr) FROM (SELECT from_address as addr FROM bank_sends` + nFilter + ` UNION SELECT to_address FROM bank_sends` + nFilter + `)`).Scan(&s.UniqueAddresses)
 
 	s.TopSenders = d.queryAddrStats(`SELECT from_address, COUNT(*), ` + amountExpr + ` FROM bank_sends` + nFilter + ` GROUP BY from_address ORDER BY COUNT(*) DESC LIMIT 10`)
@@ -1446,13 +1467,8 @@ func (d *DB) GetAnalytics(network string) (*Analytics, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	nFilter := ""
-	pFilter := ""
-	if network != "" {
-		safe := strings.ReplaceAll(network, "'", "''")
-		nFilter = " WHERE network = '" + safe + "'"
-		pFilter = " AND p.network = '" + safe + "'"
-	}
+	nFilter := " WHERE " + d.networkFilter("network", network)
+	pFilter := " AND " + d.networkFilter("p.network", network)
 
 	var a Analytics
 	if network != "" {
@@ -1467,11 +1483,7 @@ func (d *DB) GetAnalytics(network string) (*Analytics, error) {
 	d.db.QueryRow(`SELECT COUNT(*) FROM msg_runs` + nFilter).Scan(&a.TotalMsgRuns)
 	d.db.QueryRow(`SELECT COUNT(*) FROM bank_sends` + nFilter).Scan(&a.TotalSends)
 
-	addrUnionFilter := ""
-	if network != "" {
-		safe := strings.ReplaceAll(network, "'", "''")
-		addrUnionFilter = " WHERE network = '" + safe + "'"
-	}
+	addrUnionFilter := " WHERE " + d.networkFilter("network", network)
 	d.db.QueryRow(`SELECT COUNT(DISTINCT addr) FROM (
 		SELECT caller as addr FROM calls` + addrUnionFilter + ` UNION SELECT creator FROM packages` + addrUnionFilter + `
 		UNION SELECT caller FROM msg_runs` + addrUnionFilter + ` UNION SELECT from_address FROM bank_sends` + addrUnionFilter + `
@@ -1483,13 +1495,8 @@ func (d *DB) GetAnalytics(network string) (*Analytics, error) {
 		d.db.QueryRow(`SELECT COALESCE(SUM(LENGTH(body)), 0) / 1024 FROM package_files`).Scan(&a.TotalSourceKB)
 	}
 
-	callJoinFilter := ""
-	depJoinFilter := ""
-	if network != "" {
-		safe := strings.ReplaceAll(network, "'", "''")
-		callJoinFilter = " AND c_inner.network = '" + safe + "'"
-		depJoinFilter = " AND dep_inner.network = '" + safe + "'"
-	}
+	callJoinFilter := " AND " + d.networkFilter("c_inner.network", network)
+	depJoinFilter := " AND " + d.networkFilter("dep_inner.network", network)
 
 	// Top realms by calls
 	rows, _ := d.db.Query(`
@@ -1541,9 +1548,7 @@ func (d *DB) GetAnalytics(network string) (*Analytics, error) {
 
 	// Top imports
 	importsQ := `SELECT import_path, COUNT(*) as c FROM dependencies WHERE import_path LIKE 'gno.land/%'`
-	if network != "" {
-		importsQ += ` AND network = '` + strings.ReplaceAll(network, "'", "''") + `'`
-	}
+	importsQ += " AND " + d.networkFilter("network", network)
 	importsQ += ` GROUP BY import_path ORDER BY c DESC LIMIT 15`
 	rows4, _ := d.db.Query(importsQ)
 	if rows4 != nil {
