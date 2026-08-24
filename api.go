@@ -697,31 +697,20 @@ func eventTxLimit(r *http.Request) int {
 	return limit
 }
 
-func (a *API) HandleAllEvents(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	client := a.clientFor(network)
-	if client == nil {
-		jsonError(w, "no client available", 500)
-		return
-	}
-	// Recent transactions that have GnoEvents. Bounded by default: unbounded,
-	// this returns every event-emitting transaction the chain ever had.
-	limit := eventTxLimit(r)
-	txs, err := client.GetRecentTransactionsWithEvents(r.Context(), limit)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-	if limit > 0 && len(txs) > limit {
-		txs = txs[:limit]
-	}
-	type EventResult struct {
-		TxHash      string    `json:"tx_hash"`
-		BlockHeight int       `json:"block_height"`
-		Success     bool      `json:"success"`
-		Events      []TxEvent `json:"events"`
-	}
-	var results []EventResult
+// EventResult is one transaction's GnoEvents, tagged with the chain it came from.
+type EventResult struct {
+	TxHash      string    `json:"tx_hash"`
+	BlockHeight int       `json:"block_height"`
+	BlockTime   string    `json:"block_time,omitempty"`
+	Success     bool      `json:"success"`
+	Network     string    `json:"network,omitempty"`
+	Events      []TxEvent `json:"events"`
+}
+
+// gnoEvents keeps the GnoEvents of each transaction, dropping transactions that
+// emitted none.
+func gnoEvents(txs []Transaction, network string) []EventResult {
+	out := make([]EventResult, 0, len(txs))
 	for _, tx := range txs {
 		if tx.Response == nil {
 			continue
@@ -732,16 +721,85 @@ func (a *API) HandleAllEvents(w http.ResponseWriter, r *http.Request) {
 				matched = append(matched, ev)
 			}
 		}
-		if len(matched) > 0 {
-			results = append(results, EventResult{
-				TxHash:      tx.Hash,
-				BlockHeight: tx.BlockHeight,
-				Success:     tx.Success,
-				Events:      matched,
-			})
+		if len(matched) == 0 {
+			continue
 		}
+		out = append(out, EventResult{
+			TxHash:      tx.Hash,
+			BlockHeight: tx.BlockHeight,
+			BlockTime:   tx.BlockTime,
+			Success:     tx.Success,
+			Network:     network,
+			Events:      matched,
+		})
 	}
-	jsonResponse(w, results)
+	return out
+}
+
+func (a *API) HandleAllEvents(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	// Bounded by default: unbounded, this returns every event-emitting
+	// transaction the chain ever had.
+	limit := eventTxLimit(r)
+
+	if network != "" {
+		client := a.clientFor(network)
+		if client == nil {
+			jsonError(w, "network not found", 404)
+			return
+		}
+		txs, err := client.GetRecentTransactionsWithEvents(r.Context(), limit)
+		if err != nil {
+			jsonError(w, err.Error(), 500)
+			return
+		}
+		// Same stamping as the merged path, so a row carries a timestamp
+		// whichever way it was fetched.
+		a.stampBlockTimes(r.Context(), network, client, txs)
+		results := gnoEvents(txs, network)
+		if len(results) > limit {
+			results = results[:limit]
+		}
+		jsonResponse(w, results)
+		return
+	}
+
+	// All networks means every network, not whichever one clientFor happened to
+	// return. It used to call clientFor("") — which hands back an arbitrary entry
+	// of a Go map — so this endpoint silently served a single chain's events
+	// under an "all networks" heading, and the busiest chain was often the one
+	// left out.
+	var merged []EventResult
+	for _, batch := range fanOut(r.Context(), a.networks, a.clients, a.health,
+		func(ctx context.Context, n NetworkConfig, c *IndexerClient) ([]EventResult, error) {
+			txs, err := c.GetRecentTransactionsWithEvents(ctx, limit)
+			if err != nil {
+				return nil, err
+			}
+			// Timestamps are load-bearing here, not decoration. txFieldsLight
+			// carries no block_time, so without this every row sorts on raw
+			// height — and heights are not comparable across chains. gnoland1
+			// sits near 3.1M while sapphire is near 400k, so gnoland1 would win
+			// every comparison and the truncation below would drop sapphire
+			// entirely. Measured: 100 rows returned, 100 of them gnoland1.
+			a.stampBlockTimes(ctx, n.ID, c, txs)
+			return gnoEvents(txs, n.ID), nil
+		}) {
+		merged = append(merged, batch...)
+	}
+
+	// Interleave by time. Heights are not comparable across chains, so they are
+	// only a fallback for rows the block-time backfill has not reached.
+	sort.Slice(merged, func(i, j int) bool {
+		if merged[i].BlockTime != "" && merged[j].BlockTime != "" {
+			return merged[i].BlockTime > merged[j].BlockTime
+		}
+		return merged[i].BlockHeight > merged[j].BlockHeight
+	})
+	if len(merged) > limit {
+		merged = merged[:limit]
+	}
+	jsonResponse(w, merged)
 }
 
 func (a *API) HandleEvents(w http.ResponseWriter, r *http.Request) {

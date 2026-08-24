@@ -2346,6 +2346,7 @@ async function loadEvents() {
           block: item.block_height,
           tx: item.tx_hash,
           success: item.success,
+          network: item.network,
           type: ev.type || 'unknown',
           pkg_path: ev.pkg_path,
           attrs: ev.attrs,
@@ -2447,12 +2448,12 @@ function renderEventRows() {
       ? link(ev.pkg_path, () => navigate('/realm/' + ev.pkg_path.replace('gno.land/', '')))
       : el('span', {}, '-');
     if (ev.pkg_path) realmLink.setAttribute('data-hl', 'realm:' + ev.pkg_path);
-    list.appendChild(el('tr', {},
-      el('td', {}, blockLink(ev.block)),
+    list.appendChild(netRow(ev.network,
+      el('td', {}, blockLink(ev.block, ev.network)),
       el('td', {}, realmLink),
       el('td', {}, badge('realm', ev.type)),
       el('td', {}, attrStr ? linkify(attrStr) : el('span', {}, '-')),
-      el('td', {}, txLink(ev.tx, ev.block))
+      el('td', {}, txLink(ev.tx, ev.block, ev.network))
     ));
   }
 
