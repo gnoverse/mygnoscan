@@ -2230,6 +2230,23 @@ type GasTimePoint struct {
 	AvgFee         int     `json:"avg_fee"`
 	SuccessCount   int     `json:"success_count"`
 	FailCount      int     `json:"fail_count"`
+
+	// ByNetwork splits the same bucket per chain, and is only populated in
+	// all-networks mode. Fees are denominated per chain and are not the same
+	// asset across them, so a single summed figure describes nothing — the
+	// split is what makes an aggregate honest. Counts remain summed above,
+	// where adding them is meaningful.
+	ByNetwork map[string]GasTimeSlice `json:"by_network,omitempty"`
+}
+
+// GasTimeSlice is one network's share of a bucket.
+type GasTimeSlice struct {
+	TotalGasUsed   int `json:"total_gas_used"`
+	TotalGasWanted int `json:"total_gas_wanted"`
+	TotalFees      int `json:"total_fees"`
+	TxCount        int `json:"tx_count"`
+	SuccessCount   int `json:"success_count"`
+	FailCount      int `json:"fail_count"`
 }
 
 type SanityOverview struct {
@@ -2273,8 +2290,11 @@ func (d *DB) GetGasTimeSeries(network, granularity string, days int) ([]GasTimeP
 	// (network, ...) indexes stay usable for the all-networks case.
 	netFilter := " AND " + d.networkFilter("t.network", network)
 
+	// Group by network as well, then fold. One pass gives both the totals and
+	// the per-chain split, and the extra grouping key is already the leading
+	// column of the indexes this reads.
 	q := fmt.Sprintf(
-		"SELECT strftime('%s', t.block_time) as bucket,"+
+		"SELECT strftime('%s', t.block_time) as bucket, t.network,"+
 			" SUM(t.gas_used) as total_gas_used,"+
 			" SUM(t.gas_wanted) as total_gas_wanted,"+
 			" SUM(t.gas_fee) as total_fees,"+
@@ -2282,7 +2302,7 @@ func (d *DB) GetGasTimeSeries(network, granularity string, days int) ([]GasTimeP
 			" SUM(CASE WHEN t.success THEN 1 ELSE 0 END) as success_count"+
 			" FROM transactions t"+
 			" WHERE t.block_time >= ?%s"+
-			" GROUP BY bucket ORDER BY bucket ASC",
+			" GROUP BY bucket, t.network ORDER BY bucket ASC",
 		sqlFmt, netFilter)
 
 	args := []any{startTime}
@@ -2300,14 +2320,29 @@ func (d *DB) GetGasTimeSeries(network, granularity string, days int) ([]GasTimeP
 		totalFees      int
 		txCount        int
 		successCount   int
+		byNetwork      map[string]GasTimeSlice
 	}
 	buckets := make(map[string]*row)
 	for rows.Next() {
-		var r row
-		if err := rows.Scan(&r.bucket, &r.totalGasUsed, &r.totalGasWanted, &r.totalFees, &r.txCount, &r.successCount); err != nil {
+		var bucket, net string
+		var slice GasTimeSlice
+		if err := rows.Scan(&bucket, &net, &slice.TotalGasUsed, &slice.TotalGasWanted,
+			&slice.TotalFees, &slice.TxCount, &slice.SuccessCount); err != nil {
 			return nil, err
 		}
-		buckets[r.bucket] = &r
+		slice.FailCount = slice.TxCount - slice.SuccessCount
+
+		r := buckets[bucket]
+		if r == nil {
+			r = &row{bucket: bucket, byNetwork: map[string]GasTimeSlice{}}
+			buckets[bucket] = r
+		}
+		r.totalGasUsed += slice.TotalGasUsed
+		r.totalGasWanted += slice.TotalGasWanted
+		r.totalFees += slice.TotalFees
+		r.txCount += slice.TxCount
+		r.successCount += slice.SuccessCount
+		r.byNetwork[net] = slice
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -2320,6 +2355,12 @@ func (d *DB) GetGasTimeSeries(network, granularity string, days int) ([]GasTimeP
 	for cur := start; !cur.After(end); cur = truncFn(cur.Add(step)) {
 		k := bucketKey(cur, granularity)
 		if r, ok := buckets[k]; ok {
+			// Only worth sending when several chains are in play; with one
+			// selected the split is the total.
+			var split map[string]GasTimeSlice
+			if network == "" {
+				split = r.byNetwork
+			}
 			avg := 0
 			avgFee := 0
 			var eff float64
@@ -2341,6 +2382,7 @@ func (d *DB) GetGasTimeSeries(network, granularity string, days int) ([]GasTimeP
 				AvgFee:         avgFee,
 				SuccessCount:   r.successCount,
 				FailCount:      r.txCount - r.successCount,
+				ByNetwork:      split,
 			})
 		} else {
 			out = append(out, GasTimePoint{Time: k})
