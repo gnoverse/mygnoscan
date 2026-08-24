@@ -337,14 +337,18 @@ function shortAddr(addr) {
   if (!addr) return '';
   return KNOWN_ADDRS[addr] || truncAddr(addr);
 }
-function addrLink(addr) {
+// network is optional: pass it when the row belongs to a specific chain, so the
+// link lands on that chain rather than on whatever is selected. Without it an
+// address row from a merged view navigated to the current selection, which in
+// all-networks mode meant no network at all.
+function addrLink(addr, network) {
   const label = KNOWN_ADDRS[addr];
   const span = el('span');
   span.setAttribute('data-hl', addr);
   // Show the abbreviated form; a full 40-character address in every table cell
   // crowds out the content beside it. The full value stays in the tooltip, and
   // the link target is unchanged.
-  const a = link(label || truncAddr(addr), () => navigate('/address/' + addr + netSuffix(getNetwork())));
+  const a = link(label || truncAddr(addr), () => navigate('/address/' + addr + netSuffix(network)));
   a.setAttribute('data-hl', addr);
   a.title = addr;
   span.appendChild(a);
@@ -1577,8 +1581,8 @@ async function loadAccounts() {
     const tbody = clear('accounts-list');
     for (const a of (data || [])) {
       const total = a.call_count + a.deploy_count + a.msgrun_count + (a.send_count || 0);
-      tbody.appendChild(el('tr', {},
-        el('td', {}, addrLink(a.address)),
+      tbody.appendChild(netRow(a.network,
+        el('td', {}, addrLink(a.address, a.network)),
         el('td', {}, String(a.call_count)),
         el('td', {}, String(a.deploy_count)),
         el('td', {}, String(a.msgrun_count)),
@@ -1668,9 +1672,9 @@ async function loadTokens() {
     // GRC20 tokens list
     const tbody = clear('tokens-list');
     for (const t of (data || [])) {
-      tbody.appendChild(el('tr', {},
-        el('td', {}, realmPathEl(t.path)),
-        el('td', {}, addrLink(t.creator)),
+      tbody.appendChild(netRow(t.network,
+        el('td', {}, realmPathEl(t.path, t.network)),
+        el('td', {}, addrLink(t.creator, t.network)),
         el('td', {}, String(t.call_count))
       ));
     }
