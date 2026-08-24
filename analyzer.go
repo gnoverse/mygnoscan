@@ -1,11 +1,15 @@
 package main
 
 import (
+	"go/parser"
+	"go/token"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
-// importRegex matches Go import statements for gno.land packages.
+// importRegex matches any quoted gno.land path. It is the fallback for source
+// that will not parse at all — see fileImports.
 var importRegex = regexp.MustCompile(`"(gno\.land/[^"]+)"`)
 
 type Analyzer struct {
@@ -30,16 +34,53 @@ func (a *Analyzer) ExtractImports(files []MemFile) []string {
 			continue
 		}
 
-		matches := importRegex.FindAllStringSubmatch(f.Body, -1)
-		for _, m := range matches {
-			imp := m[1]
-			if !seen[imp] {
-				seen[imp] = true
-				imports = append(imports, imp)
+		for _, imp := range fileImports(f) {
+			// The graph tracks on-chain dependencies, so stdlib imports are not
+			// edges in it.
+			if !strings.HasPrefix(imp, "gno.land/") || seen[imp] {
+				continue
 			}
+			seen[imp] = true
+			imports = append(imports, imp)
 		}
 	}
 	return imports
+}
+
+// fileImports returns the paths one file imports.
+//
+// gno's import syntax is Go's, so go/parser reads it directly. ImportsOnly stops
+// at the end of the import block, which means a file whose *body* does not parse
+// still yields correct imports — worth knowing, because that is the common shape
+// of source that fails to compile.
+//
+// Scanning for quoted paths instead, as this used to, cannot tell an import from
+// any other string. It counted commented-out imports and paths that merely
+// appear in string literals, and cross-realm paths in string literals are common
+// enough in gno that the dependency graph carried edges that do not exist.
+//
+// The regex survives as a fallback for source where even the package clause and
+// import block will not parse — likely not Go at all. It over-reports, but a
+// real import is never lost, which is the better failure for a graph.
+func fileImports(f MemFile) []string {
+	parsed, err := parser.ParseFile(token.NewFileSet(), f.Name, f.Body, parser.ImportsOnly)
+	if err != nil {
+		var out []string
+		for _, m := range importRegex.FindAllStringSubmatch(f.Body, -1) {
+			out = append(out, m[1])
+		}
+		return out
+	}
+
+	out := make([]string, 0, len(parsed.Imports))
+	for _, imp := range parsed.Imports {
+		path, err := strconv.Unquote(imp.Path.Value)
+		if err != nil {
+			continue
+		}
+		out = append(out, path)
+	}
+	return out
 }
 
 // ExtractMsgRunImports parses MsgRun source for gno.land imports.
