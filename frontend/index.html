@@ -1031,6 +1031,31 @@ function destroyGasCharts() {
   destroyChartList(_gasChartInstances);
 }
 
+// Builds bar datasets split per network when the series carries a breakdown.
+//
+// Summing a denominated amount across chains produces a number that describes
+// nothing — gnoland1 ugnot and sapphire ugnot are not the same asset. Stacking
+// keeps the total's shape while making the composition readable, and reuses the
+// row-dot colours so a bar segment and a table row agree.
+//
+// Falls back to a single series when only one network is in play, so a selected
+// network renders exactly as before.
+function networkStacks(data, valueOf, fallback) {
+  const nets = [];
+  for (const p of data) {
+    for (const n of Object.keys(p.by_network || {})) if (!nets.includes(n)) nets.push(n);
+  }
+  if (nets.length < 2) return [fallback];
+  return nets.map(n => ({
+    label: n,
+    data: data.map(p => (p.by_network && p.by_network[n]) ? valueOf(p.by_network[n]) : 0),
+    backgroundColor: netColor(n) + '99',
+    borderColor: netColor(n),
+    borderWidth: 1,
+    stack: 'net',
+  }));
+}
+
 async function renderGasCharts(container) {
   destroyGasCharts();
   container.textContent = '';
@@ -1112,7 +1137,10 @@ async function renderGasCharts(container) {
     data: {
       labels,
       datasets: [
-        { label: 'total fees (ugnot)', data: data.map(p => p.total_fees), backgroundColor: 'rgba(255,212,59,0.5)', borderColor: '#ffd43b', borderWidth: 1, yAxisID: 'y', order: 2 },
+        ...networkStacks(data, v => v.total_fees, {
+          label: 'total fees (ugnot)', data: data.map(p => p.total_fees),
+          backgroundColor: 'rgba(255,212,59,0.5)', borderColor: '#ffd43b', borderWidth: 1, stack: 'net'
+        }).map(d => ({ ...d, yAxisID: 'y', order: 2 })),
         { label: 'avg fee/tx', type: 'line', data: data.map(p => p.avg_fee), borderColor: '#ff8787', backgroundColor: 'transparent', tension: 0.3, yAxisID: 'y2', order: 1 },
       ]
     },
@@ -1120,8 +1148,8 @@ async function renderGasCharts(container) {
       ...commonOpts,
       plugins: { ...commonOpts.plugins, title: { display: true, text: 'fees paid', color: '#888' } },
       scales: {
-        x: scaleOpts.x,
-        y:  { ...scaleOpts.y, position: 'left',  title: { display: true, text: 'total ugnot', color: '#888' } },
+        x: { ...scaleOpts.x, stacked: true },
+        y:  { ...scaleOpts.y, stacked: true, position: 'left',  title: { display: true, text: 'total ugnot', color: '#888' } },
         y2: { ...scaleOpts.y, position: 'right', title: { display: true, text: 'avg/tx', color: '#888' }, grid: { drawOnChartArea: false } }
       }
     }
@@ -1150,6 +1178,22 @@ async function renderGasCharts(container) {
       scales: { x: scaleOpts.x, y: { ...scaleOpts.y, max: 100, ticks: { ...scaleOpts.y.ticks, callback: v => v + '%' } } }
     }
   }));
+
+  // Where the activity actually comes from. Only rendered in all-networks mode:
+  // with one chain selected it would be a single band repeating the tx count.
+  const netStacks = networkStacks(data, v => v.tx_count, null);
+  if (netStacks.length > 1) {
+    const netCanvas = makeCanvas();
+    _gasChartInstances.push(new Chart(netCanvas, {
+      type: 'bar',
+      data: { labels, datasets: netStacks },
+      options: {
+        ...commonOpts,
+        plugins: { ...commonOpts.plugins, title: { display: true, text: 'transactions by network', color: '#888' } },
+        scales: { x: { ...scaleOpts.x, stacked: true }, y: { ...scaleOpts.y, stacked: true } }
+      }
+    }));
+  }
 
   // Successes and failures stacked, so the bar height is throughput and the red
   // band is the failure rate — both readable at once.

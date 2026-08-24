@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newTestDB opens a real SQLite file in a temp dir. The driver is pure Go, so
@@ -782,6 +783,72 @@ func TestTopGasQueryUsesAnIndex(t *testing.T) {
 	} {
 		if !strings.Contains(joined, idx) {
 			t.Errorf("type probe does not use %s.\nplan: %s", idx, joined)
+		}
+	}
+}
+
+// In all-networks mode the gas series carries a per-network breakdown. Fees are
+// denominated per chain and summing them across chains produces a figure that
+// describes nothing, so the split is what lets the view aggregate honestly.
+func TestGasTimeSeriesSplitsByNetwork(t *testing.T) {
+	db := newTestDB(t)
+	db.SetConfiguredNetworks([]NetworkConfig{{ID: "alpha"}, {ID: "beta"}})
+
+	day := time.Now().UTC().Format("2006-01-02") + "T12:00:00Z"
+	seed := func(network, hash string, gasUsed, fee int, ok bool) {
+		t.Helper()
+		if err := db.UpsertTransaction(network, hash, 100, day, gasUsed, gasUsed*2, fee, ok); err != nil {
+			t.Fatalf("UpsertTransaction: %v", err)
+		}
+	}
+	seed("alpha", "a1", 100, 10, true)
+	seed("alpha", "a2", 200, 20, false)
+	seed("beta", "b1", 300, 30, true)
+
+	points, err := db.GetGasTimeSeries("", "daily", 2)
+	if err != nil {
+		t.Fatalf("GetGasTimeSeries: %v", err)
+	}
+
+	var bucket *GasTimePoint
+	for i := range points {
+		if points[i].TxCount > 0 {
+			bucket = &points[i]
+		}
+	}
+	if bucket == nil {
+		t.Fatal("no non-empty bucket")
+	}
+
+	if len(bucket.ByNetwork) != 2 {
+		t.Fatalf("split covers %d networks, want 2: %+v", len(bucket.ByNetwork), bucket.ByNetwork)
+	}
+	// The split must reconcile with the total, or the stacked bars would not add
+	// up to the number printed above them.
+	var txs, fees, used int
+	for _, s := range bucket.ByNetwork {
+		txs += s.TxCount
+		fees += s.TotalFees
+		used += s.TotalGasUsed
+	}
+	if txs != bucket.TxCount || fees != bucket.TotalFees || used != bucket.TotalGasUsed {
+		t.Errorf("split does not sum to the total: txs %d/%d fees %d/%d gas %d/%d",
+			txs, bucket.TxCount, fees, bucket.TotalFees, used, bucket.TotalGasUsed)
+	}
+	if a := bucket.ByNetwork["alpha"]; a.TxCount != 2 || a.SuccessCount != 1 || a.FailCount != 1 {
+		t.Errorf("alpha = %+v, want 2 txs / 1 ok / 1 failed", a)
+	}
+
+	// With one network selected the split is the total, so sending it would be
+	// noise — and the frontend keys "is this multi-network?" off its absence.
+	single, err := db.GetGasTimeSeries("alpha", "daily", 2)
+	if err != nil {
+		t.Fatalf("GetGasTimeSeries(alpha): %v", err)
+	}
+	for _, p := range single {
+		if p.ByNetwork != nil {
+			t.Errorf("single-network series carries a split: %+v", p.ByNetwork)
+			break
 		}
 	}
 }
