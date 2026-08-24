@@ -300,15 +300,11 @@ const KNOWN_ADDRS = {
 const _valMonikers = {};
 async function loadValMonikers() {
   try {
-    const txs = await fetch('/api/validators?network=' + getNetwork()).then(r => r.json());
-    for (const tx of (txs || [])) {
-      if (!tx.success) continue;
-      for (const msg of (tx.messages || [])) {
-        const v = msg.value;
-        if (v.__typename === 'MsgCall' && (v.args || []).length > 0) {
-          _valMonikers[v.caller] = v.args[0];
-        }
-      }
+    const regs = await fetch('/api/validators?network=' + getNetwork()).then(r => r.json());
+    // Newest first, so the first moniker seen for an address is the current one.
+    for (const reg of (regs || [])) {
+      if (!reg.success || !reg.moniker || !reg.address) continue;
+      if (_valMonikers[reg.address] === undefined) _valMonikers[reg.address] = reg.moniker;
     }
   } catch(e) {}
 }
@@ -1534,19 +1530,15 @@ function renderValoperRows(container) {
   const tbl = el('table');
   tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'caller'), el('th', {}, 'function'), el('th', {}, 'moniker'), el('th', {}, 'status'))));
   const tbody = el('tbody');
-  for (const tx of (_valopersCache || [])) {
-    if (!_valopersShowFailed && !tx.success) continue;
-    for (const msg of tx.messages) {
-      if (msg.value.__typename === 'MsgCall') {
-        tbody.appendChild(el('tr', {},
-          el('td', {}, blockLink(tx.block_height)),
-          el('td', { className: 'truncate' }, addrLink(msg.value.caller)),
-          el('td', {}, msg.value.func),
-          el('td', {}, (msg.value.args || [])[0] || '-'),
-          el('td', {}, statusBadge(tx.success))
-        ));
-      }
-    }
+  for (const reg of (_valopersCache || [])) {
+    if (!_valopersShowFailed && !reg.success) continue;
+    tbody.appendChild(el('tr', {},
+      el('td', {}, blockLink(reg.block_height)),
+      el('td', { className: 'truncate' }, addrLink(reg.address || reg.caller)),
+      el('td', {}, reg.func),
+      el('td', {}, reg.moniker || '-'),
+      el('td', {}, statusBadge(reg.success))
+    ));
   }
   tbl.appendChild(tbody); wrap.appendChild(tbl);
 }

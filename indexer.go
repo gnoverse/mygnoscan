@@ -611,21 +611,6 @@ func (c *IndexerClient) GetTransactionsFromHeight(ctx context.Context, lastHeigh
 	return c.transactionsFromHeight(ctx, lastHeight, "", txFieldsLight)
 }
 
-// GetTransactionsByPkgPath fetches MsgCall transactions for a specific package.
-func (c *IndexerClient) GetTransactionsByPkgPath(ctx context.Context, pkgPath string) ([]Transaction, error) {
-	var result struct {
-		GetTransactions []Transaction `json:"getTransactions"`
-	}
-	q := fmt.Sprintf(`{
-		getTransactions(
-			where: { messages: { value: { MsgCall: { pkg_path: { eq: "%s" } } } } }
-			order: { heightAndIndex: DESC }
-		) { %s }
-	}`, gqlEscape(pkgPath), txFieldsLight)
-	err := c.query(ctx, q, nil, &result)
-	return result.GetTransactions, err
-}
-
 // GetTransactionByHash fetches a single transaction by hash.
 func (c *IndexerClient) GetTransactionByHash(ctx context.Context, hash string) (*Transaction, error) {
 	var result struct {

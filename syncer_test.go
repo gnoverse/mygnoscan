@@ -336,3 +336,102 @@ func TestWalkTransactionsStopsWhenCaughtUp(t *testing.T) {
 		t.Errorf("processed %d pages while caught up, want 0", calls)
 	}
 }
+
+// valoperSubject decides which address a valopers call is about and whether it
+// sets a name. The argument layout differs per function, so every case here uses
+// arguments taken from real sapphire transactions.
+func TestValoperSubject(t *testing.T) {
+	const (
+		caller  = "g1qynsu9dwj9lq0m5fkje7jh6qy3md80ztqnshhm"
+		subject = "g1rw8av9eghy9h8vajktzk9d0wn2sd5d9ftwkhuf"
+	)
+
+	tests := []struct {
+		name        string
+		fn          string
+		args        []string
+		wantAddress string
+		wantMoniker string
+	}{
+		{
+			// Register(moniker, description, serverType, address, pubkey) — the one
+			// function where args[0] really is the name, and the address is args[3]
+			// rather than the caller.
+			name:        "Register takes the moniker first and the address fourth",
+			fn:          "Register",
+			args:        []string{"onbloc-val-01", "a long description", "cloud", subject, "gpub1..."},
+			wantAddress: subject,
+			wantMoniker: "onbloc-val-01",
+		},
+		{
+			name:        "UpdateMoniker takes the address first and the name second",
+			fn:          "UpdateMoniker",
+			args:        []string{subject, "delete"},
+			wantAddress: subject,
+			wantMoniker: "delete",
+		},
+		{
+			// The old code recorded this description's address as a moniker.
+			name:        "UpdateDescription sets no name",
+			fn:          "UpdateDescription",
+			args:        []string{subject, "Infra & Insights"},
+			wantAddress: subject,
+			wantMoniker: "",
+		},
+		{
+			name:        "UpdateKeepRunning sets no name",
+			fn:          "UpdateKeepRunning",
+			args:        []string{subject, "true"},
+			wantAddress: subject,
+			wantMoniker: "",
+		},
+		{
+			name:        "UpdateSigningKey sets no name",
+			fn:          "UpdateSigningKey",
+			args:        []string{subject, "gpub1..."},
+			wantAddress: subject,
+			wantMoniker: "",
+		},
+		{
+			name:        "a non-address first argument falls back to the caller",
+			fn:          "UpdateServerType",
+			args:        []string{"cloud"},
+			wantAddress: caller,
+			wantMoniker: "",
+		},
+		{
+			name:        "no arguments falls back to the caller",
+			fn:          "SomethingElse",
+			args:        nil,
+			wantAddress: caller,
+			wantMoniker: "",
+		},
+		{
+			// A Register shorter than the current ABI must still attribute the row.
+			name:        "Register without an address argument falls back to the caller",
+			fn:          "Register",
+			args:        []string{"solo"},
+			wantAddress: caller,
+			wantMoniker: "solo",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := TxMessage{Value: MessageValue{
+				Typename: "MsgCall",
+				Caller:   caller,
+				PkgPath:  "gno.land/r/gnops/valopers",
+				Func:     tt.fn,
+				Args:     tt.args,
+			}}
+			address, moniker := valoperSubject(msg)
+			if address != tt.wantAddress {
+				t.Errorf("address = %q, want %q", address, tt.wantAddress)
+			}
+			if moniker != tt.wantMoniker {
+				t.Errorf("moniker = %q, want %q", moniker, tt.wantMoniker)
+			}
+		})
+	}
+}

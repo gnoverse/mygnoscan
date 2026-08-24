@@ -876,13 +876,12 @@ func (a *API) HandleValidators(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "no client available", 500)
 		return
 	}
-	// Get validator registrations from gno.land/r/gnops/valopers
-	txs, err := client.GetTransactionsByPkgPath(r.Context(), "gno.land/r/gnops/valopers")
+	regs, err := a.db.ValoperRegistrations(network)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
 	}
-	jsonResponse(w, txs)
+	jsonResponse(w, regs)
 }
 
 func (a *API) HandleTokens(w http.ResponseWriter, r *http.Request) {
