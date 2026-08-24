@@ -129,9 +129,11 @@ footer a:hover { color: var(--accent); }
 .network-select:focus { border-color: var(--accent); }
 /* Network badges */
 .net-badge { display: inline-block; padding: 1px 5px; border-radius: 2px; font-size: 10px; font-weight: bold; margin-left: 4px; vertical-align: middle; }
-.net-gnoland1 { background: rgba(78,205,196,0.12); color: var(--accent); border: 1px solid rgba(78,205,196,0.25); }
-.net-test12 { background: rgba(177,148,255,0.12); color: #b194ff; border: 1px solid rgba(177,148,255,0.25); }
-.net-default { background: rgba(136,136,136,0.12); color: var(--fg2); border: 1px solid rgba(136,136,136,0.25); }
+/* Colours come from netColor() at render time, so a network added to the config
+   needs no CSS. The old per-id classes only covered gnoland1 and test12, which
+   left sapphire and staging unstyled. */
+.net-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: middle; flex-shrink: 0; }
+.net-swatch { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
 /* Live mode */
 .live-btn { background: var(--bg2); border: 1px solid var(--border); color: var(--fg2); padding: 4px 10px; border-radius: 4px; font-family: var(--mono); font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 6px; }
 .live-btn:hover { border-color: var(--accent); }
@@ -173,7 +175,7 @@ footer a:hover { color: var(--accent); }
       <input type="text" id="search-input" placeholder="search...">
       <div id="search-results"></div>
     </div>
-    <select class="network-select" id="network-select" onchange="onNetworkChange()"></select>
+    <span class="net-swatch" id="network-swatch" title=""></span><select class="network-select" id="network-select" onchange="onNetworkChange()"></select>
     <button class="live-btn" id="live-toggle" onclick="toggleLive()"><span class="live-dot"></span><span id="live-label"> live</span></button>
   </div>
 </header>
@@ -622,17 +624,74 @@ function onNetworkChange() {
   const newUrl = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
   history.replaceState(null, '', newUrl);
   renderFooterIndexer();
+  renderNetworkSwatch();
   route();
+}
+// One colour per network, derived rather than hardcoded so a network added to
+// the config is styled without touching CSS. Assigned by position in the
+// configured list, which makes the colours distinct by construction; ids no
+// longer in the config fall back to a hash so they stay stable rather than
+// shifting every render.
+const NET_PALETTE = ['#4ecdc4', '#b194ff', '#ffd43b', '#ff8787', '#63b3ed', '#9ae6b4', '#f6ad55', '#f687b3'];
+function netColor(id) {
+  if (!id) return 'var(--fg2)';
+  const i = _networks.findIndex(n => n.id === id);
+  if (i >= 0) return NET_PALETTE[i % NET_PALETTE.length];
+  let h = 0;
+  for (let k = 0; k < id.length; k++) h = (h * 31 + id.charCodeAt(k)) >>> 0;
+  return NET_PALETTE[h % NET_PALETTE.length];
 }
 function netBadgeEl(networkId) {
   if (!networkId) return document.createTextNode('');
   // Redundant when one network is selected: everything on screen belongs to it.
   if (getNetwork() !== 'all') return document.createTextNode('');
   const span = document.createElement('span');
-  span.className = 'net-badge net-' + networkId;
+  span.className = 'net-badge';
+  const c = netColor(networkId);
+  span.style.color = c;
+  span.style.border = '1px solid ' + c + '40';
+  span.style.background = c + '1f';
   span.textContent = networkId;
   span.setAttribute('data-hl', 'net:' + networkId);
   return span;
+}
+// A dot carries the network without spending a column, so tables keep their
+// shape when a single network is selected and the dot disappears.
+function netDotEl(networkId) {
+  if (!networkId || getNetwork() !== 'all') return document.createTextNode('');
+  const dot = document.createElement('span');
+  dot.className = 'net-dot';
+  dot.style.background = netColor(networkId);
+  dot.title = networkId;
+  dot.setAttribute('data-hl', 'net:' + networkId);
+  return dot;
+}
+// netRow is el('tr', ...) with its network marked by a leading dot in the first
+// cell. Use it anywhere rows from several chains can be interleaved.
+function netRow(networkId, ...cells) {
+  const tr = el('tr', {}, ...cells);
+  const first = tr.firstChild;
+  if (first && networkId && getNetwork() === 'all') {
+    first.insertBefore(netDotEl(networkId), first.firstChild);
+  }
+  return tr;
+}
+// The swatch shows the selected network's colour next to the picker. Option
+// colours are honoured inconsistently across browsers; this is not.
+function renderNetworkSwatch() {
+  const sw = document.getElementById('network-swatch');
+  if (!sw) return;
+  const net = getNetwork();
+  if (!net || net === 'all') {
+    // No single colour applies, so show the palette rather than picking one.
+    const stops = _networks.map((n, i) => netColor(n.id) + ' ' + (i * 100 / Math.max(_networks.length, 1)) + '%, '
+      + netColor(n.id) + ' ' + ((i + 1) * 100 / Math.max(_networks.length, 1)) + '%').join(', ');
+    sw.style.background = _networks.length ? 'linear-gradient(90deg, ' + stops + ')' : 'var(--fg2)';
+    sw.title = 'all networks';
+    return;
+  }
+  sw.style.background = netColor(net);
+  sw.title = net;
 }
 function netSuffix(n) {
   const net = (n !== undefined ? n : null) || getNetwork();
@@ -650,10 +709,14 @@ async function initNetworkSelector() {
     sel.appendChild(all);
     for (const n of nets) {
       const opt = document.createElement('option');
-      opt.value = n.id; opt.textContent = n.id;
+      opt.value = n.id;
+      // The bullet survives browsers that ignore option colours.
+      opt.textContent = '\u25CF ' + n.id;
+      opt.style.color = netColor(n.id);
       sel.appendChild(opt);
     }
     sel.value = getNetwork();
+    renderNetworkSwatch();
     renderFooterIndexer();
   } catch(e) { console.error('network selector:', e); }
 }
@@ -1053,7 +1116,7 @@ async function loadHome() {
     for (const b of (Array.isArray(blocksData) ? blocksData : [])) blockTime[b.height] = b.time;
     const tbody = clear('latest-realms');
     for (const r of (realmsData?.items || [])) {
-      tbody.appendChild(el('tr', {},
+      tbody.appendChild(netRow(r.network,
         el('td', {}, realmPathEl(r.path, r.network)),
         el('td', {}, addrLink(r.creator)),
         el('td', {}, String(r.num_files)),
@@ -1064,7 +1127,7 @@ async function loadHome() {
     for (const tx of (txsData?.items || [])) {
       const msg = tx.messages?.[0];
       const when = tx.block_time ? timeEl(tx.block_time) : blockTime[tx.block_height] ? timeEl(blockTime[tx.block_height]) : (tx.block_height === 0 ? 'genesis' : '');
-      txBody.appendChild(el('tr', {},
+      txBody.appendChild(netRow(tx.network,
         el('td', {}, blockLink(tx.block_height, tx.network)),
         el('td', {}, typeBadge(msg?.value?.__typename)),
         el('td', {}, txDetailEl(msg)),
@@ -1101,7 +1164,7 @@ async function loadRealms(page) {
     }
     const list = clear('realms-list');
     for (const r of (data.items || [])) {
-      list.appendChild(el('tr', {},
+      list.appendChild(netRow(r.network,
         el('td', {}, realmPathEl(r.path, r.network)),
         el('td', {}, addrLink(r.creator)),
         el('td', {}, countCell(r.calls)),
@@ -1129,7 +1192,7 @@ async function loadPackages(page) {
     }
     const list = clear('packages-list');
     for (const p of (data.items || [])) {
-      list.appendChild(el('tr', {},
+      list.appendChild(netRow(p.network,
         el('td', {}, realmPathEl(p.path, p.network)),
         el('td', {}, addrLink(p.creator)),
         el('td', {}, blockLink(p.block_height, p.network)), el('td', {}, String(p.num_files))
@@ -1241,7 +1304,7 @@ function renderTxRows() {
   }
   for (const tx of page) {
     const msg = tx.messages?.[0];
-    list.appendChild(el('tr', {},
+    list.appendChild(netRow(tx.network,
       el('td', {}, txLink(tx.hash, tx.block_height, tx.network)),
       el('td', {}, blockLink(tx.block_height, tx.network)),
       el('td', {}, typeBadge(msg?.value?.__typename)),
@@ -1293,7 +1356,7 @@ function renderBlockRows() {
   for (const b of (_blocksCache || [])) {
     if (_blocksWithTxsOnly && b.num_txs === 0) continue;
     count++;
-    tbody.appendChild(el('tr', {},
+    tbody.appendChild(netRow(b.network,
       el('td', {}, blockLink(b.height, b.network)),
       el('td', {}, timeEl(b.time)),
       el('td', { style: b.num_txs === 0 ? { color: 'var(--fg2)' } : {} }, String(b.num_txs)),
