@@ -1017,10 +1017,18 @@ async function renderStorageChart(container, realm) {
 }
 
 let _gasChartInstances = [];
+// The realm breakdown is rebuilt from the /api/gas payload rather than the time
+// series, so it has its own lifecycle and must not be torn down when the period
+// buttons re-render the series.
+let _gasRealmChart = [];
+
+function destroyChartList(list) {
+  list.forEach(c => c.destroy());
+  list.length = 0;
+}
 
 function destroyGasCharts() {
-  _gasChartInstances.forEach(c => c.destroy());
-  _gasChartInstances = [];
+  destroyChartList(_gasChartInstances);
 }
 
 async function renderGasCharts(container) {
@@ -1091,6 +1099,106 @@ async function renderGasCharts(container) {
         x: scaleOpts.x,
         y:  { ...scaleOpts.y, position: 'left',  title: { display: true, text: 'avg gas', color: '#888' } },
         y2: { ...scaleOpts.y, position: 'right', title: { display: true, text: 'tx count', color: '#888' }, grid: { drawOnChartArea: false } }
+      }
+    }
+  }));
+
+  // Fees paid per period, with the average per transaction on a second axis.
+  // Volume and unit price move independently: a fee total can climb purely
+  // because the chain got busier, and this separates the two.
+  const feesCanvas = makeCanvas();
+  _gasChartInstances.push(new Chart(feesCanvas, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label: 'total fees (ugnot)', data: data.map(p => p.total_fees), backgroundColor: 'rgba(255,212,59,0.5)', borderColor: '#ffd43b', borderWidth: 1, yAxisID: 'y', order: 2 },
+        { label: 'avg fee/tx', type: 'line', data: data.map(p => p.avg_fee), borderColor: '#ff8787', backgroundColor: 'transparent', tension: 0.3, yAxisID: 'y2', order: 1 },
+      ]
+    },
+    options: {
+      ...commonOpts,
+      plugins: { ...commonOpts.plugins, title: { display: true, text: 'fees paid', color: '#888' } },
+      scales: {
+        x: scaleOpts.x,
+        y:  { ...scaleOpts.y, position: 'left',  title: { display: true, text: 'total ugnot', color: '#888' } },
+        y2: { ...scaleOpts.y, position: 'right', title: { display: true, text: 'avg/tx', color: '#888' }, grid: { drawOnChartArea: false } }
+      }
+    }
+  }));
+
+  // How much of the gas each transaction reserved it actually burned. Low
+  // efficiency means callers are over-estimating and overpaying.
+  const effCanvas = makeCanvas();
+  _gasChartInstances.push(new Chart(effCanvas, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'gas efficiency',
+        data: data.map(p => p.gas_efficiency > 0 ? +(p.gas_efficiency * 100).toFixed(1) : null),
+        borderColor: '#b194ff', backgroundColor: 'rgba(177,148,255,0.10)', tension: 0.3, fill: true, spanGaps: true
+      }]
+    },
+    options: {
+      ...commonOpts,
+      plugins: {
+        ...commonOpts.plugins,
+        title: { display: true, text: 'gas efficiency (used / wanted)', color: '#888' },
+        tooltip: { callbacks: { label: c => ' ' + c.parsed.y + '%' } }
+      },
+      scales: { x: scaleOpts.x, y: { ...scaleOpts.y, max: 100, ticks: { ...scaleOpts.y.ticks, callback: v => v + '%' } } }
+    }
+  }));
+
+  // Successes and failures stacked, so the bar height is throughput and the red
+  // band is the failure rate — both readable at once.
+  const okCanvas = makeCanvas();
+  _gasChartInstances.push(new Chart(okCanvas, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label: 'success', data: data.map(p => p.success_count), backgroundColor: 'rgba(78,205,196,0.6)', borderColor: '#4ecdc4', borderWidth: 1, stack: 's' },
+        { label: 'failed',  data: data.map(p => p.fail_count),    backgroundColor: 'rgba(255,135,135,0.7)', borderColor: '#ff8787', borderWidth: 1, stack: 's' },
+      ]
+    },
+    options: {
+      ...commonOpts,
+      plugins: { ...commonOpts.plugins, title: { display: true, text: 'transactions by outcome', color: '#888' } },
+      scales: { x: { ...scaleOpts.x, stacked: true }, y: { ...scaleOpts.y, stacked: true } }
+    }
+  }));
+}
+
+// Horizontal bars for the realms burning the most gas. The table below carries
+// the exact figures; this is for seeing the shape of the distribution — whether
+// one realm dominates or the load is spread.
+function renderTopRealmsChart(container, realms) {
+  destroyChartList(_gasRealmChart);
+  container.textContent = '';
+  const top = (realms || []).slice(0, 12);
+  if (!top.length) return;
+
+  const wrap = el('div', { style: { position: 'relative', height: Math.max(180, top.length * 26) + 'px' } });
+  const canvas = document.createElement('canvas');
+  wrap.appendChild(canvas);
+  container.appendChild(wrap);
+
+  const shortLabel = p => (p || '').replace('gno.land/', '').replace(/^MsgRun by /, 'run:');
+  _gasRealmChart.push(new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels: top.map(r => shortLabel(r.path)),
+      datasets: [{ label: 'gas used', data: top.map(r => r.gas), backgroundColor: 'rgba(78,205,196,0.55)', borderColor: '#4ecdc4', borderWidth: 1 }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, title: { display: true, text: 'gas by realm', color: '#888' } },
+      scales: {
+        x: { ticks: { color: '#888' }, grid: { color: '#2a2a2a' }, beginAtZero: true },
+        y: { ticks: { color: '#888', font: { size: 10 } }, grid: { display: false } }
       }
     }
   }));
@@ -2105,8 +2213,11 @@ async function loadGas() {
     container.appendChild(gasSection);
     renderGasCharts(gasChartsDiv);
 
-    // Top realms by gas
+    // Top realms by gas — chart first for the shape, table under it for figures.
     container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'top realms by gas usage'));
+    const realmChartDiv = el('div', { style: { marginBottom: '16px' } });
+    container.appendChild(realmChartDiv);
+    renderTopRealmsChart(realmChartDiv, data.top_realms);
     const rtbl = el('table');
     rtbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'realm'), el('th', {}, 'gas used'), el('th', {}, 'fees (ugnot)'), el('th', {}, 'txs'), el('th', {}, 'avg gas/tx'))));
     const rbody = el('tbody');
