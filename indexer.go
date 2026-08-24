@@ -490,10 +490,17 @@ func (c *IndexerClient) GetRecentTransactions(ctx context.Context, maxResults in
 }
 
 // Window sizes for paged transaction fetches. The indexer has no limit argument,
-// so the only way to bound a query is by block height; cost tracks the number of
-// rows returned, not the width of the window, so widening is cheap.
+// so the only way to bound a query is by block height.
+//
+// Start small and widen. The two errors are not symmetric: overshooting costs a
+// payload that grows with the chain's density and is unbounded in practice —
+// a 20,000-block window on sapphire returns 45MB to serve a 20-row page, which
+// does not fit in the client's timeout — while undershooting costs one more
+// round trip against a chain sparse enough that round trips are cheap. gno.land
+// returns nothing at all for its most recent 20,000 blocks and has to widen
+// regardless, so a large starting window buys nothing there either.
 const (
-	initialTxWindow = 20000
+	initialTxWindow = 100
 	txWindowGrowth  = 8
 )
 
@@ -543,6 +550,19 @@ func (c *IndexerClient) recentTransactionsWindowed(
 		) { %s }
 	}`, from, extraWhere, txFieldsLight)
 		if err := c.query(ctx, q, nil, &result); err != nil {
+			// A capped result set is not a failure here, it is the answer.
+			//
+			// This query is DESC, so the rows the resolver kept before it stopped
+			// are the newest ones — exactly what a "recent" view is asking for.
+			// Widening the window would only reach further past a cap already hit.
+			//
+			// Mirror of the sync path: transactionsFromHeight walks ASC from a
+			// cursor, where truncation hides older rows and must be paged through.
+			// Here the walk is DESC from the tip, so truncation hides only rows the
+			// caller did not want.
+			if errors.Is(err, errQueryTooLarge) && len(result.GetTransactions) >= need {
+				return result.GetTransactions, nil
+			}
 			return nil, err
 		}
 
