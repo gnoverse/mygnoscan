@@ -1503,6 +1503,7 @@ func (d *DB) Search(network, q string) ([]PackageInfo, error) {
 
 type TokenInfo struct {
 	Path      string `json:"path"`
+	Network   string `json:"network,omitempty"`
 	Name      string `json:"name"`
 	Creator   string `json:"creator"`
 	CallCount int    `json:"call_count"`
@@ -1511,27 +1512,28 @@ type TokenInfo struct {
 func (d *DB) GetTokenPackages(network string) ([]TokenInfo, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
+	// p.network comes along so the row can say which chain it is from. No two
+	// chains currently share a package path, but nothing prevents it, and a
+	// silent merge would be indistinguishable from a single deployment.
 	q := `
-		SELECT DISTINCT p.path, p.name, p.creator, COALESCE(c.cnt, 0)
+		SELECT DISTINCT p.path, p.network, p.name, p.creator, COALESCE(c.cnt, 0)
 		FROM packages p
 		JOIN dependencies dep ON dep.package_path = p.path AND dep.network = p.network
 		LEFT JOIN (SELECT pkg_path, network, COUNT(*) as cnt FROM calls GROUP BY pkg_path, network) c ON c.pkg_path = p.path AND c.network = p.network
 		WHERE dep.import_path LIKE '%grc20%'`
+	// Scoped like every other reader, so a retired network cannot reappear here.
+	q += ` AND ` + d.networkFilter("p.network", network)
 	args := []any{}
-	if network != "" {
-		q += ` AND p.network = ?`
-		args = append(args, network)
-	}
 	q += ` ORDER BY p.block_height DESC`
 	rows, err := d.db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var tokens []TokenInfo
+	tokens := []TokenInfo{}
 	for rows.Next() {
 		var t TokenInfo
-		if err := rows.Scan(&t.Path, &t.Name, &t.Creator, &t.CallCount); err != nil {
+		if err := rows.Scan(&t.Path, &t.Network, &t.Name, &t.Creator, &t.CallCount); err != nil {
 			return nil, err
 		}
 		tokens = append(tokens, t)
@@ -1541,6 +1543,7 @@ func (d *DB) GetTokenPackages(network string) ([]TokenInfo, error) {
 
 type AccountInfo struct {
 	Address     string `json:"address"`
+	Network     string `json:"network,omitempty"`
 	CallCount   int    `json:"call_count"`
 	DeployCount int    `json:"deploy_count"`
 	MsgRunCount int    `json:"msgrun_count"`
@@ -1553,20 +1556,30 @@ func (d *DB) GetActiveAccounts(network string) ([]AccountInfo, error) {
 
 	nFilter := " WHERE " + d.networkFilter("network", network)
 
+	// Grouped by (address, network), not by address alone.
+	//
+	// The same key can exist on several chains, and its activity there is
+	// unrelated: an address busy on sapphire and quiet on gnoland1 is two
+	// different actors as far as this table is concerned. Summing across chains
+	// produced one row whose numbers belonged to neither — 47 addresses on the
+	// production database were conflated this way.
+	//
+	// The consequence is that an address can appear once per chain it is active
+	// on. That is the honest shape; the network column says which is which.
 	q := `
-		SELECT address, SUM(call_count), SUM(deploy_count), SUM(run_count), SUM(send_count)
+		SELECT address, network, SUM(call_count), SUM(deploy_count), SUM(run_count), SUM(send_count)
 		FROM (
-			SELECT caller as address, COUNT(*) as call_count, 0 as deploy_count, 0 as run_count, 0 as send_count FROM calls` + nFilter + ` GROUP BY caller
+			SELECT caller as address, network, COUNT(*) as call_count, 0 as deploy_count, 0 as run_count, 0 as send_count FROM calls` + nFilter + ` GROUP BY caller, network
 			UNION ALL
-			SELECT creator as address, 0, COUNT(*), 0, 0 FROM packages` + nFilter + ` GROUP BY creator
+			SELECT creator as address, network, 0, COUNT(*), 0, 0 FROM packages` + nFilter + ` GROUP BY creator, network
 			UNION ALL
-			SELECT caller as address, 0, 0, COUNT(*), 0 FROM msg_runs` + nFilter + ` GROUP BY caller
+			SELECT caller as address, network, 0, 0, COUNT(*), 0 FROM msg_runs` + nFilter + ` GROUP BY caller, network
 			UNION ALL
-			SELECT from_address as address, 0, 0, 0, COUNT(*) FROM bank_sends` + nFilter + ` GROUP BY from_address
+			SELECT from_address as address, network, 0, 0, 0, COUNT(*) FROM bank_sends` + nFilter + ` GROUP BY from_address, network
 			UNION ALL
-			SELECT to_address as address, 0, 0, 0, COUNT(*) FROM bank_sends` + nFilter + ` GROUP BY to_address
+			SELECT to_address as address, network, 0, 0, 0, COUNT(*) FROM bank_sends` + nFilter + ` GROUP BY to_address, network
 		)
-		GROUP BY address
+		GROUP BY address, network
 		ORDER BY (SUM(call_count) + SUM(deploy_count) + SUM(run_count) + SUM(send_count)) DESC
 		LIMIT 100
 	`
@@ -1575,10 +1588,10 @@ func (d *DB) GetActiveAccounts(network string) ([]AccountInfo, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var accounts []AccountInfo
+	accounts := []AccountInfo{}
 	for rows.Next() {
 		var a AccountInfo
-		if err := rows.Scan(&a.Address, &a.CallCount, &a.DeployCount, &a.MsgRunCount, &a.SendCount); err != nil {
+		if err := rows.Scan(&a.Address, &a.Network, &a.CallCount, &a.DeployCount, &a.MsgRunCount, &a.SendCount); err != nil {
 			return nil, err
 		}
 		accounts = append(accounts, a)

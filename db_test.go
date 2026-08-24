@@ -852,3 +852,61 @@ func TestGasTimeSeriesSplitsByNetwork(t *testing.T) {
 		}
 	}
 }
+
+// An address can exist on several chains, and its activity on each is
+// unrelated. Grouping by address alone summed those into one row whose numbers
+// belonged to neither chain — 47 addresses were conflated this way on the
+// production database.
+func TestActiveAccountsAreScopedPerNetwork(t *testing.T) {
+	db := newTestDB(t)
+	db.SetConfiguredNetworks([]NetworkConfig{{ID: "alpha"}, {ID: "beta"}})
+
+	const shared = "g1shared"
+	call := func(network, hash string) {
+		t.Helper()
+		if err := db.InsertCall(network, hash, 1, "2026-01-01T00:00:00Z",
+			shared, "gno.land/r/demo/x", "Fn", true); err != nil {
+			t.Fatalf("InsertCall: %v", err)
+		}
+	}
+	// 3 calls on alpha, 1 on beta.
+	call("alpha", "a1")
+	call("alpha", "a2")
+	call("alpha", "a3")
+	call("beta", "b1")
+
+	accounts, err := db.GetActiveAccounts("")
+	if err != nil {
+		t.Fatalf("GetActiveAccounts: %v", err)
+	}
+
+	byNet := map[string]AccountInfo{}
+	for _, a := range accounts {
+		if a.Address == shared {
+			byNet[a.Network] = a
+		}
+	}
+	if len(byNet) != 2 {
+		t.Fatalf("shared address produced %d rows, want one per chain: %+v", len(byNet), accounts)
+	}
+	if got := byNet["alpha"].CallCount; got != 3 {
+		t.Errorf("alpha call_count = %d, want 3", got)
+	}
+	if got := byNet["beta"].CallCount; got != 1 {
+		t.Errorf("beta call_count = %d, want 1 — the chains were summed", got)
+	}
+
+	// Selecting one chain must show only that chain's activity.
+	only, err := db.GetActiveAccounts("beta")
+	if err != nil {
+		t.Fatalf("GetActiveAccounts(beta): %v", err)
+	}
+	for _, a := range only {
+		if a.Network != "beta" {
+			t.Errorf("row from %q leaked into the beta view", a.Network)
+		}
+		if a.Address == shared && a.CallCount != 1 {
+			t.Errorf("beta call_count = %d, want 1", a.CallCount)
+		}
+	}
+}
