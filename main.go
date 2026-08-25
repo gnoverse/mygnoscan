@@ -190,9 +190,13 @@ func run() error {
 		w.Write(indexHTML)
 	})
 
+	// Cache first, so a hit costs nothing beyond the network-name check.
+	cache := newResponseCache(cacheTTL)
+	handler := withResponseCache(cache, rejectUnknownNetwork(cfg.Networks, mux))
+
 	srv := &http.Server{
 		Addr:         *listenAddr,
-		Handler:      rejectUnknownNetwork(cfg.Networks, mux),
+		Handler:      handler,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
