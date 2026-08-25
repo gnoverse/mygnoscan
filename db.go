@@ -3,11 +3,11 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"log"
+	_ "modernc.org/sqlite"
 	"strings"
 	"sync"
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
 type DB struct {
@@ -96,7 +96,26 @@ func NewDB(path string) (*DB, error) {
 		return nil, err
 	}
 
-	return &DB{db: db}, nil
+	d := &DB{db: db}
+
+	// Refresh the planner's statistics in the background.
+	//
+	// Without sqlite_stat1 the planner guesses, and adding indexes can make it
+	// guess worse: the gas-by-realm join picked (network, pkg_path) over the
+	// (network, tx_hash) index it actually wanted and went from 2.51s to 3.73s.
+	// With statistics it chooses correctly and lands at 2.09s — better than
+	// before the new indexes existed.
+	//
+	// 0.87s on a 569MB database, and it grows with the chain, so it runs on every
+	// start rather than once: stale statistics are how the planner drifts back to
+	// the wrong choice. Off the startup path because it takes the write lock.
+	go func() {
+		if _, err := db.Exec(`ANALYZE`); err != nil {
+			log.Printf("analyze: %v", err)
+		}
+	}()
+
+	return d, nil
 }
 
 // blockTimeTables are the tables carrying a block_time column.
@@ -396,6 +415,23 @@ func initSchema(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_packages_network_hash   ON packages(network, tx_hash);
 		CREATE INDEX IF NOT EXISTS idx_msg_runs_network_hash   ON msg_runs(network, tx_hash);
 		CREATE INDEX IF NOT EXISTS idx_bank_sends_network_hash ON bank_sends(network, tx_hash);
+
+		-- The analytics and accounts views aggregate by actor and by package
+		-- inside a network. The single-column indexes that existed (caller,
+		-- creator, from_address, to_address) cannot serve a query that also
+		-- filters on network, so those aggregates fell back to table scans.
+		-- Measured on production data: the five-way distinct-address union went
+		-- 1.99s -> 0.42s and the realm join 1.23s -> 0.16s.
+		CREATE INDEX IF NOT EXISTS idx_calls_net_caller  ON calls(network, caller);
+		CREATE INDEX IF NOT EXISTS idx_calls_net_pkg     ON calls(network, pkg_path);
+		CREATE INDEX IF NOT EXISTS idx_pkgs_net_creator  ON packages(network, creator);
+		CREATE INDEX IF NOT EXISTS idx_runs_net_caller   ON msg_runs(network, caller);
+		CREATE INDEX IF NOT EXISTS idx_sends_net_from    ON bank_sends(network, from_address);
+		CREATE INDEX IF NOT EXISTS idx_sends_net_to      ON bank_sends(network, to_address);
+
+		-- The realm/analytics joins group calls by package and count distinct
+		-- callers within it, which this covers without touching the table.
+		CREATE INDEX IF NOT EXISTS idx_calls_pkg_caller  ON calls(pkg_path, caller);
 	`)
 	return err
 }
