@@ -631,16 +631,61 @@ function onNetworkChange() {
   renderNetworkSwatch();
   route();
 }
-// One colour per network, derived rather than hardcoded so a network added to
-// the config is styled without touching CSS. Assigned by position in the
-// configured list, which makes the colours distinct by construction; ids no
-// longer in the config fall back to a hash so they stay stable rather than
-// shifting every render.
-const NET_PALETTE = ['#4ecdc4', '#b194ff', '#ffd43b', '#ff8787', '#63b3ed', '#9ae6b4', '#f6ad55', '#f687b3'];
+// gno testnets are named after gemstones, so a network that is one wears its
+// stone's colour: sapphire is blue, topaz golden, emerald green. It makes the
+// palette mean something instead of being an arbitrary rotation, and the
+// association survives a network being added, removed or reordered.
+//
+// Hues are the real stones', lifted in value where the mineral is too dark to
+// read against a near-black background — onyx especially, which would otherwise
+// be invisible.
+const NET_STONES = {
+  sapphire:  '#4d8df0',
+  topaz:     '#f0a830',
+  emerald:   '#2ecc71',
+  ruby:      '#e0335b',
+  amethyst:  '#b06cf0',
+  diamond:   '#cfe4f7',
+  opal:      '#7fe6d0',
+  garnet:    '#e05545',
+  jade:      '#3fbf8f',
+  onyx:      '#9aa0a8',
+  pearl:     '#e8e0d0',
+  quartz:    '#d8c8e8',
+  citrine:   '#e8c33a',
+  peridot:   '#a8d63a',
+  turquoise: '#3fd0d0',
+  zircon:    '#8fd6f0',
+};
+
+// Networks that are not stones — gnoland1, staging, portal-loop, testN — take a
+// colour by position in the configured list, which keeps them distinct from each
+// other. The palette deliberately opens on cool tones: the warm slots would sit
+// close to topaz and citrine.
+const NET_PALETTE = ['#4ecdc4', '#8fa6c4', '#ff8787', '#63b3ed', '#9ae6b4', '#f687b3', '#c9a227', '#a0a0a0'];
+
+// stoneOf returns the gemstone colour for a network id, or "".
+//
+// Matches the first dash/underscore/dot segment so sapphire-1 and sapphire agree,
+// and so portal-loop is not mistaken for a stone.
+function stoneOf(id) {
+  return NET_STONES[String(id).toLowerCase().split(/[-_.]/)[0]] || '';
+}
+
 function netColor(id) {
   if (!id) return 'var(--fg2)';
-  const i = _networks.findIndex(n => n.id === id);
+  const stone = stoneOf(id);
+  if (stone) return stone;
+
+  // Position among the *non-stone* networks. Counting the stones too would let
+  // an unrelated network inherit a slot next to a stone it can be confused with
+  // — with sapphire configured, staging landed on a light blue — and would
+  // reshuffle every fallback colour whenever a stone network is added or
+  // retired.
+  const plain = _networks.filter(n => !stoneOf(n.id)).map(n => n.id);
+  const i = plain.indexOf(id);
   if (i >= 0) return NET_PALETTE[i % NET_PALETTE.length];
+
   let h = 0;
   for (let k = 0; k < id.length; k++) h = (h * 31 + id.charCodeAt(k)) >>> 0;
   return NET_PALETTE[h % NET_PALETTE.length];
