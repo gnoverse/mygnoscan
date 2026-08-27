@@ -419,6 +419,19 @@ func fakeCall(height int, when, caller, pkgPath, fn string) Transaction {
 	}
 }
 
+func fakePackage(height int, when, creator, path string) Transaction {
+	return Transaction{
+		Hash: fmt.Sprintf("tx-pkg-%d", height), Success: true, BlockHeight: height, BlockTime: when,
+		Messages: []TxMessage{{
+			TypeURL: "add_package", Route: "vm",
+			Value: MessageValue{Typename: "MsgAddPackage", Creator: creator, Package: &MemPackage{
+				Name: "pkg", Path: path,
+				Files: []MemFile{{Name: "pkg.gno", Body: "package pkg\n\nimport \"gno.land/p/demo/avl\"\n"}},
+			}},
+		}},
+	}
+}
+
 func fakeSend(height int, when, from, to, amount string) Transaction {
 	return Transaction{
 		Hash: fmt.Sprintf("tx-send-%d", height), Success: true, BlockHeight: height, BlockTime: when,

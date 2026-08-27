@@ -82,16 +82,31 @@ func (f *liveFeed) ensureRunning() {
 	go f.pollLoop()
 }
 
+// stopIfIdle clears the running flag and reports true when the last client has
+// gone, so pollLoop can exit.
+//
+// The check and the clear have to happen under one lock. Reading the client
+// count, releasing, then taking the lock again to clear the flag leaves a window
+// where a client arrives in between: addClientChan registers it and calls
+// ensureRunning, which sees running still true and starts nothing, and this loop
+// then clears the flag and exits. The client stays subscribed to a feed with
+// nobody polling it and silently receives no events until some other connection
+// happens to restart the loop.
+func (f *liveFeed) stopIfIdle() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if len(f.clients) > 0 {
+		return false
+	}
+	f.running = false
+	return true
+}
+
 func (f *liveFeed) pollLoop() {
 	log.Printf("[%s] live feed: started polling", f.networkID)
 	for {
-		f.mu.RLock()
-		n := len(f.clients)
-		f.mu.RUnlock()
-		if n == 0 {
-			f.mu.Lock()
-			f.running = false
-			f.mu.Unlock()
+		if f.stopIfIdle() {
 			log.Printf("[%s] live feed: no clients, stopped", f.networkID)
 			return
 		}
