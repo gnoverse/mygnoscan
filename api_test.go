@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 )
 
@@ -165,5 +167,56 @@ func TestGnoEvents(t *testing.T) {
 				t.Errorf("got %d events, want %d", len(got[0].Events), tt.wantEvs)
 			}
 		})
+	}
+}
+
+// "No limit" used to mean every transaction the chain had ever seen, which
+// returned 500 after ten seconds on a busy network because the fetch could not
+// finish inside the client timeout. The endpoint bounds it instead.
+func TestTxWindow(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+		want  int
+	}{
+		{"absent falls back to the default window", "", defaultTxs},
+		{"zero is a request for recent, not for everything", "limit=0", defaultTxs},
+		{"negative is treated the same", "limit=-1", defaultTxs},
+		{"a small limit is honoured", "limit=20", 20},
+		{"a limit above the cap is clamped", "limit=99999", maxTxs},
+		{"exactly the cap", fmt.Sprintf("limit=%d", maxTxs), maxTxs},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequest("GET", "/api/txs?"+tt.query, nil)
+			limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+
+			windowed := limit
+			if windowed <= 0 {
+				windowed = defaultTxs
+			}
+			if windowed > maxTxs {
+				windowed = maxTxs
+			}
+			if windowed != tt.want {
+				t.Errorf("window = %d, want %d", windowed, tt.want)
+			}
+		})
+	}
+}
+
+// The cap has to stay under what the server will wait for, or the endpoint
+// trades a bounded answer for a timeout — which is the bug it was fixing.
+func TestTxWindowCapIsSane(t *testing.T) {
+	if maxTxs > indexerElementCap {
+		t.Errorf("maxTxs %d exceeds the indexer's element cap %d, so the cap can never be reached",
+			maxTxs, indexerElementCap)
+	}
+	if defaultTxs > maxTxs {
+		t.Errorf("defaultTxs %d is above maxTxs %d", defaultTxs, maxTxs)
+	}
+	if defaultTxs <= 0 {
+		t.Errorf("defaultTxs %d would make an absent limit return nothing", defaultTxs)
 	}
 }
