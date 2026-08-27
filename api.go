@@ -490,22 +490,37 @@ func (a *API) HandleTx(w http.ResponseWriter, r *http.Request) {
 	jsonError(w, "transaction not found", 404)
 }
 
+// Bounds for the transaction list. "No limit" used to mean `where: {}` — every
+// transaction the chain has ever had — which returned 500 after ten seconds on a
+// busy chain because it could not finish inside the client timeout. The indexer
+// exposes no way to make that query cheap, so the endpoint bounds it instead.
+const (
+	defaultTxs = 500
+	// 5000 was still eight seconds against a busy chain — close enough to the
+	// server's write timeout to fail under load. 2000 matches maxEventTxs and
+	// lands around three.
+	maxTxs = 2000
+)
+
 func (a *API) HandleTxs(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 
-	// With a limit we only need enough rows to fill the page. Without one the
-	// caller is asking for everything, which stays expensive by definition.
-	need := 0
-	if limit > 0 {
-		need = offset + limit
+	// An absent or non-positive limit is a request for "recent transactions",
+	// not for the whole chain. Callers that genuinely want more say so, up to
+	// the cap; beyond it the indexer's own element cap takes over anyway.
+	windowed := limit
+	if windowed <= 0 {
+		windowed = defaultTxs
 	}
+	if windowed > maxTxs {
+		windowed = maxTxs
+	}
+	need := offset + windowed
+
 	fetch := func(ctx context.Context, c *IndexerClient) ([]Transaction, error) {
-		if need > 0 {
-			return c.GetRecentTransactionsPage(ctx, need)
-		}
-		return c.GetRecentTransactions(ctx, 0)
+		return c.GetRecentTransactionsPage(ctx, need)
 	}
 
 	if network != "" {
@@ -519,16 +534,14 @@ func (a *API) HandleTxs(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, err.Error(), 500)
 			return
 		}
+		// total is what was fetched, not what the chain holds. It never could
+		// be: the indexer caps a result set and exposes no count, so this is
+		// the size of the recent window and the frontend labels it as such.
 		total := len(txs)
-		if limit <= 0 {
-			a.stampBlockTimes(r.Context(), network, client, txs)
-			jsonResponse(w, map[string]any{"items": txs, "total": total})
-			return
-		}
 		if offset > total {
 			offset = total
 		}
-		end := offset + limit
+		end := offset + windowed
 		if end > total {
 			end = total
 		}
@@ -579,14 +592,10 @@ func (a *API) HandleTxs(w http.ResponseWriter, r *http.Request) {
 		return merged[i].BlockHeight > merged[j].BlockHeight
 	})
 	total := len(merged)
-	if limit <= 0 {
-		jsonResponse(w, map[string]any{"items": merged, "total": total})
-		return
-	}
 	if offset > total {
 		offset = total
 	}
-	end := offset + limit
+	end := offset + windowed
 	if end > total {
 		end = total
 	}

@@ -513,6 +513,8 @@ function highlightLine(parent, line) {
 }
 
 const PAGE_SIZE = 50;
+// How many recent transactions the txs view loads before paginating client-side.
+const TXS_WINDOW = 500;
 function pager(container, page, total, onPage) {
   const totalPages = Math.ceil(total / PAGE_SIZE);
   if (totalPages <= 1) return;
@@ -1417,7 +1419,10 @@ async function loadTxs() {
   statsBar.style.display = 'none';
   filterBar.style.display = 'none';
   try {
-    const data = await api('txs?limit=0'); // fetch all
+    // A bounded recent window, not the whole chain. Asking for everything used
+    // to fail outright on a busy network, and the counts below have always been
+    // over whatever came back rather than over all history.
+    const data = await api('txs?limit=' + TXS_WINDOW);
     _txsCache = data.items || [];
     _txsPage = 0;
     // Arriving from a home stat tile pre-selects that message type.
@@ -1436,7 +1441,8 @@ async function loadTxs() {
 
     // Stats
     statsBar.textContent = ''; statsBar.style.display = 'flex';
-    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total'), el('span', { className: 'value' }, fmtNum(_txsCache.length))));
+    // Labelled "recent" because it is: the window above, not an all-time count.
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'recent'), el('span', { className: 'value' }, fmtNum(_txsCache.length))));
     statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'success'), el('span', { className: 'value' }, fmtNum(okCount))));
     statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'failed'), el('span', { className: 'value' }, fmtNum(failCount))));
     for (const [t, c] of Object.entries(typeCounts).sort((a, b) => b[1] - a[1])) {
