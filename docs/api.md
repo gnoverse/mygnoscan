@@ -31,6 +31,18 @@ a `by_network` object alongside the totals, and the totals are the arithmetic su
 only for the counts. `by_network` is omitted when a single network is selected,
 because then it *is* the total.
 
+Liveness is not merged even that far. There is no such thing as the height, or
+the last block time, of four chains at once, so `/api/sanity/overview` leaves its
+top-level liveness fields empty in all-networks mode and reports each chain under
+`by_network` instead. Each entry carries `reachable`, which separates "this chain
+is not producing blocks" from "we could not ask it" — otherwise identical.
+
+**Ranking rows are keyed by `(identifier, network)`, never by the identifier
+alone.** 193 package paths exist on more than one chain, and the busiest caller
+on the site is active on two. A path or address alone no longer identifies a row,
+so every ranking carries a `network` and the same path may appear once per chain
+with its own figures. This is what the leaderboards mean by a "top" entry.
+
 **`limit`, `offset`** — pagination, where supported. Noted per endpoint below.
 
 ## Caching
@@ -94,13 +106,13 @@ labels this figure "recent" for the same reason.
 | endpoint | description |
 |---|---|
 | `GET /api/stats` | totals: transactions, calls, deploys, msg_runs, sends, realms, packages, unique callers, latest block |
-| `GET /api/analytics` | leaderboards and aggregate breakdowns |
+| `GET /api/analytics` | leaderboards and aggregate breakdowns. Every ranking row carries its `network`; rankings are scoped to the selected chain |
 | `GET /api/gas` | gas usage, by realm |
 | `GET /api/bankstats` | transfer volume statistics. Carries `by_network` in all-networks mode, because volume cannot be summed across chains |
 | `GET /api/tokens` | detected token packages. Rows carry their `network` |
 | `GET /api/validators` | valoper registrations, **served from storage** rather than the indexer. Flat rows with `address`, `moniker`, `func` and `success` — `address` is the validator the call is about, which is not always the caller |
 | `GET /api/govdao` | GovDAO activity. Queries every configured network in all-networks mode |
-| `GET /api/sanity/overview` | internal consistency counters, for debugging a sync |
+| `GET /api/sanity/overview` | consistency counters and liveness. In all-networks mode liveness moves to `by_network`, one entry per chain, each with `reachable` |
 
 ## Time series
 

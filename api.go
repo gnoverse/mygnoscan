@@ -1438,19 +1438,61 @@ func (a *API) HandleSanityOverview(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err.Error(), 500)
 		return
 	}
-	// Chain height, last block time and liveness always come from the live indexer.
-	if client := a.clientFor(network); client != nil {
-		if blocks, err := client.GetRecentBlocks(r.Context(), 1); err == nil && len(blocks) > 0 {
-			b := blocks[0]
-			ov.ChainHeight = b.Height
-			ov.LastBlockTime = b.Time
-			if t, err := time.Parse(time.RFC3339, b.Time); err == nil {
-				ov.SecondsSinceBlock = int(time.Since(t).Seconds())
-				ov.IsAlive = ov.SecondsSinceBlock < 120
-			}
+	// Chain height, last block time and liveness always come from the live
+	// indexer. They are also the figures that cannot be merged: there is no
+	// such thing as the height of four chains at once.
+	if network != "" {
+		if client := a.clientFor(network); client != nil {
+			live := livenessOf(r.Context(), client)
+			ov.ChainHeight, ov.LastBlockTime = live.ChainHeight, live.LastBlockTime
+			ov.SecondsSinceBlock, ov.IsAlive = live.SecondsSinceBlock, live.IsAlive
+		}
+		jsonResponse(w, ov)
+		return
+	}
+
+	// All networks: report each chain rather than picking one. The top-level
+	// liveness fields stay zero, because no single value could be right.
+	type netLive struct {
+		id   string
+		live SanityLiveness
+	}
+	results := fanOut(r.Context(), a.networks, a.clients, a.health,
+		func(ctx context.Context, n NetworkConfig, c *IndexerClient) (netLive, error) {
+			return netLive{id: n.ID, live: livenessOf(ctx, c)}, nil
+		})
+	ov.ByNetwork = make(map[string]SanityLiveness, len(a.networks))
+	for _, r := range results {
+		ov.ByNetwork[r.id] = r.live
+	}
+	// fanOut drops networks it skipped — no client, or an open breaker — but
+	// this is the page whose job is to report liveness, and a chain silently
+	// missing from it is the one case a reader most needs to see. Fill the gaps
+	// in as unreachable rather than letting them vanish.
+	for _, n := range a.networks {
+		if _, ok := ov.ByNetwork[n.ID]; !ok {
+			ov.ByNetwork[n.ID] = SanityLiveness{}
 		}
 	}
 	jsonResponse(w, ov)
+}
+
+// livenessOf reads one chain's tip. An unreachable indexer reports Reachable
+// false rather than a zero height, which would otherwise be indistinguishable
+// from a chain sitting at genesis.
+func livenessOf(ctx context.Context, client *IndexerClient) SanityLiveness {
+	blocks, err := client.GetRecentBlocks(ctx, 1)
+	if err != nil || len(blocks) == 0 {
+		return SanityLiveness{}
+	}
+
+	b := blocks[0]
+	live := SanityLiveness{ChainHeight: b.Height, LastBlockTime: b.Time, Reachable: true}
+	if t, err := time.Parse(time.RFC3339, b.Time); err == nil {
+		live.SecondsSinceBlock = int(time.Since(t).Seconds())
+		live.IsAlive = live.SecondsSinceBlock < 120
+	}
+	return live
 }
 
 func (a *API) HandleTimeSeriesHealth(w http.ResponseWriter, r *http.Request) {

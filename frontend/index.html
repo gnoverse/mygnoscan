@@ -974,7 +974,10 @@ async function renderTsCharts(container) {
   _tsChartInstances.push(new Chart(realmsCanvas, {
     type: 'bar',
     data: {
-      labels: topRealms.map(r => r.path.replace('gno.land/', '')),
+      // In all-networks mode the same path can appear once per chain, so the
+      // bare path would label two different bars identically.
+      labels: topRealms.map(r => r.path.replace('gno.land/', '') +
+        (getNetwork() === 'all' && r.network ? ' \u00b7 ' + r.network : '')),
       datasets: [
         { label: 'calls',    data: topRealms.map(r => r.calls),    backgroundColor: 'rgba(78,205,196,0.7)',  borderColor: '#4ecdc4', borderWidth: 1 },
         { label: 'callers',  data: topRealms.map(r => r.callers),  backgroundColor: 'rgba(255,107,107,0.5)', borderColor: '#ff6b6b', borderWidth: 1 },
@@ -1897,8 +1900,8 @@ async function loadAnalytics() {
     rtbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'realm'), el('th', {}, 'calls'), el('th', {}, 'callers'), el('th', {}, 'dependents'))));
     const rbody = el('tbody');
     for (const r of (data.top_realms || [])) {
-      rbody.appendChild(el('tr', {},
-        el('td', {}, realmPathEl(r.path)),
+      rbody.appendChild(netRow(r.network,
+        el('td', {}, realmPathEl(r.path, r.network)),
         el('td', {}, fmtNum(r.calls)),
         el('td', {}, fmtNum(r.callers)),
         el('td', {}, fmtNum(r.dependents))
@@ -1913,8 +1916,8 @@ async function loadAnalytics() {
     ptbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'package'), el('th', {}, 'dependents'), el('th', {}, 'calls'))));
     const pbody = el('tbody');
     for (const p of (data.top_packages || [])) {
-      pbody.appendChild(el('tr', {},
-        el('td', {}, realmPathEl(p.path)),
+      pbody.appendChild(netRow(p.network,
+        el('td', {}, realmPathEl(p.path, p.network)),
         el('td', {}, fmtNum(p.dependents)),
         el('td', {}, fmtNum(p.calls))
       ));
@@ -1928,8 +1931,8 @@ async function loadAnalytics() {
     ctbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'address'), el('th', {}, 'calls'), el('th', {}, 'realms'))));
     const cbody = el('tbody');
     for (const c of (data.top_callers || [])) {
-      cbody.appendChild(el('tr', {},
-        el('td', {}, addrLink(c.address)),
+      cbody.appendChild(netRow(c.network,
+        el('td', {}, addrLink(c.address, c.network)),
         el('td', {}, fmtNum(c.calls)),
         el('td', {}, fmtNum(c.realms))
       ));
@@ -1943,8 +1946,8 @@ async function loadAnalytics() {
     dtbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'address'), el('th', {}, 'deploys'))));
     const dbody = el('tbody');
     for (const d of (data.top_deployers || [])) {
-      dbody.appendChild(el('tr', {},
-        el('td', {}, addrLink(d.address)),
+      dbody.appendChild(netRow(d.network,
+        el('td', {}, addrLink(d.address, d.network)),
         el('td', {}, fmtNum(d.calls))
       ));
     }
@@ -1957,8 +1960,8 @@ async function loadAnalytics() {
     itbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'path'), el('th', {}, 'importers'))));
     const ibody = el('tbody');
     for (const i of (data.top_imports || [])) {
-      ibody.appendChild(el('tr', {},
-        el('td', {}, realmPathEl(i.path)),
+      ibody.appendChild(netRow(i.network,
+        el('td', {}, realmPathEl(i.path, i.network)),
         el('td', {}, fmtNum(i.imports))
       ));
     }
@@ -1971,10 +1974,10 @@ async function loadAnalytics() {
     rctbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'realm'), el('th', {}, 'creator'), el('th', {}, 'block'))));
     const rcbody = el('tbody');
     for (const r of (data.recent_realms || [])) {
-      rcbody.appendChild(el('tr', {},
-        el('td', {}, realmPathEl(r.path)),
-        el('td', {}, addrLink(r.creator)),
-        el('td', {}, blockLink(r.block_height))
+      rcbody.appendChild(netRow(r.network,
+        el('td', {}, realmPathEl(r.path, r.network)),
+        el('td', {}, addrLink(r.creator, r.network)),
+        el('td', {}, blockLink(r.block_height, r.network))
       ));
     }
     rctbl.appendChild(rcbody); recentCol.appendChild(rctbl); grid.appendChild(recentCol);
@@ -2170,17 +2173,36 @@ async function loadSanity() {
     const ov = await api('sanity/overview');
     container.textContent = '';
 
-    // Health cards
+    // Health cards.
+    //
+    // Liveness is per-chain and stays per-chain: there is no such thing as the
+    // height, or the last block time, of four networks at once. In all-networks
+    // mode the server sends one entry per chain and they are shown side by side
+    // instead of collapsing to an arbitrary one.
     const cards = el('div', { className: 'stats-bar' });
-    const alive = ov.is_alive
-      ? el('span', { style: { color: '#51cf66', fontWeight: 'bold' } }, '● alive')
-      : el('span', { style: { color: '#ff6b6b', fontWeight: 'bold' } }, '● stale');
-    cards.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'status'), alive));
-    cards.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'height'), el('span', { className: 'value' }, fmtNum(ov.chain_height))));
-    const ago = ov.seconds_since_block < 60
-      ? ov.seconds_since_block + 's ago'
-      : Math.floor(ov.seconds_since_block / 60) + 'm ago';
-    cards.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'last block'), el('span', { className: 'value' }, ago)));
+    const aliveEl = (isAlive, reachable) => reachable === false
+      ? el('span', { style: { color: 'var(--dim)', fontWeight: 'bold' } }, '● unreachable')
+      : isAlive
+        ? el('span', { style: { color: '#51cf66', fontWeight: 'bold' } }, '● alive')
+        : el('span', { style: { color: '#ff6b6b', fontWeight: 'bold' } }, '● stale');
+    const agoOf = secs => secs < 60 ? secs + 's ago' : Math.floor(secs / 60) + 'm ago';
+
+    if (ov.by_network) {
+      for (const [netId, live] of Object.entries(ov.by_network)) {
+        const label = el('span', { className: 'label' });
+        label.appendChild(netDotEl(netId));
+        label.append(netId);
+        const value = el('span', { className: 'value' },
+          live.reachable ? fmtNum(live.chain_height) + ' · ' + agoOf(live.seconds_since_block) : '-');
+        const card = el('div', { className: 'stat' }, label, value);
+        card.appendChild(aliveEl(live.is_alive, live.reachable));
+        cards.appendChild(card);
+      }
+    } else {
+      cards.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'status'), aliveEl(ov.is_alive, true)));
+      cards.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'height'), el('span', { className: 'value' }, fmtNum(ov.chain_height))));
+      cards.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'last block'), el('span', { className: 'value' }, agoOf(ov.seconds_since_block))));
+    }
     cards.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'txs 1h'), el('span', { className: 'value' }, fmtNum(ov.tx_last_1h))));
     cards.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'txs 24h'), el('span', { className: 'value' }, fmtNum(ov.tx_last_24h))));
     const sr = ov.success_rate_24h > 0 ? (ov.success_rate_24h * 100).toFixed(1) + '%' : '-';
