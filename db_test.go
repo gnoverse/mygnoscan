@@ -787,6 +787,90 @@ func TestTopGasQueryUsesAnIndex(t *testing.T) {
 	}
 }
 
+// The gas-by-realm aggregate joins every call, deploy and run back to its
+// transaction. That join touches one row per event — 682k on sapphire, to
+// produce twenty — so the only thing that can be controlled is whether it has to
+// leave the index to read the gas figures.
+func TestGasByRealmJoinStaysInTheIndex(t *testing.T) {
+	db := newTestDB(t)
+
+	// Seed and ANALYZE: on an empty table the planner has no statistics and
+	// picks the implicit unique index on (network, tx_hash), which serves the
+	// lookup but not the gas columns. That is exactly the plan this test exists
+	// to reject, so asserting against it without data would pass for the wrong
+	// reason — and fail against a correctly indexed production database.
+	const when = "2026-08-01T00:00:00Z"
+	for i := 0; i < 2000; i++ {
+		hash := fmt.Sprintf("tx-%d", i)
+		if err := db.UpsertTransaction("sapphire", hash, 100+i, when, 1000+i, 2000, 10, true); err != nil {
+			t.Fatalf("UpsertTransaction: %v", err)
+		}
+		if err := db.InsertCall("sapphire", hash, 100+i, when, "g1caller",
+			fmt.Sprintf("gno.land/r/demo/pkg%d", i%20), "Post", true); err != nil {
+			t.Fatalf("InsertCall: %v", err)
+		}
+	}
+	if _, err := db.db.Exec("ANALYZE"); err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+
+	const q = `
+		SELECT path, SUM(gas_used), SUM(gas_fee), COUNT(*) FROM (
+			SELECT c.pkg_path AS path, t.gas_used, t.gas_fee, t.tx_hash
+			  FROM calls c JOIN transactions t
+			    ON t.network = c.network AND t.tx_hash = c.tx_hash AND t.network = ?
+			UNION ALL
+			SELECT p.path AS path, t.gas_used, t.gas_fee, t.tx_hash
+			  FROM packages p JOIN transactions t
+			    ON t.network = p.network AND t.tx_hash = p.tx_hash AND t.network = ?
+			UNION ALL
+			SELECT 'MsgRun by ' || m.caller AS path, t.gas_used, t.gas_fee, t.tx_hash
+			  FROM msg_runs m JOIN transactions t
+			    ON t.network = m.network AND t.tx_hash = m.tx_hash AND t.network = ?
+		) GROUP BY path ORDER BY SUM(gas_used) DESC LIMIT 20`
+
+	joined := queryPlan(t, db, q, "sapphire", "sapphire", "sapphire")
+
+	if !strings.Contains(joined, "idx_txs_net_hash_gas") {
+		t.Errorf("the join does not use idx_txs_net_hash_gas.\nplan: %s", joined)
+	}
+	// Covering is the whole point: without gas_used and gas_fee in the index,
+	// every one of those rows costs a table lookup.
+	if !strings.Contains(joined, "COVERING INDEX idx_txs_net_hash_gas") {
+		t.Errorf("the join leaves the index to read gas figures.\nplan: %s", joined)
+	}
+}
+
+// queryPlan returns EXPLAIN QUERY PLAN output as one string.
+func queryPlan(t *testing.T, db *DB, q string, args ...any) string {
+	t.Helper()
+
+	rows, err := db.db.Query("EXPLAIN QUERY PLAN "+q, args...)
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	defer rows.Close()
+
+	var plan []string
+	for rows.Next() {
+		cols, err := rows.Columns()
+		if err != nil {
+			t.Fatalf("columns: %v", err)
+		}
+		vals := make([]any, len(cols))
+		for i := range vals {
+			vals[i] = new(sql.NullString)
+		}
+		if err := rows.Scan(vals...); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if s, ok := vals[len(vals)-1].(*sql.NullString); ok && s.Valid {
+			plan = append(plan, s.String)
+		}
+	}
+	return strings.Join(plan, " | ")
+}
+
 // In all-networks mode the gas series carries a per-network breakdown. Fees are
 // denominated per chain and summing them across chains produces a figure that
 // describes nothing, so the split is what lets the view aggregate honestly.

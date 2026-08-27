@@ -449,6 +449,12 @@ func initSchema(db *sql.DB) error {
 		-- linear pass. Measured 1.29s -> 0.02s on the realms query.
 		CREATE INDEX IF NOT EXISTS idx_calls_net_pkg_caller ON calls(network, pkg_path, caller);
 
+		-- The gas-by-realm aggregate joins every call, deploy and run back to its
+		-- transaction for the gas figures. That join touches one row per event —
+		-- 682k on sapphire, to produce twenty — so what matters is that it never
+		-- has to leave the index. Covering it: 3.79s -> 1.96s.
+		CREATE INDEX IF NOT EXISTS idx_txs_net_hash_gas ON transactions(network, tx_hash, gas_used, gas_fee);
+
 		-- And its mirror, for the top-callers ranking: group by (network,
 		-- caller) counting distinct packages. Same shape, same reason, 0.69s ->
 		-- 0.26s. Both are covering, so neither touches the table.
