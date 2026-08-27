@@ -1681,6 +1681,18 @@ type BankStats struct {
 	TopSenders      []AddrStat `json:"top_senders"`
 	TopReceiversVol []AddrStat `json:"top_receivers_volume"`
 	TopReceiversCnt []AddrStat `json:"top_receivers_count"`
+
+	// ByNetwork splits the totals per chain, populated only in all-networks
+	// mode. Counts are meaningful summed; volume is not — gnoland1 ugnot and
+	// sapphire ugnot are different assets, so the blended figure describes
+	// nothing. The split is what lets the view aggregate honestly.
+	ByNetwork map[string]BankSlice `json:"by_network,omitempty"`
+}
+
+// BankSlice is one network's share of the bank totals.
+type BankSlice struct {
+	TotalSends  int   `json:"total_sends"`
+	TotalVolume int64 `json:"total_volume"`
 }
 
 const amountExpr = `COALESCE(SUM(CAST(REPLACE(REPLACE(amount, 'ugnot', ''), '"', '') AS INTEGER)), 0)`
@@ -1696,6 +1708,23 @@ func (d *DB) GetBankStats(network string) (*BankStats, error) {
 	d.db.QueryRow(`SELECT COUNT(DISTINCT from_address) FROM bank_sends` + nFilter).Scan(&s.UniqueSenders)
 	d.db.QueryRow(`SELECT COUNT(DISTINCT to_address) FROM bank_sends` + nFilter).Scan(&s.UniqueReceivers)
 	d.db.QueryRow(`SELECT ` + amountExpr + ` FROM bank_sends` + nFilter).Scan(&s.TotalVolume)
+
+	// One pass for the per-chain breakdown; the grouping key already leads the
+	// indexes this reads.
+	if network == "" {
+		if rows, err := d.db.Query(`SELECT network, COUNT(*), ` + amountExpr +
+			` FROM bank_sends` + nFilter + ` GROUP BY network`); err == nil {
+			s.ByNetwork = map[string]BankSlice{}
+			for rows.Next() {
+				var net string
+				var slice BankSlice
+				if err := rows.Scan(&net, &slice.TotalSends, &slice.TotalVolume); err == nil {
+					s.ByNetwork[net] = slice
+				}
+			}
+			rows.Close()
+		}
+	}
 
 	andFilter := " AND " + d.networkFilter("network", network)
 	d.db.QueryRow(`SELECT COUNT(DISTINCT addr) FROM (SELECT from_address as addr FROM bank_sends` + nFilter + ` UNION SELECT to_address FROM bank_sends` + nFilter + `)`).Scan(&s.UniqueAddresses)

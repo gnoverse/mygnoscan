@@ -1658,7 +1658,24 @@ async function loadTokens() {
     statsBar.textContent = ''; statsBar.style.display = 'flex';
     statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'grc20 tokens'), el('span', { className: 'value' }, fmtNum((data || []).length))));
     statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'bank transfers'), el('span', { className: 'value' }, fmtNum(bank.total_sends))));
-    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'volume'), el('span', { className: 'value' }, fmtNum(Math.floor(bank.total_volume / 1000000)) + ' GNOT')));
+    // Volume is denominated per chain, so a single blended figure across
+    // networks describes nothing — one chain's GNOT is not another's. In
+    // all-networks mode the split is shown instead of the sum.
+    const vol = v => fmtNum(Math.floor(v / 1000000)) + ' GNOT';
+    if (bank.by_network && Object.keys(bank.by_network).length > 1) {
+      const entries = Object.entries(bank.by_network).sort((a, b) => b[1].total_volume - a[1].total_volume);
+      for (const [net, slice] of entries) {
+        const stat = el('div', { className: 'stat' });
+        const label = el('span', { className: 'label' });
+        label.appendChild(netDotEl(net));
+        label.appendChild(document.createTextNode(net + ' volume'));
+        stat.appendChild(label);
+        stat.appendChild(el('span', { className: 'value' }, vol(slice.total_volume)));
+        statsBar.appendChild(stat);
+      }
+    } else {
+      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'volume'), el('span', { className: 'value' }, vol(bank.total_volume))));
+    }
     statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'unique addresses'), el('span', { className: 'value' }, fmtNum(bank.unique_addresses))));
     statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'senders'), el('span', { className: 'value' }, fmtNum(bank.unique_senders))));
     statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'receivers'), el('span', { className: 'value' }, fmtNum(bank.unique_receivers))));

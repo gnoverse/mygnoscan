@@ -910,3 +910,62 @@ func TestActiveAccountsAreScopedPerNetwork(t *testing.T) {
 		}
 	}
 }
+
+// Transfer volume is denominated per chain: one network's ugnot is not another's.
+// Summing them across networks produces a figure that describes nothing, so the
+// all-networks view carries the split and lets the frontend show it instead.
+func TestBankStatsSplitsByNetwork(t *testing.T) {
+	db := newTestDB(t)
+	db.SetConfiguredNetworks([]NetworkConfig{{ID: "alpha"}, {ID: "beta"}})
+
+	send := func(network, hash, amount string) {
+		t.Helper()
+		if err := db.InsertBankSend(network, hash, 1, "2026-01-01T00:00:00Z",
+			"g1from", "g1to", amount, true); err != nil {
+			t.Fatalf("InsertBankSend: %v", err)
+		}
+	}
+	send("alpha", "a1", "1000ugnot")
+	send("alpha", "a2", "2000ugnot")
+	send("beta", "b1", "500ugnot")
+
+	all, err := db.GetBankStats("")
+	if err != nil {
+		t.Fatalf("GetBankStats: %v", err)
+	}
+	if len(all.ByNetwork) != 2 {
+		t.Fatalf("split covers %d networks, want 2: %+v", len(all.ByNetwork), all.ByNetwork)
+	}
+	if got := all.ByNetwork["alpha"]; got.TotalSends != 2 || got.TotalVolume != 3000 {
+		t.Errorf("alpha = %+v, want 2 sends / 3000", got)
+	}
+	if got := all.ByNetwork["beta"]; got.TotalSends != 1 || got.TotalVolume != 500 {
+		t.Errorf("beta = %+v, want 1 send / 500", got)
+	}
+
+	// The split must reconcile, or the per-chain figures would not add up to the
+	// number they replace.
+	var sends int
+	var volume int64
+	for _, s := range all.ByNetwork {
+		sends += s.TotalSends
+		volume += s.TotalVolume
+	}
+	if sends != all.TotalSends || volume != all.TotalVolume {
+		t.Errorf("split does not sum to the total: sends %d/%d volume %d/%d",
+			sends, all.TotalSends, volume, all.TotalVolume)
+	}
+
+	// With one chain selected the split is the total, so sending it is noise —
+	// and the frontend keys "is this multi-network?" off its absence.
+	one, err := db.GetBankStats("alpha")
+	if err != nil {
+		t.Fatalf("GetBankStats(alpha): %v", err)
+	}
+	if one.ByNetwork != nil {
+		t.Errorf("single-network stats carry a split: %+v", one.ByNetwork)
+	}
+	if one.TotalVolume != 3000 {
+		t.Errorf("alpha volume = %d, want 3000", one.TotalVolume)
+	}
+}
