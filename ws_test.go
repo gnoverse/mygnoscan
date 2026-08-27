@@ -171,3 +171,75 @@ func TestInitLiveFeedsSkipsNetworksWithoutAClient(t *testing.T) {
 		}
 	}
 }
+
+// A client must never end up subscribed to a feed that nobody is polling.
+//
+// pollLoop used to read the client count, release the lock, then take it again
+// to clear the running flag. A client arriving in that window registered itself,
+// called ensureRunning, saw running still true and started nothing — and then
+// the loop cleared the flag and exited. The connection stayed open and silently
+// delivered no events until some other client happened to restart the loop.
+//
+// Driving the two functions directly rather than waiting on a real pollLoop is
+// deliberate: the loop only reaches its idle check once every three seconds, so
+// a test that waits for it would almost never land inside the window and would
+// pass against the bug. This hits the same two critical sections back to back.
+func TestFeedKeepsPollingWhenAClientArrivesAsTheLastOneLeaves(t *testing.T) {
+	fake, client := newFakeIndexer(t)
+	fake.seedChain(1, 3)
+
+	for attempt := 0; attempt < 200; attempt++ {
+		f := &liveFeed{clients: map[chan []byte]struct{}{}, indexer: client, networkID: "race"}
+		f.running = true // as if a loop were already polling
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		// One side is the poll loop deciding whether to exit.
+		var stopped bool
+		go func() { defer wg.Done(); stopped = f.stopIfIdle() }()
+
+		// The other is a browser connecting at that exact moment.
+		ch := make(chan []byte, 4)
+		go func() { defer wg.Done(); f.addClientChan(ch) }()
+
+		wg.Wait()
+
+		// Whichever order they landed in, a subscribed client must have a loop.
+		// If stopIfIdle won, running is false and ensureRunning must have seen
+		// that and started one; if the client won, stopIfIdle must have seen it
+		// and declined to stop.
+		f.mu.RLock()
+		clients, running := len(f.clients), f.running
+		f.mu.RUnlock()
+
+		if clients > 0 && !running && stopped {
+			t.Fatalf("attempt %d: client subscribed to a feed that stopped polling", attempt)
+		}
+		f.removeClient(ch)
+	}
+}
+
+// The invariant stated directly: the flag is cleared only when nobody is left.
+func TestStopIfIdle(t *testing.T) {
+	f := newFeed()
+	f.running = true
+
+	if f.stopIfIdle() != true {
+		t.Error("an empty feed did not stop")
+	}
+	if f.running {
+		t.Error("running was left set on a stopped feed")
+	}
+
+	f.running = true
+	ch := make(chan []byte, 1)
+	f.clients[ch] = struct{}{}
+
+	if f.stopIfIdle() != false {
+		t.Error("a feed with a subscriber stopped anyway")
+	}
+	if !f.running {
+		t.Error("running was cleared while a client was still subscribed")
+	}
+}
