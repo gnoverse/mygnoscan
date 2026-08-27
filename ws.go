@@ -26,9 +26,17 @@ var liveFeeds = map[string]*liveFeed{}
 
 func initLiveFeeds(networks []NetworkConfig, clients map[string]*IndexerClient) {
 	for _, n := range networks {
+		// A network without a client gets no feed rather than a feed that
+		// panics: pollLoop dereferences f.indexer, so a nil one would take the
+		// process down from a goroutine the moment a browser subscribed.
+		c := clients[n.ID]
+		if c == nil {
+			log.Printf("[%s] live feed: no indexer client, feed disabled", n.ID)
+			continue
+		}
 		liveFeeds[n.ID] = &liveFeed{
 			clients:   make(map[chan []byte]struct{}),
-			indexer:   clients[n.ID],
+			indexer:   c,
 			networkID: n.ID,
 		}
 	}
@@ -47,6 +55,11 @@ func (f *liveFeed) removeClient(ch chan []byte) {
 	f.mu.Unlock()
 }
 
+// broadcast sends to every subscriber, skipping any whose buffer is full.
+//
+// The default case is load-bearing: without it one browser that has stopped
+// reading — a backgrounded tab, a stalled connection — would block the poll loop
+// and stall the feed for everyone else. A slow client loses events instead.
 func (f *liveFeed) broadcast(data []byte) {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
