@@ -1695,8 +1695,8 @@ async function loadTokens() {
       tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'address'), el('th', {}, 'txs'), el('th', {}, 'volume'))));
       const body = el('tbody');
       for (const s of bank.top_senders) {
-        body.appendChild(el('tr', {},
-          el('td', {}, addrLink(s.address)),
+        body.appendChild(netRow(s.network,
+          el('td', {}, addrLink(s.address, s.network)),
           el('td', {}, fmtNum(s.count)),
           el('td', {}, fmtNum(Math.floor(s.total / 1000000)) + ' GNOT')
         ));
@@ -1712,8 +1712,8 @@ async function loadTokens() {
       tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'address'), el('th', {}, 'volume'), el('th', {}, 'txs'))));
       const body = el('tbody');
       for (const s of bank.top_receivers_volume) {
-        body.appendChild(el('tr', {},
-          el('td', {}, addrLink(s.address)),
+        body.appendChild(netRow(s.network,
+          el('td', {}, addrLink(s.address, s.network)),
           el('td', {}, fmtNum(Math.floor(s.total / 1000000)) + ' GNOT'),
           el('td', {}, fmtNum(s.count))
         ));
@@ -1729,8 +1729,8 @@ async function loadTokens() {
       tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'address'), el('th', {}, 'txs'), el('th', {}, 'volume'))));
       const body = el('tbody');
       for (const s of bank.top_receivers_count) {
-        body.appendChild(el('tr', {},
-          el('td', {}, addrLink(s.address)),
+        body.appendChild(netRow(s.network,
+          el('td', {}, addrLink(s.address, s.network)),
           el('td', {}, fmtNum(s.count)),
           el('td', {}, fmtNum(Math.floor(s.total / 1000000)) + ' GNOT')
         ));

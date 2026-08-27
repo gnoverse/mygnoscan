@@ -1685,6 +1685,13 @@ func (d *DB) TotalSourceBytes(network string) int {
 }
 
 type AddrStat struct {
+	// Network is the chain this row's figures belong to.
+	//
+	// An address is a different actor on each chain, and its ugnot is a
+	// different asset. Ranking by address alone summed both: one top sender was
+	// showing 900,400,000,000 ugnot that was really two chains' balances added
+	// together, which is a figure describing nothing.
+	Network string `json:"network,omitempty"`
 	Address string `json:"address"`
 	Count   int    `json:"count"`
 	Total   int64  `json:"total"`
@@ -1723,8 +1730,6 @@ func (d *DB) GetBankStats(network string) (*BankStats, error) {
 
 	var s BankStats
 	d.db.QueryRow(`SELECT COUNT(*) FROM bank_sends` + nFilter).Scan(&s.TotalSends)
-	d.db.QueryRow(`SELECT COUNT(DISTINCT from_address) FROM bank_sends` + nFilter).Scan(&s.UniqueSenders)
-	d.db.QueryRow(`SELECT COUNT(DISTINCT to_address) FROM bank_sends` + nFilter).Scan(&s.UniqueReceivers)
 	d.db.QueryRow(`SELECT ` + amountExpr + ` FROM bank_sends` + nFilter).Scan(&s.TotalVolume)
 
 	// One pass for the per-chain breakdown; the grouping key already leads the
@@ -1744,14 +1749,21 @@ func (d *DB) GetBankStats(network string) (*BankStats, error) {
 		}
 	}
 
-	andFilter := " AND " + d.networkFilter("network", network)
-	d.db.QueryRow(`SELECT COUNT(DISTINCT addr) FROM (SELECT from_address as addr FROM bank_sends` + nFilter + ` UNION SELECT to_address FROM bank_sends` + nFilter + `)`).Scan(&s.UniqueAddresses)
+	// Addresses are counted per chain, like everywhere else: the same string on
+	// two chains is two actors. Blended, production reports 68,580 against
+	// 68,672 counted honestly.
+	d.db.QueryRow(`SELECT COUNT(*) FROM (SELECT DISTINCT addr, network FROM (
+		SELECT from_address as addr, network FROM bank_sends` + nFilter + `
+		UNION SELECT to_address, network FROM bank_sends` + nFilter + `))`).Scan(&s.UniqueAddresses)
+	d.db.QueryRow(`SELECT COUNT(*) FROM (SELECT DISTINCT from_address, network FROM bank_sends` + nFilter + `)`).Scan(&s.UniqueSenders)
+	d.db.QueryRow(`SELECT COUNT(*) FROM (SELECT DISTINCT to_address, network FROM bank_sends` + nFilter + `)`).Scan(&s.UniqueReceivers)
 
-	s.TopSenders = d.queryAddrStats(`SELECT from_address, COUNT(*), ` + amountExpr + ` FROM bank_sends` + nFilter + ` GROUP BY from_address ORDER BY COUNT(*) DESC LIMIT 10`)
-	s.TopReceiversVol = d.queryAddrStats(`SELECT to_address, COUNT(*), ` + amountExpr + ` FROM bank_sends` + nFilter + ` GROUP BY to_address ORDER BY ` + amountExpr + ` DESC LIMIT 10`)
-	s.TopReceiversCnt = d.queryAddrStats(`SELECT to_address, COUNT(*), ` + amountExpr + ` FROM bank_sends` + nFilter + ` GROUP BY to_address ORDER BY COUNT(*) DESC LIMIT 10`)
+	// Every ranking leads its GROUP BY with the network, which both keys the row
+	// correctly and matches the (network, address) indexes these read.
+	s.TopSenders = d.queryAddrStats(`SELECT network, from_address, COUNT(*), ` + amountExpr + ` FROM bank_sends` + nFilter + ` GROUP BY network, from_address ORDER BY COUNT(*) DESC LIMIT 10`)
+	s.TopReceiversVol = d.queryAddrStats(`SELECT network, to_address, COUNT(*), ` + amountExpr + ` FROM bank_sends` + nFilter + ` GROUP BY network, to_address ORDER BY ` + amountExpr + ` DESC LIMIT 10`)
+	s.TopReceiversCnt = d.queryAddrStats(`SELECT network, to_address, COUNT(*), ` + amountExpr + ` FROM bank_sends` + nFilter + ` GROUP BY network, to_address ORDER BY COUNT(*) DESC LIMIT 10`)
 
-	_ = andFilter
 	return &s, nil
 }
 
@@ -1966,7 +1978,7 @@ func (d *DB) queryAddrStats(query string) []AddrStat {
 	var result []AddrStat
 	for rows.Next() {
 		var s AddrStat
-		if err := rows.Scan(&s.Address, &s.Count, &s.Total); err != nil {
+		if err := rows.Scan(&s.Network, &s.Address, &s.Count, &s.Total); err != nil {
 			continue
 		}
 		result = append(result, s)
