@@ -273,3 +273,100 @@ func TestSanityListsEveryConfiguredNetwork(t *testing.T) {
 		t.Error("the healthy chain was reported unreachable")
 	}
 }
+
+// seedCrossChainSends puts the same address on two chains with very different
+// volumes, which is the shape that produced a leaderboard row summing two
+// chains' ugnot into a figure describing nothing.
+func seedCrossChainSends(t *testing.T, db *DB) {
+	t.Helper()
+
+	const when = "2026-08-01T00:00:00Z"
+	for i := 0; i < 10; i++ {
+		if err := db.InsertBankSend("busy", itoa(i)+"-busy", 100+i, when,
+			"g1shared", "g1receiver", "1000000ugnot", true); err != nil {
+			t.Fatalf("InsertBankSend: %v", err)
+		}
+	}
+	if err := db.InsertBankSend("quiet", "0-quiet", 100, when,
+		"g1shared", "g1receiver", "5ugnot", true); err != nil {
+		t.Fatalf("InsertBankSend: %v", err)
+	}
+}
+
+// One chain's ugnot is not another's, so a row that sums them is meaningless.
+// Rankings are keyed by (address, network) and each row carries its chain.
+func TestBankRankingsAreKeyedByNetwork(t *testing.T) {
+	db := newTestDB(t)
+	db.SetConfiguredNetworks([]NetworkConfig{{ID: "busy"}, {ID: "quiet"}})
+	seedCrossChainSends(t, db)
+
+	s, err := db.GetBankStats("")
+	if err != nil {
+		t.Fatalf("GetBankStats: %v", err)
+	}
+
+	byNetwork := map[string]int64{}
+	for _, row := range s.TopSenders {
+		if row.Address != "g1shared" {
+			continue
+		}
+		if row.Network == "" {
+			t.Fatalf("ranking row has no network: %+v", row)
+		}
+		byNetwork[row.Network] = row.Total
+	}
+
+	if len(byNetwork) != 2 {
+		t.Fatalf("g1shared produced %d row(s), want one per chain: %v", len(byNetwork), byNetwork)
+	}
+	if byNetwork["busy"] != 10_000_000 || byNetwork["quiet"] != 5 {
+		t.Errorf("volumes = %v, want busy 10000000 and quiet 5 kept apart", byNetwork)
+	}
+}
+
+// The same address on two chains is two actors, so it counts twice.
+func TestBankCountsAddressesPerNetwork(t *testing.T) {
+	db := newTestDB(t)
+	db.SetConfiguredNetworks([]NetworkConfig{{ID: "busy"}, {ID: "quiet"}})
+	seedCrossChainSends(t, db)
+
+	s, err := db.GetBankStats("")
+	if err != nil {
+		t.Fatalf("GetBankStats: %v", err)
+	}
+
+	// g1shared and g1receiver, on two chains each.
+	if s.UniqueSenders != 2 {
+		t.Errorf("unique senders = %d, want 2: one address seen on two chains", s.UniqueSenders)
+	}
+	if s.UniqueReceivers != 2 {
+		t.Errorf("unique receivers = %d, want 2", s.UniqueReceivers)
+	}
+	if s.UniqueAddresses != 4 {
+		t.Errorf("unique addresses = %d, want 4: two addresses on two chains each", s.UniqueAddresses)
+	}
+}
+
+// Selecting one chain scopes the rankings to it and drops the redundant label.
+func TestBankStatsScopedToOneNetwork(t *testing.T) {
+	db := newTestDB(t)
+	db.SetConfiguredNetworks([]NetworkConfig{{ID: "busy"}, {ID: "quiet"}})
+	seedCrossChainSends(t, db)
+
+	s, err := db.GetBankStats("quiet")
+	if err != nil {
+		t.Fatalf("GetBankStats: %v", err)
+	}
+
+	if s.TotalVolume != 5 {
+		t.Errorf("total volume = %d, want quiet's 5 with busy's 10000000 excluded", s.TotalVolume)
+	}
+	for _, row := range s.TopSenders {
+		if row.Network != "quiet" {
+			t.Errorf("row from %q leaked into the quiet view: %+v", row.Network, row)
+		}
+	}
+	if s.ByNetwork != nil {
+		t.Errorf("by_network was sent for a single network: %+v", s.ByNetwork)
+	}
+}
