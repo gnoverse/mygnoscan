@@ -34,7 +34,7 @@ mygnoscan
 Point it at one network:
 
 ```bash
-mygnoscan -indexer https://indexer.topaz.testnets.gno.land/graphql/query -network topaz
+mygnoscan -indexer https://indexer.pearl.testnets.gno.land/graphql/query -network pearl
 ```
 
 …or several, with a config file:

@@ -35,7 +35,7 @@ disabled**, then drives headless Chrome over the pages:
 | `DB` | `mygnoscan.db` | database snapshot to render |
 | `OUT` | `docs/images` | output directory |
 | `PORT` | `8899` | port for the temporary server |
-| `NETWORK` | `topaz` | network to select in the UI |
+| `NETWORK` | `pearl` | network to select in the UI |
 | `CONFIG` | `testdata/screenshots-networks.json` | network list |
 | `WIDTH` / `HEIGHT` | `1400` / `900` | window size |
 | `CHROME` | auto-detected | path to Chrome or Chromium |

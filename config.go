@@ -24,10 +24,16 @@ const implicitConfigFile = "networks.json"
 // defaultNetworkID names the network when -indexer is passed without -network.
 const defaultNetworkID = "default"
 
+// The out-of-the-box networks: mainnet-ish plus the current public testnets.
+// Testnets are named after gemstones and are retired as new ones launch — topaz
+// was here and its endpoints no longer resolve — so this list needs revisiting
+// whenever the next stone ships. A network that disappears degrades to a per-
+// network circuit breaker rather than breaking startup.
 var defaultConfig = &AppConfig{
 	Networks: []NetworkConfig{
 		{ID: "gnoland1", IndexerURL: "https://indexer.gno.land/graphql/query", RPCURL: "https://rpc.gno.land"},
-		{ID: "test12", IndexerURL: "https://indexer.test12.moul.p2p.team/graphql"},
+		{ID: "pearl", IndexerURL: "https://indexer.pearl.testnets.gno.land/graphql/query", RPCURL: "https://rpc.pearl.testnets.gno.land"},
+		{ID: "sapphire", IndexerURL: "https://indexer.sapphire.testnets.gno.land/graphql/query", RPCURL: "https://rpc.sapphire.testnets.gno.land"},
 	},
 }
 

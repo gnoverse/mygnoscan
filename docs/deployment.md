@@ -28,7 +28,7 @@ Combining `-config` with the single-network flags is an error, as is passing
 resulting network IDs:
 
 ```
-networks [topaz betanet] (from config file)
+networks [pearl sapphire] (from config file)
 ```
 
 Check that line, or `/api/networks`, after any config change. A wrongly configured
@@ -41,14 +41,14 @@ chain.
 {
   "networks": [
     {
-      "id": "topaz",
-      "indexer": "https://indexer.topaz.testnets.gno.land/graphql/query",
-      "rpc": "https://rpc.topaz.testnets.gno.land"
+      "id": "pearl",
+      "indexer": "https://indexer.pearl.testnets.gno.land/graphql/query",
+      "rpc": "https://rpc.pearl.testnets.gno.land"
     },
     {
-      "id": "betanet",
-      "indexer": "https://indexer.betanet.testnets.gno.land/graphql/query",
-      "rpc": "https://rpc.betanet.testnets.gno.land"
+      "id": "sapphire",
+      "indexer": "https://indexer.sapphire.testnets.gno.land/graphql/query",
+      "rpc": "https://rpc.sapphire.testnets.gno.land"
     }
   ]
 }
