@@ -33,6 +33,22 @@ var errIndexerUnavailable = errors.New("indexer unavailable, not retried yet")
 // cap. It describes the query, not the indexer's health.
 var errQueryTooLarge = errors.New("indexer result set hit the element cap")
 
+// errNotFound reports that the indexer answered and the answer was "no such
+// record". Like the element cap, it describes the question rather than the
+// indexer, and must never be mistaken for a network being down.
+//
+// A hash lives on exactly one chain, so every unfiltered lookup produces a
+// not-found from every *other* configured network. Counting those as failures
+// meant three transaction views in a row tripped the breaker on all of them,
+// and for the next minute every merged page — transactions, blocks, events —
+// was served from the one chain that happened to hold those hashes.
+var errNotFound = errors.New("not found")
+
+// indexerNotFoundMessage is how the tx-indexer words a miss. It arrives as a
+// GraphQL error rather than an empty result set, so it has to be recognised by
+// text; there is no code to switch on.
+const indexerNotFoundMessage = "item not found in storage"
+
 // indexerElementCap is the tx-indexer's server-side limit on records per query.
 // On reaching it the resolver stops iterating and returns the rows it has
 // alongside a GraphQL error, so a capped response is partial rather than empty.
@@ -133,9 +149,11 @@ func (c *IndexerClient) query(ctx context.Context, query string, vars map[string
 		return errIndexerUnavailable
 	}
 	err := c.doQuery(ctx, query, vars, result)
-	// Caller-side cancellation and a capped result set both say nothing about the
-	// indexer's health, so neither counts against the breaker.
-	if !errors.Is(err, context.Canceled) && !errors.Is(err, errQueryTooLarge) {
+	// Caller-side cancellation, a capped result set and a miss all say nothing
+	// about the indexer's health, so none of them counts against the breaker.
+	// A deadline deliberately does: that is the caller reporting the indexer was
+	// too slow, which is the signal the breaker exists to act on.
+	if !errors.Is(err, context.Canceled) && !errors.Is(err, errQueryTooLarge) && !errors.Is(err, errNotFound) {
 		c.recordResult(err)
 	}
 	return err
@@ -191,6 +209,9 @@ func (c *IndexerClient) doQuery(ctx context.Context, query string, vars map[stri
 				return fmt.Errorf("decode capped response: %w", err)
 			}
 			return fmt.Errorf("%w: %s", errQueryTooLarge, e.Message)
+		}
+		if strings.Contains(gqlResp.Errors[0].Message, indexerNotFoundMessage) {
+			return fmt.Errorf("%w: %s", errNotFound, gqlResp.Errors[0].Message)
 		}
 		return fmt.Errorf("graphql error: %s", gqlResp.Errors[0].Message)
 	}
@@ -626,7 +647,7 @@ func (c *IndexerClient) GetTransactionByHash(ctx context.Context, hash string) (
 		return nil, err
 	}
 	if len(result.GetTransactions) == 0 {
-		return nil, fmt.Errorf("transaction not found: %s", hash)
+		return nil, fmt.Errorf("transaction %w: %s", errNotFound, hash)
 	}
 	return &result.GetTransactions[0], nil
 }

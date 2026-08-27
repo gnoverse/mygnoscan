@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -235,7 +236,15 @@ func fanOut[T any](
 			nctx, cancel := context.WithTimeout(ctx, perNetworkDeadline)
 			defer cancel()
 			v, err := fn(nctx, n, c)
-			health.record(n.ID, err)
+			// A miss is an answer, not a failure. Every unfiltered lookup of a
+			// hash, block or realm asks all networks and expects all but one to
+			// say no; charging those to the breaker takes healthy chains
+			// offline for browsing the site normally.
+			if errors.Is(err, errNotFound) {
+				health.record(n.ID, nil)
+			} else {
+				health.record(n.ID, err)
+			}
 			if err != nil {
 				return
 			}
@@ -1470,4 +1479,46 @@ func (a *API) HandleTimeSeriesActiveAddresses(w http.ResponseWriter, r *http.Req
 		pts = []ActiveAddressTimePoint{}
 	}
 	jsonResponse(w, pts)
+}
+
+// RegisterRoutes wires every API endpoint onto a mux.
+//
+// These lived inline in run(), which meant nothing could reach them: a test
+// calling a handler directly gets a request with no path values, so `{hash}`
+// and `{height}` arrive empty and the handler rejects its own input. Route
+// patterns are part of the endpoint's behaviour and belong somewhere testable.
+//
+// Endpoints that close over build-time values (/api/version) or over process
+// state (/api/live, the SPA) stay in run().
+func (a *API) RegisterRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/stats", a.HandleStats)
+	mux.HandleFunc("GET /api/realms", a.HandleRealms)
+	mux.HandleFunc("GET /api/realm/{path...}", a.HandleRealm)
+	mux.HandleFunc("GET /api/packages", a.HandlePackages)
+	mux.HandleFunc("GET /api/tx/{hash}", a.HandleTx)
+	mux.HandleFunc("GET /api/txs", a.HandleTxs)
+	mux.HandleFunc("GET /api/address/{addr}", a.HandleAddress)
+	mux.HandleFunc("GET /api/search", a.HandleSearch)
+	mux.HandleFunc("GET /api/deps/{path...}", a.HandleDeps)
+	mux.HandleFunc("GET /api/analytics", a.HandleAnalytics)
+	mux.HandleFunc("GET /api/timeseries/transactions", a.HandleTimeSeriesTransactions)
+	mux.HandleFunc("GET /api/timeseries/packages", a.HandleTimeSeriesPackages)
+	mux.HandleFunc("GET /api/timeseries/callers", a.HandleTimeSeriesCallers)
+	mux.HandleFunc("GET /api/timeseries/gas", a.HandleTimeSeriesGas)
+	mux.HandleFunc("GET /api/timeseries/storage", a.HandleTimeSeriesStorage)
+	mux.HandleFunc("GET /api/timeseries/storage/realms", a.HandleStorageRealms)
+	mux.HandleFunc("GET /api/sanity/overview", a.HandleSanityOverview)
+	mux.HandleFunc("GET /api/timeseries/health", a.HandleTimeSeriesHealth)
+	mux.HandleFunc("GET /api/timeseries/active-addresses", a.HandleTimeSeriesActiveAddresses)
+	mux.HandleFunc("GET /api/gas", a.HandleGas)
+	mux.HandleFunc("GET /api/bankstats", a.HandleBankStats)
+	mux.HandleFunc("GET /api/storage/{path...}", a.HandleStorage)
+	mux.HandleFunc("GET /api/allevents", a.HandleAllEvents)
+	mux.HandleFunc("GET /api/events/{path...}", a.HandleEvents)
+	mux.HandleFunc("GET /api/blocks", a.HandleBlocks)
+	mux.HandleFunc("GET /api/block/{height}", a.HandleBlock)
+	mux.HandleFunc("GET /api/validators", a.HandleValidators)
+	mux.HandleFunc("GET /api/tokens", a.HandleTokens)
+	mux.HandleFunc("GET /api/accounts", a.HandleAccounts)
+	mux.HandleFunc("GET /api/govdao", a.HandleGovDAO)
 }
