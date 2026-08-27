@@ -229,3 +229,47 @@ func TestSanityMarksAnUnreachableChain(t *testing.T) {
 		t.Error("the healthy chain was dropped along with the broken one")
 	}
 }
+
+// The sanity page must not silently omit a chain. fanOut skips networks with no
+// client or an open breaker, but this is the page whose whole job is to report
+// liveness — a chain missing from it is the one a reader most needs to see.
+func TestSanityListsEveryConfiguredNetwork(t *testing.T) {
+	db := newTestDB(t)
+	nets := []NetworkConfig{{ID: "alpha"}, {ID: "beta"}, {ID: "noclient"}}
+	db.SetConfiguredNetworks(nets)
+
+	alpha, alphaClient := newFakeIndexer(t)
+	alpha.seedChain(100, 5)
+
+	// beta's breaker is already open, as it would be after a real outage.
+	beta, betaClient := newFakeIndexer(t)
+	beta.status = http.StatusInternalServerError
+
+	api := NewAPI(db, map[string]*IndexerClient{"alpha": alphaClient, "beta": betaClient},
+		nets, NewAnalyzer(db))
+	for i := 0; i < breakerThreshold; i++ {
+		api.health.record("beta", errIndexerUnavailable)
+	}
+
+	rec, body := serve(t, api, "/api/sanity/overview")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, body)
+	}
+
+	var ov SanityOverview
+	mustJSON(t, body, &ov)
+
+	for _, n := range nets {
+		live, ok := ov.ByNetwork[n.ID]
+		if !ok {
+			t.Errorf("%s is missing from the liveness report entirely", n.ID)
+			continue
+		}
+		if n.ID != "alpha" && live.Reachable {
+			t.Errorf("%s was reported reachable: %+v", n.ID, live)
+		}
+	}
+	if !ov.ByNetwork["alpha"].Reachable {
+		t.Error("the healthy chain was reported unreachable")
+	}
+}

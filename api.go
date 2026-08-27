@@ -1461,9 +1461,18 @@ func (a *API) HandleSanityOverview(w http.ResponseWriter, r *http.Request) {
 		func(ctx context.Context, n NetworkConfig, c *IndexerClient) (netLive, error) {
 			return netLive{id: n.ID, live: livenessOf(ctx, c)}, nil
 		})
-	ov.ByNetwork = make(map[string]SanityLiveness, len(results))
+	ov.ByNetwork = make(map[string]SanityLiveness, len(a.networks))
 	for _, r := range results {
 		ov.ByNetwork[r.id] = r.live
+	}
+	// fanOut drops networks it skipped — no client, or an open breaker — but
+	// this is the page whose job is to report liveness, and a chain silently
+	// missing from it is the one case a reader most needs to see. Fill the gaps
+	// in as unreachable rather than letting them vanish.
+	for _, n := range a.networks {
+		if _, ok := ov.ByNetwork[n.ID]; !ok {
+			ov.ByNetwork[n.ID] = SanityLiveness{}
+		}
 	}
 	jsonResponse(w, ov)
 }
