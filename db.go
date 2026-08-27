@@ -1522,16 +1522,21 @@ func (d *DB) Search(network, q string) ([]PackageInfo, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
+	// The counts are selected, not left to the scan: this used to read eight
+	// columns into eleven destinations, so every search returned
+	// "expected 8 destination arguments in Scan, not 11" and the site's search
+	// box was dead for any query.
 	qStr := `
-		SELECT network, path, name, creator, block_height, tx_hash, is_realm, num_files
-		FROM packages
-		WHERE (path LIKE ? OR name LIKE ? OR creator LIKE ?)`
+		SELECT p.network, p.path, p.name, p.creator, p.block_height, p.tx_hash,
+		       p.is_realm, p.num_files,
+		       (SELECT COUNT(*) FROM calls c WHERE c.network = p.network AND c.pkg_path = p.path),
+		       (SELECT COUNT(*) FROM dependencies d WHERE d.network = p.network AND d.import_path = p.path),
+		       (SELECT COUNT(*) FROM dependencies d WHERE d.network = p.network AND d.package_path = p.path)
+		FROM packages p
+		WHERE (p.path LIKE ? OR p.name LIKE ? OR p.creator LIKE ?)`
 	args := []any{"%" + q + "%", "%" + q + "%", "%" + q + "%"}
-	if network != "" {
-		qStr += ` AND network = ?`
-		args = append(args, network)
-	}
-	qStr += ` ORDER BY block_height DESC LIMIT 20`
+	qStr += ` AND ` + d.networkFilter("p.network", network)
+	qStr += ` ORDER BY p.block_height DESC LIMIT 20`
 
 	rows, err := d.db.Query(qStr, args...)
 	if err != nil {

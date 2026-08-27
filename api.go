@@ -638,7 +638,7 @@ func (a *API) HandleAddress(w http.ResponseWriter, r *http.Request) {
 	} else {
 		c := a.clientFor(network)
 		if c == nil {
-			jsonError(w, "no client available", 500)
+			jsonError(w, "network not found", 404)
 			return
 		}
 		var err error
@@ -928,7 +928,7 @@ func (a *API) HandleBlocks(w http.ResponseWriter, r *http.Request) {
 	if network != "" {
 		client := a.clientFor(network)
 		if client == nil {
-			jsonError(w, "no client available", 500)
+			jsonError(w, "network not found", 404)
 			return
 		}
 		blocks, err := client.GetRecentBlocks(r.Context(), limit)
@@ -983,7 +983,7 @@ func (a *API) HandleBlock(w http.ResponseWriter, r *http.Request) {
 	}
 	client := a.clientFor(network)
 	if client == nil {
-		jsonError(w, "no client available", 500)
+		jsonError(w, "network not found", 404)
 		return
 	}
 	height, err := strconv.Atoi(r.PathValue("height"))
