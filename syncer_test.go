@@ -2,75 +2,19 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"strings"
-	"sync"
 	"testing"
 )
-
-// fakeIndexer serves just enough of the tx-indexer GraphQL API to drive the
-// syncer: block 1 (the reset fingerprint) and the latest height.
-type fakeIndexer struct {
-	mu sync.Mutex
-
-	block1Hash    string
-	chainID       string
-	latestHeight  int
-	block1Failing bool
-}
-
-func (f *fakeIndexer) set(hash string, height int) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.block1Hash = hash
-	f.latestHeight = height
-}
-
-func (f *fakeIndexer) failBlock1(failing bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.block1Failing = failing
-}
-
-func (f *fakeIndexer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	body, _ := io.ReadAll(r.Body)
-	query := string(body)
-
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	w.Header().Set("Content-Type", "application/json")
-	switch {
-	case strings.Contains(query, "latestBlockHeight"):
-		fmt.Fprintf(w, `{"data":{"latestBlockHeight":%d}}`, f.latestHeight)
-
-	case strings.Contains(query, "getBlocks"):
-		if f.block1Failing {
-			http.Error(w, "indexer unavailable", http.StatusInternalServerError)
-			return
-		}
-		b, _ := json.Marshal(f.block1Hash)
-		fmt.Fprintf(w, `{"data":{"getBlocks":[{"hash":%s,"height":1,"chain_id":%q,"time":"2026-01-01T00:00:00Z"}]}}`,
-			b, f.chainID)
-
-	default:
-		// Any transaction query: no results, so sync is a no-op.
-		fmt.Fprint(w, `{"data":{"getTransactions":[]}}`)
-	}
-}
 
 // newTestSyncer wires a syncer against a fake indexer and a real temp database.
 func newTestSyncer(t *testing.T, network string) (*Syncer, *fakeIndexer, *DB) {
 	t.Helper()
 
-	fake := &fakeIndexer{chainID: "testchain", block1Hash: "genesis-a", latestHeight: 1000}
-	srv := httptest.NewServer(fake)
-	t.Cleanup(srv.Close)
+	fake, client := newFakeIndexer(t)
+	fake.chainID = "testchain"
+	fake.set("genesis-a", 1000)
 
 	db, err := NewDB(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -78,7 +22,7 @@ func newTestSyncer(t *testing.T, network string) (*Syncer, *fakeIndexer, *DB) {
 	}
 	t.Cleanup(func() { db.Close() })
 
-	return NewSyncer(NewIndexerClient(srv.URL), db, NewAnalyzer(db), network), fake, db
+	return NewSyncer(client, db, NewAnalyzer(db), network), fake, db
 }
 
 // seedNetwork writes one row into every network-scoped table.
