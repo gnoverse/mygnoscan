@@ -1530,7 +1530,9 @@ func (d *DB) GetStats(network string) (*Stats, error) {
 	d.db.QueryRow(`SELECT COUNT(*) FROM msg_runs` + nf).Scan(&s.TotalMsgRuns)
 	d.db.QueryRow(`SELECT COUNT(*) FROM bank_sends` + nf).Scan(&s.TotalSends)
 	s.TotalTxs = s.TotalCalls + s.TotalDeploys + s.TotalMsgRuns + s.TotalSends
-	d.db.QueryRow(`SELECT COUNT(DISTINCT caller) FROM calls` + nf).Scan(&s.UniqueCallers)
+	// Per (caller, network): the same address on two chains is two actors, and
+	// collapsing them undercounts. 19,054 blended against 19,117 on production.
+	d.db.QueryRow(`SELECT COUNT(*) FROM (SELECT DISTINCT caller, network FROM calls` + nf + `)`).Scan(&s.UniqueCallers)
 	d.db.QueryRow(`SELECT COALESCE(MAX(block_height), 0) FROM packages` + nf).Scan(&s.LatestBlock)
 	return &s, nil
 }
@@ -2078,10 +2080,13 @@ func (d *DB) GetTransactionTimeSeries(network, granularity string, days int) ([]
 	sqlFmt, step, truncFn := timeseriesFormat(granularity)
 	startTime := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
 
-	netFilter := ""
-	if network != "" {
-		netFilter = " AND t.network = ?"
-	}
+	// Scope to the configured networks, always.
+	//
+	// An empty filter is not "all networks" — it is "every network ever synced",
+	// including retired ones whose rows are still here. topaz has been gone for
+	// months and still holds 3,093 transactions, 2,945 calls and 272 packages in
+	// production, and every unfiltered series above was quietly counting them.
+	netFilter := " AND " + d.networkFilter("t.network", network)
 
 	subq := func(table, typ string) string {
 		return fmt.Sprintf(
@@ -2098,13 +2103,7 @@ func (d *DB) GetTransactionTimeSeries(network, granularity string, days int) ([]
 		" UNION ALL " + subq("bank_sends", "sends") +
 		" ORDER BY bucket ASC"
 
-	var args []any
-	for range 4 {
-		args = append(args, startTime)
-		if network != "" {
-			args = append(args, network)
-		}
-	}
+	args := []any{startTime, startTime, startTime, startTime}
 
 	rows, err := d.db.Query(q, args...)
 	if err != nil {
@@ -2152,10 +2151,13 @@ func (d *DB) GetPackageTimeSeries(network, granularity string, days int) ([]PkgT
 	sqlFmt, step, truncFn := timeseriesFormat(granularity)
 	startTime := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
 
-	netFilter := ""
-	if network != "" {
-		netFilter = " AND t.network = ?"
-	}
+	// Scope to the configured networks, always.
+	//
+	// An empty filter is not "all networks" — it is "every network ever synced",
+	// including retired ones whose rows are still here. topaz has been gone for
+	// months and still holds 3,093 transactions, 2,945 calls and 272 packages in
+	// production, and every unfiltered series above was quietly counting them.
+	netFilter := " AND " + d.networkFilter("t.network", network)
 
 	subq := func(typ string, isRealm int) string {
 		return fmt.Sprintf(
@@ -2170,13 +2172,7 @@ func (d *DB) GetPackageTimeSeries(network, granularity string, days int) ([]PkgT
 		" UNION ALL " + subq("realms", 1) +
 		" ORDER BY bucket ASC"
 
-	var args []any
-	for range 2 {
-		args = append(args, startTime)
-		if network != "" {
-			args = append(args, network)
-		}
-	}
+	args := []any{startTime, startTime}
 
 	rows, err := d.db.Query(q, args...)
 	if err != nil {
@@ -2213,6 +2209,23 @@ func (d *DB) GetPackageTimeSeries(network, granularity string, days int) ([]PkgT
 	), nil
 }
 
+// perChainBucketCount builds a per-bucket count of distinct addresses, keyed by
+// (address, network) rather than by address alone.
+//
+// The same address on two chains is two actors with two histories, so counting
+// it once undercounts. Every address figure in the project is counted this way;
+// doing it here too is what keeps a series' components consistent with the
+// totals computed beside them, rather than producing a page whose own numbers
+// contradict each other.
+func perChainBucketCount(sqlFmt, typ, column, from, netFilter string) string {
+	return fmt.Sprintf(
+		"SELECT bucket, '%s' as typ, COUNT(*) as cnt FROM ("+
+			" SELECT DISTINCT strftime('%s', t.block_time) as bucket, %s, t.network"+
+			" FROM %s WHERE t.block_time >= ?%s"+
+			") GROUP BY bucket",
+		typ, sqlFmt, column, from, netFilter)
+}
+
 func (d *DB) GetCallerTimeSeries(network, granularity string, days int) ([]CallerTimePoint, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -2220,40 +2233,26 @@ func (d *DB) GetCallerTimeSeries(network, granularity string, days int) ([]Calle
 	sqlFmt, step, truncFn := timeseriesFormat(granularity)
 	startTime := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
 
-	netFilter := ""
-	if network != "" {
-		netFilter = " AND t.network = ?"
-	}
+	// Scope to the configured networks, always.
+	//
+	// An empty filter is not "all networks" — it is "every network ever synced",
+	// including retired ones whose rows are still here. topaz has been gone for
+	// months and still holds 3,093 transactions, 2,945 calls and 272 packages in
+	// production, and every unfiltered series above was quietly counting them.
+	netFilter := " AND " + d.networkFilter("t.network", network)
 
 	subqs := []string{
-		fmt.Sprintf(
-			"SELECT strftime('%s', t.block_time) as bucket, 'callers' as typ, COUNT(DISTINCT t.caller) as cnt"+
-				" FROM calls t"+
-				" WHERE t.block_time >= ?%s"+
-				" GROUP BY bucket",
-			sqlFmt, netFilter),
-		fmt.Sprintf(
-			"SELECT strftime('%s', t.block_time) as bucket, 'deployers' as typ, COUNT(DISTINCT t.creator) as cnt"+
-				" FROM packages t"+
-				" WHERE t.block_time >= ?%s"+
-				" GROUP BY bucket",
-			sqlFmt, netFilter),
-		fmt.Sprintf(
-			"SELECT strftime('%s', t.block_time) as bucket, 'senders' as typ, COUNT(DISTINCT t.from_address) as cnt"+
-				" FROM bank_sends t"+
-				" WHERE t.block_time >= ?%s"+
-				" GROUP BY bucket",
-			sqlFmt, netFilter),
+		// Counted per (address, network), like every other address figure: the
+		// same address on two chains is two actors. Counting the pair keeps this
+		// consistent with total_active in the active-addresses series, which
+		// would otherwise be computed one way and its components another.
+		perChainBucketCount(sqlFmt, "callers", "t.caller", "calls t", netFilter),
+		perChainBucketCount(sqlFmt, "deployers", "t.creator", "packages t", netFilter),
+		perChainBucketCount(sqlFmt, "senders", "t.from_address", "bank_sends t", netFilter),
 	}
 	q := strings.Join(subqs, " UNION ALL ") + " ORDER BY bucket ASC"
 
-	var args []any
-	for range 3 {
-		args = append(args, startTime)
-		if network != "" {
-			args = append(args, network)
-		}
-	}
+	args := []any{startTime, startTime, startTime}
 
 	rows, err := d.db.Query(q, args...)
 	if err != nil {
@@ -2306,12 +2305,8 @@ func (d *DB) GetStorageTimeSeries(network, realmPath, granularity string, days i
 	sqlFmt, step, truncFn := timeseriesFormat(granularity)
 	startTime := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
 
-	extraFilters := ""
+	extraFilters := " AND " + d.networkFilter("p.network", network)
 	args := []any{startTime}
-	if network != "" {
-		extraFilters += " AND p.network = ?"
-		args = append(args, network)
-	}
 	if realmPath != "" {
 		extraFilters += " AND p.path = ?"
 		args = append(args, realmPath)
@@ -2582,28 +2577,23 @@ func (d *DB) GetSanityOverview(network string) (*SanityOverview, error) {
 
 	ov := &SanityOverview{Network: network}
 
-	netFilter := ""
-	if network != "" {
-		netFilter = " AND network = ?"
-	}
+	// Scope to the configured networks, always.
+	//
+	// An empty filter is not "all networks" — it is "every network ever synced",
+	// including retired ones whose rows are still here. topaz has been gone for
+	// months and still holds 3,093 transactions, 2,945 calls and 272 packages in
+	// production, and every unfiltered series above was quietly counting them.
+	netFilter := " AND " + d.networkFilter("network", network)
 
 	now := time.Now().UTC()
 	since1h := now.Add(-1 * time.Hour).Format(time.RFC3339)
 	since24h := now.Add(-24 * time.Hour).Format(time.RFC3339)
 	since7d := now.Add(-7 * 24 * time.Hour).Format(time.RFC3339)
 
-	args1h := []any{since1h}
-	if network != "" {
-		args1h = append(args1h, network)
-	}
-	d.db.QueryRow(`SELECT COUNT(*) FROM transactions WHERE block_time >= ?`+netFilter, args1h...).Scan(&ov.TxLast1h)
+	d.db.QueryRow(`SELECT COUNT(*) FROM transactions WHERE block_time >= ?`+netFilter, since1h).Scan(&ov.TxLast1h)
 
-	args24h := []any{since24h}
-	if network != "" {
-		args24h = append(args24h, network)
-	}
 	var total24h, success24h, gasUsed24h, gasWanted24h int
-	d.db.QueryRow(`SELECT COUNT(*), SUM(CASE WHEN success THEN 1 ELSE 0 END), SUM(gas_used), SUM(gas_wanted) FROM transactions WHERE block_time >= ?`+netFilter, args24h...).Scan(&total24h, &success24h, &gasUsed24h, &gasWanted24h)
+	d.db.QueryRow(`SELECT COUNT(*), SUM(CASE WHEN success THEN 1 ELSE 0 END), SUM(gas_used), SUM(gas_wanted) FROM transactions WHERE block_time >= ?`+netFilter, since24h).Scan(&total24h, &success24h, &gasUsed24h, &gasWanted24h)
 	ov.TxLast24h = total24h
 	if total24h > 0 {
 		ov.SuccessRate24h = float64(success24h) / float64(total24h)
@@ -2612,27 +2602,21 @@ func (d *DB) GetSanityOverview(network string) (*SanityOverview, error) {
 		ov.GasEfficiency24h = float64(gasUsed24h) / float64(gasWanted24h)
 	}
 
-	addrArgs := []any{since24h, since24h, since24h}
-	addrQuery := `SELECT COUNT(DISTINCT addr) FROM (
-		SELECT caller as addr FROM calls WHERE block_time >= ?
-		UNION SELECT creator FROM packages WHERE block_time >= ?
-		UNION SELECT from_address FROM bank_sends WHERE block_time >= ?
-	)`
-	if network != "" {
-		addrArgs = []any{since24h, network, since24h, network, since24h, network}
-		addrQuery = `SELECT COUNT(DISTINCT addr) FROM (
-			SELECT caller as addr FROM calls WHERE block_time >= ? AND network = ?
-			UNION SELECT creator FROM packages WHERE block_time >= ? AND network = ?
-			UNION SELECT from_address FROM bank_sends WHERE block_time >= ? AND network = ?
-		)`
-	}
-	d.db.QueryRow(addrQuery, addrArgs...).Scan(&ov.ActiveAddresses24h)
+	// Scoped to the configured networks and counted per chain.
+	//
+	// This one was wrong in two directions at once: the all-networks branch had
+	// no network filter at all, so it counted retired topaz, and the distinct
+	// count collapsed an address seen on two chains into one. On production:
+	// 63,404 as written, 63,343 once topaz is excluded, 63,421 counted honestly.
+	addrFilter := " AND " + d.networkFilter("network", network)
+	addrQuery := `SELECT COUNT(*) FROM (SELECT DISTINCT addr, network FROM (
+		SELECT caller as addr, network FROM calls WHERE block_time >= ?` + addrFilter + `
+		UNION SELECT creator, network FROM packages WHERE block_time >= ?` + addrFilter + `
+		UNION SELECT from_address, network FROM bank_sends WHERE block_time >= ?` + addrFilter + `
+	))`
+	d.db.QueryRow(addrQuery, since24h, since24h, since24h).Scan(&ov.ActiveAddresses24h)
 
-	args7d := []any{since7d}
-	if network != "" {
-		args7d = append(args7d, network)
-	}
-	d.db.QueryRow(`SELECT COUNT(*) FROM packages WHERE block_time >= ?`+netFilter, args7d...).Scan(&ov.NewPackages7d)
+	d.db.QueryRow(`SELECT COUNT(*) FROM packages WHERE block_time >= ?`+netFilter, since7d).Scan(&ov.NewPackages7d)
 
 	return ov, nil
 }
@@ -2644,10 +2628,13 @@ func (d *DB) GetHealthTimeSeries(network, granularity string, days int) ([]Healt
 	sqlFmt, step, truncFn := timeseriesFormat(granularity)
 	startTime := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
 
-	netFilter := ""
-	if network != "" {
-		netFilter = " AND t.network = ?"
-	}
+	// Scope to the configured networks, always.
+	//
+	// An empty filter is not "all networks" — it is "every network ever synced",
+	// including retired ones whose rows are still here. topaz has been gone for
+	// months and still holds 3,093 transactions, 2,945 calls and 272 packages in
+	// production, and every unfiltered series above was quietly counting them.
+	netFilter := " AND " + d.networkFilter("t.network", network)
 
 	q := fmt.Sprintf(
 		"SELECT strftime('%s', t.block_time) as bucket,"+
@@ -2659,12 +2646,7 @@ func (d *DB) GetHealthTimeSeries(network, granularity string, days int) ([]Healt
 			" GROUP BY bucket ORDER BY bucket ASC",
 		sqlFmt, netFilter)
 
-	args := []any{startTime}
-	if network != "" {
-		args = append(args, network)
-	}
-
-	rows, err := d.db.Query(q, args...)
+	rows, err := d.db.Query(q, startTime)
 	if err != nil {
 		return nil, err
 	}
@@ -2719,13 +2701,9 @@ func (d *DB) GetRealmsWithStorage(network string, days int) ([]string, error) {
 		FROM package_files pf
 		JOIN packages p ON p.network = pf.network AND p.path = pf.package_path
 		WHERE p.block_time >= ? AND p.is_realm = 1`
-	args := []any{startTime}
-	if network != "" {
-		q += " AND p.network = ?"
-		args = append(args, network)
-	}
+	q += " AND " + d.networkFilter("p.network", network)
 	q += " ORDER BY p.path ASC"
-	rows, err := d.db.Query(q, args...)
+	rows, err := d.db.Query(q, startTime)
 	if err != nil {
 		return nil, err
 	}
@@ -2748,26 +2726,24 @@ func (d *DB) GetActiveAddressTimeSeries(network, granularity string, days int) (
 	sqlFmt, step, truncFn := timeseriesFormat(granularity)
 	startTime := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
 
-	netFilter := ""
-	if network != "" {
-		netFilter = " AND t.network = ?"
-	}
+	// Scope to the configured networks, always.
+	//
+	// An empty filter is not "all networks" — it is "every network ever synced",
+	// including retired ones whose rows are still here. topaz has been gone for
+	// months and still holds 3,093 transactions, 2,945 calls and 272 packages in
+	// production, and every unfiltered series above was quietly counting them.
+	netFilter := " AND " + d.networkFilter("t.network", network)
 
-	// Individual counts: callers, deployers, senders
+	// Individual counts: callers, deployers, senders — counted the same way as
+	// the union total below, so the parts agree with the whole.
 	subqs := []string{
-		fmt.Sprintf("SELECT strftime('%s', t.block_time) as bucket, 'callers' as typ, COUNT(DISTINCT t.caller) as cnt FROM calls t WHERE t.block_time >= ?%s GROUP BY bucket", sqlFmt, netFilter),
-		fmt.Sprintf("SELECT strftime('%s', t.block_time) as bucket, 'deployers' as typ, COUNT(DISTINCT t.creator) as cnt FROM packages t WHERE t.block_time >= ?%s GROUP BY bucket", sqlFmt, netFilter),
-		fmt.Sprintf("SELECT strftime('%s', t.block_time) as bucket, 'senders' as typ, COUNT(DISTINCT t.from_address) as cnt FROM bank_sends t WHERE t.block_time >= ?%s GROUP BY bucket", sqlFmt, netFilter),
+		perChainBucketCount(sqlFmt, "callers", "t.caller", "calls t", netFilter),
+		perChainBucketCount(sqlFmt, "deployers", "t.creator", "packages t", netFilter),
+		perChainBucketCount(sqlFmt, "senders", "t.from_address", "bank_sends t", netFilter),
 	}
 	q := strings.Join(subqs, " UNION ALL ") + " ORDER BY bucket ASC"
 
-	var args []any
-	for range 3 {
-		args = append(args, startTime)
-		if network != "" {
-			args = append(args, network)
-		}
-	}
+	args := []any{startTime, startTime, startTime}
 
 	rows, err := d.db.Query(q, args...)
 	if err != nil {
@@ -2800,24 +2776,23 @@ func (d *DB) GetActiveAddressTimeSeries(network, granularity string, days int) (
 		return nil, err
 	}
 
-	// Union total active addresses per bucket
-	var unionNetFilter string
-	var unionArgs []any
-	if network != "" {
-		unionNetFilter = " AND network = ?"
-		unionArgs = []any{startTime, network, startTime, network, startTime, network}
-	} else {
-		unionArgs = []any{startTime, startTime, startTime}
-	}
+	// Union total active addresses per bucket, counted per chain.
+	//
+	// COUNT(DISTINCT addr) collapses an address seen on two chains into one, but
+	// it is two actors with two histories — the same reasoning as everywhere
+	// else. The inner query already carries the network, so counting the pair
+	// costs nothing extra.
+	unionNetFilter := " AND " + d.networkFilter("network", network)
 	unionQ := fmt.Sprintf(
-		"SELECT strftime('%s', block_time) as bucket, COUNT(DISTINCT addr) as cnt FROM ("+
-			" SELECT caller as addr, block_time, network FROM calls WHERE block_time >= ?%s"+
-			" UNION SELECT creator, block_time, network FROM packages WHERE block_time >= ?%s"+
-			" UNION SELECT from_address, block_time, network FROM bank_sends WHERE block_time >= ?%s"+
-			") GROUP BY bucket ORDER BY bucket ASC",
+		"SELECT bucket, COUNT(*) as cnt FROM ("+
+			" SELECT DISTINCT strftime('%s', block_time) as bucket, addr, network FROM ("+
+			"  SELECT caller as addr, block_time, network FROM calls WHERE block_time >= ?%s"+
+			"  UNION SELECT creator, block_time, network FROM packages WHERE block_time >= ?%s"+
+			"  UNION SELECT from_address, block_time, network FROM bank_sends WHERE block_time >= ?%s"+
+			" )) GROUP BY bucket ORDER BY bucket ASC",
 		sqlFmt, unionNetFilter, unionNetFilter, unionNetFilter)
 
-	urows, err := d.db.Query(unionQ, unionArgs...)
+	urows, err := d.db.Query(unionQ, startTime, startTime, startTime)
 	if err != nil {
 		return nil, err
 	}

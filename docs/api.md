@@ -12,7 +12,9 @@ All responses are JSON. Errors are `{"error": "..."}` with a non-200 status.
 | `all`, or omitted | every **configured** network |
 | anything else | `404 {"error": "network not found"}` |
 
-"Every configured network" is not the same as "no filter". Rows survive a network
+This applies to the time series and the sanity counters too, which until
+recently used no filter at all in that mode and so reported every network ever
+synced. "Every configured network" is not the same as "no filter". Rows survive a network
 being removed from the config — a retired testnet keeps its history in the
 database — and those rows are excluded. Removing topaz from the config dropped
 4,101 transactions and 187 realms out of the all-networks totals, which is
