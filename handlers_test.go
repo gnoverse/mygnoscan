@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -308,5 +309,139 @@ func mustJSON(t *testing.T, body []byte, v any) {
 	t.Helper()
 	if err := json.Unmarshal(body, v); err != nil {
 		t.Fatalf("decode %s: %v", body, err)
+	}
+}
+
+// The handlers left over after the storage-backed and indexer-backed sweeps.
+// All of these read from the database and were reachable in production without
+// ever having been exercised by a test.
+func TestRemainingStorageHandlers(t *testing.T) {
+	api, db := newTestAPI(t)
+	seedActivity(t, db, "alpha", 4, 2, 1)
+	seedActivity(t, db, "beta", 1, 1, 1)
+
+	// seedActivity writes realms; /api/packages lists the non-realms, so it
+	// needs one of those to have anything to show.
+	if err := db.UpsertPackage("alpha", "gno.land/p/alpha/lib", "lib", "g1creator",
+		"alpha-lib", 400, "2026-08-01T00:00:00Z", false, 1); err != nil {
+		t.Fatalf("UpsertPackage: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux)
+
+	tests := []struct {
+		name   string
+		target string
+		check  func(t *testing.T, body []byte)
+	}{
+		{
+			name:   "packages list",
+			target: "/api/packages?limit=10",
+			check: func(t *testing.T, body []byte) {
+				var p struct {
+					Items []PackageInfo `json:"items"`
+					Total int           `json:"total"`
+				}
+				mustJSON(t, body, &p)
+				if p.Total == 0 {
+					t.Error("no packages")
+				}
+				for _, r := range p.Items {
+					if r.Network == "" {
+						t.Errorf("package %s carries no network", r.Path)
+					}
+				}
+			},
+		},
+		{
+			name:   "one realm's detail",
+			target: "/api/realm/r/alpha/pkg0?network=alpha",
+			check: func(t *testing.T, body []byte) {
+				var d map[string]any
+				mustJSON(t, body, &d)
+				if d["path"] == nil && d["package"] == nil {
+					t.Errorf("no package in the response: %s", body)
+				}
+			},
+		},
+		{
+			name:   "dependency graph",
+			target: "/api/deps/r/alpha/pkg0?network=alpha",
+		},
+		{
+			name:   "reverse dependency graph",
+			target: "/api/deps/r/alpha/pkg0?network=alpha&dir=dependents",
+		},
+		{
+			name:   "storage time series",
+			target: "/api/timeseries/storage?days=7&network=alpha",
+		},
+		{
+			name:   "storage realms selector",
+			target: "/api/timeseries/storage/realms?days=7&network=alpha",
+		},
+		{
+			name:   "health time series",
+			target: "/api/timeseries/health?days=7&network=alpha",
+		},
+		{
+			name:   "sanity overview for one network",
+			target: "/api/sanity/overview?network=alpha",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, httptest.NewRequest("GET", tt.target, nil))
+			body := rec.Body.Bytes()
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", rec.Code, body)
+			}
+			if !json.Valid(body) {
+				t.Fatalf("body is not valid JSON: %s", body)
+			}
+			if string(body) == "null\n" || string(body) == "null" {
+				t.Error("returned null; the frontend iterates this and would throw")
+			}
+			if tt.check != nil {
+				tt.check(t, body)
+			}
+		})
+	}
+}
+
+// The live feed is an SSE stream, so it must set the streaming headers and stay
+// open rather than answering and closing like a normal endpoint.
+func TestLiveFeedHandlerOpensAStream(t *testing.T) {
+	handler := liveFeedHandler()
+
+	req := httptest.NewRequest("GET", "/api/live?network=nonexistent", nil)
+	ctx, cancel := context.WithTimeout(req.Context(), 100*time.Millisecond)
+	defer cancel()
+
+	rec := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handler(rec, req.WithContext(ctx))
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the handler did not return after its request was cancelled")
+	}
+
+	// A subscription naming a network with no feed is accepted but silent: the
+	// connection stays open and delivers nothing, rather than erroring at a
+	// browser that cannot do anything useful with the error.
+	if got := rec.Header().Get("Content-Type"); got != "text/event-stream" {
+		t.Errorf("Content-Type = %q, want text/event-stream", got)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Errorf("Cache-Control = %q, want no-cache: a cached SSE stream never updates", got)
 	}
 }

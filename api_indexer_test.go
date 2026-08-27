@@ -313,3 +313,45 @@ func str(v any) string {
 	s, _ := v.(string)
 	return s
 }
+
+// The per-package events endpoint, which reaches the indexer rather than
+// storage. In all-networks mode it queries every chain and tags each row.
+func TestPackageEventsHandler(t *testing.T) {
+	api, _, _ := newIndexerAPI(t)
+
+	for _, tc := range []struct{ name, target string }{
+		{"one network", "/api/events/r/demo/boards?network=alpha&limit=5"},
+		{"every network", "/api/events/r/demo/boards?limit=5"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec, body := serve(t, api, tc.target)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", rec.Code, body)
+			}
+
+			rows, _ := page(t, body)
+			for _, row := range rows {
+				if str(row["network"]) == "" {
+					t.Errorf("event row carries no network: %v", row)
+				}
+				if str(row["block_time"]) == "" {
+					t.Errorf("event row lost its timestamp; the merged view sorts on it: %v", row)
+				}
+			}
+		})
+	}
+}
+
+// An unknown package is an empty list, not a failure: the events view for a
+// realm nobody has called yet should render empty rather than error.
+func TestPackageEventsOnAnUnknownPackage(t *testing.T) {
+	api, _, _ := newIndexerAPI(t)
+
+	rec, body := serve(t, api, "/api/events/r/demo/nothing-here?limit=5")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, body)
+	}
+	if string(body) == "null\n" || string(body) == "null" {
+		t.Error("returned null; the frontend iterates this and would throw")
+	}
+}
