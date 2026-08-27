@@ -14,6 +14,12 @@ type DB struct {
 	db *sql.DB
 	mu sync.RWMutex
 
+	// background tracks work started by NewDB that outlives it. Close waits on
+	// it: the ANALYZE below is still writing WAL files when a caller finishes,
+	// and a test using t.TempDir() would fail its cleanup with "directory not
+	// empty" — intermittently, roughly one run in eight.
+	background sync.WaitGroup
+
 	// configured is the set of networks the process is running, set once at
 	// startup. Rows survive a network being retired from the config, so without
 	// this the database — not the config — decides which networks exist.
@@ -109,7 +115,10 @@ func NewDB(path string) (*DB, error) {
 	// 0.87s on a 569MB database, and it grows with the chain, so it runs on every
 	// start rather than once: stale statistics are how the planner drifts back to
 	// the wrong choice. Off the startup path because it takes the write lock.
+	d.background.Add(1)
 	go func() {
+		defer d.background.Done()
+
 		if _, err := db.Exec(`ANALYZE`); err != nil {
 			log.Printf("analyze: %v", err)
 		}
@@ -436,7 +445,12 @@ func initSchema(db *sql.DB) error {
 	return err
 }
 
+// Close waits for background work to finish before closing the handle, so no
+// goroutine is left writing to a database — or a directory — the caller
+// considers done with.
 func (d *DB) Close() error {
+	d.background.Wait()
+
 	return d.db.Close()
 }
 
