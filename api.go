@@ -585,11 +585,9 @@ func (a *API) HandleTxs(w http.ResponseWriter, r *http.Request) {
 			merged = append(merged, tx)
 		}
 	}
-	sort.Slice(merged, func(i, j int) bool {
-		if merged[i].BlockTime != "" && merged[j].BlockTime != "" {
-			return merged[i].BlockTime > merged[j].BlockTime
-		}
-		return merged[i].BlockHeight > merged[j].BlockHeight
+	sort.SliceStable(merged, func(i, j int) bool {
+		return newerFirst(merged[i].BlockTime, merged[j].BlockTime,
+			merged[i].BlockHeight, merged[j].BlockHeight)
 	})
 	total := len(merged)
 	if offset > total {
@@ -629,12 +627,7 @@ func (a *API) HandleAddress(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		sort.Slice(txs, func(i, j int) bool {
-			if txs[i].BlockTime != "" && txs[j].BlockTime != "" {
-				return txs[i].BlockTime > txs[j].BlockTime
-			}
-			return txs[i].BlockHeight > txs[j].BlockHeight
-		})
+		sortTransactionsByTime(txs)
 	} else {
 		c := a.clientFor(network)
 		if c == nil {
@@ -715,27 +708,49 @@ func eventTxLimit(r *http.Request) int {
 	return limit
 }
 
-// sortTransactionsByTime orders newest first. Block height is only a fallback
-// for rows the block-time backfill has not reached: heights are per-chain, so
-// comparing them across networks lets the chain with the largest numbers win
-// every time and crowd the others out entirely.
+// newerFirst is the ordering every cross-network list uses.
+//
+// Timestamp wins. A row that has one sorts ahead of a row that does not, so
+// undated rows collect at the end rather than being interleaved by a number that
+// means nothing. Height is the last resort, and by then both rows are undated.
+//
+// Heights are per-chain: gnoland1 sits near 3.1M while sapphire is near 400k.
+// Comparing them across networks lets the chain with the largest numbers win
+// every comparison — and in a list that is then truncated to a page, that does
+// not mis-order, it deletes a chain. It did exactly that to sapphire's events.
+func newerFirst(timeA, timeB string, heightA, heightB int) bool {
+	if timeA != "" && timeB != "" {
+		return timeA > timeB
+	}
+	if timeA != timeB {
+		return timeA != ""
+	}
+
+	return heightA > heightB
+}
+
+// sortTransactionsByTime orders newest first.
+//
+// Heights are per-chain and not comparable: gnoland1 sits near 3.1M while
+// sapphire is near 400k, so a height comparison lets the chain with the largest
+// numbers win every time. Dropped into a merged list that is then truncated to a
+// page, that does not merely mis-order — it deletes a chain. It did exactly that
+// to sapphire's events before the block-time stamping was added.
+//
+// So: timestamp first, then rows that have one ahead of rows that do not, and
+// only then height — by which point both rows are undated and any order is a
+// guess, but at least a stable one.
 func sortTransactionsByTime(txs []Transaction) {
-	sort.Slice(txs, func(i, j int) bool {
-		if txs[i].BlockTime != "" && txs[j].BlockTime != "" {
-			return txs[i].BlockTime > txs[j].BlockTime
-		}
-		return txs[i].BlockHeight > txs[j].BlockHeight
+	sort.SliceStable(txs, func(i, j int) bool {
+		return newerFirst(txs[i].BlockTime, txs[j].BlockTime, txs[i].BlockHeight, txs[j].BlockHeight)
 	})
 }
 
-// sortEventResultsByTime orders newest first, with the same height caveat as
+// sortEventResultsByTime orders newest first, on the same rules as
 // sortTransactionsByTime.
 func sortEventResultsByTime(rows []EventResult) {
-	sort.Slice(rows, func(i, j int) bool {
-		if rows[i].BlockTime != "" && rows[j].BlockTime != "" {
-			return rows[i].BlockTime > rows[j].BlockTime
-		}
-		return rows[i].BlockHeight > rows[j].BlockHeight
+	sort.SliceStable(rows, func(i, j int) bool {
+		return newerFirst(rows[i].BlockTime, rows[j].BlockTime, rows[i].BlockHeight, rows[j].BlockHeight)
 	})
 }
 
@@ -861,12 +876,7 @@ func (a *API) HandleAllEvents(w http.ResponseWriter, r *http.Request) {
 
 	// Interleave by time. Heights are not comparable across chains, so they are
 	// only a fallback for rows the block-time backfill has not reached.
-	sort.Slice(merged, func(i, j int) bool {
-		if merged[i].BlockTime != "" && merged[j].BlockTime != "" {
-			return merged[i].BlockTime > merged[j].BlockTime
-		}
-		return merged[i].BlockHeight > merged[j].BlockHeight
-	})
+	sortEventResultsByTime(merged)
 	if len(merged) > limit {
 		merged = merged[:limit]
 	}
@@ -960,11 +970,8 @@ func (a *API) HandleBlocks(w http.ResponseWriter, r *http.Request) {
 		}) {
 		merged = append(merged, blocks...)
 	}
-	sort.Slice(merged, func(i, j int) bool {
-		if merged[i].Time != "" && merged[j].Time != "" {
-			return merged[i].Time > merged[j].Time
-		}
-		return merged[i].Height > merged[j].Height
+	sort.SliceStable(merged, func(i, j int) bool {
+		return newerFirst(merged[i].Time, merged[j].Time, merged[i].Height, merged[j].Height)
 	})
 	if len(merged) > limit {
 		merged = merged[:limit]

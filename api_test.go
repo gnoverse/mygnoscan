@@ -220,3 +220,102 @@ func TestTxWindowCapIsSane(t *testing.T) {
 		t.Errorf("defaultTxs %d would make an absent limit return nothing", defaultTxs)
 	}
 }
+
+// Every cross-network list orders through newerFirst. Heights are per-chain —
+// gnoland1 sits near 3.1M while sapphire is near 400k — so comparing them across
+// networks lets the chain with the largest numbers win every comparison. In a
+// list that is then truncated to a page, that does not mis-order: it deletes a
+// chain. It did exactly that to sapphire's events before block times were
+// stamped, which is what this pins.
+func TestNewerFirst(t *testing.T) {
+	const (
+		older = "2026-08-01T00:00:00Z"
+		newer = "2026-08-27T00:00:00Z"
+	)
+
+	tests := []struct {
+		name             string
+		timeA, timeB     string
+		heightA, heightB int
+		want             bool
+	}{
+		{
+			name: "the newer timestamp wins regardless of height",
+			// The classic cross-chain case: a low-height row from a busy chain
+			// is genuinely more recent than a high-height row from a quiet one.
+			timeA: newer, timeB: older, heightA: 400_000, heightB: 3_100_000,
+			want: true,
+		},
+		{
+			name:  "the older timestamp loses regardless of height",
+			timeA: older, timeB: newer, heightA: 3_100_000, heightB: 400_000,
+			want: false,
+		},
+		{
+			name: "a dated row sorts ahead of an undated one",
+			// Undated rows collect at the end instead of being interleaved by a
+			// number that means nothing across chains.
+			timeA: older, timeB: "", heightA: 1, heightB: 9_999_999,
+			want: true,
+		},
+		{
+			name:  "an undated row sorts behind a dated one",
+			timeA: "", timeB: older, heightA: 9_999_999, heightB: 1,
+			want: false,
+		},
+		{
+			name: "height only decides between two undated rows",
+			// By here both are undated, so any order is a guess — but a stable one.
+			timeA: "", timeB: "", heightA: 200, heightB: 100,
+			want: true,
+		},
+		{
+			// Neither is strictly newer, so this reports false and the stable
+			// sort keeps the input order. Height is deliberately not consulted:
+			// rows sharing a timestamp are in the same block on the same chain,
+			// where height cannot separate them either.
+			name:  "equal timestamps leave the order alone",
+			timeA: newer, timeB: newer, heightA: 200, heightB: 100,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := newerFirst(tt.timeA, tt.timeB, tt.heightA, tt.heightB); got != tt.want {
+				t.Errorf("newerFirst(%q, %q, %d, %d) = %v, want %v",
+					tt.timeA, tt.timeB, tt.heightA, tt.heightB, got, tt.want)
+			}
+		})
+	}
+}
+
+// The failure this ordering exists to prevent, end to end: a page-sized
+// truncation must not drop a whole chain.
+func TestMergedListDoesNotDropAChain(t *testing.T) {
+	// sapphire is busier and more recent but numbers its blocks far lower.
+	rows := []Transaction{}
+	for i := 0; i < 40; i++ {
+		rows = append(rows, Transaction{
+			Hash:        fmt.Sprintf("gnoland1-%d", i),
+			BlockHeight: 3_100_000 + i,
+			BlockTime:   "2026-08-01T00:00:00Z",
+		})
+	}
+	for i := 0; i < 40; i++ {
+		rows = append(rows, Transaction{
+			Hash:        fmt.Sprintf("sapphire-%d", i),
+			BlockHeight: 400_000 + i,
+			BlockTime:   "2026-08-27T00:00:00Z",
+		})
+	}
+
+	sortTransactionsByTime(rows)
+	page := rows[:20] // what a limit would keep
+
+	for _, tx := range page {
+		if tx.BlockTime != "2026-08-27T00:00:00Z" {
+			t.Fatalf("page contains an older row (%s) — the newest 20 should all be sapphire's", tx.Hash)
+		}
+	}
+}
