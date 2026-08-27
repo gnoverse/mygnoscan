@@ -441,6 +441,18 @@ func initSchema(db *sql.DB) error {
 		-- The realm/analytics joins group calls by package and count distinct
 		-- callers within it, which this covers without touching the table.
 		CREATE INDEX IF NOT EXISTS idx_calls_pkg_caller  ON calls(pkg_path, caller);
+
+		-- The same, once the network joined the grouping key. Without the caller
+		-- in the index SQLite builds a temp B-tree for COUNT(DISTINCT caller),
+		-- which cost 1.60s over 685k rows to produce 159 groups; with it the
+		-- callers arrive already ordered within each group and the count is a
+		-- linear pass. Measured 1.29s -> 0.02s on the realms query.
+		CREATE INDEX IF NOT EXISTS idx_calls_net_pkg_caller ON calls(network, pkg_path, caller);
+
+		-- And its mirror, for the top-callers ranking: group by (network,
+		-- caller) counting distinct packages. Same shape, same reason, 0.69s ->
+		-- 0.26s. Both are covering, so neither touches the table.
+		CREATE INDEX IF NOT EXISTS idx_calls_net_caller_pkg ON calls(network, caller, pkg_path);
 	`)
 	return err
 }
@@ -1574,7 +1586,7 @@ func (d *DB) GetTokenPackages(network string) ([]TokenInfo, error) {
 		SELECT DISTINCT p.path, p.network, p.name, p.creator, COALESCE(c.cnt, 0)
 		FROM packages p
 		JOIN dependencies dep ON dep.package_path = p.path AND dep.network = p.network
-		LEFT JOIN (SELECT pkg_path, network, COUNT(*) as cnt FROM calls GROUP BY pkg_path, network) c ON c.pkg_path = p.path AND c.network = p.network
+		LEFT JOIN (SELECT pkg_path, network, COUNT(*) as cnt FROM calls GROUP BY network, pkg_path) c ON c.pkg_path = p.path AND c.network = p.network
 		WHERE dep.import_path LIKE '%grc20%'`
 	// Scoped like every other reader, so a retired network cannot reappear here.
 	q += ` AND ` + d.networkFilter("p.network", network)
@@ -1624,11 +1636,11 @@ func (d *DB) GetActiveAccounts(network string) ([]AccountInfo, error) {
 	q := `
 		SELECT address, network, SUM(call_count), SUM(deploy_count), SUM(run_count), SUM(send_count)
 		FROM (
-			SELECT caller as address, network, COUNT(*) as call_count, 0 as deploy_count, 0 as run_count, 0 as send_count FROM calls` + nFilter + ` GROUP BY caller, network
+			SELECT caller as address, network, COUNT(*) as call_count, 0 as deploy_count, 0 as run_count, 0 as send_count FROM calls` + nFilter + ` GROUP BY network, caller
 			UNION ALL
-			SELECT creator as address, network, 0, COUNT(*), 0, 0 FROM packages` + nFilter + ` GROUP BY creator, network
+			SELECT creator as address, network, 0, COUNT(*), 0, 0 FROM packages` + nFilter + ` GROUP BY network, creator
 			UNION ALL
-			SELECT caller as address, network, 0, 0, COUNT(*), 0 FROM msg_runs` + nFilter + ` GROUP BY caller, network
+			SELECT caller as address, network, 0, 0, COUNT(*), 0 FROM msg_runs` + nFilter + ` GROUP BY network, caller
 			UNION ALL
 			SELECT from_address as address, network, 0, 0, 0, COUNT(*) FROM bank_sends` + nFilter + ` GROUP BY from_address, network
 			UNION ALL
@@ -1737,7 +1749,15 @@ func (d *DB) GetBankStats(network string) (*BankStats, error) {
 	return &s, nil
 }
 
+// Every ranking row carries the chain it belongs to.
+//
+// 193 package paths now exist on more than one network — pearl launched with
+// the same demo realms gnoland1 has — so a path alone no longer identifies a
+// row, and neither does an address: the busiest caller on the site is active on
+// two chains and the next-busiest on three. Ranking without the network merges
+// separate actors into one row whose numbers belong to neither.
 type RealmActivity struct {
+	Network    string `json:"network,omitempty"`
 	Path       string `json:"path"`
 	Calls      int    `json:"calls"`
 	Callers    int    `json:"callers"`
@@ -1746,12 +1766,14 @@ type RealmActivity struct {
 }
 
 type CallerActivity struct {
+	Network string `json:"network,omitempty"`
 	Address string `json:"address"`
 	Calls   int    `json:"calls"`
 	Realms  int    `json:"realms"`
 }
 
 type ImportRank struct {
+	Network string `json:"network,omitempty"`
 	Path    string `json:"path"`
 	Imports int    `json:"imports"`
 }
@@ -1796,27 +1818,52 @@ func (d *DB) GetAnalytics(network string) (*Analytics, error) {
 	d.db.QueryRow(`SELECT COUNT(*) FROM msg_runs` + nFilter).Scan(&a.TotalMsgRuns)
 	d.db.QueryRow(`SELECT COUNT(*) FROM bank_sends` + nFilter).Scan(&a.TotalSends)
 
+	// Addresses are counted per chain. The same string on two chains is two
+	// actors with two histories, and collapsing them undercounts: 68,506
+	// blended against 68,806 counted honestly.
 	addrUnionFilter := " WHERE " + d.networkFilter("network", network)
-	d.db.QueryRow(`SELECT COUNT(DISTINCT addr) FROM (
-		SELECT caller as addr FROM calls` + addrUnionFilter + ` UNION SELECT creator FROM packages` + addrUnionFilter + `
-		UNION SELECT caller FROM msg_runs` + addrUnionFilter + ` UNION SELECT from_address FROM bank_sends` + addrUnionFilter + `
-		UNION SELECT to_address FROM bank_sends` + addrUnionFilter + `
-	)`).Scan(&a.TotalAddresses)
+	d.db.QueryRow(`SELECT COUNT(*) FROM (SELECT DISTINCT addr, network FROM (
+		SELECT caller as addr, network FROM calls` + addrUnionFilter + ` UNION SELECT creator, network FROM packages` + addrUnionFilter + `
+		UNION SELECT caller, network FROM msg_runs` + addrUnionFilter + ` UNION SELECT from_address, network FROM bank_sends` + addrUnionFilter + `
+		UNION SELECT to_address, network FROM bank_sends` + addrUnionFilter + `
+	))`).Scan(&a.TotalAddresses)
 	if network != "" {
 		d.db.QueryRow(`SELECT COALESCE(SUM(LENGTH(body)), 0) / 1024 FROM package_files WHERE network = ?`, network).Scan(&a.TotalSourceKB)
 	} else {
 		d.db.QueryRow(`SELECT COALESCE(SUM(LENGTH(body)), 0) / 1024 FROM package_files`).Scan(&a.TotalSourceKB)
 	}
 
-	callJoinFilter := " AND " + d.networkFilter("c_inner.network", network)
-	depJoinFilter := " AND " + d.networkFilter("dep_inner.network", network)
+	// The aggregate subqueries below join on (path, network), not on path alone.
+	//
+	// That join key is the correctness fix. 193 package paths now exist on more
+	// than one chain — pearl launched carrying the same demo realms gnoland1
+	// has — so matching on path alone attributes every chain's calls to every
+	// copy of the realm. On production that put a realm with 22,789 calls at the
+	// top of pearl's leaderboard when pearl had none of them, and ordered the
+	// whole page by other chains' traffic.
+	//
+	// The filters are an optimization on top, not the fix: with the network in
+	// the join key the results are already right without them. They shrink the
+	// subquery to the selected chain's rows, which is worth a great deal when
+	// one chain holds most of the traffic — pearl's page went from 0.59s to
+	// 0.013s. Removing them changes timing, not answers.
+	//
+	// Every GROUP BY below leads with the network so it matches the existing
+	// (network, col) indexes. Grouping is order-insensitive semantically but not
+	// to the planner: with the network second, SQLite cannot walk the index in
+	// group order and builds a temporary B-tree instead, which cost sapphire
+	// 3.19s -> 5.57s until the terms were swapped.
+	callFilter := " WHERE " + d.networkFilter("network", network)
+	depFilter := " WHERE " + d.networkFilter("network", network)
 
 	// Top realms by calls
 	rows, _ := d.db.Query(`
-		SELECT p.path, COALESCE(c.cnt, 0), COALESCE(c.callers, 0), COALESCE(dep.cnt, 0), p.is_realm
+		SELECT p.network, p.path, COALESCE(c.cnt, 0), COALESCE(c.callers, 0), COALESCE(dep.cnt, 0), p.is_realm
 		FROM packages p
-		LEFT JOIN (SELECT pkg_path, COUNT(*) as cnt, COUNT(DISTINCT caller) as callers FROM calls GROUP BY pkg_path) c ON c.pkg_path = p.path
-		LEFT JOIN (SELECT import_path, COUNT(*) as cnt FROM dependencies GROUP BY import_path) dep ON dep.import_path = p.path
+		LEFT JOIN (SELECT pkg_path, network, COUNT(*) as cnt, COUNT(DISTINCT caller) as callers FROM calls` + callFilter + ` GROUP BY network, pkg_path) c
+			ON c.pkg_path = p.path AND c.network = p.network
+		LEFT JOIN (SELECT import_path, network, COUNT(*) as cnt FROM dependencies` + depFilter + ` GROUP BY network, import_path) dep
+			ON dep.import_path = p.path AND dep.network = p.network
 		WHERE p.is_realm = 1` + pFilter + `
 		ORDER BY COALESCE(c.cnt, 0) DESC LIMIT 15
 	`)
@@ -1824,17 +1871,19 @@ func (d *DB) GetAnalytics(network string) (*Analytics, error) {
 		defer rows.Close()
 		for rows.Next() {
 			var r RealmActivity
-			rows.Scan(&r.Path, &r.Calls, &r.Callers, &r.Dependents, &r.IsRealm)
+			rows.Scan(&r.Network, &r.Path, &r.Calls, &r.Callers, &r.Dependents, &r.IsRealm)
 			a.TopRealms = append(a.TopRealms, r)
 		}
 	}
 
 	// Top packages by imports (dependents)
 	rows2, _ := d.db.Query(`
-		SELECT p.path, COALESCE(c.cnt, 0), 0, COALESCE(dep.cnt, 0), p.is_realm
+		SELECT p.network, p.path, COALESCE(c.cnt, 0), 0, COALESCE(dep.cnt, 0), p.is_realm
 		FROM packages p
-		LEFT JOIN (SELECT pkg_path, COUNT(*) as cnt FROM calls GROUP BY pkg_path) c ON c.pkg_path = p.path
-		LEFT JOIN (SELECT import_path, COUNT(*) as cnt FROM dependencies GROUP BY import_path) dep ON dep.import_path = p.path
+		LEFT JOIN (SELECT pkg_path, network, COUNT(*) as cnt FROM calls` + callFilter + ` GROUP BY network, pkg_path) c
+			ON c.pkg_path = p.path AND c.network = p.network
+		LEFT JOIN (SELECT import_path, network, COUNT(*) as cnt FROM dependencies` + depFilter + ` GROUP BY network, import_path) dep
+			ON dep.import_path = p.path AND dep.network = p.network
 		WHERE p.is_realm = 0` + pFilter + `
 		ORDER BY COALESCE(dep.cnt, 0) DESC LIMIT 15
 	`)
@@ -1842,45 +1891,47 @@ func (d *DB) GetAnalytics(network string) (*Analytics, error) {
 		defer rows2.Close()
 		for rows2.Next() {
 			var r RealmActivity
-			rows2.Scan(&r.Path, &r.Calls, &r.Callers, &r.Dependents, &r.IsRealm)
+			rows2.Scan(&r.Network, &r.Path, &r.Calls, &r.Callers, &r.Dependents, &r.IsRealm)
 			a.TopPackages = append(a.TopPackages, r)
 		}
 	}
 
-	// Top callers
-	callersQ := `SELECT caller, COUNT(*) as c, COUNT(DISTINCT pkg_path) as realms FROM calls` + nFilter + ` GROUP BY caller ORDER BY c DESC LIMIT 15`
+	// Top callers, per chain: the busiest caller on the site is active on two
+	// networks and the next on three, so one row per address would be a sum
+	// across separate actors.
+	callersQ := `SELECT network, caller, COUNT(*) as c, COUNT(DISTINCT pkg_path) as realms FROM calls` + nFilter + ` GROUP BY network, caller ORDER BY c DESC LIMIT 15`
 	rows3, _ := d.db.Query(callersQ)
 	if rows3 != nil {
 		defer rows3.Close()
 		for rows3.Next() {
 			var c CallerActivity
-			rows3.Scan(&c.Address, &c.Calls, &c.Realms)
+			rows3.Scan(&c.Network, &c.Address, &c.Calls, &c.Realms)
 			a.TopCallers = append(a.TopCallers, c)
 		}
 	}
 
 	// Top imports
-	importsQ := `SELECT import_path, COUNT(*) as c FROM dependencies WHERE import_path LIKE 'gno.land/%'`
+	importsQ := `SELECT network, import_path, COUNT(*) as c FROM dependencies WHERE import_path LIKE 'gno.land/%'`
 	importsQ += " AND " + d.networkFilter("network", network)
-	importsQ += ` GROUP BY import_path ORDER BY c DESC LIMIT 15`
+	importsQ += ` GROUP BY network, import_path ORDER BY c DESC LIMIT 15`
 	rows4, _ := d.db.Query(importsQ)
 	if rows4 != nil {
 		defer rows4.Close()
 		for rows4.Next() {
 			var i ImportRank
-			rows4.Scan(&i.Path, &i.Imports)
+			rows4.Scan(&i.Network, &i.Path, &i.Imports)
 			a.TopImports = append(a.TopImports, i)
 		}
 	}
 
 	// Top deployers
-	deployQ := `SELECT creator, COUNT(*) as c, 0 FROM packages` + nFilter + ` GROUP BY creator ORDER BY c DESC LIMIT 15`
+	deployQ := `SELECT network, creator, COUNT(*) as c, 0 FROM packages` + nFilter + ` GROUP BY network, creator ORDER BY c DESC LIMIT 15`
 	rows5, _ := d.db.Query(deployQ)
 	if rows5 != nil {
 		defer rows5.Close()
 		for rows5.Next() {
 			var c CallerActivity
-			rows5.Scan(&c.Address, &c.Calls, &c.Realms)
+			rows5.Scan(&c.Network, &c.Address, &c.Calls, &c.Realms)
 			a.TopDeployers = append(a.TopDeployers, c)
 		}
 	}
@@ -1896,9 +1947,6 @@ func (d *DB) GetAnalytics(network string) (*Analytics, error) {
 			a.RecentRealms = append(a.RecentRealms, p)
 		}
 	}
-
-	_ = callJoinFilter
-	_ = depJoinFilter
 
 	return &a, nil
 }
@@ -2347,17 +2395,39 @@ type GasTimeSlice struct {
 }
 
 type SanityOverview struct {
-	Network            string  `json:"network"`
-	ChainHeight        int     `json:"chain_height"`
-	LastBlockTime      string  `json:"last_block_time"`
-	SecondsSinceBlock  int     `json:"seconds_since_block"`
-	IsAlive            bool    `json:"is_alive"`
-	TxLast1h           int     `json:"tx_last_1h"`
-	TxLast24h          int     `json:"tx_last_24h"`
-	SuccessRate24h     float64 `json:"success_rate_24h"`
-	GasEfficiency24h   float64 `json:"gas_efficiency_24h"`
-	ActiveAddresses24h int     `json:"active_addresses_24h"`
-	NewPackages7d      int     `json:"new_packages_7d"`
+	Network string `json:"network"`
+	// ByNetwork carries one entry per chain in all-networks mode, and is absent
+	// when a single network is selected.
+	//
+	// Liveness is the one figure that cannot be merged at all. It is not even
+	// wrong to sum, the way a denominated amount is — there is simply no such
+	// thing as the height, or the last block time, of four chains at once. This
+	// page used to answer with clientFor(""), which returned an arbitrary entry
+	// of a Go map, so it presented one randomly-chosen chain's liveness under a
+	// global heading.
+	ByNetwork          map[string]SanityLiveness `json:"by_network,omitempty"`
+	ChainHeight        int                       `json:"chain_height"`
+	LastBlockTime      string                    `json:"last_block_time"`
+	SecondsSinceBlock  int                       `json:"seconds_since_block"`
+	IsAlive            bool                      `json:"is_alive"`
+	TxLast1h           int                       `json:"tx_last_1h"`
+	TxLast24h          int                       `json:"tx_last_24h"`
+	SuccessRate24h     float64                   `json:"success_rate_24h"`
+	GasEfficiency24h   float64                   `json:"gas_efficiency_24h"`
+	ActiveAddresses24h int                       `json:"active_addresses_24h"`
+	NewPackages7d      int                       `json:"new_packages_7d"`
+}
+
+// SanityLiveness is the per-chain half of the overview: the figures that come
+// from a live indexer rather than from stored rows.
+type SanityLiveness struct {
+	ChainHeight       int    `json:"chain_height"`
+	LastBlockTime     string `json:"last_block_time,omitempty"`
+	SecondsSinceBlock int    `json:"seconds_since_block"`
+	IsAlive           bool   `json:"is_alive"`
+	// Reachable distinguishes "this chain is not producing blocks" from "we
+	// could not ask it", which look identical in the fields above.
+	Reachable bool `json:"reachable"`
 }
 
 type HealthTimePoint struct {
