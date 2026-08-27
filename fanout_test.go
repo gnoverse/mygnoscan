@@ -161,3 +161,89 @@ func TestHealthTrackerIsConcurrencySafe(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// The breaker's edges, which the cases above do not reach.
+func TestHealthTrackerEdges(t *testing.T) {
+	boom := errors.New("indexer unreachable")
+
+	t.Run("one failure is a blip, not an outage", func(t *testing.T) {
+		h := newHealthTracker()
+		h.record("alpha", boom)
+		if h.shouldSkip("alpha") {
+			t.Error("breaker opened after a single failure")
+		}
+	})
+
+	t.Run("networks are tracked independently", func(t *testing.T) {
+		h := newHealthTracker()
+		for i := 0; i < breakerThreshold; i++ {
+			h.record("dead", boom)
+		}
+		if !h.shouldSkip("dead") {
+			t.Error("dead network should be skipped")
+		}
+		if h.shouldSkip("alive") {
+			t.Error("one network's failures silenced another")
+		}
+	})
+
+	t.Run("a network with no history is attempted", func(t *testing.T) {
+		if newHealthTracker().shouldSkip("never-seen") {
+			t.Error("an unknown network should not be skipped")
+		}
+	})
+
+	t.Run("a nil tracker is inert", func(t *testing.T) {
+		// api.go guards for this; the guard is only useful if it works.
+		var h *healthTracker
+		h.record("alpha", boom)
+		if h.shouldSkip("alpha") {
+			t.Error("a nil tracker should skip nothing")
+		}
+	})
+
+	t.Run("concurrent use is safe", func(t *testing.T) {
+		// Meaningful under -race: shouldSkip and record share a map.
+		h := newHealthTracker()
+		var wg sync.WaitGroup
+		for i := 0; i < 50; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				if i%2 == 0 {
+					h.record("alpha", boom)
+				} else {
+					h.shouldSkip("alpha")
+				}
+			}(i)
+		}
+		wg.Wait()
+	})
+}
+
+func TestFanOutSkipsNetworksWithoutAClient(t *testing.T) {
+	// A network can be configured without a usable client — clientFor returns
+	// nil for anything not in the map. It must be skipped, not panicked on.
+	nets := []NetworkConfig{{ID: "configured"}, {ID: "clientless"}}
+	clients := map[string]*IndexerClient{"configured": {}}
+
+	got := fanOut(context.Background(), nets, clients, newHealthTracker(),
+		func(ctx context.Context, n NetworkConfig, c *IndexerClient) (string, error) {
+			return n.ID, nil
+		})
+
+	if len(got) != 1 || got[0] != "configured" {
+		t.Errorf("got %v, want only the network that has a client", got)
+	}
+}
+
+func TestFanOutWithNoNetworks(t *testing.T) {
+	got := fanOut(context.Background(), nil, nil, newHealthTracker(),
+		func(ctx context.Context, n NetworkConfig, c *IndexerClient) (string, error) {
+			t.Error("callback ran with no networks configured")
+			return "", nil
+		})
+	if len(got) != 0 {
+		t.Errorf("got %v, want nothing", got)
+	}
+}
