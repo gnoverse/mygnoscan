@@ -92,6 +92,14 @@ th.sort-desc::after { content: ' \2193'; opacity: 1; }
 tr.total-row { border-top: 2px solid var(--border); }
 tr.total-row td { font-weight: bold; color: var(--accent); }
 .block-ctx { color: var(--fg2); font-size: 12px; }
+/* Load failures: shown where a skeleton would otherwise shimmer forever. */
+.load-error { padding: 16px 4px; text-align: left; }
+.load-error-head { color: var(--red); font-weight: bold; margin-bottom: 4px; }
+.load-error-msg { color: var(--fg2); font-size: 12px; font-family: var(--mono); margin-bottom: 10px; word-break: break-word; }
+.load-error-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.load-error-btn { background: var(--bg3); color: var(--fg); border: 1px solid var(--bg3);
+  border-radius: 4px; padding: 4px 10px; font-size: 12px; font-family: inherit; cursor: pointer; }
+.load-error-btn:hover { border-color: var(--fg2); }
 /* Skeleton loading */
 .skeleton { background: var(--bg3); border-radius: 4px; animation: pulse 1.5s ease-in-out infinite; }
 .skeleton-line { height: 16px; margin-bottom: 12px; }
@@ -823,6 +831,76 @@ async function api(path) {
   return r.json();
 }
 
+
+// --- Load failures -------------------------------------------------------
+//
+// A failed load used to log to the console and leave the skeleton shimmering
+// forever. The two states look identical from the outside, so a network whose
+// indexer is having a bad day reads as "the whole site is broken" — and the
+// first-time visitor leaves. The server already says exactly what went wrong
+// ("indexer unavailable, not retried yet"); it just never reached the screen.
+function errorMessage(err) {
+  const raw = (err && err.message) || String(err || 'request failed');
+  // API errors arrive as {"error": "..."}; anything else is shown as-is.
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.error) return parsed.error;
+  } catch (_) {}
+  return raw.trim() || 'request failed';
+}
+
+// errorPanel explains the failure and offers the two ways out: try again, or
+// widen to all networks — which is the actual workaround when one chain's
+// indexer is down, and is otherwise something the reader has to guess.
+function errorPanel(err, retry) {
+  const net = getNetwork();
+  const box = el('div', { className: 'load-error' });
+
+  const head = el('div', { className: 'load-error-head' });
+  head.append(net && net !== 'all' ? net + ' is not responding' : 'could not load this');
+  box.appendChild(head);
+
+  box.appendChild(el('div', { className: 'load-error-msg' }, errorMessage(err)));
+
+  const actions = el('div', { className: 'load-error-actions' });
+  if (typeof retry === 'function') {
+    const again = el('button', { className: 'load-error-btn' }, 'retry');
+    again.addEventListener('click', () => retry());
+    actions.appendChild(again);
+  }
+  if (net && net !== 'all') {
+    const all = el('button', { className: 'load-error-btn' }, 'try all networks');
+    // Go through the picker so the URL, footer, swatch and route all follow —
+    // setNetwork alone only writes localStorage and would leave the page
+    // showing the failed network with a stale selector.
+    all.addEventListener('click', () => {
+      const sel = document.getElementById('network-select');
+      if (sel) { sel.value = 'all'; onNetworkChange(); }
+    });
+    actions.appendChild(all);
+  }
+  if (actions.childNodes.length) box.appendChild(actions);
+  return box;
+}
+
+// failBlock replaces a container's loading state with the error panel.
+function failBlock(container, err, retry) {
+  if (!container) return;
+  container.textContent = '';
+  container.appendChild(errorPanel(err, retry));
+}
+
+// failRows does the same inside a table, spanning every column so the panel is
+// not squeezed into one cell.
+function failRows(tbody, cols, err, retry) {
+  if (!tbody) return;
+  tbody.textContent = '';
+  const td = el('td');
+  td.colSpan = cols;
+  td.appendChild(errorPanel(err, retry));
+  tbody.appendChild(el('tr', {}, td));
+}
+
 // --- Navigation (History API) ---
 function navigate(path, replace) {
   if (replace) history.replaceState(null, '', path);
@@ -1361,7 +1439,18 @@ async function loadHome() {
         el('td', { style: { color: 'var(--fg2)', fontSize: '12px' } }, when)
       ));
     }
-  } catch (err) { console.error('home:', err); }
+  } catch (err) {
+    console.error('home:', err);
+    // The stat row shows a dash until it has a number, which is indistinguishable
+    // from still loading. Mark it as failed so the whole page reads one way.
+    for (const id of ['stat-txs', 'stat-calls', 'stat-deploys', 'stat-runs',
+                      'stat-sends', 'stat-realms', 'stat-packages', 'stat-block']) {
+      const cell = document.getElementById(id);
+      if (cell) { cell.textContent = '\u2014'; cell.style.color = 'var(--fg2)'; }
+    }
+    failRows(clear('recent-txs'), 5, err, loadHome);
+    failRows(clear('latest-realms'), 4, err, loadHome);
+  }
 }
 
 let _realmsSort = 'newest';
@@ -1400,7 +1489,10 @@ async function loadRealms(page) {
       ));
     }
     pager(section, page, data.total || 0, loadRealms);
-  } catch (err) { console.error(err); }
+  } catch (err) {
+    console.error(err);
+    failRows(clear('realms-list'), 7, err, loadRealms);
+  }
 }
 
 async function loadPackages(page) {
@@ -1425,7 +1517,10 @@ async function loadPackages(page) {
       ));
     }
     pager(section, page, data.total || 0, loadPackages);
-  } catch (err) { console.error(err); }
+  } catch (err) {
+    console.error(err);
+    failRows(clear('packages-list'), 4, err, loadPackages);
+  }
 }
 
 let _txsCache = null;
@@ -1510,7 +1605,10 @@ async function loadTxs() {
     filterBar.appendChild(statusFail);
 
     renderTxRows();
-  } catch (err) { console.error(err); }
+  } catch (err) {
+    console.error(err);
+    failRows(clear('txs-list'), 5, err, loadTxs);
+  }
 }
 
 function highlightBtn(group, activeBtn) {
@@ -1577,7 +1675,10 @@ async function loadBlocks() {
     label.appendChild(cb); label.appendChild(document.createTextNode('only blocks with transactions'));
     filterBar.appendChild(label);
     renderBlockRows();
-  } catch (err) { console.error(err); }
+  } catch (err) {
+    console.error(err);
+    failRows(clear('blocks-list'), 5, err, loadBlocks);
+  }
 }
 
 function renderBlockRows() {
@@ -1664,7 +1765,10 @@ async function loadAccounts() {
         el('td', {}, String(total))
       ));
     }
-  } catch (err) { console.error(err); }
+  } catch (err) {
+    console.error(err);
+    failRows(clear('accounts-list'), 6, err, loadAccounts);
+  }
 }
 
 async function loadTokens() {
@@ -1772,7 +1876,10 @@ async function loadTokens() {
     if (!(data || []).length) {
       tbody.appendChild(el('tr', {}, el('td', { colspan: '3', style: { color: 'var(--fg2)' } }, 'no tokens found')));
     }
-  } catch (err) { console.error(err); }
+  } catch (err) {
+    console.error(err);
+    failRows(clear('tokens-list'), 3, err, loadTokens);
+  }
 }
 
 let _valopersCache = null;
@@ -1830,7 +1937,10 @@ async function loadValidators() {
       container.appendChild(tblWrap);
       renderValoperRows(container);
     }
-  } catch (err) { console.error(err); }
+  } catch (err) {
+    console.error(err);
+    failBlock(clear('validators-content'), err, loadValidators);
+  }
 }
 
 function renderValoperRows(container) {
@@ -2522,7 +2632,10 @@ async function loadEvents() {
     filterBar.appendChild(el('span', { id: 'events-match-count', className: 'pager-info' }, ''));
 
     renderEventRows();
-  } catch (err) { console.error(err); }
+  } catch (err) {
+    console.error(err);
+    failRows(clear('events-list'), 5, err, loadEvents);
+  }
 }
 
 function filteredEvents() {
@@ -2621,7 +2734,10 @@ async function loadGovDAO() {
     if (!(events || []).length && !(calls || []).length) {
       list.appendChild(el('tr', {}, el('td', { colspan: '5', style: { color: 'var(--fg2)' } }, 'no govdao activity found')));
     }
-  } catch (err) { console.error(err); }
+  } catch (err) {
+    console.error(err);
+    failRows(clear('govdao-list'), 5, err, loadGovDAO);
+  }
 }
 
 async function loadRealmDetail(path, initialTab) {
