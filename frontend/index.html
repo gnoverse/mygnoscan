@@ -539,9 +539,26 @@ function rawJsonToggle(data) {
   wrapper.appendChild(toggle); wrapper.appendChild(content);
   return wrapper;
 }
-function typeBadge(t) {
+// typeBadge labels a message by its GraphQL typename.
+//
+// `msg` is optional and used only for messages the indexer does not model: those
+// arrive with __typename "UnexpectedMessage", which is an internal detail of the
+// indexer's schema and reads on screen like something broke. The route and
+// typeUrl are carried on every message regardless, and say what it actually is
+// — pearl's unmodelled message is `auth/create_session`, which is informative
+// where "UnexpectedMessage" is not.
+function typeBadge(t, msg) {
   const m = { MsgAddPackage: ['pkg', 'deploy'], MsgCall: ['realm', 'call'], MsgRun: ['ok', 'run'], BankMsgSend: ['fail', 'send'] };
-  const [c, x] = m[t] || ['', t || '?']; return badge(c, x);
+  if (m[t]) { const [c, x] = m[t]; return badge(c, x); }
+  return badge('', msgKind(msg) || 'message');
+}
+// msgKind names a message from the fields the indexer always provides.
+function msgKind(msg) {
+  if (!msg) return '';
+  const route = msg.route || '';
+  const type = (msg.typeUrl || '').split('/').pop();
+  if (route && type) return route + '/' + type;
+  return type || route || '';
 }
 // tx link with block context: "hash (genesis)" or "hash (block N)"
 function txLink(hash, blockHeight, network) {
@@ -574,7 +591,10 @@ function txDetailEl(msg) {
       if (amt) s.appendChild(el('span', { className: 'block-ctx' }, ' ' + amt));
       return s;
     }
-    default: return el('span', {}, v.__typename || '?');
+    default:
+      // Not a type the indexer models. Show what it does tell us rather than
+      // its internal placeholder name.
+      return el('span', {}, msgKind(msg) || v.__typename || 'unknown message');
   }
 }
 function timeAgo(t) {
@@ -1335,7 +1355,7 @@ async function loadHome() {
       const when = tx.block_time ? timeEl(tx.block_time) : blockTime[tx.block_height] ? timeEl(blockTime[tx.block_height]) : (tx.block_height === 0 ? 'genesis' : '');
       txBody.appendChild(netRow(tx.network,
         el('td', {}, blockLink(tx.block_height, tx.network)),
-        el('td', {}, typeBadge(msg?.value?.__typename)),
+        el('td', {}, typeBadge(msg?.value?.__typename, msg)),
         el('td', {}, txDetailEl(msg)),
         el('td', {}, statusBadge(tx.success)),
         el('td', { style: { color: 'var(--fg2)', fontSize: '12px' } }, when)
@@ -1517,7 +1537,7 @@ function renderTxRows() {
     list.appendChild(netRow(tx.network,
       el('td', {}, txLink(tx.hash, tx.block_height, tx.network)),
       el('td', {}, blockLink(tx.block_height, tx.network)),
-      el('td', {}, typeBadge(msg?.value?.__typename)),
+      el('td', {}, typeBadge(msg?.value?.__typename, msg)),
       el('td', {}, txDetailEl(msg)),
       el('td', {}, statusBadge(tx.success))
     ));
@@ -1606,7 +1626,7 @@ async function loadBlockDetail(height) {
         const msg = tx.messages?.[0];
         txBody.appendChild(el('tr', {},
           el('td', {}, txLink(tx.hash, tx.block_height)),
-          el('td', {}, typeBadge(msg?.value?.__typename)),
+          el('td', {}, typeBadge(msg?.value?.__typename, msg)),
           el('td', {}, txDetailEl(msg)),
           el('td', {}, statusBadge(tx.success))
         ));
@@ -2827,8 +2847,10 @@ async function loadRealmDetail(path, initialTab) {
     const depsPath = path.replace('gno.land/', '');
     const [imports, dependents] = await Promise.all([api('deps/' + depsPath), api('deps/' + depsPath + '?dir=dependents')]);
     const grid = el('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' } });
-    grid.appendChild(buildDepTree('imports (what this uses)', imports, path));
-    grid.appendChild(buildDepTree('dependents (what uses this)', dependents, path));
+    grid.appendChild(buildDepTree('imports (what this uses)', imports, path,
+      'what each of these imports in turn'));
+    grid.appendChild(buildDepTree('dependents (what uses this)', dependents, path,
+      'what else depends on each of these'));
     depsEl.appendChild(grid);
     // Graph
     const graphEl = document.getElementById('tab-graph'); if (activeTab === 'graph') graphEl.classList.add('active'); else graphEl.classList.remove('active');
@@ -2839,19 +2861,43 @@ async function loadRealmDetail(path, initialTab) {
   }
 }
 
-function buildDepTree(title, graph, root) {
-  const div = el('div'); div.appendChild(el('div', { className: 'section-title' }, title));
-  const entries = Object.entries(graph || {});
-  if (!entries.length) { div.appendChild(el('div', { style: { color: 'var(--fg2)' } }, 'none')); return div; }
-  for (const [pkg, deps] of entries) {
+// buildDepTree lists a realm's direct imports or dependents, one per row, with
+// what each of those pulls in on the line beneath it.
+//
+// The list used to render every node of the returned graph, which includes the
+// root itself — so a realm appeared in its own "imports" and its own
+// "dependents" lists, reading as a self-reference that cannot exist in Gno. The
+// data was always right; only this rendering was wrong.
+//
+// `direct` is what the title promises. Everything else in the graph is reached
+// through those, and belongs under them rather than beside them.
+function buildDepTree(title, graph, root, arrowHint) {
+  const div = el('div');
+  div.appendChild(el('div', { className: 'section-title' }, title));
+
+  const direct = (graph || {})[root] || [];
+  if (!direct.length) { div.appendChild(el('div', { style: { color: 'var(--fg2)' } }, 'none')); return div; }
+
+  // The arrow annotation was previously unlabelled, which left readers guessing
+  // whether it meant files, call sites or aliases.
+  div.appendChild(el('div', {
+    style: { color: 'var(--fg2)', fontSize: '11px', marginBottom: '8px' }
+  }, '\u2192 ' + arrowHint));
+
+  for (const pkg of direct) {
     const item = el('div', { style: { marginBottom: '8px' } });
-    const a = link(pkg, () => navigate('/realm/' + pkg.replace('gno.land/', '')));
-    if (pkg === root) a.style.fontWeight = 'bold';
-    item.appendChild(a);
-    if ((deps || []).length) {
+    item.appendChild(link(pkg, () => navigate('/realm/' + pkg.replace('gno.land/', ''))));
+
+    // What this one reaches in turn, minus the root: an edge back to the realm
+    // being viewed is the reverse relationship, not a new one.
+    const onward = ((graph || {})[pkg] || []).filter(d => d !== root);
+    if (onward.length) {
       const sub = el('div', { style: { paddingLeft: '16px', color: 'var(--fg2)', fontSize: '12px' } });
       sub.append('\u2192 ');
-      deps.forEach((d, i) => { if (i > 0) sub.append(', '); sub.appendChild(link(d.split('/').slice(-1)[0], () => navigate('/realm/' + d.replace('gno.land/', '')))); });
+      onward.forEach((d, i) => {
+        if (i > 0) sub.append(', ');
+        sub.appendChild(link(d.split('/').slice(-1)[0], () => navigate('/realm/' + d.replace('gno.land/', ''))));
+      });
       item.appendChild(sub);
     }
     div.appendChild(item);
@@ -3176,7 +3222,7 @@ async function loadAddressDetail(addr) {
       if (tx.network) txTd.appendChild(netBadgeEl(tx.network));
       tbody.appendChild(el('tr', {},
         txTd,
-        el('td', {}, typeBadge(msg?.value?.__typename)),
+        el('td', {}, typeBadge(msg?.value?.__typename, msg)),
         el('td', {}, txDetailEl(msg)),
         el('td', {}, statusBadge(tx.success)),
         el('td', { style: { color: 'var(--fg2)', fontSize: '12px' } }, when)
@@ -3293,8 +3339,8 @@ function argValueEl(val) {
 function renderMessageEl(msg, index, returnData, msgLog) {
   const v = msg.value;
   const div = el('div', { className: 'card' });
-  const typeLabel = { MsgCall: '/vm.m_call', MsgAddPackage: '/vm.m_addpkg', MsgRun: '/vm.m_run', BankMsgSend: '/bank.MsgSend' }[v.__typename] || msg.typeUrl || v.__typename;
-  const hdr = el('div', { style: { marginBottom: '8px' } }); hdr.appendChild(typeBadge(v.__typename)); hdr.append(' #' + index + '  '); hdr.appendChild(el('span', { style: { color: 'var(--fg2)', fontSize: '12px', fontFamily: 'var(--mono)' } }, typeLabel)); div.appendChild(hdr);
+  const typeLabel = { MsgCall: '/vm.m_call', MsgAddPackage: '/vm.m_addpkg', MsgRun: '/vm.m_run', BankMsgSend: '/bank.MsgSend' }[v.__typename] || msgKind(msg) || msg.typeUrl || v.__typename;
+  const hdr = el('div', { style: { marginBottom: '8px' } }); hdr.appendChild(typeBadge(v.__typename, msg)); hdr.append(' #' + index + '  '); hdr.appendChild(el('span', { style: { color: 'var(--fg2)', fontSize: '12px', fontFamily: 'var(--mono)' } }, typeLabel)); div.appendChild(hdr);
   const tbl = el('table', { style: { width: '100%' } });
   const addRow = (label, content) => {
     const td = el('td', { style: { wordBreak: 'break-word', maxWidth: '0', width: '100%' } });
@@ -3731,7 +3777,7 @@ function onLiveTx(tx) {
     const msg = tx.messages?.[0];
     const tr = el('tr', { className: 'live-new' },
       el('td', {}, blockLink(tx.block_height, tx.network)),
-      el('td', {}, typeBadge(msg?.value?.__typename)),
+      el('td', {}, typeBadge(msg?.value?.__typename, msg)),
       el('td', {}, txDetailEl(msg)),
       el('td', {}, statusBadge(tx.success)),
       el('td', { style: { color: 'var(--fg2)', fontSize: '12px' } }, timeEl(new Date().toISOString()))
@@ -3748,7 +3794,7 @@ function onLiveTx(tx) {
     const tr = el('tr', { className: 'live-new' },
       el('td', {}, txLink(tx.hash, tx.block_height, tx.network)),
       el('td', {}, blockLink(tx.block_height, tx.network)),
-      el('td', {}, typeBadge(msg?.value?.__typename)),
+      el('td', {}, typeBadge(msg?.value?.__typename, msg)),
       el('td', {}, txDetailEl(msg)),
       el('td', {}, statusBadge(tx.success))
     );
