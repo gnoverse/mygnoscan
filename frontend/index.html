@@ -95,6 +95,8 @@ tr.total-row td { font-weight: bold; color: var(--accent); }
 .section-sub { color: var(--fg2); font-size: 12px; margin: -4px 0 10px; max-width: 70ch; }
 .table-filter-note { color: var(--fg2); font-size: 11px; margin: 4px 0 8px; }
 .table-filter-note a { color: var(--accent); }
+.search-direct { padding: 8px 12px; cursor: pointer; border-bottom: 1px solid var(--border);
+  border-left: 2px solid var(--accent); font-family: var(--mono); word-break: break-all; }
 /* Load failures: shown where a skeleton would otherwise shimmer forever. */
 .load-error { padding: 16px 4px; text-align: left; }
 .load-error-head { color: var(--red); font-weight: bold; margin-bottom: 4px; }
@@ -842,6 +844,36 @@ async function api(path) {
 
 
 
+
+
+// directDestinations recognises what a search term is by its shape.
+//
+// /api/search covers package paths, names and creators. An address, transaction
+// hash or block height matches none of those, so typing one returned "no
+// results" — which reads as "this does not exist" rather than "this box does not
+// search that". Rather than broaden the server query (a hash lookup is an
+// indexer round-trip, and a height needs a network), offer the destination
+// directly: the reader already knows what they typed.
+function directDestinations(raw) {
+  const q = raw.trim();
+  const net = netSuffix(getNetwork());
+  const out = [];
+
+  // gno bech32: g1 followed by 38 more characters.
+  if (/^g1[0-9a-z]{38}$/.test(q)) {
+    out.push({ label: q, kind: 'address', href: '/address/' + q + net });
+  }
+  // A transaction hash is 32 bytes base64: 43 characters and a pad.
+  if (/^[A-Za-z0-9+/]{43}=$/.test(q)) {
+    out.push({ label: q, kind: 'transaction', href: '/tx/' + encodeURIComponent(q) + net });
+  }
+  // A bare number is a block height. It needs a network — a height identifies a
+  // different block on every chain — so this is offered only when one is picked.
+  if (/^\d+$/.test(q) && net) {
+    out.push({ label: 'block ' + fmtNum(parseInt(q, 10)), kind: 'block', href: '/block/' + q + net });
+  }
+  return out;
+}
 
 // dependentsCell groups a realm's dependents by who deployed them.
 //
@@ -3864,7 +3896,27 @@ document.getElementById('search-input').addEventListener('input', function() {
     try {
       const data = await api('search?q=' + encodeURIComponent(q));
       results.textContent = '';
-      if (!data || !data.length) { results.appendChild(el('div', { style: { padding: '8px 12px' } }, 'no results')); }
+
+      // The box looks like a universal search, so make it one. /api/search covers
+      // package paths, names and creators only — an address, a transaction hash
+      // or a block height returned nothing at all, which reads as "not found"
+      // rather than "not searched". These are recognised by shape and offered as
+      // direct destinations above the package matches.
+      for (const d of directDestinations(q)) {
+        const item = el('div', { className: 'search-direct' });
+        item.appendChild(el('div', { style: { fontSize: '13px' } }, d.label));
+        item.appendChild(el('div', { style: { fontSize: '11px', color: 'var(--fg2)' } }, d.kind));
+        item.addEventListener('click', () => { results.classList.remove('open'); navigate(d.href); });
+        item.addEventListener('mouseover', () => item.style.background = 'var(--bg3)');
+        item.addEventListener('mouseout', () => item.style.background = '');
+        results.appendChild(item);
+      }
+
+      if (!data || !data.length) {
+        if (!results.childNodes.length) {
+          results.appendChild(el('div', { style: { padding: '8px 12px' } }, 'no results'));
+        }
+      }
       else { for (const r of data) {
         const item = el('div', { style: { padding: '8px 12px', cursor: 'pointer', borderBottom: '1px solid var(--border)' } });
         item.appendChild(el('div', { style: { fontSize: '13px' } }, r.path));

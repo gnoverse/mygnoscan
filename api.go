@@ -1070,9 +1070,29 @@ func (a *API) HandleTokens(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, tokens)
 }
 
+// Account listing bounds. The default matches the previous fixed top 100, so an
+// existing caller passing nothing sees no change.
+const (
+	defaultAccounts = 100
+	maxAccounts     = 500
+)
+
 func (a *API) HandleAccounts(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
-	accounts, err := a.db.GetActiveAccounts(network)
+
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 {
+		limit = defaultAccounts
+	}
+	if limit > maxAccounts {
+		limit = maxAccounts
+	}
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	if offset < 0 {
+		offset = 0
+	}
+
+	accounts, err := a.db.GetActiveAccounts(network, r.URL.Query().Get("sort"), limit, offset)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return

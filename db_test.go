@@ -959,7 +959,7 @@ func TestActiveAccountsAreScopedPerNetwork(t *testing.T) {
 	call("alpha", "a3")
 	call("beta", "b1")
 
-	accounts, err := db.GetActiveAccounts("")
+	accounts, err := db.GetActiveAccounts("", "", 100, 0)
 	if err != nil {
 		t.Fatalf("GetActiveAccounts: %v", err)
 	}
@@ -981,7 +981,7 @@ func TestActiveAccountsAreScopedPerNetwork(t *testing.T) {
 	}
 
 	// Selecting one chain must show only that chain's activity.
-	only, err := db.GetActiveAccounts("beta")
+	only, err := db.GetActiveAccounts("beta", "", 100, 0)
 	if err != nil {
 		t.Fatalf("GetActiveAccounts(beta): %v", err)
 	}
