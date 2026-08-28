@@ -317,31 +317,28 @@ const KNOWN_ADDRS = {
   'g1m0rgan0rla00ygmdmp55f5m0unvsvknluyg2a4': '@morgan',
   'g148583t5x66zs6p90ehad6l4qefeyaf54s69wql': '@faucet',
 };
-// Validator moniker map: address → moniker (loaded from /api/validators)
-const _valMonikers = {};
-async function loadValMonikers() {
-  try {
-    const regs = await fetch('/api/validators?network=' + getNetwork()).then(r => r.json());
-    // Newest first, so the first moniker seen for an address is the current one.
-    for (const reg of (regs || [])) {
-      if (!reg.success || !reg.moniker || !reg.address) continue;
-      if (_valMonikers[reg.address] === undefined) _valMonikers[reg.address] = reg.moniker;
-    }
-  } catch(e) {}
-}
+// proposerEl renders a block proposer.
+//
+// It used to look the address up in a moniker map built from /api/validators, so
+// blocks could show "BonyNode" instead of a raw g1…. That lookup never matched
+// once, on any network, since the day it was written — and it fired on every
+// blocks-view load.
+//
+// The reason is not a bug in the join. A valoper registration carries an ed25519
+// public key, and `sha256(key)[:20]` bech32-encoded reproduces the operator
+// address it registered with — verified against production, where it matches for
+// four of six registrations. But that is the *operator* key. Proposers are
+// identified by the chain's *consensus* key, which is a different key and is
+// never published to the valopers realm. The two address sets are disjoint by
+// construction, so no amount of derivation joins them.
+//
+// See #84 for the measurements. If a realm ever records consensus keys, this
+// becomes possible; until then a lookup that cannot succeed is worse than no
+// lookup, because it reads as a feature that is merely missing data.
 function proposerEl(addr) {
-  const moniker = _valMonikers[addr];
   const span = el('span');
   span.setAttribute('data-hl', addr);
-  if (moniker) {
-    const a = link(moniker, () => navigate('/address/' + addr + netSuffix(getNetwork())));
-    a.setAttribute('data-hl', addr);
-    a.title = addr;
-    span.appendChild(a);
-    span.appendChild(el('span', { className: 'block-ctx' }, ' ' + truncAddr(addr)));
-  } else {
-    span.appendChild(addrLink(addr));
-  }
+  span.appendChild(addrLink(addr));
   return span;
 }
 function addrLabel(addr) { return KNOWN_ADDRS[addr] || ''; }
@@ -1807,7 +1804,7 @@ async function loadBlocks() {
   statsBar.style.display = 'none';
   filterBar.style.display = 'none';
   try {
-    const [data] = await Promise.all([api('blocks?limit=500'), loadValMonikers()]);
+    const data = await api('blocks?limit=500');
     _blocksCache = data;
     _blocksWithTxsOnly = false;
     const withTxs = (data || []).filter(b => b.num_txs > 0);
