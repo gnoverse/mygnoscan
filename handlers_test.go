@@ -535,3 +535,87 @@ func TestEmptyNotNull(t *testing.T) {
 		})
 	}
 }
+
+// The accounts leaderboard takes paging and sort controls.
+//
+// It used to return a fixed top 100 with none, which #10 flagged as the reason
+// it could not back a real "rich list": there was no way to page past the first
+// hundred or to rank by anything but total activity.
+func TestAccountsPagingAndSort(t *testing.T) {
+	api, db := newTestAPI(t)
+
+	const when = "2026-08-01T00:00:00Z"
+	for i := 0; i < 12; i++ {
+		addr := fmt.Sprintf("g1caller%02d", i)
+		// Descending calls, ascending sends: the two orders disagree, so a sort
+		// that is ignored cannot pass by coincidence.
+		for c := 0; c <= 12-i; c++ {
+			if err := db.InsertCall("alpha", fmt.Sprintf("c-%d-%d", i, c), 100+c, when,
+				addr, "gno.land/r/demo/boards", "Post", true); err != nil {
+				t.Fatalf("InsertCall: %v", err)
+			}
+		}
+		for sIdx := 0; sIdx <= i; sIdx++ {
+			if err := db.InsertBankSend("alpha", fmt.Sprintf("s-%d-%d", i, sIdx), 200+sIdx, when,
+				addr, "g1recv", "1ugnot", true); err != nil {
+				t.Fatalf("InsertBankSend: %v", err)
+			}
+		}
+	}
+
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux)
+
+	get := func(t *testing.T, target string) []AccountInfo {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest("GET", target, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		var accounts []AccountInfo
+		mustJSON(t, rec.Body.Bytes(), &accounts)
+		return accounts
+	}
+
+	t.Run("limit is honoured", func(t *testing.T) {
+		if got := get(t, "/api/accounts?limit=5"); len(got) != 5 {
+			t.Errorf("got %d accounts for limit=5", len(got))
+		}
+	})
+
+	t.Run("offset pages past the first rows", func(t *testing.T) {
+		first := get(t, "/api/accounts?limit=3")
+		next := get(t, "/api/accounts?limit=3&offset=3")
+		if len(first) != 3 || len(next) != 3 {
+			t.Fatalf("page sizes = %d and %d", len(first), len(next))
+		}
+		for _, a := range first {
+			for _, b := range next {
+				if a.Address == b.Address {
+					t.Errorf("%s appears on both pages", a.Address)
+				}
+			}
+		}
+	})
+
+	t.Run("sort changes the order", func(t *testing.T) {
+		byCalls := get(t, "/api/accounts?limit=1&sort=calls")
+		bySends := get(t, "/api/accounts?limit=1&sort=sends")
+		if len(byCalls) == 0 || len(bySends) == 0 {
+			t.Fatal("empty result")
+		}
+		if byCalls[0].Address == bySends[0].Address {
+			t.Errorf("sort=calls and sort=sends both lead with %s; the parameter is ignored",
+				byCalls[0].Address)
+		}
+	})
+
+	t.Run("an absent limit keeps the previous default", func(t *testing.T) {
+		// Twelve callers plus g1recv, which is an active account by virtue of
+		// receiving — the accounts view counts both sides of a send.
+		if got := get(t, "/api/accounts"); len(got) != 13 {
+			t.Errorf("got %d accounts, want all 13 under the default of %d", len(got), defaultAccounts)
+		}
+	})
+}

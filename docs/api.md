@@ -101,7 +101,7 @@ labels this figure "recent" for the same reason.
 | endpoint | description |
 |---|---|
 | `GET /api/address/{addr}` | activity for an address: calls, deploys, runs, sends, and balance |
-| `GET /api/accounts` | most active accounts. **Top 100 by total activity, no pagination or sort controls.** One row per `(address, network)`: the same key on two chains is two different actors, and each row carries its `network` |
+| `GET /api/accounts` | most active accounts. `limit` (default 100, max 500), `offset`, and `sort` = `calls`, `deploys`, `runs`, `sends` or total activity. One row per `(address, network)`: the same key on two chains is two different actors, and each row carries its `network` |
 
 ## Aggregates
 
@@ -143,6 +143,11 @@ GET /api/search?q=<query>
 Searches **package paths, names and creators only**. It does not search
 transaction hashes, block heights, or addresses — an address matches only when it
 happens to be a package creator.
+
+The UI covers the rest without asking the server: an address, a transaction hash
+or a block height is recognised by shape and offered as a direct destination
+above the package matches. A bare number is offered only when a network is
+selected, since a height identifies a different block on every chain.
 
 ## Live feed
 

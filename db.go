@@ -1642,7 +1642,32 @@ type AccountInfo struct {
 	SendCount   int    `json:"send_count"`
 }
 
-func (d *DB) GetActiveAccounts(network string) ([]AccountInfo, error) {
+// accountSortClause maps a sort name to an ORDER BY over the aggregated columns.
+//
+// The sums are recomputed rather than referenced by alias: SQLite allows the
+// alias here but the expression is what the index-free aggregate produces
+// either way, and spelling it out keeps the mapping readable next to the query.
+func accountSortClause(sortBy string) string {
+	switch sortBy {
+	case "calls":
+		return "SUM(call_count) DESC"
+	case "deploys":
+		return "SUM(deploy_count) DESC"
+	case "runs":
+		return "SUM(run_count) DESC"
+	case "sends":
+		return "SUM(send_count) DESC"
+	default: // total activity
+		return "(SUM(call_count) + SUM(deploy_count) + SUM(run_count) + SUM(send_count)) DESC"
+	}
+}
+
+// GetActiveAccounts returns the most active accounts, paged.
+//
+// limit and offset are honoured so this can back a real leaderboard: it used to
+// return a fixed top 100 with no controls at all, which #10 flagged as the
+// reason it could not serve as one.
+func (d *DB) GetActiveAccounts(network, sortBy string, limit, offset int) ([]AccountInfo, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
@@ -1672,10 +1697,10 @@ func (d *DB) GetActiveAccounts(network string) ([]AccountInfo, error) {
 			SELECT to_address as address, network, 0, 0, 0, COUNT(*) FROM bank_sends` + nFilter + ` GROUP BY to_address, network
 		)
 		GROUP BY address, network
-		ORDER BY (SUM(call_count) + SUM(deploy_count) + SUM(run_count) + SUM(send_count)) DESC
-		LIMIT 100
+		ORDER BY ` + accountSortClause(sortBy) + `
+		LIMIT ? OFFSET ?
 	`
-	rows, err := d.db.Query(q)
+	rows, err := d.db.Query(q, limit, offset)
 	if err != nil {
 		return nil, err
 	}
