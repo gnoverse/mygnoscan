@@ -92,6 +92,7 @@ th.sort-desc::after { content: ' \2193'; opacity: 1; }
 tr.total-row { border-top: 2px solid var(--border); }
 tr.total-row td { font-weight: bold; color: var(--accent); }
 .block-ctx { color: var(--fg2); font-size: 12px; }
+.section-sub { color: var(--fg2); font-size: 12px; margin: -4px 0 10px; max-width: 70ch; }
 /* Load failures: shown where a skeleton would otherwise shimmer forever. */
 .load-error { padding: 16px 4px; text-align: left; }
 .load-error-head { color: var(--red); font-weight: bold; margin-bottom: 4px; }
@@ -206,10 +207,16 @@ footer a:hover { color: var(--accent); }
       <div class="stat stat-link" data-goto="/blocks"><span class="label">block</span><span class="value" id="stat-block">-</span></div>
     </div>
     <main>
+      <div class="section">
+        <div class="section-title">most depended-upon realms</div>
+        <div class="section-sub">what the rest of the chain builds on. every realm here links to the
+          full import graph and the list of realms that use it.</div>
+        <table><thead><tr><th>realm</th><th>used by</th><th>imports</th><th>calls</th></tr></thead><tbody id="top-depended"></tbody></table>
+      </div>
       <div class="section"><div class="section-title">recent activity</div>
         <table><thead><tr><th>block</th><th>type</th><th>detail</th><th>status</th><th>when</th></tr></thead><tbody id="recent-txs"></tbody></table></div>
       <div class="section"><div class="section-title">latest realms</div>
-        <table><thead><tr><th>path</th><th>creator</th><th>files</th><th>block</th></tr></thead><tbody id="latest-realms"></tbody></table></div>
+        <table><thead><tr><th>path</th><th>used by</th><th>imports</th><th>calls</th><th>creator</th><th>block</th></tr></thead><tbody id="latest-realms"></tbody></table></div>
     </main>
   </div>
   <div class="view" id="view-realms"><main><div id="realms-stats" class="stats-bar" style="display:none"></div><div class="section"><div class="section-title">all realms</div>
@@ -832,6 +839,97 @@ async function api(path) {
 }
 
 
+
+
+// dependentsCell groups a realm's dependents by who deployed them.
+//
+// A flat list of paths reads as adoption when it may be one project's version
+// churn — r/gnoswap/router has 25 dependents, 21 of them one deployer's
+// sequential gnomemepad releases. The question a reader actually has is "how
+// many independent parties depend on this", and answering it from a flat list
+// meant cross-referencing creator addresses by hand across pages.
+//
+// Grouping is by creator address, which is recorded per package, rather than by
+// path prefix — a heuristic that would mis-group anything not deployed under a
+// user namespace.
+function dependentsCell(detail) {
+  const td = el('td');
+  const deps = detail.dependents || [];
+  if (!deps.length) { td.textContent = 'none'; return td; }
+
+  const byCreator = new Map();
+  for (const dep of deps) {
+    // Dependents without a recorded deploy are grouped under their own path so
+    // they are still listed rather than silently merged with each other.
+    const key = dep.creator || ('unknown:' + dep.path);
+    if (!byCreator.has(key)) byCreator.set(key, []);
+    byCreator.get(key).push(dep);
+  }
+
+  const summary = el('div', { style: { color: 'var(--fg2)', fontSize: '12px', marginBottom: '6px' } });
+  summary.append(fmtNum(deps.length) + ' realm' + (deps.length === 1 ? '' : 's') +
+    ' from ' + fmtNum(byCreator.size) + ' deployer' + (byCreator.size === 1 ? '' : 's'));
+  td.appendChild(summary);
+
+  const groups = [...byCreator.entries()].sort((a, b) => b[1].length - a[1].length);
+  for (const [creator, members] of groups) {
+    const row = el('div', { style: { marginBottom: '4px' } });
+
+    if (members.length === 1) {
+      row.appendChild(link(members[0].path, () => navigate('/realm/' + members[0].path.replace('gno.land/', ''))));
+    } else {
+      // Collapse a deployer's versions to one line: the newest, plus a count.
+      const newest = members[members.length - 1];
+      row.appendChild(link(newest.path, () => navigate('/realm/' + newest.path.replace('gno.land/', ''))));
+      const more = el('span', { className: 'block-ctx', style: { cursor: 'pointer' } },
+        ' +' + (members.length - 1) + ' more from this deployer');
+      const rest = el('div', { style: { paddingLeft: '16px', display: 'none' } });
+      for (const m of members.slice(0, -1)) {
+        rest.appendChild(link(m.path, () => navigate('/realm/' + m.path.replace('gno.land/', ''))));
+        rest.appendChild(el('br'));
+      }
+      more.addEventListener('click', () => {
+        rest.style.display = rest.style.display === 'none' ? 'block' : 'none';
+      });
+      row.appendChild(more);
+      row.appendChild(rest);
+    }
+
+    if (creator.startsWith('unknown:')) {
+      row.appendChild(el('span', { className: 'block-ctx' }, ' \u00b7 deployer unknown'));
+    } else {
+      const by = el('span', { className: 'block-ctx' });
+      by.append(' \u00b7 by ');
+      by.appendChild(addrLink(creator, detail.network));
+      if (creator === detail.creator) {
+        by.append(' ');
+        by.appendChild(badge('ok', 'same deployer'));
+      }
+      row.appendChild(by);
+    }
+    td.appendChild(row);
+  }
+  return td;
+}
+
+// usageLink renders a usage count that goes somewhere useful.
+//
+// A bare number answers "how many" and stops there; the question behind it is
+// always "which ones", and that lived two clicks away on a non-default tab. Zero
+// stays plain — there is nothing to open.
+function usageLink(realm, kind) {
+  const n = (kind === 'importers' ? realm.importers : realm.imports) || 0;
+  if (!n) return el('span', { style: { color: 'var(--fg2)' } }, '0');
+  const tab = kind === 'importers' ? 'deps' : 'deps';
+  const a = link(fmtNum(n), () => navigate(
+    '/realm/' + realm.path.replace('gno.land/', '') + netSuffix(realm.network) +
+    (netSuffix(realm.network) ? '&' : '?') + 'tab=' + tab));
+  a.title = kind === 'importers'
+    ? n + ' realm(s) import this'
+    : 'imports ' + n + ' package(s)';
+  return a;
+}
+
 // --- Load failures -------------------------------------------------------
 //
 // A failed load used to log to the console and leave the skeleton shimmering
@@ -1402,10 +1500,12 @@ function renderTopRealmsChart(container, realms) {
 
 async function loadHome() {
   skeletonRows(clear('recent-txs'), 5, 8);
-  skeletonRows(clear('latest-realms'), 4, 5);
+  skeletonRows(clear('latest-realms'), 6, 5);
+  skeletonRows(clear('top-depended'), 4, 5);
   try {
-    const [stats, realmsData, txsData, blocksData] = await Promise.all([
-      api('stats'), api('realms?limit=10'), api('txs?limit=20'), api('blocks?limit=50')
+    const [stats, realmsData, txsData, blocksData, dependedData] = await Promise.all([
+      api('stats'), api('realms?limit=10'), api('txs?limit=20'), api('blocks?limit=50'),
+      api('realms?limit=8&sort=importers')
     ]);
     document.getElementById('stat-txs').textContent = fmtNum(stats.total_txs);
     document.getElementById('stat-calls').textContent = fmtNum(stats.total_calls);
@@ -1418,12 +1518,31 @@ async function loadHome() {
     // Block height → time lookup
     const blockTime = {};
     for (const b of (Array.isArray(blocksData) ? blocksData : [])) blockTime[b.height] = b.time;
+    // The differentiator, above the generic activity feed: which realms the rest
+    // of the chain actually builds on. The ranking already existed in the data
+    // and was three clicks away behind a non-default sort.
+    const topBody = clear('top-depended');
+    for (const r of (dependedData?.items || [])) {
+      topBody.appendChild(netRow(r.network,
+        el('td', {}, realmPathEl(r.path, r.network)),
+        el('td', {}, usageLink(r, 'importers')),
+        el('td', {}, usageLink(r, 'imports')),
+        el('td', {}, fmtNum(r.calls || 0))
+      ));
+    }
+    if (!(dependedData?.items || []).length) {
+      topBody.appendChild(el('tr', {}, el('td', { colSpan: 4, style: { color: 'var(--fg2)' } },
+        'no dependency data yet')));
+    }
+
     const tbody = clear('latest-realms');
     for (const r of (realmsData?.items || [])) {
       tbody.appendChild(netRow(r.network,
         el('td', {}, realmPathEl(r.path, r.network)),
-        el('td', {}, addrLink(r.creator)),
-        el('td', {}, String(r.num_files)),
+        el('td', {}, usageLink(r, 'importers')),
+        el('td', {}, usageLink(r, 'imports')),
+        el('td', {}, fmtNum(r.calls || 0)),
+        el('td', {}, addrLink(r.creator, r.network)),
         el('td', {}, blockLink(r.block_height, r.network))
       ));
     }
@@ -1448,8 +1567,9 @@ async function loadHome() {
       const cell = document.getElementById(id);
       if (cell) { cell.textContent = '\u2014'; cell.style.color = 'var(--fg2)'; }
     }
+    failRows(clear('top-depended'), 4, err, loadHome);
     failRows(clear('recent-txs'), 5, err, loadHome);
-    failRows(clear('latest-realms'), 4, err, loadHome);
+    failRows(clear('latest-realms'), 6, err, loadHome);
   }
 }
 
@@ -2777,10 +2897,8 @@ async function loadRealmDetail(path, initialTab) {
     if (!(detail.imports || []).length) impTd.textContent = 'none';
     impRow.appendChild(impTd); tbl.appendChild(impRow);
     const depRow = el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'dependents'));
-    const depTd = el('td');
-    for (const dep of (detail.dependents || [])) { depTd.appendChild(link(dep, () => navigate('/realm/' + dep.replace('gno.land/', '')))); depTd.appendChild(el('br')); }
-    if (!(detail.dependents || []).length) depTd.textContent = 'none';
-    depRow.appendChild(depTd); tbl.appendChild(depRow);
+    depRow.appendChild(dependentsCell(detail));
+    tbl.appendChild(depRow);
     tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'msgrun refs'), el('td', {}, fmtNum((detail.msgrun_refs || []).length) + ' references')));
     info.appendChild(tbl);
     info.appendChild(rawJsonToggle(detail));
