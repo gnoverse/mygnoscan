@@ -93,6 +93,8 @@ tr.total-row { border-top: 2px solid var(--border); }
 tr.total-row td { font-weight: bold; color: var(--accent); }
 .block-ctx { color: var(--fg2); font-size: 12px; }
 .section-sub { color: var(--fg2); font-size: 12px; margin: -4px 0 10px; max-width: 70ch; }
+.table-filter-note { color: var(--fg2); font-size: 11px; margin: 4px 0 8px; }
+.table-filter-note a { color: var(--accent); }
 /* Load failures: shown where a skeleton would otherwise shimmer forever. */
 .load-error { padding: 16px 4px; text-align: left; }
 .load-error-head { color: var(--red); font-weight: bold; margin-bottom: 4px; }
@@ -3493,10 +3495,22 @@ function processClampQueue() {
 // --- Filterable + sortable tables ---
 // Adds a text filter input above a table. Filters rows by text content.
 function addTableFilter(container, table) {
+  // This filters the rows currently in the DOM, which on a paginated table is
+  // one page of many. Labelled "filter..." that reads as filtering everything,
+  // so typing a realm that lives on page 7 of 11 shows nothing and looks like it
+  // does not exist. Say which it is, and point at the tool that does search
+  // across pages.
+  const paged = !!container.querySelector('.pager');
+
   const input = document.createElement('input');
   input.type = 'text';
   input.className = 'table-filter';
-  input.placeholder = 'filter...';
+  input.placeholder = paged ? 'filter this page...' : 'filter...';
+
+  const note = el('div', { className: 'table-filter-note' });
+  const hidden = () => [...table.querySelectorAll('tbody tr')]
+    .filter(tr => !tr.classList.contains('total-row') && tr.style.display === 'none').length;
+
   input.addEventListener('input', () => {
     const q = input.value.toLowerCase();
     const rows = table.querySelectorAll('tbody tr');
@@ -3504,8 +3518,23 @@ function addTableFilter(container, table) {
       if (tr.classList.contains('total-row')) return;
       tr.style.display = tr.textContent.toLowerCase().includes(q) ? '' : 'none';
     });
+
+    note.textContent = '';
+    if (paged && q) {
+      const total = rows.length;
+      note.append('showing ' + (total - hidden()) + ' of ' + total + ' rows on this page \u00b7 ');
+      const search = el('a', { href: '#' }, 'search all pages');
+      search.addEventListener('click', ev => {
+        ev.preventDefault();
+        const box = document.getElementById('search-input');
+        if (box) { box.value = input.value; box.focus(); box.dispatchEvent(new Event('input')); }
+      });
+      note.appendChild(search);
+    }
   });
+
   container.insertBefore(input, table);
+  container.insertBefore(note, table);
 }
 
 // Makes table headers clickable for sorting. Sorts by text content.
