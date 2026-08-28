@@ -339,3 +339,60 @@ func TestBreakerResetsOnSuccess(t *testing.T) {
 		t.Error("the breaker opened after one failure; the success in between should have reset the count")
 	}
 }
+
+// An address page must be windowed like every other "recent" view.
+//
+// Unbounded, this asked the indexer to scan the whole chain for five address
+// predicates at once. On sapphire that exceeded the ten-second client deadline,
+// so /api/address answered 500 for the busiest accounts — and because a deadline
+// legitimately counts against the per-network breaker, viewing one address took
+// that chain out of every merged view for a minute.
+func TestAddressQueryIsWindowedFromTheTip(t *testing.T) {
+	f, c := newFakeIndexer(t)
+	f.seedChain(1, 5000)
+
+	// The address appears only near the tip, so a window that starts small and
+	// widens still finds it — and the query must be bounded either way.
+	f.add(fakeCall(4999, "2026-08-01T00:00:00Z", "g1needle", "gno.land/r/demo/boards", "Post"))
+
+	txs, err := c.GetTransactionsByAddress(context.Background(), "g1needle")
+	if err != nil {
+		t.Fatalf("GetTransactionsByAddress: %v", err)
+	}
+	if len(txs) == 0 {
+		t.Fatal("the address's own transaction was not found")
+	}
+
+	// Every query must carry a height bound in its *where* clause.
+	//
+	// Checking the whole query text passes for the wrong reason: txFieldsLight
+	// selects `block_height` as a field, so the string appears in every query
+	// regardless of what was filtered. Only the argument says what was asked.
+	for _, q := range f.askedQueries() {
+		if !strings.Contains(q, "getTransactions") {
+			continue
+		}
+		if !strings.Contains(whereClause(q), "block_height") {
+			t.Errorf("an unbounded transaction query went out, where clause: %s", whereClause(q))
+		}
+	}
+}
+
+// The page is capped, so an address with more history than fits still answers.
+func TestAddressQueryIsCapped(t *testing.T) {
+	f, c := newFakeIndexer(t)
+
+	when := "2026-08-01T00:00:00Z"
+	f.seedChain(1, 10)
+	for i := 0; i < addressTxLimit+50; i++ {
+		f.add(fakeCall(1000+i, when, "g1busy", "gno.land/r/demo/boards", "Post"))
+	}
+
+	txs, err := c.GetTransactionsByAddress(context.Background(), "g1busy")
+	if err != nil {
+		t.Fatalf("GetTransactionsByAddress: %v", err)
+	}
+	if len(txs) > addressTxLimit {
+		t.Errorf("returned %d transactions, want at most %d", len(txs), addressTxLimit)
+	}
+}

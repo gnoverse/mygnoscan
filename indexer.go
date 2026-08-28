@@ -652,31 +652,49 @@ func (c *IndexerClient) GetTransactionByHash(ctx context.Context, hash string) (
 	return &result.GetTransactions[0], nil
 }
 
-// GetTransactionsByAddress fetches transactions involving an address.
+// addressTxLimit bounds an address page. The view shows recent activity, not an
+// account's whole history, and the indexer has no way to make the latter cheap.
+const addressTxLimit = 200
+
+// GetTransactionsByAddress fetches recent transactions involving an address.
+//
+// Windowed from the tip like every other "recent" query. Unbounded, this asked
+// the indexer to scan the whole chain for five address predicates at once: on
+// sapphire it took longer than the ten-second client deadline, so /api/address
+// answered 500 for the busiest accounts — and the timeout counted against the
+// per-network breaker, taking that chain out of every merged view for a minute.
+// One address page could degrade the whole site.
 func (c *IndexerClient) GetTransactionsByAddress(ctx context.Context, addr string) ([]Transaction, error) {
-	var result struct {
-		GetTransactions []Transaction `json:"getTransactions"`
-	}
-	q := fmt.Sprintf(`{
-		getTransactions(
-			where: {
-				_or: [
+	e := gqlEscape(addr)
+	involves := fmt.Sprintf(`_or: [
 					{ messages: { value: { MsgCall: { caller: { eq: "%s" } } } } }
 					{ messages: { value: { MsgAddPackage: { creator: { eq: "%s" } } } } }
 					{ messages: { value: { MsgRun: { caller: { eq: "%s" } } } } }
 					{ messages: { value: { BankMsgSend: { from_address: { eq: "%s" } } } } }
 					{ messages: { value: { BankMsgSend: { to_address: { eq: "%s" } } } } }
-				]
+				]`, e, e, e, e, e)
+
+	txs, err := c.recentTransactionsWindowed(ctx, addressTxLimit, involves,
+		func() ([]Transaction, error) {
+			var result struct {
+				GetTransactions []Transaction `json:"getTransactions"`
 			}
+			q := fmt.Sprintf(`{
+		getTransactions(
+			where: { %s }
 			order: { heightAndIndex: DESC }
 		) { %s }
-	}`, gqlEscape(addr), gqlEscape(addr), gqlEscape(addr), gqlEscape(addr), gqlEscape(addr), txFieldsLight)
-	err := c.query(ctx, q, nil, &result)
-	// Cap at 200 most recent to avoid huge responses
-	if len(result.GetTransactions) > 200 {
-		return result.GetTransactions[:200], err
+	}`, involves, txFieldsLight)
+			err := c.query(ctx, q, nil, &result)
+			return result.GetTransactions, err
+		})
+	if err != nil {
+		return nil, err
 	}
-	return result.GetTransactions, err
+	if len(txs) > addressTxLimit {
+		return txs[:addressTxLimit], nil
+	}
+	return txs, nil
 }
 
 // GetMsgRunTransactions fetches a page of MsgRun transactions above lastHeight.
