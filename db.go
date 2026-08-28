@@ -1198,12 +1198,25 @@ type PackageInfo struct {
 
 type PackageDetail struct {
 	PackageInfo
-	Files      []FileInfo   `json:"files"`
-	Imports    []string     `json:"imports"`
-	Dependents []string     `json:"dependents"`
+	Files   []FileInfo `json:"files"`
+	Imports []string   `json:"imports"`
+	// Dependents carries each importer's creator, not just its path.
+	//
+	// A flat list of paths reads as adoption when it may be one project's
+	// version churn: r/gnoswap/router has 25 dependents, 21 of which are one
+	// deployer's sequential gnomemepad releases. The question a reader has is
+	// "how many independent parties depend on this", and answering it from paths
+	// alone meant cross-referencing creators by hand across pages.
+	Dependents []Dependent  `json:"dependents"`
 	Callers    []CallInfo   `json:"recent_calls"`
 	MsgRunRefs []MsgRunInfo `json:"msgrun_refs"`
 	CallCount  int          `json:"call_count"`
+}
+
+// Dependent is one realm that imports another.
+type Dependent struct {
+	Path    string `json:"path"`
+	Creator string `json:"creator,omitempty"`
 }
 
 type FileInfo struct {
@@ -1343,15 +1356,24 @@ func (d *DB) GetPackageDetail(network, path string) (*PackageDetail, error) {
 		p.Imports = append(p.Imports, imp)
 	}
 
-	// Dependents (who imports this)
-	depRows, err := d.db.Query(`SELECT package_path FROM dependencies WHERE import_path = ? AND network = ?`, path, p.Network)
+	// Dependents (who imports this), with each one's creator.
+	//
+	// LEFT JOIN rather than JOIN: an edge can point at a package this instance
+	// has not synced the deploy for, and dropping those would understate the
+	// count. Such a row simply has no creator.
+	depRows, err := d.db.Query(`
+		SELECT dep.package_path, COALESCE(pkg.creator, '')
+		FROM dependencies dep
+		LEFT JOIN packages pkg ON pkg.network = dep.network AND pkg.path = dep.package_path
+		WHERE dep.import_path = ? AND dep.network = ?
+		ORDER BY dep.package_path ASC`, path, p.Network)
 	if err != nil {
 		return nil, err
 	}
 	defer depRows.Close()
 	for depRows.Next() {
-		var dep string
-		if err := depRows.Scan(&dep); err != nil {
+		var dep Dependent
+		if err := depRows.Scan(&dep.Path, &dep.Creator); err != nil {
 			return nil, err
 		}
 		p.Dependents = append(p.Dependents, dep)
