@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -443,5 +444,94 @@ func TestLiveFeedHandlerOpensAStream(t *testing.T) {
 	}
 	if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
 		t.Errorf("Cache-Control = %q, want no-cache: a cached SSE stream never updates", got)
+	}
+}
+
+// No list endpoint may answer `null`.
+//
+// Go marshals a nil slice as `null`, and every list view in the frontend
+// iterates what it gets, so a query that legitimately matched nothing rendered
+// as a broken page rather than an empty one. /api/search did this on production
+// for any query with no hits.
+//
+// Most of these only ever looked correct because the chain they were tried
+// against happened to have data, so this runs them all against an empty
+// database, where every one of them matches nothing.
+func TestNoListEndpointAnswersNull(t *testing.T) {
+	api, _ := newTestAPI(t)
+
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux)
+
+	targets := []string{
+		"/api/search?q=nothing-matches-this",
+		"/api/accounts",
+		"/api/tokens",
+		"/api/validators",
+		"/api/realms?limit=10",
+		"/api/packages?limit=10",
+		"/api/deps/r/demo/nothing",
+		"/api/timeseries/transactions?days=7",
+		"/api/timeseries/packages?days=7",
+		"/api/timeseries/callers?days=7",
+		"/api/timeseries/gas?days=7",
+		"/api/timeseries/active-addresses?days=7",
+		"/api/timeseries/health?days=7",
+		"/api/timeseries/storage?days=7",
+		"/api/timeseries/storage/realms?days=7",
+	}
+
+	for _, target := range targets {
+		t.Run(target, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, httptest.NewRequest("GET", target, nil))
+			body := strings.TrimSpace(rec.Body.String())
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", rec.Code, body)
+			}
+			if body == "null" {
+				t.Error("answered null; the frontend iterates this and would throw")
+			}
+			if !json.Valid([]byte(body)) {
+				t.Fatalf("body is not valid JSON: %s", body)
+			}
+		})
+	}
+}
+
+// The normalization itself, including the cases it must leave alone.
+func TestEmptyNotNull(t *testing.T) {
+	var nilSlice []string
+	var nilMap map[string]int
+	type payload struct{ N int }
+
+	tests := []struct {
+		name string
+		in   any
+		want string
+	}{
+		{"a nil slice becomes an empty array", nilSlice, "[]"},
+		{"a nil map becomes an empty object", nilMap, "{}"},
+		{"an empty slice is unchanged", []string{}, "[]"},
+		{"a populated slice is unchanged", []int{1, 2}, "[1,2]"},
+		{"a populated map is unchanged", map[string]int{"a": 1}, `{"a":1}`},
+		{"a struct is unchanged", payload{N: 3}, `{"N":3}`},
+		{"a pointer is unchanged", &payload{N: 4}, `{"N":4}`},
+		// A nil pointer genuinely is null: there is no empty value to stand in
+		// for a missing object, and the handlers that return one 404 instead.
+		{"a nil pointer stays null", (*payload)(nil), "null"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := json.Marshal(emptyNotNull(tt.in))
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if string(got) != tt.want {
+				t.Errorf("got %s, want %s", got, tt.want)
+			}
+		})
 	}
 }

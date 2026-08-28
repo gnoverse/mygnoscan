@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -36,7 +37,33 @@ func NewAPI(db *DB, clients map[string]*IndexerClient, networks []NetworkConfig,
 
 func jsonResponse(w http.ResponseWriter, data any) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(data)
+	json.NewEncoder(w).Encode(emptyNotNull(data))
+}
+
+// emptyNotNull turns a nil slice or map into an empty one.
+//
+// Go marshals a nil slice as `null`, and every list view in the frontend
+// iterates what it gets — `for (const r of rows)` throws on null, so a query
+// that legitimately matched nothing rendered as a broken page rather than an
+// empty one. /api/search did exactly that for any query with no hits.
+//
+// Individual handlers had been guarding this one at a time as each was noticed.
+// Doing it where the response is written covers the ones nobody has hit yet:
+// most list endpoints only look safe because the chain they were tried against
+// happened to have data.
+func emptyNotNull(data any) any {
+	v := reflect.ValueOf(data)
+	switch v.Kind() {
+	case reflect.Slice:
+		if v.IsNil() {
+			return []any{}
+		}
+	case reflect.Map:
+		if v.IsNil() {
+			return map[string]any{}
+		}
+	}
+	return data
 }
 
 func jsonError(w http.ResponseWriter, msg string, code int) {
