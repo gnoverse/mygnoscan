@@ -23,16 +23,12 @@ func NewAnalyzer(db *DB) *Analyzer {
 }
 
 // ExtractImports parses Go source files and extracts gno.land import paths.
-func (a *Analyzer) ExtractImports(files []MemFile) []string {
+func (a *Analyzer) ExtractImports(pkgPath string, files []MemFile) []string {
 	seen := make(map[string]bool)
 	var imports []string
 
 	for _, f := range files {
-		if !strings.HasSuffix(f.Name, ".gno") {
-			continue
-		}
-		// Skip test files
-		if strings.HasSuffix(f.Name, "_test.gno") {
+		if !strings.HasSuffix(f.Name, ".gno") || isTestFile(f.Name) {
 			continue
 		}
 
@@ -42,11 +38,29 @@ func (a *Analyzer) ExtractImports(files []MemFile) []string {
 			if !strings.HasPrefix(imp, "gno.land/") || seen[imp] {
 				continue
 			}
+			// A package cannot import itself at runtime. Test files legitimately
+			// import the package under test, so before filetests were excluded
+			// this produced self-edges that rendered as a realm depending on
+			// itself. Kept as a guard: the graph should never contain one
+			// whatever the extraction does.
+			if imp == pkgPath {
+				continue
+			}
 			seen[imp] = true
 			imports = append(imports, imp)
 		}
 	}
 	return imports
+}
+
+// isTestFile reports whether a file is one of gno's two test conventions.
+//
+// `_filetest.gno` was being missed: it does not end in `_test.gno`, so filetests
+// were parsed as production source. They import the package under test, which is
+// how six self-edges reached the live dependency graph, and they pull in test-only
+// packages that are not part of what the realm actually uses.
+func isTestFile(name string) bool {
+	return strings.HasSuffix(name, "_test.gno") || strings.HasSuffix(name, "_filetest.gno")
 }
 
 // fileImports returns the paths one file imports.
@@ -86,8 +100,11 @@ func fileImports(f MemFile) []string {
 }
 
 // ExtractMsgRunImports parses MsgRun source for gno.land imports.
+//
+// A MsgRun has no package path of its own to exclude — it is ephemeral code, not
+// a deployed package — so there is nothing it could self-import.
 func (a *Analyzer) ExtractMsgRunImports(files []MemFile) []string {
-	return a.ExtractImports(files) // same logic
+	return a.ExtractImports("", files)
 }
 
 // ProcessPackage analyzes a package and stores its dependency info.
@@ -107,7 +124,7 @@ func (a *Analyzer) ProcessPackage(network string, pkg *MemPackage, creator, txHa
 	}
 
 	// Extract and store dependencies
-	imports := a.ExtractImports(pkg.Files)
+	imports := a.ExtractImports(pkg.Path, pkg.Files)
 	if err := a.db.SetDependencies(network, pkg.Path, imports); err != nil {
 		return err
 	}
@@ -124,7 +141,9 @@ func (a *Analyzer) ProcessPackage(network string, pkg *MemPackage, creator, txHa
 // import block. The regex counted commented-out imports and paths that only
 // appeared in string literals, so rows written before it carry edges that do not
 // exist.
-const dependencyExtractorVersion = "2"
+// v3 excludes `_filetest.gno` — gno's other test convention, which the
+// `_test.gno` check did not match — and refuses self-edges outright.
+const dependencyExtractorVersion = "3"
 
 const dependencyExtractorKey = "dependency_extractor_version"
 
@@ -139,6 +158,11 @@ func (a *Analyzer) ReextractDependencies() error {
 	if err == nil && done == dependencyExtractorVersion {
 		return nil
 	}
+
+	// There is work to do, so wait out the startup ANALYZE before taking the
+	// write lock against it. Skipped entirely on the common path above, where
+	// the marker already matches and nothing is rewritten.
+	a.db.WaitBackground()
 
 	refs, err := a.db.StoredPackageRefs()
 	if err != nil {
@@ -156,7 +180,7 @@ func (a *Analyzer) ReextractDependencies() error {
 			failed++
 			continue
 		}
-		imports := a.ExtractImports(files)
+		imports := a.ExtractImports(ref.Path, files)
 		if err := a.db.SetDependencies(ref.Network, ref.Path, imports); err != nil {
 			log.Printf("re-extract %s/%s: %v", ref.Network, ref.Path, err)
 			failed++

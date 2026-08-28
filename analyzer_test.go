@@ -2,6 +2,7 @@ package main
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -85,7 +86,7 @@ func TestExtractImports(t *testing.T) {
 	a := NewAnalyzer(nil)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := a.ExtractImports(tt.files)
+			got := a.ExtractImports("", tt.files)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("ExtractImports() = %v, want %v", got, tt.want)
 			}
@@ -112,7 +113,7 @@ func TestExtractImportsIgnoresPathsThatAreNotImports(t *testing.T) {
 		}
 	`}}
 
-	got := NewAnalyzer(nil).ExtractImports(files)
+	got := NewAnalyzer(nil).ExtractImports("", files)
 	want := []string{"gno.land/p/demo/avl"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ExtractImports() = %v, want %v", got, want)
@@ -131,7 +132,7 @@ func TestExtractImportsSurvivesAnUnparseableBody(t *testing.T) {
 		func broken( { this is not go at all }
 	`}}
 
-	got := NewAnalyzer(nil).ExtractImports(files)
+	got := NewAnalyzer(nil).ExtractImports("", files)
 	want := []string{"gno.land/p/demo/avl"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ExtractImports() = %v, want %v", got, want)
@@ -146,7 +147,7 @@ func TestExtractImportsFallsBackWhenNothingParses(t *testing.T) {
 		import "gno.land/p/demo/avl"
 	`}}
 
-	got := NewAnalyzer(nil).ExtractImports(files)
+	got := NewAnalyzer(nil).ExtractImports("", files)
 	want := []string{"gno.land/p/demo/avl"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ExtractImports() = %v, want %v", got, want)
@@ -294,4 +295,103 @@ func depsOf(t *testing.T, db *DB, network, pkgPath string) []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+// gno has two test-file conventions and only one of them ends in `_test.gno`.
+//
+// `_filetest.gno` was being parsed as production source, so a filetest's import
+// of the package under test became a self-edge in the dependency graph — six of
+// them reached production, rendering as realms that depend on themselves. Test
+// files also pull in test-only packages that are not part of what a realm uses.
+func TestExtractImportsSkipsBothTestConventions(t *testing.T) {
+	const pkgPath = "gno.land/r/gov/dao/v3/impl"
+
+	files := []MemFile{
+		{Name: "impl.gno", Body: `package impl
+
+import (
+	"gno.land/p/nt/avl/v0"
+	"gno.land/r/gov/dao"
+)
+`},
+		{Name: "impl_test.gno", Body: `package impl
+
+import (
+	"gno.land/p/nt/testutils/v0"
+	"gno.land/r/gov/dao/v3/impl"
+)
+`},
+		{Name: "executor_disclosure_filetest.gno", Body: `package main
+
+import (
+	"gno.land/p/nt/testutils/v0"
+	"gno.land/r/gov/dao/v3/impl"
+)
+`},
+	}
+
+	got := NewAnalyzer(nil).ExtractImports(pkgPath, files)
+
+	want := map[string]bool{"gno.land/p/nt/avl/v0": true, "gno.land/r/gov/dao": true}
+	for _, imp := range got {
+		if imp == pkgPath {
+			t.Errorf("the package imports itself, which cannot happen at runtime")
+		}
+		if strings.Contains(imp, "testutils") {
+			t.Errorf("a test-only import reached the graph: %s", imp)
+		}
+		if !want[imp] {
+			t.Errorf("unexpected import %s", imp)
+		}
+		delete(want, imp)
+	}
+	for missing := range want {
+		t.Errorf("missing production import %s", missing)
+	}
+}
+
+// The self-edge guard holds even if a non-test file somehow names its own path.
+func TestExtractImportsNeverEmitsASelfEdge(t *testing.T) {
+	const pkgPath = "gno.land/r/demo/boards"
+
+	got := NewAnalyzer(nil).ExtractImports(pkgPath, []MemFile{
+		{Name: "boards.gno", Body: `package boards
+
+import (
+	"gno.land/r/demo/boards"
+	"gno.land/p/demo/avl"
+)
+`},
+	})
+
+	for _, imp := range got {
+		if imp == pkgPath {
+			t.Fatalf("self-edge emitted: %v", got)
+		}
+	}
+	if len(got) != 1 || got[0] != "gno.land/p/demo/avl" {
+		t.Errorf("imports = %v, want just the avl edge", got)
+	}
+}
+
+func TestIsTestFile(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"impl.gno", false},
+		{"impl_test.gno", true},
+		{"executor_disclosure_filetest.gno", true},
+		{"govdao_execute_proposal_00_filetest.gno", true},
+		// Not a test: "test" appears in the name but not as the convention.
+		{"testutils.gno", false},
+		{"latest.gno", false},
+		{"gnomod.toml", false},
+	}
+
+	for _, tt := range tests {
+		if got := isTestFile(tt.name); got != tt.want {
+			t.Errorf("isTestFile(%q) = %v, want %v", tt.name, got, tt.want)
+		}
+	}
 }

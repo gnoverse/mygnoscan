@@ -127,6 +127,17 @@ func NewDB(path string) (*DB, error) {
 	return d, nil
 }
 
+// WaitBackground blocks until the startup work started in NewDB has finished.
+//
+// Only ANALYZE runs there today, and it takes the write lock for the better part
+// of a second on a large database. Anything else that writes during startup has
+// to wait for it or risk SQLITE_BUSY — the one-time dependency re-extraction lost
+// a package that way, which cost it the whole pass, because the version marker is
+// only written once every package succeeds.
+func (d *DB) WaitBackground() {
+	d.background.Wait()
+}
+
 // blockTimeTables are the tables carrying a block_time column.
 var blockTimeTables = []string{"packages", "calls", "msg_runs", "bank_sends", "transactions"}
 
