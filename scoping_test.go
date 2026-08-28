@@ -282,3 +282,83 @@ func TestBothCallerSeriesAgree(t *testing.T) {
 		t.Error("both series report zero callers")
 	}
 }
+
+// The home page and the realms directory must answer the same question with the
+// same number.
+//
+// They did not: the stat tile read 321 realms while the directory header read
+// 508, in the same all-networks mode, with nothing on screen saying which was
+// authoritative. The gap was exactly topaz's 187 retired realms, which one
+// count included and the other did not.
+//
+// This is the most corrosive class of bug an explorer can have. Once it is
+// caught disagreeing with itself on a basic count, every other number it shows
+// becomes suspect.
+func TestRealmCountsAgreeAcrossEndpoints(t *testing.T) {
+	db := newScopedDB(t)
+
+	// Each seeded network has one realm; only two of the three are configured.
+	stats, err := db.GetStats("")
+	if err != nil {
+		t.Fatalf("GetStats: %v", err)
+	}
+	directory, err := db.CountPackages("", true)
+	if err != nil {
+		t.Fatalf("CountPackages: %v", err)
+	}
+	analytics, err := db.GetAnalytics("")
+	if err != nil {
+		t.Fatalf("GetAnalytics: %v", err)
+	}
+
+	if stats.TotalRealms != directory {
+		t.Errorf("the home page reports %d realms and the directory reports %d for the same question",
+			stats.TotalRealms, directory)
+	}
+	if analytics.TotalRealms != directory {
+		t.Errorf("analytics reports %d realms and the directory reports %d",
+			analytics.TotalRealms, directory)
+	}
+	if directory != 2 {
+		t.Errorf("realm count = %d, want 2; the retired chain's realm must not be counted", directory)
+	}
+}
+
+// The listed rows must match the total above them. A count that excludes a
+// retired chain while the list includes it produces a page whose header
+// disagrees with the rows under it.
+func TestRealmListMatchesItsTotal(t *testing.T) {
+	db := newScopedDB(t)
+
+	total, err := db.CountPackages("", true)
+	if err != nil {
+		t.Fatalf("CountPackages: %v", err)
+	}
+	rows, err := db.ListPackages("", true, 100, 0, "")
+	if err != nil {
+		t.Fatalf("ListPackages: %v", err)
+	}
+
+	if len(rows) != total {
+		t.Errorf("the list returned %d rows under a total of %d", len(rows), total)
+	}
+	for _, r := range rows {
+		if r.Network == "retired" {
+			t.Errorf("a retired chain's realm appears in the list: %s", r.Path)
+		}
+	}
+}
+
+// A package that exists only on a retired chain must not resolve. It is history
+// from a chain that no longer exists, and rendering it as a live realm invites
+// someone to try calling it.
+func TestPackageDetailExcludesRetiredNetworks(t *testing.T) {
+	db := newScopedDB(t)
+
+	if _, err := db.GetPackageDetail("", "gno.land/r/retired/pkg"); err == nil {
+		t.Error("a retired chain's package resolved in all-networks mode")
+	}
+	if _, err := db.GetPackageDetail("", "gno.land/r/live1/pkg"); err != nil {
+		t.Errorf("a live package failed to resolve: %v", err)
+	}
+}

@@ -845,10 +845,7 @@ func (d *DB) BlockTimesForHeights(network string, heights []int) (map[int]string
 	args := make([]any, 0, len(heights)+1)
 	q := `SELECT block_height, block_time FROM transactions
 	      WHERE block_time IS NOT NULL AND block_time != ''`
-	if network != "" {
-		q += ` AND network = ?`
-		args = append(args, network)
-	}
+	q += ` AND ` + d.networkFilter("network", network)
 	q += ` AND block_height IN (` + placeholders + `) GROUP BY block_height`
 	for _, h := range heights {
 		args = append(args, h)
@@ -1221,14 +1218,14 @@ type MsgRunInfo struct {
 func (d *DB) CountPackages(network string, realmOnly bool) (int, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	q := `SELECT COUNT(*) FROM packages WHERE is_realm = ?`
-	args := []any{realmOnly}
-	if network != "" {
-		q += ` AND network = ?`
-		args = append(args, network)
-	}
+	// Scoped to the configured networks, so this agrees with the same count on
+	// the home page. It did not: the stat tile read 321 realms while the
+	// directory header read 508, because this branch counted retired chains and
+	// that one did not. topaz alone accounts for the 187 between them.
+	q := `SELECT COUNT(*) FROM packages WHERE is_realm = ? AND ` +
+		d.networkFilter("network", network)
 	var count int
-	err := d.db.QueryRow(q, args...).Scan(&count)
+	err := d.db.QueryRow(q, realmOnly).Scan(&count)
 	return count, err
 }
 
@@ -1266,12 +1263,8 @@ func (d *DB) ListPackages(network string, realmOnly bool, limit, offset int, sor
 		   WHERE d.network = p.network AND d.import_path = p.path) AS importers,
 		(SELECT COUNT(*) FROM dependencies d
 		   WHERE d.network = p.network AND d.package_path = p.path) AS imports
-		FROM packages p WHERE p.is_realm = ?`
+		FROM packages p WHERE p.is_realm = ? AND ` + d.networkFilter("p.network", network)
 	args := []any{realmOnly}
-	if network != "" {
-		q += ` AND p.network = ?`
-		args = append(args, network)
-	}
 	q += ` ORDER BY ` + packageSortClause(sortBy)
 	if limit > 0 {
 		q += fmt.Sprintf(` LIMIT %d OFFSET %d`, limit, offset)
@@ -1300,12 +1293,9 @@ func (d *DB) GetPackageDetail(network, path string) (*PackageDetail, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	q := `SELECT network, path, name, creator, block_height, tx_hash, is_realm, num_files FROM packages WHERE path = ?`
+	q := `SELECT network, path, name, creator, block_height, tx_hash, is_realm, num_files
+	      FROM packages WHERE path = ? AND ` + d.networkFilter("network", network)
 	args := []any{path}
-	if network != "" {
-		q += ` AND network = ?`
-		args = append(args, network)
-	}
 
 	var p PackageDetail
 	err := d.db.QueryRow(q, args...).Scan(&p.Network, &p.Path, &p.Name, &p.Creator, &p.BlockHeight, &p.TxHash, &p.IsRealm, &p.NumFiles)
@@ -1415,11 +1405,8 @@ func (d *DB) GetDependencyGraph(network, path string) (map[string][]string, erro
 
 		var rows *sql.Rows
 		var err error
-		if network != "" {
-			rows, err = d.db.Query(`SELECT import_path FROM dependencies WHERE package_path = ? AND network = ?`, p, network)
-		} else {
-			rows, err = d.db.Query(`SELECT import_path FROM dependencies WHERE package_path = ?`, p)
-		}
+		rows, err = d.db.Query(`SELECT import_path FROM dependencies WHERE package_path = ? AND `+
+			d.networkFilter("network", network), p)
 		if err != nil {
 			return err
 		}
@@ -1468,11 +1455,8 @@ func (d *DB) GetReverseGraph(network, path string) (map[string][]string, error) 
 
 		var rows *sql.Rows
 		var err error
-		if network != "" {
-			rows, err = d.db.Query(`SELECT package_path FROM dependencies WHERE import_path = ? AND network = ?`, p, network)
-		} else {
-			rows, err = d.db.Query(`SELECT package_path FROM dependencies WHERE import_path = ?`, p)
-		}
+		rows, err = d.db.Query(`SELECT package_path FROM dependencies WHERE import_path = ? AND `+
+			d.networkFilter("network", network), p)
 		if err != nil {
 			return err
 		}
@@ -1678,11 +1662,8 @@ func (d *DB) TotalSourceBytes(network string) int {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	var n int
-	if network != "" {
-		d.db.QueryRow(`SELECT COALESCE(SUM(LENGTH(body)), 0) FROM package_files WHERE network = ?`, network).Scan(&n)
-	} else {
-		d.db.QueryRow(`SELECT COALESCE(SUM(LENGTH(body)), 0) FROM package_files`).Scan(&n)
-	}
+	d.db.QueryRow(`SELECT COALESCE(SUM(LENGTH(body)), 0) FROM package_files WHERE ` +
+		d.networkFilter("network", network)).Scan(&n)
 	return n
 }
 
@@ -1826,13 +1807,9 @@ func (d *DB) GetAnalytics(network string) (*Analytics, error) {
 	pFilter := " AND " + d.networkFilter("p.network", network)
 
 	var a Analytics
-	if network != "" {
-		d.db.QueryRow(`SELECT COUNT(*) FROM packages WHERE is_realm = 1 AND network = ?`, network).Scan(&a.TotalRealms)
-		d.db.QueryRow(`SELECT COUNT(*) FROM packages WHERE is_realm = 0 AND network = ?`, network).Scan(&a.TotalPackages)
-	} else {
-		d.db.QueryRow(`SELECT COUNT(*) FROM packages WHERE is_realm = 1`).Scan(&a.TotalRealms)
-		d.db.QueryRow(`SELECT COUNT(*) FROM packages WHERE is_realm = 0`).Scan(&a.TotalPackages)
-	}
+	pkgFilter := d.networkFilter("network", network)
+	d.db.QueryRow(`SELECT COUNT(*) FROM packages WHERE is_realm = 1 AND ` + pkgFilter).Scan(&a.TotalRealms)
+	d.db.QueryRow(`SELECT COUNT(*) FROM packages WHERE is_realm = 0 AND ` + pkgFilter).Scan(&a.TotalPackages)
 	d.db.QueryRow(`SELECT COUNT(*) FROM calls` + nFilter).Scan(&a.TotalCalls)
 	d.db.QueryRow(`SELECT COUNT(*) FROM packages` + nFilter).Scan(&a.TotalDeploys)
 	d.db.QueryRow(`SELECT COUNT(*) FROM msg_runs` + nFilter).Scan(&a.TotalMsgRuns)
@@ -1847,11 +1824,8 @@ func (d *DB) GetAnalytics(network string) (*Analytics, error) {
 		UNION SELECT caller, network FROM msg_runs` + addrUnionFilter + ` UNION SELECT from_address, network FROM bank_sends` + addrUnionFilter + `
 		UNION SELECT to_address, network FROM bank_sends` + addrUnionFilter + `
 	))`).Scan(&a.TotalAddresses)
-	if network != "" {
-		d.db.QueryRow(`SELECT COALESCE(SUM(LENGTH(body)), 0) / 1024 FROM package_files WHERE network = ?`, network).Scan(&a.TotalSourceKB)
-	} else {
-		d.db.QueryRow(`SELECT COALESCE(SUM(LENGTH(body)), 0) / 1024 FROM package_files`).Scan(&a.TotalSourceKB)
-	}
+	d.db.QueryRow(`SELECT COALESCE(SUM(LENGTH(body)), 0) / 1024 FROM package_files WHERE ` +
+		d.networkFilter("network", network)).Scan(&a.TotalSourceKB)
 
 	// The aggregate subqueries below join on (path, network), not on path alone.
 	//
