@@ -95,6 +95,7 @@ tr.total-row td { font-weight: bold; color: var(--accent); }
 .section-sub { color: var(--fg2); font-size: 12px; margin: -4px 0 10px; max-width: 70ch; }
 .table-filter-note { color: var(--fg2); font-size: 11px; margin: 4px 0 8px; }
 .table-filter-note a { color: var(--accent); }
+.addr-inferred { color: var(--fg2); font-size: 10px; vertical-align: super; cursor: help; margin-left: 1px; }
 .search-direct { padding: 8px 12px; cursor: pointer; border-bottom: 1px solid var(--border);
   border-left: 2px solid var(--accent); font-family: var(--mono); word-break: break-all; }
 /* Load failures: shown where a skeleton would otherwise shimmer forever. */
@@ -311,12 +312,81 @@ function badge(type, text) {
   return b;
 }
 function link(text, onclick) { const a = el('a', { href: '#' }, text); a.addEventListener('click', (e) => { e.preventDefault(); onclick(); }); return a; }
+// Curated address labels, global rather than per network: an address is the same
+// key everywhere, and a faucet on one testnet is the same operator on the next.
+//
+// Only for names that cannot be derived. Anything provable from on-chain data —
+// namespace ownership in particular — comes from /api/labels instead, so it
+// stays right as the chains change instead of rotting here.
+//
+// A plain string is a name we can stand behind. An object with `why` is an
+// *inference* from behaviour: it renders with a marker and the reasoning in its
+// tooltip, so a reader can tell "this address deployed gno.land/r/gnoswap/*"
+// from "this address looks like a faucet". Guessing silently is how an explorer
+// loses the trust that makes it worth using.
 const KNOWN_ADDRS = {
   'g1edq4dugw0sgat4zxcw9xardvuydqf6cgleuc8p': '@genesis_deployer',
   'g1manfred47kzduec920z88wfr64ylksmdcedlf5': '@moul',
   'g1m0rgan0rla00ygmdmp55f5m0unvsvknluyg2a4': '@morgan',
   'g148583t5x66zs6p90ehad6l4qefeyaf54s69wql': '@faucet',
+
+  // Inferred from activity shape. Measured 2026-08-28 against the live chains.
+  'g18qhq2fl54lszhmxeyqlvxnwjzc3xpu4nnakclp': {
+    label: '@faucet',
+    why: 'inferred: 3 683 sends to 953 addresses across three networks, never calls a realm, receives nothing',
+  },
+  'g1ve35g5rhcn9mlmqcp9pr085hsqe5x4dm8f23j7': {
+    label: '@test_token_faucet',
+    why: 'inferred: 464 582 calls, almost all Transfer on gnoswap test tokens (test_atom, test_btc, …)',
+  },
+  'g1v73cacldctfky0thu5xuuhmy5zs0mnd8vxyl2w': {
+    label: '@gnoswap_bot',
+    why: 'inferred: 7 189 uniform 500 000 ugnot sends plus router::ExactInSwapRoute — distributes and trades',
+  },
+  'g1vmmklhc7eyxgr3x8ll0yr5wupv8lkxv4xhd8l0': {
+    label: '@gnoswap_bot',
+    why: 'inferred: 6 410 sends to 6 123 addresses plus 6 135 router::ExactInSwapRoute calls',
+  },
+  'g1cywjkx44a92c2j0fgfjxa64pg9qjf0vn6p8qsm': {
+    label: '@gnoswap_bot',
+    why: 'inferred: 5 262 sends to 4 924 addresses plus 4 930 router::ExactInSwapRoute calls',
+  },
+  'g1uhsq7qat4l345hkw9f2g5wpm6pnncmrju9p5mu': {
+    label: '@gnoswap_bot',
+    why: 'inferred: 1 637 uniform 500 000 ugnot sends plus router::ExactInSwapRoute calls',
+  },
 };
+
+// Labels derived on the server from namespace ownership, fetched once per load.
+let _derivedAddrLabels = {};
+async function loadAddrLabels() {
+  try {
+    _derivedAddrLabels = await api('labels') || {};
+  } catch (_) {
+    _derivedAddrLabels = {};
+  }
+}
+
+// addrInfo resolves an address to {label, why, inferred}.
+//
+// `why` is the evidence and is shown for every label that has any. `inferred` is
+// narrower: it means the label was worked out from behaviour rather than proved.
+// The two are not the same, and conflating them would put a doubt marker on
+// @gnoswap — an address that demonstrably deployed gno.land/r/gnoswap/*.
+//
+// Curated entries win over derived ones: a hand-written name is a deliberate
+// override of whatever the data implies.
+function addrInfo(addr) {
+  const curated = KNOWN_ADDRS[addr];
+  if (typeof curated === 'string') return { label: curated, why: '', inferred: false };
+  // Every curated object entry is a behavioural inference; that is what the
+  // object form is for.
+  if (curated) return { label: curated.label, why: curated.why || '', inferred: true };
+
+  const derived = _derivedAddrLabels[addr];
+  if (derived) return { label: derived.label, why: derived.why || '', inferred: false };
+  return null;
+}
 // proposerEl renders a block proposer.
 //
 // It used to look the address up in a moniker map built from /api/validators, so
@@ -341,7 +411,7 @@ function proposerEl(addr) {
   span.appendChild(addrLink(addr));
   return span;
 }
-function addrLabel(addr) { return KNOWN_ADDRS[addr] || ''; }
+function addrLabel(addr) { return (addrInfo(addr) || {}).label || ''; }
 // Single source of truth for abbreviating an address: keep the g1 prefix and the
 // tail, so two addresses sharing a prefix stay distinguishable. Every call site
 // that shortens an address goes through this.
@@ -358,17 +428,26 @@ function shortAddr(addr) {
 // address row from a merged view navigated to the current selection, which in
 // all-networks mode meant no network at all.
 function addrLink(addr, network) {
-  const label = KNOWN_ADDRS[addr];
+  const info = addrInfo(addr);
   const span = el('span');
   span.setAttribute('data-hl', addr);
   // Show the abbreviated form; a full 40-character address in every table cell
   // crowds out the content beside it. The full value stays in the tooltip, and
   // the link target is unchanged.
-  const a = link(label || truncAddr(addr), () => navigate('/address/' + addr + netSuffix(network)));
+  const a = link(info ? info.label : truncAddr(addr), () => navigate('/address/' + addr + netSuffix(network)));
   a.setAttribute('data-hl', addr);
   a.title = addr;
   span.appendChild(a);
-  if (label) {
+  if (info) {
+    // The evidence goes in the link's tooltip whatever its source, so any label
+    // can be checked. Only an inferred one is marked, because only that one
+    // asks the reader to take something on trust.
+    if (info.why) a.title = addr + '\n' + info.why;
+    if (info.inferred) {
+      const mark = el('span', { className: 'addr-inferred' }, '?');
+      mark.title = info.why || 'inferred from activity';
+      span.appendChild(mark);
+    }
     span.appendChild(el('span', { className: 'block-ctx' }, ' ' + truncAddr(addr)));
   }
   return span;
@@ -3950,7 +4029,9 @@ document.querySelectorAll('.stat-link').forEach(tile => {
 });
 
 // --- Init ---
-initNetworkSelector();
+// Labels first: they change how every address renders, and arriving after the
+// first paint would show raw addresses that then silently rewrite themselves.
+loadAddrLabels().then(() => { initNetworkSelector(); });
 
 // --- Footer version ---
 api('version').then(v => {

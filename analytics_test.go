@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"testing"
 )
@@ -368,5 +369,76 @@ func TestBankStatsScopedToOneNetwork(t *testing.T) {
 	}
 	if s.ByNetwork != nil {
 		t.Errorf("by_network was sent for a single network: %+v", s.ByNetwork)
+	}
+}
+
+// Namespace ownership is the one address name that can be proved from the data:
+// the sole deployer of gno.land/r/gnoswap/* is gnoswap.
+//
+// The rule has to refuse more than it accepts. Seven namespaces on the live
+// chains have several deployers, and picking one of them would present a guess
+// as a fact — which is precisely the class of thing that costs an explorer its
+// credibility.
+func TestDerivedAddressLabels(t *testing.T) {
+	db := newTestDB(t)
+	db.SetConfiguredNetworks([]NetworkConfig{{ID: "live"}, {ID: "retired"}})
+
+	const when = "2026-08-01T00:00:00Z"
+	deploy := func(net, path, creator string) {
+		t.Helper()
+		if err := db.UpsertPackage(net, path, "pkg", creator, net+path, 100, when, true, 1); err != nil {
+			t.Fatalf("UpsertPackage: %v", err)
+		}
+	}
+
+	// Sole deployer of a namespace, well past the minimum.
+	for i := 0; i < 5; i++ {
+		deploy("live", fmt.Sprintf("gno.land/r/gnoswap/pkg%d", i), "g1gnoswap")
+	}
+	// Two deployers under one namespace: nobody gets named.
+	for i := 0; i < 4; i++ {
+		deploy("live", fmt.Sprintf("gno.land/r/shared/a%d", i), "g1first")
+		deploy("live", fmt.Sprintf("gno.land/r/shared/b%d", i), "g1second")
+	}
+	// Only two packages: below the minimum evidence.
+	deploy("live", "gno.land/r/tiny/one", "g1tiny")
+	deploy("live", "gno.land/r/tiny/two", "g1tiny")
+	// A namespace that is itself an address carries no name.
+	for i := 0; i < 4; i++ {
+		deploy("live", fmt.Sprintf("gno.land/r/g1selfns/pkg%d", i), "g1selfns")
+	}
+	// Publishes widely, so no single namespace identifies it.
+	for i := 0; i < 4; i++ {
+		deploy("live", fmt.Sprintf("gno.land/r/spread%d/pkg", i), "g1spread")
+	}
+	// A retired chain must not contribute a name.
+	for i := 0; i < 5; i++ {
+		deploy("retired", fmt.Sprintf("gno.land/r/ghost/pkg%d", i), "g1ghost")
+	}
+	db.SetConfiguredNetworks([]NetworkConfig{{ID: "live"}})
+
+	labels, err := db.DerivedAddressLabels("")
+	if err != nil {
+		t.Fatalf("DerivedAddressLabels: %v", err)
+	}
+
+	if got := labels["g1gnoswap"].Label; got != "@gnoswap" {
+		t.Errorf("sole deployer label = %q, want @gnoswap", got)
+	}
+	if labels["g1gnoswap"].Why == "" {
+		t.Error("a label with no stated evidence cannot be checked by a reader")
+	}
+
+	for addr, reason := range map[string]string{
+		"g1first":  "shares its namespace with another deployer",
+		"g1second": "shares its namespace with another deployer",
+		"g1tiny":   "has too few packages to establish ownership",
+		"g1selfns": "its namespace is an address, which carries no name",
+		"g1spread": "publishes across namespaces, so none identifies it",
+		"g1ghost":  "deployed only on a retired network",
+	} {
+		if l, ok := labels[addr]; ok {
+			t.Errorf("%s was labelled %q but %s", addr, l.Label, reason)
+		}
 	}
 }

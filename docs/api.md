@@ -69,6 +69,17 @@ the whole window. `/api/live` and `/api/version` bypass the cache entirely.
 |---|---|
 | `GET /api/version` | build info: `git_hash`, `build_time` |
 | `GET /api/networks` | configured network IDs — the fastest way to confirm which chains an instance is actually serving |
+| `GET /api/labels` | display names for addresses, derived from on-chain data: `{address: {label, kind, why}}`. Currently one rule — the sole deployer of a named namespace is that namespace. `why` states the evidence so any label can be checked |
+
+**Address labels are global, not per network.** An address is the same key on
+every chain, so a name earned on one applies everywhere. `/api/labels` derives
+what it can prove; the UI adds a small curated map for names that cannot be
+derived — faucets and infrastructure keys — and marks any label inferred from
+behaviour rather than proved, with the reasoning in its tooltip.
+
+Nothing is derived from a namespace with more than one deployer. Seven exist on
+the live chains, and naming one of their deployers would present a guess as a
+fact.
 
 ## Packages and realms
 
