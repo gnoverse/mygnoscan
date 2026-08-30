@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	_ "modernc.org/sqlite"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -2858,4 +2859,103 @@ func (d *DB) GetActiveAddressTimeSeries(network, granularity string, days int) (
 		}
 	}
 	return out, nil
+}
+
+// AddressLabel is a display name for an address, derived from on-chain data.
+type AddressLabel struct {
+	Label string `json:"label"`
+	Kind  string `json:"kind"`
+	Why   string `json:"why"`
+}
+
+// namespaceLabelMinPackages is how many packages a deployer must have published
+// under a namespace before that namespace names it. Below this the evidence is
+// one or two deploys, which is as easily a guest as an owner.
+const namespaceLabelMinPackages = 3
+
+// namespaceLabelDominance is the share of a deployer's own packages that must sit
+// under the namespace. Someone who publishes widely and happens to have three
+// packages under a prefix is not that prefix's owner.
+const namespaceLabelDominance = 0.6
+
+var namespacePath = regexp.MustCompile(`^gno\.land/[rp]/([^/]+)/`)
+
+// DerivedAddressLabels names addresses from what they have deployed.
+//
+// The signal is namespace ownership: an address that is the sole deployer of
+// gno.land/r/gnoswap/* is gnoswap. Derived rather than hand-maintained, so it
+// stays correct as namespaces appear, and it independently reproduces the
+// hand-written entries that already existed — which is the check that the rule
+// is the right one.
+//
+// Two guards keep it from naming the wrong address:
+//
+//   - A namespace with more than one deployer names nobody. Seven of them exist
+//     on the live chains (onbloc has three), and picking one would be a guess
+//     presented as a fact.
+//   - A namespace that is itself an address (gno.land/r/g1abc.../foo) is skipped.
+//     The prefix is the deployer, so it carries no name.
+func (d *DB) DerivedAddressLabels(network string) (map[string]AddressLabel, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	rows, err := d.db.Query(`SELECT path, creator FROM packages WHERE ` +
+		d.networkFilter("network", network))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	perCreator := map[string]map[string]int{} // creator -> namespace -> packages
+	total := map[string]int{}                 // creator -> packages with any namespace
+	deployers := map[string]map[string]bool{} // namespace -> creators
+
+	for rows.Next() {
+		var path, creator string
+		if err := rows.Scan(&path, &creator); err != nil {
+			return nil, err
+		}
+		m := namespacePath.FindStringSubmatch(path)
+		if m == nil || strings.HasPrefix(m[1], "g1") {
+			continue
+		}
+		ns := m[1]
+		if perCreator[creator] == nil {
+			perCreator[creator] = map[string]int{}
+		}
+		perCreator[creator][ns]++
+		total[creator]++
+		if deployers[ns] == nil {
+			deployers[ns] = map[string]bool{}
+		}
+		deployers[ns][creator] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	labels := map[string]AddressLabel{}
+	for creator, counts := range perCreator {
+		best, n := "", 0
+		for ns, c := range counts {
+			if c > n {
+				best, n = ns, c
+			}
+		}
+		if best == "" || n < namespaceLabelMinPackages {
+			continue
+		}
+		if len(deployers[best]) != 1 {
+			continue
+		}
+		if float64(n)/float64(total[creator]) < namespaceLabelDominance {
+			continue
+		}
+		labels[creator] = AddressLabel{
+			Label: "@" + best,
+			Kind:  "namespace",
+			Why:   fmt.Sprintf("sole deployer of gno.land/*/%s/* (%d packages)", best, n),
+		}
+	}
+	return labels, nil
 }

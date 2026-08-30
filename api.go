@@ -1077,6 +1077,20 @@ const (
 	maxAccounts     = 500
 )
 
+// HandleLabels serves display names for addresses, derived from on-chain data.
+//
+// Kept separate from the rows that mention an address so it can be fetched once
+// and applied everywhere, rather than repeating a label on every transaction in
+// a list.
+func (a *API) HandleLabels(w http.ResponseWriter, r *http.Request) {
+	labels, err := a.db.DerivedAddressLabels(a.networkParam(r))
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	jsonResponse(w, labels)
+}
+
 func (a *API) HandleAccounts(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
 
@@ -1609,5 +1623,6 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/validators", a.HandleValidators)
 	mux.HandleFunc("GET /api/tokens", a.HandleTokens)
 	mux.HandleFunc("GET /api/accounts", a.HandleAccounts)
+	mux.HandleFunc("GET /api/labels", a.HandleLabels)
 	mux.HandleFunc("GET /api/govdao", a.HandleGovDAO)
 }
