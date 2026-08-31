@@ -97,7 +97,7 @@ fact.
 
 | endpoint | description |
 |---|---|
-| `GET /api/txs` | **recent** transactions, from the indexer. `limit` defaults to 500 and is capped at 2000; `offset` pages within that window |
+| `GET /api/txs` | recent transactions. `limit` (default 500, max 2000), `offset`, `type` = `MsgCall`/`MsgAddPackage`/`MsgRun`/`BankMsgSend`, `success` = `true`/`false`. A `type` filter is served **from local storage** and pages properly with a real total; without one the rows come from the indexer and `total` is the fetched window. `from_storage` says which |
 | `GET /api/tx/{hash}` | one transaction: messages, events, errors |
 | `GET /api/blocks` | recent blocks. `limit` |
 | `GET /api/block/{height}` | one block and its transactions. **Requires `network`**: a height alone does not identify a block across chains |

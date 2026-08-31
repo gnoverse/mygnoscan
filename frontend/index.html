@@ -1979,86 +1979,95 @@ let _txsFilterType = null; // null = all
 let _txsFilterStatus = null; // null = all, true = ok, false = fail
 let _txsPage = 0;
 
-async function loadTxs() {
+// The transactions page pages on the server.
+//
+// It used to fetch a 500-row window and slice it locally, which cost 3.6s on a
+// busy chain to show 50 rows, and made the filter bar describe that window
+// rather than the network — "3 deploys" meant "3 among the last 500", which is
+// worse than slow because it is wrong.
+//
+// Now: one page at a time from the indexer, filters applied there too, and the
+// headline counts taken from /api/stats, which knows the whole chain and is
+// cheap because it reads stored rows.
+//
+// Uses the shared PAGE_SIZE, which pager() also divides by. Two constants that
+// have to agree is a defect waiting for one of them to change.
+async function loadTxs(page) {
+  _txsPage = page || 0;
   const tbody = clear('txs-list');
   skeletonRows(tbody, 5, 10);
   const statsBar = document.getElementById('txs-stats');
   const filterBar = document.getElementById('txs-filter');
-  statsBar.style.display = 'none';
-  filterBar.style.display = 'none';
+
+  // Arriving from a home stat tile pre-selects that message type.
+  if (_pendingTxType) { _txsFilterType = _pendingTxType; _pendingTxType = null; _txsPage = 0; }
+
   try {
-    // A bounded recent window, not the whole chain. Asking for everything used
-    // to fail outright on a busy network, and the counts below have always been
-    // over whatever came back rather than over all history.
-    const data = await api('txs?limit=' + TXS_WINDOW);
+    const q = ['limit=' + PAGE_SIZE, 'offset=' + (_txsPage * PAGE_SIZE)];
+    if (_txsFilterType) q.push('type=' + encodeURIComponent(_txsFilterType));
+    if (_txsFilterStatus !== null) q.push('success=' + (_txsFilterStatus ? 'true' : 'false'));
+
+    const [data, stats] = await Promise.all([api('txs?' + q.join('&')), api('stats')]);
     _txsCache = data.items || [];
-    _txsPage = 0;
-    // Arriving from a home stat tile pre-selects that message type.
-    _txsFilterType = _pendingTxType;
-    _pendingTxType = null;
-    _txsFilterStatus = null;
 
-    // Compute type counts
-    const typeCounts = {};
-    let okCount = 0, failCount = 0;
-    for (const tx of _txsCache) {
-      const t = tx.messages?.[0]?.value?.__typename || 'unknown';
-      typeCounts[t] = (typeCounts[t] || 0) + 1;
-      if (tx.success) okCount++; else failCount++;
-    }
-
-    // Stats
-    statsBar.textContent = ''; statsBar.style.display = 'flex';
-    // Labelled "recent" because it is: the window above, not an all-time count.
-    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'recent'), el('span', { className: 'value' }, fmtNum(_txsCache.length))));
-    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'success'), el('span', { className: 'value' }, fmtNum(okCount))));
-    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'failed'), el('span', { className: 'value' }, fmtNum(failCount))));
-    for (const [t, c] of Object.entries(typeCounts).sort((a, b) => b[1] - a[1])) {
-      const shortName = t.replace('Msg', '').replace('BankMsgSend', 'send');
-      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, shortName), el('span', { className: 'value' }, fmtNum(c))));
-    }
-
-    // Filter bar
-    filterBar.textContent = ''; filterBar.style.display = 'flex';
-    filterBar.style.gap = '8px'; filterBar.style.flexWrap = 'wrap';
-    filterBar.style.alignItems = 'center'; filterBar.style.padding = '8px 0';
-
-    // Type filter
-    filterBar.appendChild(el('span', { style: { color: 'var(--fg2)', fontSize: '12px' } }, 'type:'));
-    const allTypeBtn = el('button', { className: 'pager-btn', style: { padding: '3px 10px', fontSize: '12px' } }, 'all');
-    allTypeBtn.style.borderColor = 'var(--accent)'; allTypeBtn.style.color = 'var(--accent)';
-    allTypeBtn.addEventListener('click', () => { _txsFilterType = null; _txsPage = 0; renderTxRows(); highlightBtn('txs-type-btns', allTypeBtn); });
-    allTypeBtn.setAttribute('data-group', 'txs-type-btns');
-    filterBar.appendChild(allTypeBtn);
-    for (const t of Object.keys(typeCounts).sort()) {
-      const shortName = t.replace('Msg', '').replace('BankMsgSend', 'send');
-      const btn = el('button', { className: 'pager-btn', style: { padding: '3px 10px', fontSize: '12px' } }, shortName);
-      btn.setAttribute('data-group', 'txs-type-btns');
-      btn.addEventListener('click', () => { _txsFilterType = t; _txsPage = 0; renderTxRows(); highlightBtn('txs-type-btns', btn); });
-      filterBar.appendChild(btn);
-    }
-
-    // Status filter
-    filterBar.appendChild(el('span', { style: { color: 'var(--fg2)', fontSize: '12px', marginLeft: '12px', borderLeft: '1px solid var(--border)', paddingLeft: '12px' } }, 'status:'));
-    const statusAll = el('button', { className: 'pager-btn', style: { padding: '3px 10px', fontSize: '12px' } }, 'all');
-    statusAll.style.borderColor = 'var(--accent)'; statusAll.style.color = 'var(--accent)';
-    statusAll.setAttribute('data-group', 'txs-status-btns');
-    statusAll.addEventListener('click', () => { _txsFilterStatus = null; _txsPage = 0; renderTxRows(); highlightBtn('txs-status-btns', statusAll); });
-    filterBar.appendChild(statusAll);
-    const statusOk = el('button', { className: 'pager-btn', style: { padding: '3px 10px', fontSize: '12px' } }, 'ok');
-    statusOk.setAttribute('data-group', 'txs-status-btns');
-    statusOk.addEventListener('click', () => { _txsFilterStatus = true; _txsPage = 0; renderTxRows(); highlightBtn('txs-status-btns', statusOk); });
-    filterBar.appendChild(statusOk);
-    const statusFail = el('button', { className: 'pager-btn', style: { padding: '3px 10px', fontSize: '12px' } }, 'fail');
-    statusFail.setAttribute('data-group', 'txs-status-btns');
-    statusFail.addEventListener('click', () => { _txsFilterStatus = false; _txsPage = 0; renderTxRows(); highlightBtn('txs-status-btns', statusFail); });
-    filterBar.appendChild(statusFail);
-
-    renderTxRows();
+    renderTxStats(statsBar, stats);
+    renderTxFilters(filterBar);
+    renderTxRows(data);
   } catch (err) {
     console.error(err);
-    failRows(clear('txs-list'), 5, err, loadTxs);
+    statsBar.style.display = 'none';
+    filterBar.style.display = 'none';
+    failRows(clear('txs-list'), 5, err, () => loadTxs(_txsPage));
   }
+}
+
+// Counts come from /api/stats, which covers the whole chain. The previous
+// version counted whatever had loaded and labelled it "recent" to stay honest;
+// with real totals available there is no reason to settle for that.
+function renderTxStats(statsBar, stats) {
+  statsBar.textContent = '';
+  statsBar.style.display = 'flex';
+  const cell = (label, value) => statsBar.appendChild(el('div', { className: 'stat' },
+    el('span', { className: 'label' }, label), el('span', { className: 'value' }, fmtNum(value || 0))));
+  cell('total', stats.total_txs);
+  cell('calls', stats.total_calls);
+  cell('deploys', stats.total_deploys);
+  cell('runs', stats.total_msg_runs);
+  cell('sends', stats.total_sends);
+}
+
+function renderTxFilters(filterBar) {
+  filterBar.textContent = '';
+  filterBar.style.display = 'flex';
+  filterBar.style.gap = '8px';
+  filterBar.style.flexWrap = 'wrap';
+  filterBar.style.alignItems = 'center';
+  filterBar.style.padding = '8px 0';
+
+  const button = (text, group, active, onPick) => {
+    const btn = el('button', { className: 'pager-btn', style: { padding: '3px 10px', fontSize: '12px' } }, text);
+    btn.setAttribute('data-group', group);
+    if (active) { btn.style.borderColor = 'var(--accent)'; btn.style.color = 'var(--accent)'; }
+    // Every filter change refetches: the server decides what matches, so the
+    // page cannot show a filtered view of stale rows.
+    btn.addEventListener('click', () => { onPick(); loadTxs(0); });
+    filterBar.appendChild(btn);
+    return btn;
+  };
+
+  filterBar.appendChild(el('span', { style: { color: 'var(--fg2)', fontSize: '12px' } }, 'type:'));
+  button('all', 'txs-type', _txsFilterType === null, () => { _txsFilterType = null; });
+  for (const [type, label] of [['MsgCall', 'call'], ['MsgAddPackage', 'deploy'],
+                               ['MsgRun', 'run'], ['BankMsgSend', 'send']]) {
+    button(label, 'txs-type', _txsFilterType === type, () => { _txsFilterType = type; });
+  }
+
+  filterBar.appendChild(el('span', {
+    style: { color: 'var(--fg2)', fontSize: '12px', marginLeft: '12px',
+             borderLeft: '1px solid var(--border)', paddingLeft: '12px' } }, 'status:'));
+  button('all', 'txs-status', _txsFilterStatus === null, () => { _txsFilterStatus = null; });
+  button('ok', 'txs-status', _txsFilterStatus === true, () => { _txsFilterStatus = true; });
+  button('fail', 'txs-status', _txsFilterStatus === false, () => { _txsFilterStatus = false; });
 }
 
 function highlightBtn(group, activeBtn) {
@@ -2066,31 +2075,77 @@ function highlightBtn(group, activeBtn) {
   activeBtn.style.borderColor = 'var(--accent)'; activeBtn.style.color = 'var(--accent)';
 }
 
-function renderTxRows() {
+
+// storedTxDetail renders the detail cell for a row that came from storage,
+// matching what txDetailEl produces for the same message from the indexer.
+function storedTxDetail(tx) {
+  const span = el('span');
+  switch (tx.type) {
+    case 'MsgCall': {
+      const [path, fn] = (tx.detail || '').split('::');
+      if (path) span.appendChild(realmPathEl(path, tx.network));
+      if (fn) span.append('::' + fn);
+      return span;
+    }
+    case 'MsgAddPackage':
+      if (tx.detail) span.appendChild(realmPathEl(tx.detail, tx.network));
+      return span;
+    case 'MsgRun':
+      span.append('run by ');
+      span.appendChild(addrLink(tx.caller, tx.network));
+      return span;
+    case 'BankMsgSend': {
+      const [to, amount] = (tx.detail || '').split(' ');
+      span.appendChild(addrLink(tx.caller, tx.network));
+      span.append(' > ');
+      if (to) span.appendChild(addrLink(to, tx.network));
+      const pretty = fmtCoins(amount);
+      if (pretty) span.appendChild(el('span', { className: 'block-ctx' }, ' ' + pretty));
+      return span;
+    }
+  }
+  span.append(tx.detail || '');
+  return span;
+}
+
+// renderTxRows draws the page the server returned. No local filtering: the rows
+// that arrived are already the rows that match.
+function renderTxRows(data) {
   const section = document.querySelector('#view-txs .section');
   section.querySelectorAll('.pager').forEach(p => p.remove());
-  const filtered = (_txsCache || []).filter(tx => {
-    if (_txsFilterType && (tx.messages?.[0]?.value?.__typename || 'unknown') !== _txsFilterType) return false;
-    if (_txsFilterStatus !== null && tx.success !== _txsFilterStatus) return false;
-    return true;
-  });
-  const start = _txsPage * PAGE_SIZE;
-  const page = filtered.slice(start, start + PAGE_SIZE);
+
+  const rows = data.items || [];
   const list = clear('txs-list');
-  if (page.length === 0) {
-    list.appendChild(el('tr', {}, el('td', { colspan: '5', style: { color: 'var(--fg2)', textAlign: 'center', padding: '20px' } }, 'no transactions matching filter')));
+
+  if (!rows.length) {
+    const what = _txsFilterType || _txsFilterStatus !== null
+      ? 'no transactions match this filter in the recent window'
+      : 'no transactions';
+    list.appendChild(el('tr', {}, el('td', {
+      colspan: '5', style: { color: 'var(--fg2)', textAlign: 'center', padding: '20px' } }, what)));
   }
-  for (const tx of page) {
+
+  for (const tx of rows) {
+    // Two shapes reach here: indexer rows carry messages[], storage rows carry a
+    // flat type/detail. Rendering both keeps the filtered view — which must come
+    // from storage to be fast — looking identical to the unfiltered one.
     const msg = tx.messages?.[0];
+    const type = msg ? typeBadge(msg?.value?.__typename, msg) : typeBadge(tx.type);
+    const detail = msg ? txDetailEl(msg) : storedTxDetail(tx);
     list.appendChild(netRow(tx.network,
       el('td', {}, txLink(tx.hash, tx.block_height, tx.network)),
       el('td', {}, blockLink(tx.block_height, tx.network)),
-      el('td', {}, typeBadge(msg?.value?.__typename, msg)),
-      el('td', {}, txDetailEl(msg)),
+      el('td', {}, type),
+      el('td', {}, detail),
       el('td', {}, statusBadge(tx.success))
     ));
   }
-  pager(section, _txsPage, filtered.length, (p) => { _txsPage = p; renderTxRows(); });
+
+  // `total` is the size of the window the indexer searched, not the chain's
+  // transaction count — the indexer exposes no count and caps a result set, so
+  // there is nothing truthful to page against beyond it. The headline totals
+  // above come from stored rows and do cover the whole chain.
+  pager(section, _txsPage, data.total || rows.length, p => loadTxs(p));
 }
 
 let _blocksCache = null;

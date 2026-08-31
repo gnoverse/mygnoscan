@@ -555,8 +555,39 @@ func (a *API) HandleTxs(w http.ResponseWriter, r *http.Request) {
 	}
 	need := offset + windowed
 
+	// A type filter is served from storage, not the indexer.
+	//
+	// The indexer has no index for message type, so asking it for deploys walks
+	// the chain until it finds enough — 12s for a 50-row page on sapphire,
+	// against 0.5s unfiltered. The syncer already writes one row per message
+	// into a per-type table indexed by (network, block_height), which answers
+	// the same question with a real offset.
+	//
+	// A status filter alone still goes to the indexer: `success` is a column on
+	// every transaction there, so it costs nothing extra.
+	msgType := r.URL.Query().Get("type")
+	if _, known := txSources[msgType]; known {
+		var success *bool
+		switch r.URL.Query().Get("success") {
+		case "true":
+			t := true
+			success = &t
+		case "false":
+			f := false
+			success = &f
+		}
+		rows, total, err := a.db.FilteredTransactions(network, msgType, success, windowed, offset)
+		if err != nil {
+			jsonError(w, err.Error(), 500)
+			return
+		}
+		jsonResponse(w, map[string]any{"items": rows, "total": total, "from_storage": true})
+		return
+	}
+
+	success := r.URL.Query().Get("success")
 	fetch := func(ctx context.Context, c *IndexerClient) ([]Transaction, error) {
-		return c.GetRecentTransactionsPage(ctx, need)
+		return c.GetRecentTransactionsFiltered(ctx, need, "", success)
 	}
 
 	if network != "" {
