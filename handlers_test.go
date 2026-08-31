@@ -714,3 +714,110 @@ func TestWatchEndpoint(t *testing.T) {
 		}
 	})
 }
+
+// A type-filtered transaction list is served from storage, not the indexer.
+//
+// The indexer has no index for message type, so asking it for deploys walks the
+// chain until it finds enough — measured at 12s for a 50-row page on sapphire,
+// against 0.5s unfiltered, past the client deadline. The syncer already writes
+// one row per message into a per-type table, which answers the same question
+// with a real offset.
+func TestFilteredTransactionsFromStorage(t *testing.T) {
+	api, db := newTestAPI(t)
+
+	const when = "2026-08-01T00:00:00Z"
+	for i := 0; i < 30; i++ {
+		if err := db.InsertCall("alpha", fmt.Sprintf("call-%d", i), 1000+i, when,
+			"g1caller", "gno.land/r/demo/boards", "Post", i%5 != 0); err != nil {
+			t.Fatalf("InsertCall: %v", err)
+		}
+	}
+	for i := 0; i < 7; i++ {
+		if err := db.UpsertPackage("alpha", fmt.Sprintf("gno.land/r/demo/pkg%d", i), "pkg",
+			"g1deployer", fmt.Sprintf("deploy-%d", i), 2000+i, when, true, 1); err != nil {
+			t.Fatalf("UpsertPackage: %v", err)
+		}
+	}
+	for i := 0; i < 12; i++ {
+		if err := db.InsertBankSend("alpha", fmt.Sprintf("send-%d", i), 3000+i, when,
+			"g1from", "g1to", "5ugnot", true); err != nil {
+			t.Fatalf("InsertBankSend: %v", err)
+		}
+	}
+
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux)
+	page := func(t *testing.T, target string) (items []map[string]any, total int, fromStorage bool) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest("GET", target, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		var out struct {
+			Items       []map[string]any `json:"items"`
+			Total       int              `json:"total"`
+			FromStorage bool             `json:"from_storage"`
+		}
+		mustJSON(t, rec.Body.Bytes(), &out)
+		return out.Items, out.Total, out.FromStorage
+	}
+
+	t.Run("deploys come from storage with a real total", func(t *testing.T) {
+		items, total, storage := page(t, "/api/txs?type=MsgAddPackage&limit=5&network=alpha")
+		if !storage {
+			t.Error("a type filter went to the indexer")
+		}
+		if total != 7 {
+			t.Errorf("total = %d, want 7 — the count must cover the chain, not the page", total)
+		}
+		if len(items) != 5 {
+			t.Errorf("got %d rows for limit=5", len(items))
+		}
+		for _, it := range items {
+			if it["type"] != "MsgAddPackage" {
+				t.Errorf("a %v leaked into a deploy-filtered page", it["type"])
+			}
+		}
+	})
+
+	t.Run("offset pages properly rather than re-slicing a window", func(t *testing.T) {
+		first, _, _ := page(t, "/api/txs?type=BankMsgSend&limit=5&network=alpha")
+		second, _, _ := page(t, "/api/txs?type=BankMsgSend&limit=5&offset=5&network=alpha")
+		if len(first) != 5 || len(second) != 5 {
+			t.Fatalf("page sizes = %d and %d", len(first), len(second))
+		}
+		for _, a := range first {
+			for _, b := range second {
+				if a["hash"] == b["hash"] {
+					t.Errorf("%v appears on both pages", a["hash"])
+				}
+			}
+		}
+	})
+
+	t.Run("the status filter narrows the total too", func(t *testing.T) {
+		_, all, _ := page(t, "/api/txs?type=MsgCall&limit=1&network=alpha")
+		_, failed, _ := page(t, "/api/txs?type=MsgCall&success=false&limit=1&network=alpha")
+		if all != 30 {
+			t.Errorf("unfiltered total = %d, want 30", all)
+		}
+		// Every fifth call was seeded as a failure.
+		if failed != 6 {
+			t.Errorf("failed total = %d, want 6", failed)
+		}
+	})
+
+	t.Run("deploys have a success flag despite the table lacking one", func(t *testing.T) {
+		// packages is keyed by path and holds current state, not per-deploy
+		// outcome, so the flag comes from the transaction row and defaults to
+		// success when that row has not been backfilled.
+		items, _, _ := page(t, "/api/txs?type=MsgAddPackage&limit=1&network=alpha")
+		if len(items) == 0 {
+			t.Fatal("no deploys")
+		}
+		if _, ok := items[0]["success"]; !ok {
+			t.Error("a deploy row carries no success flag")
+		}
+	})
+}

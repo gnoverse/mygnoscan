@@ -3100,3 +3100,104 @@ func (d *DB) WatchAddresses(network string, items []WatchRequest) ([]WatchedAddr
 	}
 	return out, nil
 }
+
+// --- Filtered transaction listing ------------------------------------------
+
+// StoredTx is one transaction as the list view needs it: enough to render a row
+// without asking the indexer.
+type StoredTx struct {
+	Network     string `json:"network"`
+	Hash        string `json:"hash"`
+	BlockHeight int    `json:"block_height"`
+	BlockTime   string `json:"block_time,omitempty"`
+	Type        string `json:"type"`
+	Detail      string `json:"detail,omitempty"`
+	Caller      string `json:"caller,omitempty"`
+	Success     bool   `json:"success"`
+}
+
+// txSource maps a message type to the table that records it, and to the columns
+// that describe one of its rows.
+//
+// `success` is the awkward one. Three of these tables carry it; `packages` does
+// not — it is keyed by (network, path) and holds the current state of a package
+// rather than one row per deploy, so there is no per-attempt outcome to store.
+// For that table the flag comes from the transaction row instead.
+type txSource struct {
+	table   string
+	caller  string
+	detail  string
+	success string
+}
+
+var txSources = map[string]txSource{
+	"MsgCall":       {table: "calls", caller: "caller", detail: "pkg_path || '::' || func_name", success: "e.success"},
+	"MsgAddPackage": {table: "packages", caller: "creator", detail: "path", success: "COALESCE(t.success, 1)"},
+	"MsgRun":        {table: "msg_runs", caller: "caller", detail: "''", success: "e.success"},
+	"BankMsgSend":   {table: "bank_sends", caller: "from_address", detail: "to_address || ' ' || amount", success: "e.success"},
+}
+
+// FilteredTransactions lists transactions of one message type from storage.
+//
+// Filtering this at the indexer does not work. It has no index for message type,
+// so a query for deploys walks the chain until it finds enough — and deploys are
+// rare next to calls. Measured on sapphire: a 50-row page of MsgAddPackage took
+// 12 seconds and exceeded the client deadline, while the same page unfiltered
+// took 0.5s.
+//
+// The syncer already writes one row per message into a per-type table, each
+// indexed by (network, block_height). That is exactly this query, and it pages
+// properly: a real offset over an ordered index rather than a window that has to
+// be re-walked to reach page two.
+func (d *DB) FilteredTransactions(network, msgType string, success *bool, limit, offset int) ([]StoredTx, int, error) {
+	src, ok := txSources[msgType]
+	if !ok {
+		return nil, 0, fmt.Errorf("unknown message type: %s", msgType)
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	// packages needs the transaction row for its success flag; the others carry
+	// their own. LEFT JOIN so a package whose transaction has not been backfilled
+	// still lists, defaulting to success rather than vanishing.
+	join := ""
+	if src.success != "e.success" {
+		join = " LEFT JOIN transactions t ON t.network = e.network AND t.tx_hash = e.tx_hash"
+	}
+
+	where := " WHERE " + d.networkFilter("e.network", network)
+	if success != nil {
+		if *success {
+			where += " AND " + src.success + " = 1"
+		} else {
+			where += " AND " + src.success + " = 0"
+		}
+	}
+
+	var total int
+	if err := d.db.QueryRow(`SELECT COUNT(*) FROM ` + src.table + ` e` + join + where).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	rows, err := d.db.Query(`
+		SELECT e.network, e.tx_hash, e.block_height, COALESCE(e.block_time, ''),
+		       COALESCE(e.`+src.caller+`, ''), `+src.detail+`, `+src.success+`
+		FROM `+src.table+` e`+join+where+`
+		ORDER BY e.block_height DESC, e.tx_hash ASC
+		LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	out := []StoredTx{}
+	for rows.Next() {
+		t := StoredTx{Type: msgType}
+		if err := rows.Scan(&t.Network, &t.Hash, &t.BlockHeight, &t.BlockTime,
+			&t.Caller, &t.Detail, &t.Success); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, t)
+	}
+	return out, total, rows.Err()
+}

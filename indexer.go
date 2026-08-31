@@ -565,7 +565,38 @@ const (
 // has ever had — 14MB and 4.5s on a modest testnet — because the indexer exposes
 // no limit or pagination argument. Bounding by height is the only lever there is.
 func (c *IndexerClient) GetRecentTransactionsPage(ctx context.Context, need int) ([]Transaction, error) {
-	return c.recentTransactionsWindowed(ctx, need, "", func() ([]Transaction, error) {
+	return c.GetRecentTransactionsFiltered(ctx, need, "", "")
+}
+
+// messageTypeFilter maps a message type name to its where-clause fragment.
+//
+// Filtering at the indexer rather than over a fetched page is what makes the
+// filter honest: a page-local filter describes the window it happens to have
+// loaded, not the chain, so "3 deploys" means "3 in the last 500 rows".
+func messageTypeFilter(msgType string) string {
+	switch msgType {
+	case "MsgCall", "MsgAddPackage", "MsgRun", "BankMsgSend":
+		return fmt.Sprintf("messages: { value: { %s: {} } }", msgType)
+	}
+	return ""
+}
+
+// GetRecentTransactionsFiltered fetches recent transactions, optionally narrowed
+// to one message type and/or success state.
+//
+// A narrowed query needs a wider height window to find the same number of rows —
+// deploys are rare next to calls — which the widening window already handles: it
+// keeps doubling until it has enough or reaches genesis.
+func (c *IndexerClient) GetRecentTransactionsFiltered(ctx context.Context, need int, msgType, success string) ([]Transaction, error) {
+	where := messageTypeFilter(msgType)
+	if success == "true" || success == "false" {
+		if where != "" {
+			where += " "
+		}
+		where += "success: { eq: " + success + " }"
+	}
+
+	return c.recentTransactionsWindowed(ctx, need, where, func() ([]Transaction, error) {
 		return c.GetRecentTransactions(ctx, 0)
 	})
 }

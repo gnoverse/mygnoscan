@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -395,4 +396,75 @@ func TestAddressQueryIsCapped(t *testing.T) {
 	if len(txs) > addressTxLimit {
 		t.Errorf("returned %d transactions, want at most %d", len(txs), addressTxLimit)
 	}
+}
+
+// Filtering happens at the indexer, so a filtered page describes the chain
+// rather than whatever window happened to load.
+func TestFilteredTransactionQueries(t *testing.T) {
+	f, c := newFakeIndexer(t)
+	when := "2026-08-01T00:00:00Z"
+	f.seedChain(1, 60) // 60 calls
+	for i := 0; i < 5; i++ {
+		f.add(fakePackage(100+i, when, "g1deployer", fmt.Sprintf("gno.land/r/demo/pkg%d", i)))
+	}
+	for i := 0; i < 8; i++ {
+		f.add(fakeSend(200+i, when, "g1from", "g1to", "1ugnot"))
+	}
+
+	tests := []struct {
+		name     string
+		msgType  string
+		wantType string
+	}{
+		{"deploys only", "MsgAddPackage", "MsgAddPackage"},
+		{"sends only", "BankMsgSend", "BankMsgSend"},
+		{"calls only", "MsgCall", "MsgCall"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			txs, err := c.GetRecentTransactionsFiltered(context.Background(), 100, tt.msgType, "")
+			if err != nil {
+				t.Fatalf("GetRecentTransactionsFiltered: %v", err)
+			}
+			if len(txs) == 0 {
+				t.Fatalf("no %s transactions returned", tt.msgType)
+			}
+			for _, tx := range txs {
+				for _, m := range tx.Messages {
+					if m.Value.Typename != tt.wantType {
+						t.Errorf("tx %s is a %s in a %s-filtered result", tx.Hash, m.Value.Typename, tt.wantType)
+					}
+				}
+			}
+		})
+	}
+
+	t.Run("an unknown type is ignored rather than matching nothing", func(t *testing.T) {
+		// A stale bookmark carrying type=Nonsense should show transactions, not
+		// an empty page that reads as "this chain has none".
+		txs, err := c.GetRecentTransactionsFiltered(context.Background(), 10, "Nonsense", "")
+		if err != nil {
+			t.Fatalf("GetRecentTransactionsFiltered: %v", err)
+		}
+		if len(txs) == 0 {
+			t.Error("an unrecognised filter produced an empty page")
+		}
+	})
+
+	t.Run("the filter reaches the where clause", func(t *testing.T) {
+		f.queries = nil
+		if _, err := c.GetRecentTransactionsFiltered(context.Background(), 10, "MsgAddPackage", ""); err != nil {
+			t.Fatalf("GetRecentTransactionsFiltered: %v", err)
+		}
+		found := false
+		for _, q := range f.askedQueries() {
+			if strings.Contains(whereClause(q), "MsgAddPackage") {
+				found = true
+			}
+		}
+		if !found {
+			t.Error("no query carried the type filter in its where clause")
+		}
+	})
 }
