@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	_ "modernc.org/sqlite"
@@ -2958,4 +2959,144 @@ func (d *DB) DerivedAddressLabels(network string) (map[string]AddressLabel, erro
 		}
 	}
 	return labels, nil
+}
+
+// --- Watchlist ------------------------------------------------------------
+
+// WatchedRealm is one realm's activity summary, for a watchlist digest.
+type WatchedRealm struct {
+	Network    string `json:"network"`
+	Path       string `json:"path"`
+	Exists     bool   `json:"exists"`
+	Calls      int    `json:"calls"`
+	Calls24h   int    `json:"calls_24h"`
+	Importers  int    `json:"importers"`
+	LastHeight int    `json:"last_height"`
+	LastTime   string `json:"last_time,omitempty"`
+	// NewSince counts activity above the height the caller last saw. Height
+	// rather than a timestamp because it is exact and monotonic per chain,
+	// where a wall-clock comparison drifts against block time.
+	//
+	// Zero when the caller supplied no baseline. Reporting the entire history as
+	// "new" in that case would be technically defensible and useless.
+	NewSince int `json:"new_since"`
+}
+
+// WatchedAddress is one address's activity summary.
+type WatchedAddress struct {
+	Network    string `json:"network"`
+	Address    string `json:"address"`
+	Calls      int    `json:"calls"`
+	Deploys    int    `json:"deploys"`
+	Sends      int    `json:"sends"`
+	Received   int    `json:"received"`
+	Calls24h   int    `json:"calls_24h"`
+	LastHeight int    `json:"last_height"`
+	LastTime   string `json:"last_time,omitempty"`
+	NewSince   int    `json:"new_since"`
+}
+
+// WatchRequest is one item a caller is watching, with the height it last saw.
+type WatchRequest struct {
+	ID    string
+	Since int
+}
+
+// WatchRealms summarises activity for a set of watched realms.
+//
+// Answered entirely from stored rows: a watchlist is checked often and by
+// definition covers things the caller already cares about, so it must not cost
+// an indexer round-trip per item.
+func (d *DB) WatchRealms(network string, items []WatchRequest) ([]WatchedRealm, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	if len(items) == 0 {
+		return []WatchedRealm{}, nil
+	}
+	since24h := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)
+	netFilter := d.networkFilter("network", network)
+
+	out := make([]WatchedRealm, 0, len(items))
+	for _, item := range items {
+		w := WatchedRealm{Path: item.ID}
+
+		// The realm itself. A watched path can exist on several chains; report
+		// the one the current view is scoped to, or the newest deploy otherwise.
+		err := d.db.QueryRow(`SELECT network FROM packages WHERE path = ? AND `+netFilter+
+			` ORDER BY block_height DESC LIMIT 1`, item.ID).Scan(&w.Network)
+		if err == nil {
+			w.Exists = true
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+
+		d.db.QueryRow(`SELECT COUNT(*) FROM calls WHERE pkg_path = ? AND `+netFilter,
+			item.ID).Scan(&w.Calls)
+		d.db.QueryRow(`SELECT COUNT(*) FROM calls WHERE pkg_path = ? AND block_time >= ? AND `+netFilter,
+			item.ID, since24h).Scan(&w.Calls24h)
+		d.db.QueryRow(`SELECT COUNT(*) FROM dependencies WHERE import_path = ? AND `+netFilter,
+			item.ID).Scan(&w.Importers)
+
+		var height sql.NullInt64
+		var when sql.NullString
+		d.db.QueryRow(`SELECT block_height, block_time FROM calls WHERE pkg_path = ? AND `+netFilter+
+			` ORDER BY block_height DESC LIMIT 1`, item.ID).Scan(&height, &when)
+		w.LastHeight, w.LastTime = int(height.Int64), when.String
+
+		if item.Since > 0 {
+			d.db.QueryRow(`SELECT COUNT(*) FROM calls WHERE pkg_path = ? AND block_height > ? AND `+netFilter,
+				item.ID, item.Since).Scan(&w.NewSince)
+		}
+		out = append(out, w)
+	}
+	return out, nil
+}
+
+// WatchAddresses summarises activity for a set of watched addresses.
+func (d *DB) WatchAddresses(network string, items []WatchRequest) ([]WatchedAddress, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	if len(items) == 0 {
+		return []WatchedAddress{}, nil
+	}
+	since24h := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)
+	nf := d.networkFilter("network", network)
+
+	out := make([]WatchedAddress, 0, len(items))
+	for _, item := range items {
+		w := WatchedAddress{Address: item.ID}
+
+		d.db.QueryRow(`SELECT COUNT(*) FROM calls WHERE caller = ? AND `+nf, item.ID).Scan(&w.Calls)
+		d.db.QueryRow(`SELECT COUNT(*) FROM packages WHERE creator = ? AND `+nf, item.ID).Scan(&w.Deploys)
+		d.db.QueryRow(`SELECT COUNT(*) FROM bank_sends WHERE from_address = ? AND `+nf, item.ID).Scan(&w.Sends)
+		d.db.QueryRow(`SELECT COUNT(*) FROM bank_sends WHERE to_address = ? AND `+nf, item.ID).Scan(&w.Received)
+		d.db.QueryRow(`SELECT COUNT(*) FROM calls WHERE caller = ? AND block_time >= ? AND `+nf,
+			item.ID, since24h).Scan(&w.Calls24h)
+
+		// Newest activity across every table the address can appear in, so a
+		// deploy-only or send-only account still reports a last-seen height.
+		var height sql.NullInt64
+		var when sql.NullString
+		d.db.QueryRow(`SELECT block_height, block_time, network FROM (
+			SELECT block_height, block_time, network FROM calls WHERE caller = ? AND `+nf+`
+			UNION ALL SELECT block_height, block_time, network FROM packages WHERE creator = ? AND `+nf+`
+			UNION ALL SELECT block_height, block_time, network FROM bank_sends WHERE from_address = ? AND `+nf+`
+			UNION ALL SELECT block_height, block_time, network FROM bank_sends WHERE to_address = ? AND `+nf+`
+		) ORDER BY block_height DESC LIMIT 1`,
+			item.ID, item.ID, item.ID, item.ID).Scan(&height, &when, &w.Network)
+		w.LastHeight, w.LastTime = int(height.Int64), when.String
+
+		if item.Since > 0 {
+			d.db.QueryRow(`SELECT COUNT(*) FROM (
+				SELECT block_height FROM calls WHERE caller = ? AND block_height > ? AND `+nf+`
+				UNION ALL SELECT block_height FROM packages WHERE creator = ? AND block_height > ? AND `+nf+`
+				UNION ALL SELECT block_height FROM bank_sends WHERE from_address = ? AND block_height > ? AND `+nf+`
+				UNION ALL SELECT block_height FROM bank_sends WHERE to_address = ? AND block_height > ? AND `+nf+`
+			)`, item.ID, item.Since, item.ID, item.Since, item.ID, item.Since, item.ID, item.Since).Scan(&w.NewSince)
+		}
+		out = append(out, w)
+	}
+	return out, nil
 }

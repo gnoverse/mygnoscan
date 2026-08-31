@@ -619,3 +619,98 @@ func TestAccountsPagingAndSort(t *testing.T) {
 		}
 	})
 }
+
+// The watchlist digest: counts for the things a reader follows, plus how much
+// has happened since they last reviewed each one.
+//
+// Answered entirely from stored rows. A watchlist is checked often and covers
+// things the reader already cares about, so it must not cost an indexer
+// round-trip per item.
+func TestWatchEndpoint(t *testing.T) {
+	api, db := newTestAPI(t)
+
+	const when = "2026-08-01T00:00:00Z"
+	const realm = "gno.land/r/demo/boards"
+	if err := db.UpsertPackage("alpha", realm, "boards", "g1creator", "deploy", 100, when, true, 1); err != nil {
+		t.Fatalf("UpsertPackage: %v", err)
+	}
+	for i := 0; i < 10; i++ {
+		if err := db.InsertCall("alpha", fmt.Sprintf("c%d", i), 200+i, when, "g1watched", realm, "Post", true); err != nil {
+			t.Fatalf("InsertCall: %v", err)
+		}
+	}
+
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux)
+
+	get := func(t *testing.T, target string) map[string]any {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest("GET", target, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		var out map[string]any
+		mustJSON(t, rec.Body.Bytes(), &out)
+		return out
+	}
+
+	t.Run("a realm reports its activity", func(t *testing.T) {
+		out := get(t, "/api/watch?realm="+realm)
+		realms, _ := out["realms"].([]any)
+		if len(realms) != 1 {
+			t.Fatalf("got %d realms, want 1", len(realms))
+		}
+		r := realms[0].(map[string]any)
+		if r["calls"].(float64) != 10 {
+			t.Errorf("calls = %v, want 10", r["calls"])
+		}
+		if r["exists"] != true {
+			t.Error("a deployed realm reported as not existing")
+		}
+	})
+
+	t.Run("new_since counts only activity above the acknowledged height", func(t *testing.T) {
+		out := get(t, "/api/watch?realm="+realm+"@205")
+		r := out["realms"].([]any)[0].(map[string]any)
+		// Calls sit at heights 200..209, so four are above 205.
+		if r["new_since"].(float64) != 4 {
+			t.Errorf("new_since = %v, want 4", r["new_since"])
+		}
+	})
+
+	t.Run("an acknowledged height at the tip reports nothing new", func(t *testing.T) {
+		out := get(t, "/api/watch?realm="+realm+"@209")
+		r := out["realms"].([]any)[0].(map[string]any)
+		if r["new_since"].(float64) != 0 {
+			t.Errorf("new_since = %v, want 0", r["new_since"])
+		}
+	})
+
+	t.Run("a watched path absent from this chain is reported, not hidden", func(t *testing.T) {
+		// Showing zeros silently would read as "idle" rather than "not here".
+		out := get(t, "/api/watch?realm=gno.land/r/demo/nothing")
+		r := out["realms"].([]any)[0].(map[string]any)
+		if r["exists"] != false {
+			t.Error("an unknown realm reported as existing")
+		}
+	})
+
+	t.Run("an address reports across every table it appears in", func(t *testing.T) {
+		out := get(t, "/api/watch?address=g1watched")
+		addrs, _ := out["addresses"].([]any)
+		if len(addrs) != 1 {
+			t.Fatalf("got %d addresses, want 1", len(addrs))
+		}
+		if addrs[0].(map[string]any)["calls"].(float64) != 10 {
+			t.Errorf("calls = %v, want 10", addrs[0].(map[string]any)["calls"])
+		}
+	})
+
+	t.Run("an empty watchlist is an empty digest, not an error", func(t *testing.T) {
+		out := get(t, "/api/watch")
+		if out["realms"] == nil || out["addresses"] == nil {
+			t.Errorf("missing keys on an empty watchlist: %v", out)
+		}
+	})
+}

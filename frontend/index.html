@@ -96,6 +96,19 @@ tr.total-row td { font-weight: bold; color: var(--accent); }
 .table-filter-note { color: var(--fg2); font-size: 11px; margin: 4px 0 8px; }
 .table-filter-note a { color: var(--accent); }
 .addr-inferred { color: var(--fg2); font-size: 10px; vertical-align: super; cursor: help; margin-left: 1px; }
+.watch-btn { background: var(--bg2); border: 1px solid var(--border); color: var(--fg2); border-radius: 4px;
+  padding: 3px 9px; font-family: inherit; font-size: 12px; cursor: pointer; }
+.watch-btn:hover { border-color: var(--accent); color: var(--accent); }
+.watch-btn.on { color: var(--accent); border-color: var(--accent); }
+.watch-new { color: var(--accent); font-weight: bold; }
+.shortcut-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex;
+  align-items: center; justify-content: center; z-index: 1000; }
+.shortcut-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 20px 24px; min-width: 340px; max-width: 90vw; }
+.shortcut-row { display: flex; gap: 16px; align-items: baseline; margin: 6px 0; font-size: 13px; }
+.shortcut-row kbd { font-family: var(--mono); background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 3px; padding: 1px 6px; font-size: 11px; white-space: nowrap; }
+.shortcut-row span { color: var(--fg2); }
 .search-direct { padding: 8px 12px; cursor: pointer; border-bottom: 1px solid var(--border);
   border-left: 2px solid var(--accent); font-family: var(--mono); word-break: break-all; }
 /* Load failures: shown where a skeleton would otherwise shimmer forever. */
@@ -172,6 +185,7 @@ footer a:hover { color: var(--accent); }
     <span class="logo" onclick="navigate('/')">mygnoscan</span>
     <nav>
       <a onclick="navigate('/')" id="nav-home" class="active">home</a>
+      <a onclick="navigate('/watch')" id="nav-watch">watch</a>
       <a onclick="navigate('/realms')" id="nav-realms">realms</a>
       <a onclick="navigate('/packages')" id="nav-packages">packages</a>
       <a onclick="navigate('/txs')" id="nav-txs">txs</a>
@@ -224,6 +238,7 @@ footer a:hover { color: var(--accent); }
         <table><thead><tr><th>path</th><th>used by</th><th>imports</th><th>calls</th><th>creator</th><th>block</th></tr></thead><tbody id="latest-realms"></tbody></table></div>
     </main>
   </div>
+  <div class="view" id="view-watch"><main><div id="watch-content"></div></main></div>
   <div class="view" id="view-realms"><main><div id="realms-stats" class="stats-bar" style="display:none"></div><div class="section"><div class="section-title">all realms</div>
     <table><thead><tr><th>path</th><th>creator</th>
       <th class="rs" data-sort="calls">calls</th>
@@ -1040,6 +1055,205 @@ function usageLink(realm, kind) {
   return a;
 }
 
+
+// --- Watchlist -------------------------------------------------------------
+//
+// The thing an explorer lacks for daily use is anything to come back *to*. You
+// look something up, you leave. A watchlist plus a count of what has happened
+// since you last looked turns that into a page worth opening in the morning.
+//
+// Kept in localStorage rather than behind an account: there is no user system
+// and adding one to store a dozen strings would be the wrong trade. It also
+// means the list is per-browser, which is worth saying out loud on the page.
+//
+// Watched items are stored without a network. An address is the same key on
+// every chain and a realm path can exist on several, so the watchlist follows
+// whatever network is selected — watch gno.land/r/demo/boards once and see it on
+// whichever chain you are looking at.
+const WATCH_KEY = 'mygnoscan-watch';
+
+// What the page currently being viewed would watch, for the `w` shortcut.
+let _watchTarget = null;
+
+function loadWatch() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(WATCH_KEY) || '{}');
+    return { realms: raw.realms || {}, addresses: raw.addresses || {} };
+  } catch (_) {
+    return { realms: {}, addresses: {} };
+  }
+}
+function saveWatch(w) {
+  try { localStorage.setItem(WATCH_KEY, JSON.stringify(w)); } catch (_) {}
+}
+function isWatched(kind, id) { return loadWatch()[kind][id] !== undefined; }
+function watchCount() {
+  const w = loadWatch();
+  return Object.keys(w.realms).length + Object.keys(w.addresses).length;
+}
+// seen is the block height the reader has acknowledged, recorded when the item
+// is first watched so there is always a baseline. Zero means no baseline — the
+// server then reports nothing as new, because "everything that ever happened"
+// is not a useful answer to "what changed since I last looked".
+function toggleWatch(kind, id, seen) {
+  const w = loadWatch();
+  if (w[kind][id] !== undefined) delete w[kind][id];
+  else w[kind][id] = { seen: seen || 0 };
+  saveWatch(w);
+  renderWatchBadge();
+  return w[kind][id] !== undefined;
+}
+function markWatchSeen(kind, id, height) {
+  const w = loadWatch();
+  if (w[kind][id] === undefined) return;
+  w[kind][id].seen = height || 0;
+  saveWatch(w);
+  renderWatchBadge();
+}
+
+// watchButton is the star. Deliberately a button rather than an icon-only
+// affordance: this is the only piece of state the app keeps for you, so it
+// should be obvious what it does.
+function watchButton(kind, id, currentHeight) {
+  const btn = el('button', { className: 'watch-btn' });
+  const paint = () => {
+    const on = isWatched(kind, id);
+    btn.textContent = on ? '\u2605 watching' : '\u2606 watch';
+    btn.classList.toggle('on', on);
+    btn.title = on ? 'stop watching' : 'add to your watchlist';
+  };
+  btn.addEventListener('click', ev => {
+    ev.stopPropagation();
+    toggleWatch(kind, id, currentHeight);
+    paint();
+  });
+  paint();
+  return btn;
+}
+
+function renderWatchBadge() {
+  const link = document.getElementById('nav-watch');
+  if (!link) return;
+  const n = watchCount();
+  link.textContent = n ? 'watch (' + n + ')' : 'watch';
+}
+
+async function loadWatchlist() {
+  const container = clear('watch-content');
+  const w = loadWatch();
+  const realms = Object.entries(w.realms);
+  const addresses = Object.entries(w.addresses);
+
+  if (!realms.length && !addresses.length) {
+    container.appendChild(el('div', { className: 'section-title' }, 'watchlist'));
+    container.appendChild(el('div', { className: 'section-sub' },
+      'Nothing watched yet. Open any realm or address and press \u2606 watch, or press w while viewing one. ' +
+      'Your list is stored in this browser only \u2014 there is no account and nothing is sent anywhere.'));
+    return;
+  }
+
+  skeletonBlock(container);
+  const params = [
+    ...realms.map(([id, v]) => 'realm=' + encodeURIComponent(id + '@' + (v.seen || 0))),
+    ...addresses.map(([id, v]) => 'address=' + encodeURIComponent(id + '@' + (v.seen || 0))),
+  ];
+
+  try {
+    const data = await api('watch?' + params.join('&'));
+    container.textContent = '';
+
+    const totalNew = [...(data.realms || []), ...(data.addresses || [])]
+      .reduce((n, r) => n + (r.new_since || 0), 0);
+
+    const head = el('div', { className: 'section-title' }, 'watchlist');
+    container.appendChild(head);
+    container.appendChild(el('div', { className: 'section-sub' },
+      totalNew
+        ? totalNew + ' new event' + (totalNew === 1 ? '' : 's') + ' since you last reviewed these.'
+        : 'Nothing new since you last reviewed these.'));
+
+    if ((data.realms || []).length) {
+      container.appendChild(el('div', { className: 'section-title' }, 'realms'));
+      const tbl = el('table');
+      tbl.appendChild(el('thead', {}, el('tr', {},
+        el('th', {}, 'realm'), el('th', {}, 'new'), el('th', {}, 'calls 24h'),
+        el('th', {}, 'calls'), el('th', {}, 'used by'), el('th', {}, 'last'), el('th', {}, ''))));
+      const body = el('tbody');
+      for (const r of data.realms) {
+        body.appendChild(watchRow('realms', r.path, r, [
+          el('td', {}, r.exists ? realmPathEl(r.path, r.network) : notOnChain(r.path)),
+          el('td', {}, newBadge(r.new_since)),
+          el('td', {}, fmtNum(r.calls_24h)),
+          el('td', {}, fmtNum(r.calls)),
+          el('td', {}, fmtNum(r.importers)),
+          el('td', {}, r.last_time ? timeEl(r.last_time) : '-'),
+        ]));
+      }
+      tbl.appendChild(body);
+      container.appendChild(tbl);
+    }
+
+    if ((data.addresses || []).length) {
+      container.appendChild(el('div', { className: 'section-title' }, 'addresses'));
+      const tbl = el('table');
+      tbl.appendChild(el('thead', {}, el('tr', {},
+        el('th', {}, 'address'), el('th', {}, 'new'), el('th', {}, 'calls 24h'),
+        el('th', {}, 'calls'), el('th', {}, 'deploys'), el('th', {}, 'sends'),
+        el('th', {}, 'last'), el('th', {}, ''))));
+      const body = el('tbody');
+      for (const a of data.addresses) {
+        body.appendChild(watchRow('addresses', a.address, a, [
+          el('td', {}, addrLink(a.address, a.network)),
+          el('td', {}, newBadge(a.new_since)),
+          el('td', {}, fmtNum(a.calls_24h)),
+          el('td', {}, fmtNum(a.calls)),
+          el('td', {}, fmtNum(a.deploys)),
+          el('td', {}, fmtNum(a.sends)),
+          el('td', {}, a.last_time ? timeEl(a.last_time) : '-'),
+        ]));
+      }
+      tbl.appendChild(body);
+      container.appendChild(tbl);
+    }
+
+    if (totalNew) {
+      const done = el('button', { className: 'watch-btn on', style: { marginTop: '14px' } }, 'mark all reviewed');
+      done.addEventListener('click', () => {
+        for (const r of (data.realms || [])) markWatchSeen('realms', r.path, r.last_height);
+        for (const a of (data.addresses || [])) markWatchSeen('addresses', a.address, a.last_height);
+        loadWatchlist();
+      });
+      container.appendChild(done);
+    }
+  } catch (err) {
+    failBlock(container, err, loadWatchlist);
+  }
+}
+
+// notOnChain renders a watched path that the selected network has never seen.
+// Silently showing zeros would read as "this realm is idle" rather than "this
+// realm does not exist here".
+function notOnChain(path) {
+  const span = el('span');
+  span.append(path.replace('gno.land/', ''));
+  span.appendChild(el('span', { className: 'block-ctx' }, ' not on this network'));
+  return span;
+}
+
+function newBadge(n) {
+  if (!n) return el('span', { style: { color: 'var(--fg2)' } }, '-');
+  return el('span', { className: 'watch-new' }, '+' + fmtNum(n));
+}
+
+function watchRow(kind, id, item, cells) {
+  const stop = el('td');
+  const btn = el('button', { className: 'watch-btn' }, '\u2715');
+  btn.title = 'remove from watchlist';
+  btn.addEventListener('click', () => { toggleWatch(kind, id); loadWatchlist(); });
+  stop.appendChild(btn);
+  return el('tr', {}, ...cells, stop);
+}
+
 // --- Load failures -------------------------------------------------------
 //
 // A failed load used to log to the console and leave the skeleton shimmering
@@ -1117,6 +1331,10 @@ function navigate(path, replace) {
 }
 
 function route() {
+  _watchTarget = null;
+  // The badge counts localStorage, which another tab can change under us.
+  // Repainting per navigation keeps it honest without polling.
+  renderWatchBadge();
   const path = window.location.pathname;
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.querySelectorAll('nav a').forEach(a => a.classList.remove('active'));
@@ -1141,6 +1359,7 @@ function route() {
   else if (path === '/gas') { view = 'gas'; }
   else if (path === '/analytics') { view = 'analytics'; }
   else if (path === '/sanity') { view = 'sanity'; }
+  else if (path === '/watch') { view = 'watch'; }
   else if (path.startsWith('/block/')) { view = 'block-detail'; data = parseInt(path.slice(7)); }
   else if (path.startsWith('/realm/')) { view = 'realm-detail'; data = 'gno.land/' + path.slice(7); }
   else if (path.startsWith('/tx/')) { view = 'tx-detail'; data = decodeURIComponent(path.slice(4)); }
@@ -1164,6 +1383,7 @@ function route() {
 
   switch (view) {
     case 'home': loadHome(); break;
+    case 'watch': loadWatchlist(); break;
     case 'realms': loadRealms(); break;
     case 'packages': loadPackages(); break;
     case 'txs': loadTxs(); break;
@@ -2982,7 +3202,13 @@ async function loadRealmDetail(path, initialTab) {
     meta.append(' deployed by ');
     meta.appendChild(addrLink(detail.creator));
     meta.append(' at ' + blockLabel(detail.block_height) + ' \u00b7 ' + detail.num_files + ' files \u00b7 ' + detail.call_count + ' calls');
+    meta.append(' ');
+    // Baseline is the realm's most recent call, not its deploy height. Watching
+    // a busy realm should not immediately report its entire history as new.
+    const latestCall = (detail.recent_calls || [])[0]?.block_height || detail.block_height;
+    meta.appendChild(watchButton('realms', detail.path, latestCall));
     header.appendChild(meta);
+    _watchTarget = { kind: 'realms', id: detail.path, height: latestCall };
     const tabs = clear('realm-tabs');
     const tabNames = ['info', 'source', 'calls', 'events', 'storage', 'deps', 'graph'];
     const activeTab = initialTab && tabNames.includes(initialTab) ? initialTab : 'info';
@@ -3411,9 +3637,19 @@ async function loadAddressDetail(addr) {
     container.textContent = '';
     // Header
     container.appendChild(el('h2', { style: { margin: '16px 0 8px' } }, 'Address'));
-    const label = KNOWN_ADDRS[addr];
-    if (label) container.appendChild(el('div', { style: { color: 'var(--accent)', marginBottom: '4px', fontSize: '16px' } }, label));
-    container.appendChild(el('div', { style: { color: 'var(--fg2)', marginBottom: '16px', wordBreak: 'break-all' } }, addr));
+    const info = addrInfo(addr);
+    if (info) {
+      const labelRow = el('div', { style: { color: 'var(--accent)', marginBottom: '4px', fontSize: '16px' } }, info.label);
+      if (info.why) { labelRow.title = info.why; }
+      if (info.inferred) labelRow.append(' (inferred)');
+      container.appendChild(labelRow);
+    }
+    const addrRow = el('div', { style: { color: 'var(--fg2)', marginBottom: '16px', wordBreak: 'break-all' } });
+    addrRow.append(addr + ' ');
+    const lastHeight = (data.transactions || [])[0]?.block_height || 0;
+    addrRow.appendChild(watchButton('addresses', addr, lastHeight));
+    container.appendChild(addrRow);
+    _watchTarget = { kind: 'addresses', id: addr, height: lastHeight };
     // Stats bar
     const txs = data.transactions || [];
     const pkgs = data.packages || [];
@@ -4008,6 +4244,115 @@ document.getElementById('search-input').addEventListener('input', function() {
 });
 document.addEventListener('click', (e) => { if (!e.target.closest('.search-box')) document.getElementById('search-results').classList.remove('open'); });
 
+
+// --- Keyboard ---------------------------------------------------------------
+//
+// This is a terminal-shaped tool used by people who live in terminals, and the
+// difference between "I look things up here" and "I keep this open" is largely
+// how fast it is to move around without reaching for the mouse.
+//
+// Deliberately conventional: `/` focuses search, `g` then a letter goes
+// somewhere, `?` lists them, `w` watches whatever is on screen. Nothing fires
+// while typing in a field, and nothing shadows a browser shortcut.
+const KEY_ROUTES = {
+  h: ['/', 'home'],
+  w: ['/watch', 'watchlist'],
+  r: ['/realms', 'realms'],
+  p: ['/packages', 'packages'],
+  t: ['/txs', 'transactions'],
+  b: ['/blocks', 'blocks'],
+  a: ['/accounts', 'accounts'],
+  e: ['/events', 'events'],
+  g: ['/gas', 'gas'],
+  n: ['/analytics', 'analytics'],
+  s: ['/sanity', 'sanity'],
+};
+
+let _awaitingGoto = false;
+let _gotoTimer = null;
+
+function isTyping(target) {
+  const tag = (target?.tagName || '').toLowerCase();
+  return tag === 'input' || tag === 'textarea' || tag === 'select' || target?.isContentEditable;
+}
+
+function showShortcuts() {
+  const existing = document.getElementById('shortcut-overlay');
+  if (existing) { existing.remove(); return; }
+
+  const overlay = el('div', { id: 'shortcut-overlay', className: 'shortcut-overlay' });
+  const card = el('div', { className: 'shortcut-card' });
+  card.appendChild(el('div', { className: 'section-title' }, 'keyboard'));
+
+  const rows = [
+    ['/', 'focus search'],
+    ['g then h/r/p/t/b/a/e/g/n/s', 'go to a page'],
+    ['g then w', 'go to your watchlist'],
+    ['w', 'watch or unwatch what you are viewing'],
+    ['?', 'this list'],
+    ['esc', 'close this / leave the search box'],
+  ];
+  for (const [keys, what] of rows) {
+    const row = el('div', { className: 'shortcut-row' });
+    row.appendChild(el('kbd', {}, keys));
+    row.appendChild(el('span', {}, what));
+    card.appendChild(row);
+  }
+  overlay.appendChild(card);
+  overlay.addEventListener('click', ev => { if (ev.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
+}
+
+document.addEventListener('keydown', ev => {
+  if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+
+  if (ev.key === 'Escape') {
+    document.getElementById('shortcut-overlay')?.remove();
+    document.getElementById('search-results')?.classList.remove('open');
+    if (isTyping(ev.target)) ev.target.blur();
+    return;
+  }
+  if (isTyping(ev.target)) return;
+
+  if (_awaitingGoto) {
+    _awaitingGoto = false;
+    clearTimeout(_gotoTimer);
+    const dest = KEY_ROUTES[ev.key];
+    if (dest) { ev.preventDefault(); navigate(dest[0] + netSuffix(getNetwork())); }
+    return;
+  }
+
+  switch (ev.key) {
+    case '/':
+      ev.preventDefault();
+      document.getElementById('search-input')?.focus();
+      break;
+    case '?':
+      ev.preventDefault();
+      showShortcuts();
+      break;
+    case 'g':
+      // Wait for the second key, but not forever: a stray g should not swallow
+      // the next thing typed minutes later.
+      _awaitingGoto = true;
+      _gotoTimer = setTimeout(() => { _awaitingGoto = false; }, 1500);
+      break;
+    case 'w':
+      if (!_watchTarget) return;
+      ev.preventDefault();
+      toggleWatch(_watchTarget.kind, _watchTarget.id, _watchTarget.height);
+      // Repaint whatever star is on screen rather than reloading the view.
+      document.querySelectorAll('.watch-btn').forEach(b => {
+        if (b.textContent.includes('watch')) {
+          const on = isWatched(_watchTarget.kind, _watchTarget.id);
+          b.textContent = on ? '\u2605 watching' : '\u2606 watch';
+          b.classList.toggle('on', on);
+        }
+      });
+      break;
+  }
+});
+
 // --- Highlight on hover (addresses, tx hashes, event types, etc) ---
 document.addEventListener('mouseover', (e) => {
   const val = e.target.closest('[data-hl]')?.getAttribute('data-hl');
@@ -4032,6 +4377,7 @@ document.querySelectorAll('.stat-link').forEach(tile => {
 // Labels first: they change how every address renders, and arriving after the
 // first paint would show raw addresses that then silently rewrite themselves.
 loadAddrLabels().then(() => { initNetworkSelector(); });
+renderWatchBadge();
 
 // --- Footer version ---
 api('version').then(v => {
