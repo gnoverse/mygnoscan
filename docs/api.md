@@ -69,6 +69,7 @@ the whole window. `/api/live` and `/api/version` bypass the cache entirely.
 |---|---|
 | `GET /api/version` | build info: `git_hash`, `build_time` |
 | `GET /api/networks` | configured network IDs — the fastest way to confirm which chains an instance is actually serving |
+| `GET /api/watch` | activity digest for a watchlist. Repeated `realm=` and `address=` parameters, each optionally `id@height` — that height is the baseline `new_since` counts against. Answered from stored rows only, so a watchlist costs no indexer round-trips. Capped at 100 items |
 | `GET /api/labels` | display names for addresses, derived from on-chain data: `{address: {label, kind, why}}`. Currently one rule — the sole deployer of a named namespace is that namespace. `why` states the evidence so any label can be checked |
 
 **Address labels are global, not per network.** An address is the same key on

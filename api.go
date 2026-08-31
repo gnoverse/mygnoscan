@@ -1091,6 +1091,57 @@ func (a *API) HandleLabels(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, labels)
 }
 
+// maxWatchItems bounds a watchlist request. Each item is a handful of indexed
+// counts, so the cost is linear — but the parameters come from a URL and this is
+// the one endpoint whose size a caller controls directly.
+const maxWatchItems = 100
+
+// HandleWatch summarises activity for the realms and addresses a caller watches.
+//
+// Items arrive as repeated `realm=` and `address=` parameters, each optionally
+// carrying the height the caller last saw as `path@height`. That height is what
+// turns a list into a digest: it is what "12 new calls since you last looked"
+// counts against.
+//
+// Height rather than a timestamp because it is exact and monotonic per chain,
+// where comparing wall-clock time against block time drifts.
+func (a *API) HandleWatch(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	q := r.URL.Query()
+
+	parse := func(values []string) []WatchRequest {
+		out := make([]WatchRequest, 0, len(values))
+		for _, v := range values {
+			if len(out) >= maxWatchItems {
+				break
+			}
+			id, since := v, 0
+			if at := strings.LastIndex(v, "@"); at > 0 {
+				if n, err := strconv.Atoi(v[at+1:]); err == nil {
+					id, since = v[:at], n
+				}
+			}
+			if id == "" {
+				continue
+			}
+			out = append(out, WatchRequest{ID: id, Since: since})
+		}
+		return out
+	}
+
+	realms, err := a.db.WatchRealms(network, parse(q["realm"]))
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	addresses, err := a.db.WatchAddresses(network, parse(q["address"]))
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	jsonResponse(w, map[string]any{"realms": realms, "addresses": addresses})
+}
+
 func (a *API) HandleAccounts(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
 
@@ -1624,5 +1675,6 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/tokens", a.HandleTokens)
 	mux.HandleFunc("GET /api/accounts", a.HandleAccounts)
 	mux.HandleFunc("GET /api/labels", a.HandleLabels)
+	mux.HandleFunc("GET /api/watch", a.HandleWatch)
 	mux.HandleFunc("GET /api/govdao", a.HandleGovDAO)
 }
