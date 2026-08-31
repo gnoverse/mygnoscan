@@ -886,3 +886,100 @@ func TestGovDAOFromStorage(t *testing.T) {
 		}
 	})
 }
+
+// The address page is served from storage.
+//
+// The indexer cannot answer it at chain scale: five address predicates over
+// unindexed fields means a scan. Eight of the nine busiest accounts on sapphire
+// returned 500 after twelve seconds, including the top one at 15s.
+func TestAddressFromStorage(t *testing.T) {
+	api, db := newTestAPI(t)
+
+	const when = "2026-08-01T00:00:00Z"
+	const me = "g1me"
+	for i := 0; i < 25; i++ {
+		if err := db.InsertCall("alpha", fmt.Sprintf("call-%d", i), 100+i, when,
+			me, "gno.land/r/demo/boards", "Post", true); err != nil {
+			t.Fatalf("InsertCall: %v", err)
+		}
+	}
+	if err := db.UpsertPackage("alpha", "gno.land/r/me/pkg", "pkg", me, "deploy", 300, when, true, 1); err != nil {
+		t.Fatalf("UpsertPackage: %v", err)
+	}
+	// Sent by me, and received by me: both are this address's activity.
+	if err := db.InsertBankSend("alpha", "sent", 400, when, me, "g1other", "5ugnot", true); err != nil {
+		t.Fatalf("InsertBankSend: %v", err)
+	}
+	if err := db.InsertBankSend("alpha", "recv", 401, when, "g1other", me, "9ugnot", true); err != nil {
+		t.Fatalf("InsertBankSend: %v", err)
+	}
+	// Someone else's activity must not appear.
+	if err := db.InsertCall("alpha", "theirs", 500, when, "g1other", "gno.land/r/demo/boards", "Post", true); err != nil {
+		t.Fatalf("InsertCall: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux)
+	get := func(t *testing.T, target string) map[string]any {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest("GET", target, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		var out map[string]any
+		mustJSON(t, rec.Body.Bytes(), &out)
+		return out
+	}
+
+	t.Run("every kind of activity appears, and only this address's", func(t *testing.T) {
+		out := get(t, "/api/address/"+me+"?network=alpha")
+		if out["total"].(float64) != 28 {
+			t.Errorf("total = %v, want 28: 25 calls, 1 deploy, 1 sent, 1 received", out["total"])
+		}
+		kinds := map[string]bool{}
+		for _, raw := range out["transactions"].([]any) {
+			tx := raw.(map[string]any)
+			kinds[tx["type"].(string)] = true
+			if tx["hash"] == "theirs" {
+				t.Error("another address's transaction appeared")
+			}
+		}
+		for _, want := range []string{"MsgCall", "MsgAddPackage", "BankMsgSend"} {
+			if !kinds[want] {
+				t.Errorf("no %s in the results", want)
+			}
+		}
+	})
+
+	t.Run("the total counts everything, the page is bounded", func(t *testing.T) {
+		out := get(t, "/api/address/"+me+"?network=alpha&limit=10")
+		if got := len(out["transactions"].([]any)); got != 10 {
+			t.Errorf("page has %d rows for limit=10", got)
+		}
+		// A total that stopped at the page size would not be a total.
+		if out["total"].(float64) != 28 {
+			t.Errorf("total = %v, want 28 regardless of page size", out["total"])
+		}
+	})
+
+	t.Run("bounding each branch still returns the globally newest rows", func(t *testing.T) {
+		// The union is bounded per branch before sorting, which is only exact if
+		// the global newest N lie within each branch's own newest N. The newest
+		// row overall is the received send at height 401.
+		out := get(t, "/api/address/"+me+"?network=alpha&limit=3")
+		first := out["transactions"].([]any)[0].(map[string]any)
+		if first["block_height"].(float64) != 401 {
+			t.Errorf("newest row is at height %v, want 401", first["block_height"])
+		}
+	})
+
+	t.Run("balance is reported only for a single network", func(t *testing.T) {
+		// It is per chain and lives only at the RPC; summing across chains would
+		// repeat the category error of adding ugnot from different networks.
+		out := get(t, "/api/address/"+me)
+		if out["balance"] != "" {
+			t.Errorf("balance %q reported in all-networks mode", out["balance"])
+		}
+	})
+}
