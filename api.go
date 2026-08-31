@@ -667,73 +667,70 @@ func (a *API) HandleTxs(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, map[string]any{"items": merged[offset:end], "total": total})
 }
 
+// addressTxPage bounds an address page. Its history can be enormous — the
+// busiest account on sapphire has half a million calls — and the view shows
+// recent activity, not an archive.
+const addressTxPage = 200
+
+// HandleAddress serves an address's activity from storage.
+//
+// It used to ask the indexer, which cannot answer at chain scale: the query is
+// five address predicates over fields it has no index for, so it scans.
+// Windowing it from the tip (#121) bought time and the chain outgrew it — the
+// busiest account went back to a 500 at 13.9s.
+//
+// Every message the syncer decodes is already written to a per-type table keyed
+// by the address involved, all indexed. Balance still comes from RPC, which is
+// the only place it exists.
 func (a *API) HandleAddress(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
 	addr := r.PathValue("addr")
 
-	// Get transactions for this address (fan-out to all networks when unfiltered)
-	var txs []Transaction
-	if network == "" {
-		seen := make(map[string]bool)
-		for _, netTxs := range fanOut(r.Context(), a.networks, a.clients, a.health,
-			func(ctx context.Context, n NetworkConfig, c *IndexerClient) ([]Transaction, error) {
-				netTxs, err := c.GetTransactionsByAddress(ctx, addr)
-				if err != nil {
-					return nil, err
-				}
-				a.stampBlockTimes(ctx, n.ID, c, netTxs)
-				for i := range netTxs {
-					netTxs[i].Network = n.ID
-				}
-				return netTxs, nil
-			}) {
-			for i := range netTxs {
-				if !seen[netTxs[i].Hash] {
-					seen[netTxs[i].Hash] = true
-					txs = append(txs, netTxs[i])
-				}
-			}
-		}
-		sortTransactionsByTime(txs)
-	} else {
-		c := a.clientFor(network)
-		if c == nil {
-			jsonError(w, "network not found", 404)
-			return
-		}
-		var err error
-		txs, err = c.GetTransactionsByAddress(r.Context(), addr)
-		if err != nil {
-			jsonError(w, err.Error(), 500)
-			return
-		}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 || limit > addressTxPage {
+		limit = addressTxPage
+	}
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	if offset < 0 {
+		offset = 0
 	}
 
-	// Get packages created by this address
+	txs, total, err := a.db.AddressTransactions(network, addr, limit, offset)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+
 	pkgs, err := a.db.Search(network, addr)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
 	}
 
-	// First block seen
-	firstBlock := -1
+	// The oldest block on this page, not the address's first ever: paging back
+	// would otherwise make "first seen" wander. Named accordingly.
+	oldestOnPage := -1
 	for _, tx := range txs {
-		if firstBlock < 0 || tx.BlockHeight < firstBlock {
-			firstBlock = tx.BlockHeight
+		if oldestOnPage < 0 || tx.BlockHeight < oldestOnPage {
+			oldestOnPage = tx.BlockHeight
 		}
 	}
 
-	// Bank balance via RPC
-	rpcURL := a.rpcURLFor(network)
-	balance := fetchBalance(r.Context(), addr, rpcURL)
+	// Balance is per chain and lives only at the RPC, so it is reported only
+	// when one chain is selected. Summing balances across chains would repeat
+	// the category error of adding ugnot from different networks.
+	balance := ""
+	if network != "" {
+		balance = fetchBalance(r.Context(), addr, a.rpcURLFor(network))
+	}
 
 	jsonResponse(w, map[string]any{
-		"address":      addr,
-		"transactions": txs,
-		"packages":     pkgs,
-		"first_block":  firstBlock,
-		"balance":      balance,
+		"address":        addr,
+		"transactions":   txs,
+		"total":          total,
+		"packages":       pkgs,
+		"oldest_on_page": oldestOnPage,
+		"balance":        balance,
 	})
 }
 

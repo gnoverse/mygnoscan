@@ -3114,6 +3114,10 @@ type StoredTx struct {
 	Detail      string `json:"detail,omitempty"`
 	Caller      string `json:"caller,omitempty"`
 	Success     bool   `json:"success"`
+	// Gas figures live only on the transaction row, so they are joined in where
+	// the view needs them and left zero where it does not.
+	GasUsed int `json:"gas_used,omitempty"`
+	GasFee  int `json:"gas_fee,omitempty"`
 }
 
 // txSource maps a message type to the table that records it, and to the columns
@@ -3248,4 +3252,98 @@ func (d *DB) GovDAOCalls(network string, limit int) ([]StoredTx, error) {
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// AddressTransactions lists an address's activity from storage.
+//
+// The indexer cannot serve this at chain scale. The query is five address
+// predicates over fields it has no index for, so it scans: windowing it from the
+// tip (#121) bought time and the chain outgrew it — the busiest account on
+// sapphire went back to a 500 at 13.9s as its history grew.
+//
+// Every message the syncer decodes is already written to a per-type table keyed
+// by the address involved, and those are indexed. This is the same question with
+// an index behind it, and it pages properly.
+func (d *DB) AddressTransactions(network, addr string, limit, offset int) ([]StoredTx, int, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	nf := d.networkFilter("network", network)
+
+	// Each branch is bounded before the union.
+	//
+	// Unbounded, the union has to be fully materialised and sorted before the
+	// outer LIMIT can pick anything — 580,000 rows for the busiest account on
+	// sapphire, measured at 3.5s. The global newest N must lie within each
+	// branch's own newest N, so taking that many per branch first is exact, not
+	// an approximation, and cuts it to 1.5s.
+	//
+	// SQLite requires each bounded branch to be wrapped in a subselect: ORDER BY
+	// is not allowed directly on a UNION ALL arm.
+	//
+	// Measured against adding (network, address, block_height) indexes to all
+	// four tables, which made it slightly *worse* — 1.70s — so they are not here.
+	take := limit + offset
+
+	branch := func(sel, table, cond string) string {
+		return fmt.Sprintf("SELECT * FROM (SELECT %s FROM %s WHERE %s AND %s"+
+			" ORDER BY block_height DESC LIMIT %d)", sel, table, cond, nf, take)
+	}
+
+	// One branch per way an address can appear. bank_sends matches both
+	// directions because being paid is activity too.
+	union := strings.Join([]string{
+		branch(`network, tx_hash, block_height, COALESCE(block_time,'') bt, 'MsgCall' typ,
+		        caller who, pkg_path || '::' || func_name detail, success`, "calls", "caller = ?"),
+		branch(`network, tx_hash, block_height, COALESCE(block_time,''), 'MsgAddPackage',
+		        creator, path, 1`, "packages", "creator = ?"),
+		branch(`network, tx_hash, block_height, COALESCE(block_time,''), 'MsgRun',
+		        caller, '', success`, "msg_runs", "caller = ?"),
+		branch(`network, tx_hash, block_height, COALESCE(block_time,''), 'BankMsgSend',
+		        from_address, to_address || ' ' || amount, success`, "bank_sends",
+			"(from_address = ? OR to_address = ?)"),
+	}, " UNION ALL ")
+
+	// The count is over unbounded branches — a total that stopped at the page
+	// size would not be a total. It is cheap: 0.155s for the same account,
+	// because counting needs no sort.
+	countUnion := strings.Join([]string{
+		"SELECT tx_hash FROM calls WHERE caller = ? AND " + nf,
+		"SELECT tx_hash FROM packages WHERE creator = ? AND " + nf,
+		"SELECT tx_hash FROM msg_runs WHERE caller = ? AND " + nf,
+		"SELECT tx_hash FROM bank_sends WHERE (from_address = ? OR to_address = ?) AND " + nf,
+	}, " UNION ALL ")
+
+	args := []any{addr, addr, addr, addr, addr}
+
+	var total int
+	if err := d.db.QueryRow(`SELECT COUNT(*) FROM (`+countUnion+`)`, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	// Gas comes from the transaction row. LEFT JOIN so an event whose
+	// transaction has not been backfilled still lists, with zero gas rather
+	// than disappearing.
+	rows, err := d.db.Query(`
+		SELECT e.network, e.tx_hash, e.block_height, e.bt, e.typ, e.who, e.detail, e.success,
+		       COALESCE(t.gas_used, 0), COALESCE(t.gas_fee, 0)
+		FROM (`+union+`) e
+		LEFT JOIN transactions t ON t.network = e.network AND t.tx_hash = e.tx_hash
+		ORDER BY e.block_height DESC, e.tx_hash ASC LIMIT ? OFFSET ?`,
+		append(args, limit, offset)...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	out := []StoredTx{}
+	for rows.Next() {
+		var t StoredTx
+		if err := rows.Scan(&t.Network, &t.Hash, &t.BlockHeight, &t.BlockTime,
+			&t.Type, &t.Caller, &t.Detail, &t.Success, &t.GasUsed, &t.GasFee); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, t)
+	}
+	return out, total, rows.Err()
 }
