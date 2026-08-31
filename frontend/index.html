@@ -95,6 +95,8 @@ tr.total-row td { font-weight: bold; color: var(--accent); }
 .section-sub { color: var(--fg2); font-size: 12px; margin: -4px 0 10px; max-width: 70ch; }
 .table-filter-note { color: var(--fg2); font-size: 11px; margin: 4px 0 8px; }
 .table-filter-note a { color: var(--accent); }
+.table-export { display: flex; gap: 6px; align-items: center; margin: 4px 0 8px; }
+.table-export-label { color: var(--fg2); font-size: 11px; }
 .addr-inferred { color: var(--fg2); font-size: 10px; vertical-align: super; cursor: help; margin-left: 1px; }
 .watch-btn { background: var(--bg2); border: 1px solid var(--border); color: var(--fg2); border-radius: 4px;
   padding: 3px 9px; font-family: inherit; font-size: 12px; cursor: pointer; }
@@ -3891,6 +3893,88 @@ function processClampQueue() {
     }
   }
 }
+
+// --- Export ----------------------------------------------------------------
+//
+// An explorer that cannot get data out is a dead end for anyone doing analysis:
+// you find the rows you want and then retype them. Exporting the table you are
+// looking at costs nothing and turns "I found it" into "I can work with it".
+//
+// Exports what is on screen, not what the endpoint could return. That is the
+// honest scope — the filename records the page, the network and the row count so
+// a file on disk still says where it came from.
+function csvEscape(v) {
+  const s = String(v ?? '');
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+// tableToRows reads a rendered table rather than the data behind it, so an
+// export matches what the reader sees — same columns, same filters, same page.
+//
+// Decorative context is dropped. A hash cell renders as "abc= (block 556 537)"
+// because the block number is useful next to a truncated hash on screen; in a
+// CSV it is noise duplicating the block column, and it makes the hash column
+// unusable as a key. Everything in .block-ctx is that kind of restatement.
+function cellText(td) {
+  const copy = td.cloneNode(true);
+  copy.querySelectorAll('.block-ctx, .addr-inferred').forEach(n => n.remove());
+  return copy.textContent.replace(/\s+/g, ' ').trim();
+}
+
+function tableToRows(table) {
+  const head = [...table.querySelectorAll('thead th')]
+    .map(th => th.textContent.replace(/[\u2195\u2191\u2193]/g, '').trim());
+  const body = [...table.querySelectorAll('tbody tr')]
+    .filter(tr => tr.style.display !== 'none' && !tr.querySelector('.skeleton') && !tr.querySelector('.load-error'))
+    .map(tr => [...tr.children].map(cellText));
+  return { head, body };
+}
+
+function download(name, mime, text) {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoking immediately can cancel the download in some browsers.
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+function exportName(ext, rows) {
+  const view = (window.location.pathname.replace(/^\//, '') || 'home').replace(/\//g, '-');
+  const net = getNetwork() || 'all';
+  return 'mygnoscan-' + view + '-' + net + '-' + rows + 'rows.' + ext;
+}
+
+function addTableExport(container, table) {
+  const bar = el('div', { className: 'table-export' });
+
+  const csv = el('button', { className: 'watch-btn' }, 'csv');
+  csv.title = 'download the rows shown, as CSV';
+  csv.addEventListener('click', () => {
+    const { head, body } = tableToRows(table);
+    const text = [head, ...body].map(r => r.map(csvEscape).join(',')).join('\n');
+    download(exportName('csv', body.length), 'text/csv', text);
+  });
+
+  const json = el('button', { className: 'watch-btn' }, 'json');
+  json.title = 'download the rows shown, as JSON';
+  json.addEventListener('click', () => {
+    const { head, body } = tableToRows(table);
+    const key = (h, i) => (h || ('col' + i)).replace(/\s+/g, '_');
+    const objs = body.map(r => Object.fromEntries(r.map((v, i) => [key(head[i], i), v])));
+    download(exportName('json', objs.length), 'application/json', JSON.stringify(objs, null, 2));
+  });
+
+  bar.appendChild(el('span', { className: 'table-export-label' }, 'export:'));
+  bar.appendChild(csv);
+  bar.appendChild(json);
+  container.insertBefore(bar, table);
+}
+
 // --- Filterable + sortable tables ---
 // Adds a text filter input above a table. Filters rows by text content.
 function addTableFilter(container, table) {
@@ -3978,6 +4062,9 @@ function enhanceTables() {
       const parent = tbl.parentElement;
       if (parent && !parent.querySelector('.table-filter')) {
         addTableFilter(parent, tbl);
+      }
+      if (parent && !parent.querySelector('.table-export')) {
+        addTableExport(parent, tbl);
       }
     }
   });
