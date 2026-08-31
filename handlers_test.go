@@ -821,3 +821,68 @@ func TestFilteredTransactionsFromStorage(t *testing.T) {
 		}
 	})
 }
+
+// Governance calls come from storage, which cannot produce a row that is not a
+// governance call.
+//
+// The indexer version could: its predicate `MsgCall: { pkg_path: { like: ... } }`
+// matched a message that was not a MsgCall and carried no pkg_path, so the
+// governance view listed an auth/create_session transaction on pearl. It also
+// took 12s and returned a 500 on sapphire, which has no governance activity —
+// the filter is a substring match over an unindexed field, so it widened its
+// window until the deadline.
+func TestGovDAOFromStorage(t *testing.T) {
+	api, db := newTestAPI(t)
+
+	const when = "2026-08-01T00:00:00Z"
+	// Governance calls, including a versioned subpackage.
+	if err := db.InsertCall("alpha", "gov-1", 100, when, "g1voter", "gno.land/r/gov/dao", "Propose", true); err != nil {
+		t.Fatalf("InsertCall: %v", err)
+	}
+	if err := db.InsertCall("alpha", "gov-2", 101, when, "g1voter", "gno.land/r/gov/dao/v3/impl", "Vote", true); err != nil {
+		t.Fatalf("InsertCall: %v", err)
+	}
+	// Near-misses that must not be picked up: gnoswap ships these, and a bare
+	// "gov" match would take them.
+	for _, path := range []string{"gno.land/r/gnoswap/gov/staker", "gno.land/r/gnoswap/gov/governance"} {
+		if err := db.InsertCall("alpha", "swap-"+path, 102, when, "g1trader", path, "Stake", true); err != nil {
+			t.Fatalf("InsertCall: %v", err)
+		}
+	}
+
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("GET", "/api/govdao?network=alpha", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var calls []StoredTx
+	mustJSON(t, rec.Body.Bytes(), &calls)
+
+	if len(calls) != 2 {
+		t.Fatalf("got %d governance calls, want 2: %+v", len(calls), calls)
+	}
+	for _, c := range calls {
+		if !strings.HasPrefix(c.Detail, "gno.land/r/gov/dao") {
+			t.Errorf("%s is not a governance call", c.Detail)
+		}
+		if c.Type != "MsgCall" {
+			t.Errorf("a %s reached the governance view", c.Type)
+		}
+	}
+
+	t.Run("a chain with no governance activity answers empty, not slowly", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest("GET", "/api/govdao?network=beta", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d", rec.Code)
+		}
+		var none []StoredTx
+		mustJSON(t, rec.Body.Bytes(), &none)
+		if len(none) != 0 {
+			t.Errorf("got %d rows on a chain with no governance activity", len(none))
+		}
+	})
+}

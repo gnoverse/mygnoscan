@@ -1206,49 +1206,25 @@ func (a *API) HandleBankStats(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, stats)
 }
 
+// HandleGovDAO lists governance calls, from storage.
+//
+// This used to ask the indexer, which cannot answer it: the filter is a
+// substring match over a field it has no index for, so on a chain with no
+// governance activity it widened its window until the deadline and returned a
+// 500 — 12 seconds on sapphire. On pearl it returned a row that was not a
+// governance call at all, because the predicate matched a message carrying no
+// pkg_path.
+//
+// The syncer already records every MsgCall with its path, indexed by
+// (network, pkg_path), so this is a prefix scan that answers instantly and
+// cannot match a non-call.
 func (a *API) HandleGovDAO(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	limit := eventTxLimit(r)
-
-	// Previously this called clientFor("") for all networks, which returns an
-	// arbitrary client — and in practice returned a null body.
-	if network == "" {
-		// Non-nil so an empty result serialises as [] rather than null; the
-		// frontend iterates this and null is what it used to receive.
-		merged := []Transaction{}
-		for _, txs := range fanOut(r.Context(), a.networks, a.clients, a.health,
-			func(ctx context.Context, nc NetworkConfig, c *IndexerClient) ([]Transaction, error) {
-				txs, err := c.GetGovDAOTransactions(ctx, limit)
-				if err != nil {
-					return nil, err
-				}
-				a.stampBlockTimes(ctx, nc.ID, c, txs)
-				for i := range txs {
-					txs[i].Network = nc.ID
-				}
-				return txs, nil
-			}) {
-			merged = append(merged, txs...)
-		}
-		sortTransactionsByTime(merged)
-		if len(merged) > limit {
-			merged = merged[:limit]
-		}
-		jsonResponse(w, merged)
-		return
-	}
-
-	client := a.clientFor(network)
-	if client == nil {
-		jsonError(w, "network not found", 404)
-		return
-	}
-	txs, err := client.GetGovDAOTransactions(r.Context(), limit)
+	calls, err := a.db.GovDAOCalls(a.networkParam(r), eventTxLimit(r))
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
 	}
-	jsonResponse(w, txs)
+	jsonResponse(w, calls)
 }
 
 func (a *API) HandleDeps(w http.ResponseWriter, r *http.Request) {
