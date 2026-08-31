@@ -3201,3 +3201,51 @@ func (d *DB) FilteredTransactions(network, msgType string, success *bool, limit,
 	}
 	return out, total, rows.Err()
 }
+
+// govDAOPathPrefix is the realm the governance view is about.
+//
+// A prefix, not a substring: paths are `gno.land/r/gov/dao` and its versioned
+// subpackages, and an anchored pattern can walk the (network, pkg_path) index
+// instead of scanning. It also cannot pick up gnoswap's `gov/staker` and
+// `gov/governance`, which a bare "gov" would.
+const govDAOPathPrefix = "gno.land/r/gov/dao"
+
+// GovDAOCalls lists governance calls from storage.
+//
+// Asking the indexer for these does not work on a chain that has none. The
+// filter is a substring match over a field it has no index for, so it widens its
+// window until the deadline and then fails — measured at 12s and a 500 on
+// sapphire, which has no governance activity at all.
+//
+// Worse, it returned a *wrong* row on pearl: the predicate
+// `MsgCall: { pkg_path: { like: ... } }` matched a message that is not a MsgCall
+// and carries no pkg_path, so the governance view listed an `auth/create_session`
+// transaction. Reading the calls table cannot do that — a row is there only
+// because the syncer decoded a MsgCall with that path.
+func (d *DB) GovDAOCalls(network string, limit int) ([]StoredTx, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	rows, err := d.db.Query(`
+		SELECT network, tx_hash, block_height, COALESCE(block_time, ''),
+		       caller, pkg_path || '::' || func_name, success
+		FROM calls
+		WHERE pkg_path LIKE ? AND `+d.networkFilter("network", network)+`
+		ORDER BY block_height DESC, tx_hash ASC
+		LIMIT ?`, govDAOPathPrefix+"%", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []StoredTx{}
+	for rows.Next() {
+		t := StoredTx{Type: "MsgCall"}
+		if err := rows.Scan(&t.Network, &t.Hash, &t.BlockHeight, &t.BlockTime,
+			&t.Caller, &t.Detail, &t.Success); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}

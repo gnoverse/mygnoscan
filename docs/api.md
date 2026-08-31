@@ -125,7 +125,7 @@ labels this figure "recent" for the same reason.
 | `GET /api/bankstats` | transfer volume statistics. Carries `by_network` in all-networks mode, because volume cannot be summed across chains. Every ranking row is keyed by `(address, network)` and carries its `network` |
 | `GET /api/tokens` | detected token packages. Rows carry their `network` |
 | `GET /api/validators` | valoper registrations, **served from storage** rather than the indexer. Flat rows with `address`, `moniker`, `func` and `success` — `address` is the validator the call is about, which is not always the caller |
-| `GET /api/govdao` | GovDAO activity. Queries every configured network in all-networks mode |
+| `GET /api/govdao` | governance calls, **served from local storage** as a prefix match on `gno.land/r/gov/dao`. The indexer cannot answer this: its filter is a substring match over an unindexed field, so it scans until the deadline on a chain with no governance activity, and its predicate can match a message carrying no `pkg_path` at all |
 | `GET /api/sanity/overview` | consistency counters and liveness. In all-networks mode liveness moves to `by_network`, one entry per chain, each with `reachable` |
 
 ## Time series

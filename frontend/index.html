@@ -3220,12 +3220,10 @@ async function loadGovDAO() {
       for (const item of events) {
         // Find the originating message
         let origin = '';
+        // Governance calls come from storage now, so a matched row carries a
+        // flat `detail` (path::func) rather than a messages[] to dig through.
         const tx = calls?.find(t => t.hash === item.tx_hash);
-        if (tx) {
-          const msg = tx.messages?.[0]?.value;
-          if (msg?.__typename === 'MsgCall') origin = msg.pkg_path + '::' + msg.func;
-          else if (msg?.__typename === 'MsgRun') origin = 'MsgRun by ' + shortAddr(msg.caller);
-        }
+        if (tx) origin = tx.detail || '';
         for (const ev of item.events) {
           const attrStr = (ev.attrs || []).map(a => a.key + '=' + a.value).join(', ');
           list.appendChild(el('tr', {},
