@@ -60,8 +60,22 @@ the whole window. `/api/live` and `/api/version` bypass the cache entirely.
 
 | parameter | values | default |
 |---|---|---|
-| `days` | 1–365, clamped | `30` |
-| `granularity` | `hourly`, `daily`, `weekly` | `daily` |
+| `window` | `24h`, `7d`, `30d`, `90d`, `1y`, `all` | unset |
+| `days` | 1–365, clamped (`monthly` raises the cap to 3650) | `30` |
+| `granularity` | `hourly`, `daily`, `weekly`, `monthly` | `daily` |
+
+`window` is the current contract and sets both `days` and `granularity` at once:
+`24h`→(1, hourly), `7d`→(7, hourly), `30d`→(30, daily), `90d`→(90, daily),
+`1y`→(365, weekly), `all`→(3650, monthly). It is case-insensitive, and an
+unrecognised value is ignored rather than rejected.
+
+`days` and `granularity` predate `window` and still work. Either one, given
+explicitly, overrides what `window` would have set — so `window=all&days=7`
+is 7 days at monthly granularity.
+
+The 365-day clamp keeps hourly, daily and weekly bucket counts bounded.
+`monthly` exists to span longer ranges, so it is exempt from that clamp and
+bounded at 3650 days instead.
 
 ## Meta
 

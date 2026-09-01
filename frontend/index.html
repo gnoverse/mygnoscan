@@ -132,6 +132,27 @@ tr.total-row td { font-weight: bold; color: var(--accent); }
 @keyframes pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 0.8; } }
 .skeleton-row td { padding: 12px; }
 .skeleton-cell { height: 14px; background: var(--bg3); border-radius: 3px; animation: pulse 1.5s ease-in-out infinite; }
+/* Dashboards */
+.dash-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(440px, 1fr)); gap: 16px; }
+.dash-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; padding: 12px; }
+.dash-card.wide { grid-column: 1 / -1; }
+.dash-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+.dash-title { font-size: 13px; color: var(--fg); }
+.dash-chart { width: 100%; height: 300px; }
+.dash-msg { color: var(--fg2); font-size: 12px; padding: 20px 0; }
+.dash-bar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
+.dash-grp { display: inline-flex; align-items: center; gap: 6px; }
+.dash-bar .label { font-size: 11px; color: var(--fg2); text-transform: uppercase; letter-spacing: 1px; }
+.dash-seg { display: inline-flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+.dash-seg button { background: var(--bg2); color: var(--fg2); border: none; border-left: 1px solid var(--border); padding: 4px 10px; cursor: pointer; font-family: var(--mono); font-size: 11px; }
+.dash-seg button:first-child { border-left: none; }
+.dash-seg button.on { background: var(--accent); color: var(--bg); font-weight: bold; }
+/* Info tooltip: a real button so it works on keyboard and touch, not title= */
+.info { position: relative; display: inline-flex; }
+.info-btn { background: none; border: 1px solid var(--border); color: var(--fg2); border-radius: 50%; width: 16px; height: 16px; font-size: 10px; line-height: 1; padding: 0; cursor: help; font-family: var(--mono); }
+.info-btn:hover, .info-btn:focus-visible { color: var(--accent); border-color: var(--accent); }
+.info-pop { display: none; position: absolute; top: 22px; left: 0; z-index: 300; width: 300px; background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; padding: 8px 10px; font-size: 11px; line-height: 1.5; color: var(--fg2); }
+.info:hover .info-pop, .info-btn:focus-visible + .info-pop { display: block; }
 /* Raw JSON toggle */
 .raw-toggle { cursor: pointer; color: var(--fg2); font-size: 12px; margin-top: 12px; user-select: none; }
 .raw-toggle:hover { color: var(--accent); }
@@ -198,6 +219,7 @@ footer a:hover { color: var(--accent); }
       <a onclick="navigate('/govdao')" id="nav-govdao">govdao</a>
       <a onclick="navigate('/gas')" id="nav-gas">gas</a>
       <a onclick="navigate('/analytics')" id="nav-analytics">analytics</a>
+      <a onclick="navigate('/dashboards')" id="nav-dashboards">dashboards</a>
       <a onclick="navigate('/sanity')" id="nav-sanity">sanity</a>
       <a onclick="navigate('/events')" id="nav-events">events</a>
     </nav>
@@ -278,6 +300,7 @@ footer a:hover { color: var(--accent); }
   <div class="view" id="view-analytics"><main><div id="analytics-content"></div></main></div>
   <div class="view" id="view-sanity"><main><div id="sanity-content"></div></main></div>
   <div class="view" id="view-gas"><main><div id="gas-content"></div></main></div>
+  <div class="view" id="view-dashboards"><main><div id="dashboards-content"></div></main></div>
   <div class="view" id="view-block-detail"><main><div id="block-detail-content"></div></main></div>
   <div class="view" id="view-events"><main>
     <div id="events-stats" class="stats-bar" style="display:none"></div>
@@ -307,6 +330,7 @@ footer a:hover { color: var(--accent); }
 </footer>
 <script src="https://d3js.org/d3.v7.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
 <script>
 function el(tag, attrs, ...children) {
   const e = document.createElement(tag);
@@ -1360,6 +1384,7 @@ function route() {
   else if (path === '/events') { view = 'events'; }
   else if (path === '/gas') { view = 'gas'; }
   else if (path === '/analytics') { view = 'analytics'; }
+  else if (path === '/dashboards') { view = 'dashboards'; }
   else if (path === '/sanity') { view = 'sanity'; }
   else if (path === '/watch') { view = 'watch'; }
   else if (path.startsWith('/block/')) { view = 'block-detail'; data = parseInt(path.slice(7)); }
@@ -1383,6 +1408,7 @@ function route() {
     }
   }
 
+  if (view !== 'dashboards' && typeof destroyDashCharts === 'function') destroyDashCharts();
   switch (view) {
     case 'home': loadHome(); break;
     case 'watch': loadWatchlist(); break;
@@ -1397,6 +1423,7 @@ function route() {
     case 'events': loadEvents(); break;
     case 'gas': loadGas(); break;
     case 'analytics': loadAnalytics(); break;
+    case 'dashboards': loadDashboards(); break;
     case 'sanity': loadSanity(); break;
     case 'block-detail': loadBlockDetail(data); break;
     case 'realm-detail': loadRealmDetail(data, urlTab); break;
@@ -4713,6 +4740,360 @@ function onLiveBlock(block, network) {
     while (blocksList.children.length > 60) blocksList.removeChild(blocksList.lastChild);
   }
 }
+
+// --- Dashboards ---
+const DASH_PAL = ['#4ecdc4', '#ff6b6b', '#51cf66', '#ffd43b', '#b197fc', '#4dabf7', '#ff922b', '#e599f7'];
+const DASH_AXIS = {
+  axisLine: { lineStyle: { color: '#2a2a2a' } },
+  axisLabel: { color: '#888', fontSize: 10 },
+  splitLine: { lineStyle: { color: '#1e1e1e' } },
+};
+const DASH_WINDOWS = ['24h', '7d', '30d', '90d', '1y', 'all'];
+let _dashWindow = '90d';
+let _dashSection = null;
+let _dashGen = 0;
+const _dashCharts = {};
+
+function dashBase(opt) {
+  const base = {
+    backgroundColor: 'transparent',
+    textStyle: { fontFamily: "'SF Mono','Cascadia Code','Fira Code',monospace", color: '#e0e0e0' },
+    tooltip: { backgroundColor: '#1e1e1e', borderColor: '#2a2a2a', textStyle: { color: '#e0e0e0', fontSize: 11 } },
+    grid: { left: 60, right: 56, top: 30, bottom: 28 },
+    color: DASH_PAL,
+  };
+  const merged = Object.assign({}, base, opt);
+  // Shallow Object.assign lets a chart-supplied top-level key (e.g. tooltip:
+  // {trigger:'axis'}) fully replace a themed default instead of merging into
+  // it. Merge these sub-objects one level deeper so a chart can override one
+  // field (trigger, top, ...) without dropping the rest of the theme.
+  ['tooltip', 'legend', 'textStyle'].forEach(key => {
+    if (opt && opt[key]) merged[key] = Object.assign({}, base[key], opt[key]);
+  });
+  return merged;
+}
+function dashLegend(names) {
+  return { data: names, textStyle: { color: '#888', fontSize: 11 }, top: 0, right: 4 };
+}
+// dashAxisMerge applies the same one-level-deep merge dashBase uses (see
+// commit 7954488) to the DASH_AXIS theme defaults, so a chart overriding an
+// object-valued key (axisLabel, axisLine, splitLine) merges into the theme
+// instead of replacing it outright and silently dropping the rest.
+function dashAxisMerge(base, opt) {
+  const merged = Object.assign({}, base, opt);
+  ['axisLine', 'axisLabel', 'splitLine'].forEach(key => {
+    if (opt && opt[key]) merged[key] = Object.assign({}, base[key], opt[key]);
+  });
+  return merged;
+}
+function dashCatAxis(times) {
+  return dashAxisMerge(DASH_AXIS, { type: 'category', data: times, boundaryGap: false });
+}
+function dashValAxis(name) {
+  return dashAxisMerge(DASH_AXIS, {
+    type: 'value', name: name, nameTextStyle: { color: '#888' },
+    axisLabel: { formatter: dashCompactNumber },
+  });
+}
+// dashCompactNumber renders large axis values as k/M/B so gas, fee and
+// storage-byte magnitudes (8-9 digits) don't overflow the grid's fixed
+// left/right padding, which is sized for small numbers. Small numbers pass
+// through unchanged.
+function dashCompactNumber(v) {
+  const n = Number(v);
+  if (!isFinite(n)) return String(v);
+  const abs = Math.abs(n);
+  if (abs >= 1e9) return (n / 1e9).toFixed(abs % 1e9 === 0 ? 0 : 1) + 'B';
+  if (abs >= 1e6) return (n / 1e6).toFixed(abs % 1e6 === 0 ? 0 : 1) + 'M';
+  if (abs >= 1e3) return (n / 1e3).toFixed(abs % 1e3 === 0 ? 0 : 1) + 'k';
+  return String(n);
+}
+function cumulative(values) {
+  let sum = 0;
+  return values.map(v => (sum += (v || 0)));
+}
+async function dashApi(path, chartWindow) {
+  const w = chartWindow || _dashWindow;
+  return api(path + (path.includes('?') ? '&' : '?') + 'window=' + w);
+}
+function destroyDashCharts() {
+  // Bump the generation first so any renderDashChart() call already in flight
+  // (its fetch not yet resolved) fails its gen !== _dashGen guard instead of
+  // registering a fresh ECharts instance into the registry this just emptied.
+  // loadDashboards()'s own bump right after calling this becomes a harmless
+  // second increment.
+  _dashGen++;
+  Object.keys(_dashCharts).forEach(k => {
+    const inst = _dashCharts[k];
+    if (inst && !inst.isDisposed()) inst.dispose();
+    delete _dashCharts[k];
+  });
+}
+
+const DASHBOARDS = [
+  {
+    id: 'pulse',
+    title: 'chain pulse',
+    charts: [
+      {
+        id: 'tx-by-type',
+        title: 'transactions per bucket, by message type',
+        why: 'Total on-chain activity and what it is made of. A shift in the mix between calls, sends, runs and deploys shows what the chain is actually being used for. Counts messages, not transactions: one transaction can carry several.',
+        wide: true,
+        fetch: w => dashApi('timeseries/transactions', w),
+        opt: rows => dashBase({
+          tooltip: { trigger: 'axis' },
+          legend: dashLegend(['calls', 'sends', 'runs', 'deploys']),
+          xAxis: dashCatAxis(rows.map(r => r.time)),
+          yAxis: dashValAxis('messages'),
+          series: [
+            { name: 'calls', type: 'line', stack: 't', areaStyle: { opacity: 0.5 }, showSymbol: false, lineStyle: { width: 1 }, data: rows.map(r => r.calls) },
+            { name: 'sends', type: 'line', stack: 't', areaStyle: { opacity: 0.5 }, showSymbol: false, lineStyle: { width: 1 }, data: rows.map(r => r.sends) },
+            { name: 'runs', type: 'line', stack: 't', areaStyle: { opacity: 0.5 }, showSymbol: false, lineStyle: { width: 1 }, data: rows.map(r => r.msg_runs) },
+            { name: 'deploys', type: 'line', stack: 't', areaStyle: { opacity: 0.5 }, showSymbol: false, lineStyle: { width: 1 }, data: rows.map(r => r.deploys) },
+          ],
+        }),
+      },
+      {
+        id: 'cumulative-tx',
+        title: 'cumulative transactions',
+        window: 'all',
+        why: 'The long-run growth curve, summed across all indexed history. This chart is pinned to the full range, so the window picker above does not change it — a cumulative total over a partial window would understate the real figure.',
+        fetch: w => dashApi('timeseries/transactions', w),
+        opt: rows => dashBase({
+          tooltip: { trigger: 'axis' },
+          xAxis: dashCatAxis(rows.map(r => r.time)),
+          yAxis: dashValAxis('messages'),
+          series: [{
+            type: 'line', smooth: true, showSymbol: false,
+            areaStyle: { opacity: 0.25 },
+            data: cumulative(rows.map(r => r.total)),
+          }],
+        }),
+      },
+      {
+        id: 'success-rate',
+        title: 'transaction success rate',
+        why: 'Reliability. A sudden dip usually means a buggy realm deploy, a spam wave, or a gas-estimation problem, so this doubles as a chain-health alarm.',
+        fetch: w => dashApi('timeseries/health', w),
+        opt: rows => dashBase({
+          tooltip: { trigger: 'axis', valueFormatter: v => v == null ? '-' : v.toFixed(2) + '%' },
+          xAxis: dashCatAxis(rows.map(r => r.time)),
+          yAxis: Object.assign(dashValAxis('%'), { min: 0, max: 100 }),
+          series: [{
+            type: 'line', smooth: true, showSymbol: false,
+            areaStyle: { opacity: 0.2 },
+            lineStyle: { color: DASH_PAL[2] }, itemStyle: { color: DASH_PAL[2] },
+            data: rows.map(r => r.success_rate < 0 ? null : r.success_rate * 100),
+          }],
+        }),
+      },
+      {
+        id: 'active-addresses',
+        title: 'active addresses per bucket',
+        why: 'Engagement, split by what each address did. This counts addresses active within each bucket only. Rolling 7- and 30-day active counts need trailing-window queries and arrive in a later batch.',
+        fetch: w => dashApi('timeseries/active-addresses', w),
+        opt: rows => dashBase({
+          tooltip: { trigger: 'axis' },
+          legend: dashLegend(['total', 'callers', 'deployers', 'senders']),
+          xAxis: dashCatAxis(rows.map(r => r.time)),
+          yAxis: dashValAxis('addresses'),
+          series: [
+            { name: 'total', type: 'line', smooth: true, showSymbol: false, data: rows.map(r => r.total_active) },
+            { name: 'callers', type: 'line', smooth: true, showSymbol: false, data: rows.map(r => r.unique_callers) },
+            { name: 'deployers', type: 'line', smooth: true, showSymbol: false, data: rows.map(r => r.unique_deployers) },
+            { name: 'senders', type: 'line', smooth: true, showSymbol: false, data: rows.map(r => r.unique_senders) },
+          ],
+        }),
+      },
+    ],
+  },
+  {
+    id: 'economics',
+    title: 'economics',
+    charts: [
+      {
+        id: 'gas-used-wanted',
+        title: 'gas used vs wanted',
+        wide: true,
+        why: 'Capacity and estimator quality. The gap between gas wanted and gas used is headroom that was paid for but never consumed; the efficiency line tracks that gap as a percentage.',
+        fetch: w => dashApi('timeseries/gas', w),
+        opt: rows => dashBase({
+          tooltip: { trigger: 'axis' },
+          legend: dashLegend(['gas wanted', 'gas used', 'efficiency %']),
+          xAxis: dashCatAxis(rows.map(r => r.time)),
+          yAxis: [
+            dashValAxis('gas'),
+            Object.assign(dashValAxis('%'), { position: 'right', min: 0, max: 100 }),
+          ],
+          series: [
+            { name: 'gas wanted', type: 'line', showSymbol: false, areaStyle: { opacity: 0.15 }, data: rows.map(r => r.total_gas_wanted) },
+            { name: 'gas used', type: 'line', showSymbol: false, areaStyle: { opacity: 0.3 }, lineStyle: { color: DASH_PAL[1] }, itemStyle: { color: DASH_PAL[1] }, data: rows.map(r => r.total_gas_used) },
+            // gas_efficiency is a 0-1 fraction (db.go: gasUsed/gasWanted), so it
+            // must be scaled to percent for the 0-100 axis. The existing sanity
+            // view compensates the same way. Do NOT change the API payload —
+            // that view consumes the raw fraction.
+            // Gap buckets carry gas_efficiency: 0 (there's no -1 sentinel like
+            // success_rate has), so test total_gas_wanted instead of the
+            // efficiency value itself — that way a genuine 0% efficiency with
+            // real traffic still plots as 0 rather than being treated as empty.
+            { name: 'efficiency %', type: 'line', yAxisIndex: 1, showSymbol: false, lineStyle: { color: DASH_PAL[3] }, itemStyle: { color: DASH_PAL[3] }, data: rows.map(r => r.total_gas_wanted > 0 ? r.gas_efficiency * 100 : null) },
+          ],
+        }),
+      },
+      {
+        id: 'fees',
+        title: 'fees per bucket & cumulative',
+        wide: true,
+        why: 'The fee economy in ugnot: how much the chain collects each bucket, plus the running total. The cumulative line accumulates within the selected window, not from genesis.',
+        fetch: w => dashApi('timeseries/gas', w),
+        opt: rows => dashBase({
+          tooltip: { trigger: 'axis' },
+          legend: dashLegend(['fees', 'cumulative']),
+          xAxis: dashCatAxis(rows.map(r => r.time)),
+          yAxis: [
+            dashValAxis('ugnot'),
+            Object.assign(dashValAxis('cumulative'), { position: 'right' }),
+          ],
+          series: [
+            { name: 'fees', type: 'bar', data: rows.map(r => r.total_fees), itemStyle: { color: DASH_PAL[0] } },
+            { name: 'cumulative', type: 'line', yAxisIndex: 1, showSymbol: false, lineStyle: { color: DASH_PAL[3] }, itemStyle: { color: DASH_PAL[3] }, data: cumulative(rows.map(r => r.total_fees)) },
+          ],
+        }),
+      },
+    ],
+  },
+];
+
+function infoTip(text) {
+  const btn = el('button', { type: 'button', className: 'info-btn', 'aria-label': 'what this chart shows' }, 'i');
+  const pop = el('span', { className: 'info-pop', role: 'tooltip' }, text);
+  return el('span', { className: 'info' }, btn, pop);
+}
+
+function dashCard(chart) {
+  const head = el('div', { className: 'dash-head' }, el('span', { className: 'dash-title' }, chart.title));
+  if (chart.why) head.appendChild(infoTip(chart.why));
+  const host = el('div', { className: 'dash-chart', id: 'dash-chart-' + chart.id });
+  return el('div', { className: 'dash-card' + (chart.wide ? ' wide' : '') }, head, host);
+}
+
+async function renderDashChart(chart, gen) {
+  const host = document.getElementById('dash-chart-' + chart.id);
+  if (!host) return;
+  let rows;
+  try {
+    // chart.window pins a chart to its own range, ignoring the global picker.
+    rows = await chart.fetch(chart.window || _dashWindow);
+  } catch (err) {
+    // A newer loadDashboards() call may have started (and possibly already
+    // resolved) while this fetch was in flight — e.g. two quick window-picker
+    // clicks, or a window click followed by a network switch. Bail out before
+    // touching the DOM or the registry so a stale response can't clobber the
+    // instance actually attached to the visible host.
+    if (gen !== _dashGen) return;
+    // Shared error state, so a failed chart reads the same as a failed table
+    // elsewhere: the server's message plus retry, not a dead string. Retry
+    // re-renders this one card and reads _dashGen at click time rather than
+    // closing over gen, which by then is stale and would bail immediately.
+    failBlock(host, err, () => renderDashChart(chart, _dashGen));
+    return;
+  }
+  if (gen !== _dashGen) return;
+  if (!rows || rows.length === 0) {
+    host.textContent = '';
+    host.appendChild(el('div', { className: 'dash-msg' }, 'no data in this window'));
+    return;
+  }
+  rows = trimLeadingEmptyRows(rows);
+  const inst = echarts.init(host);
+  inst.setOption(chart.opt(rows), true);
+  _dashCharts[chart.id] = inst;
+}
+
+// trimLeadingEmptyRows drops leading all-zero rows (e.g. window=all's
+// fillBuckets zero-fills clear back to allWindowDays, so cumulative-tx's
+// pinned 'all' window otherwise leads with years of dead space predating
+// gno.land). Trims only from the front — interior gaps stay meaningful and
+// the trailing edge is the present, so neither is touched. Never trims to
+// nothing: if every row is empty the series is left untouched so the chart
+// still shows a flat line instead of "no data in this window".
+function isRowEmpty(row) {
+  return Object.keys(row).every(k => k === 'time' || row[k] === null || row[k] === 0);
+}
+function trimLeadingEmptyRows(rows) {
+  const firstNonEmpty = rows.findIndex(r => !isRowEmpty(r));
+  if (firstNonEmpty <= 0) return rows;
+  return rows.slice(firstNonEmpty);
+}
+
+function dashSubnav(sections) {
+  const seg = el('div', { className: 'dash-seg' });
+  sections.forEach(s => {
+    const b = el('button', { type: 'button', className: s.id === _dashSection ? 'on' : '' }, s.title);
+    b.addEventListener('click', () => {
+      const params = new URLSearchParams(window.location.search);
+      params.set('section', s.id);
+      history.replaceState(null, '', window.location.pathname + '?' + params.toString());
+      loadDashboards();
+    });
+    seg.appendChild(b);
+  });
+  return seg;
+}
+
+function dashWindowPicker() {
+  const seg = el('div', { className: 'dash-seg' });
+  DASH_WINDOWS.forEach(w => {
+    const b = el('button', { type: 'button', className: w === _dashWindow ? 'on' : '' }, w);
+    b.addEventListener('click', () => { _dashWindow = w; loadDashboards(); });
+    seg.appendChild(b);
+  });
+  return el('span', { className: 'dash-grp' }, el('span', { className: 'label' }, 'window'), seg);
+}
+
+function loadDashboards() {
+  destroyDashCharts();
+  // Bumped on every call so in-flight renderDashChart() calls from a
+  // superseded render (rapid window clicks, or a network switch while a
+  // fetch is still pending) can detect they've been superseded and bail out.
+  const gen = ++_dashGen;
+  const root = clear('dashboards-content');
+  if (typeof echarts === 'undefined') {
+    root.appendChild(el('div', { className: 'dash-msg' },
+      'charts unavailable — the ECharts library failed to load'));
+    return;
+  }
+  // A section appears only once it has at least one chart, so later batches
+  // can add sections without leaving empty tabs behind.
+  const sections = DASHBOARDS.filter(s => s.charts.length > 0);
+  if (sections.length === 0) {
+    root.appendChild(el('div', { className: 'dash-msg' }, 'no dashboards yet'));
+    return;
+  }
+  const urlSection = new URLSearchParams(window.location.search).get('section');
+  _dashSection = sections.some(s => s.id === urlSection) ? urlSection : sections[0].id;
+
+  const bar = el('div', { className: 'dash-bar' }, dashSubnav(sections), dashWindowPicker());
+  root.appendChild(bar);
+
+  const section = sections.find(s => s.id === _dashSection);
+  const grid = el('div', { className: 'dash-grid' });
+  section.charts.forEach(c => grid.appendChild(dashCard(c)));
+  root.appendChild(grid);
+  section.charts.forEach(c => renderDashChart(c, gen));
+}
+
+let _dashResizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(_dashResizeTimer);
+  _dashResizeTimer = setTimeout(() => {
+    Object.keys(_dashCharts).forEach(k => {
+      const inst = _dashCharts[k];
+      if (inst && !inst.isDisposed()) inst.resize();
+    });
+  }, 120);
+});
 
 // --- Routing ---
 window.addEventListener('popstate', route);
