@@ -45,6 +45,11 @@ type fakeIndexer struct {
 	capAt         int    // >0: truncate to this many rows and report the element cap
 	blocksFailing bool   // fail only getBlocks, leaving other queries healthy
 	delay         time.Duration
+
+	// emptyBlocksOnce makes the next getBlocks answer with no rows regardless of
+	// what is stored, which is how a lagging replica (or a load balancer fronting
+	// a partially-populated node) answers a range that genuinely has data.
+	emptyBlocksOnce bool
 }
 
 var (
@@ -127,6 +132,10 @@ func (f *fakeIndexer) resolve(q string) (map[string]any, int) {
 		return map[string]any{"latestBlockHeight": f.tip()}, 1
 
 	case strings.Contains(q, "getBlocks"):
+		if f.emptyBlocksOnce {
+			f.emptyBlocksOnce = false
+			return map[string]any{"getBlocks": []Block{}}, 0
+		}
 		blocks := filterBlocks(f.blocks, q)
 		return map[string]any{"getBlocks": blocks}, len(blocks)
 
@@ -377,6 +386,49 @@ func (f *fakeIndexer) seedChain(from, n int) {
 		f.txs = append(f.txs, fakeCall(h, when, fmt.Sprintf("g1caller%d", i%3),
 			"gno.land/r/demo/boards", "Post"))
 	}
+}
+
+// setBlockRange replaces the fake's blocks with the contiguous range [lo, hi]
+// and reports hi as the tip. Nothing exists below lo, which is what a pruned
+// indexer looks like from the outside.
+func (f *fakeIndexer) setBlockRange(lo, hi int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	base := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	f.blocks = f.blocks[:0]
+	for h := lo; h <= hi; h++ {
+		f.blocks = append(f.blocks, Block{
+			Hash: fmt.Sprintf("block-%d", h), Height: h, ChainID: f.chainID,
+			Time:               base.Add(time.Duration(h-lo) * time.Minute).Format(time.RFC3339),
+			NumTxs:             1,
+			TotalTxs:           h - lo + 1,
+			ProposerAddressRaw: "g1proposer",
+		})
+	}
+	f.latestHeight = hi
+}
+
+// forceEmptyRange makes the very next getBlocks return no rows, then clears
+// itself, so a test can inject one transient empty page.
+func (f *fakeIndexer) forceEmptyRange() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.emptyBlocksOnce = true
+}
+
+// blockQueryCount reports how many getBlocks queries have been asked, so a test
+// can assert that a terminated backfill stops re-querying.
+func (f *fakeIndexer) blockQueryCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, q := range f.queries {
+		if strings.Contains(q, "getBlocks") {
+			n++
+		}
+	}
+	return n
 }
 
 // redate stamps every block and transaction with the same timestamp, to make

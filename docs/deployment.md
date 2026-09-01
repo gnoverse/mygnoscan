@@ -70,9 +70,10 @@ ID and nothing ties the two together.
 **Renaming an ID orphans the data stored under the old one.** Since sync cursors
 are derived from the highest stored height per network, a renamed network looks
 brand new and re-syncs from genesis. To relabel while keeping history, update the
-`network` column across all seven network-scoped tables (`packages`,
+`network` column across all nine network-scoped tables (`packages`,
 `package_files`, `dependencies`, `calls`, `msg_runs`, `bank_sends`,
-`transactions`) — that preserves the cursor too. Back up first.
+`transactions`, `blocks`, `proposers`) — that preserves the cursor too. Back up
+first.
 
 ## Reset-prone networks
 
@@ -131,6 +132,15 @@ the build carries no version information at all.
   a public endpoint.
 - **The database grows with source code**, since full `.gno` file bodies are stored.
   Expect tens of MB per busy network.
+- **Every block is stored**, at roughly 130 bytes each including its index — about
+  **430 MB per network** at mainnet's ~3.3M blocks, and the built-in defaults
+  configure two networks. This is on top of the source-code storage above, and it
+  is not optional in this release.
+- **The block backfill runs automatically** on startup, bounded per pass so it
+  cannot stall the rest of the sync. It walks backward from the tip and takes
+  roughly 16 minutes to cover a mainnet-sized chain. Until it finishes, block
+  charts cover only recent history and say so; `/api/blocks/coverage` reports the
+  stored range and whether it is complete.
 - **WAL mode is on**, so back up the `-wal` and `-shm` files alongside the database,
   or take the backup with the service stopped.
 

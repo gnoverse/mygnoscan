@@ -137,9 +137,11 @@ tr.total-row td { font-weight: bold; color: var(--accent); }
 .dash-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; padding: 12px; }
 .dash-card.wide { grid-column: 1 / -1; }
 .dash-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+.dash-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
 .dash-title { font-size: 13px; color: var(--fg); }
 .dash-chart { width: 100%; height: 300px; }
 .dash-msg { color: var(--fg2); font-size: 12px; padding: 20px 0; }
+.dash-note { color: var(--fg2); font-size: 11px; margin-bottom: 10px; }
 .dash-bar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
 .dash-grp { display: inline-flex; align-items: center; gap: 6px; }
 .dash-bar .label { font-size: 11px; color: var(--fg2); text-transform: uppercase; letter-spacing: 1px; }
@@ -4799,6 +4801,13 @@ function dashAxisMerge(base, opt) {
 function dashCatAxis(times) {
   return dashAxisMerge(DASH_AXIS, { type: 'category', data: times, boundaryGap: false });
 }
+// dashCatAxisBars is dashCatAxis with boundaryGap on. Line charts want ticks
+// sitting on the grid edges (boundaryGap: false); bar charts center each bar
+// on its tick, so with boundaryGap: false the first and last bars are drawn
+// half outside the grid's clip rect and render clipped.
+function dashCatAxisBars(times) {
+  return dashAxisMerge(DASH_AXIS, { type: 'category', data: times, boundaryGap: true });
+}
 function dashValAxis(name) {
   return dashAxisMerge(DASH_AXIS, {
     type: 'value', name: name, nameTextStyle: { color: '#888' },
@@ -4847,8 +4856,8 @@ const DASHBOARDS = [
     charts: [
       {
         id: 'tx-by-type',
-        title: 'transactions per bucket, by message type',
-        why: 'Total on-chain activity and what it is made of. A shift in the mix between calls, sends, runs and deploys shows what the chain is actually being used for. Counts messages, not transactions: one transaction can carry several.',
+        title: 'messages per bucket, by type',
+        why: 'Total on-chain activity and what it is made of. A shift in the mix between calls, sends, runs and deploys shows what the chain is actually being used for. This counts messages, not transactions: one transaction carries one or more messages, so this number is always greater than or equal to the transaction count in the throughput chart below.',
         wide: true,
         fetch: w => dashApi('timeseries/transactions', w),
         opt: rows => dashBase({
@@ -4916,6 +4925,76 @@ const DASHBOARDS = [
           ],
         }),
       },
+      {
+        id: 'blocks-per-bucket',
+        title: 'blocks and transactions per bucket',
+        why: 'Throughput. Blocks per bucket tracks consensus liveness; transactions is the real on-chain transaction count, which is lower than the message count above because one transaction can carry several messages.',
+        networkScoped: true,
+        fetch: w => dashApi('timeseries/blocks', w),
+        opt: rows => dashBase({
+          tooltip: { trigger: 'axis' },
+          legend: dashLegend(['blocks', 'transactions']),
+          xAxis: dashCatAxisBars(rows.map(r => r.time)),
+          yAxis: [dashValAxis('blocks'), Object.assign(dashValAxis('txs'), { position: 'right' })],
+          series: [
+            { name: 'blocks', type: 'line', showSymbol: false, areaStyle: { opacity: 0.2 }, data: rows.map(r => r.blocks) },
+            { name: 'transactions', type: 'bar', yAxisIndex: 1, itemStyle: { color: DASH_PAL[3] }, data: rows.map(r => r.txs) },
+          ],
+        }),
+      },
+      {
+        id: 'block-time-histogram',
+        title: 'block-time distribution',
+        window: '7d',
+        why: 'Consensus health. A tight cluster around the target interval is healthy; a fat right tail means the chain is stalling under load. Pinned to 7 days because recent consensus behaviour is what matters here, so the window picker above does not change it.',
+        networkScoped: true,
+        fetch: w => dashApi('blocks/time-histogram', w),
+        opt: rows => dashBase({
+          tooltip: { trigger: 'axis' },
+          xAxis: dashCatAxisBars(rows.map(r => r.bin)),
+          yAxis: dashValAxis('blocks'),
+          series: [{ type: 'bar', data: rows.map(r => r.blocks), itemStyle: { color: DASH_PAL[5] } }],
+        }),
+      },
+      {
+        id: 'block-proposers',
+        title: 'block proposers',
+        wide: true,
+        state: { topN: 15 },
+        why: 'Decentralisation. Blocks proposed per validator over the window — a heavily skewed bar means a few validators dominate block production. Names come from the r/gnops/valopers registry; validators that never registered a moniker show as truncated addresses.',
+        networkScoped: true,
+        controls: (bar, rerender, state) => {
+          bar.appendChild(el('span', { className: 'label' }, 'top'));
+          const seg = el('div', { className: 'dash-seg' });
+          [10, 15, 25, 50].forEach(n => {
+            const b = el('button', { type: 'button', className: n === state.topN ? 'on' : '' }, String(n));
+            b.addEventListener('click', () => { state.topN = n; rerender(); });
+            seg.appendChild(b);
+          });
+          bar.appendChild(seg);
+        },
+        fetch: async function (w) {
+          // _valMonikers is only populated by the blocks view, so this chart
+          // loads it itself. loadValMonikers already swallows its own errors,
+          // so a registry failure degrades to truncated addresses rather than
+          // failing the card.
+          const [rows] = await Promise.all([
+            dashApi('blocks/proposers?topN=' + (this.state && this.state.topN ? this.state.topN : 15), w),
+            loadValMonikers(),
+          ]);
+          return rows;
+        },
+        opt: rows => {
+          const labels = rows.map(r => _valMonikers[r.address] || truncAddr(r.address));
+          return dashBase({
+            grid: { left: 130, right: 20, top: 10, bottom: 28 },
+            tooltip: { trigger: 'axis' },
+            xAxis: dashValAxis('blocks'),
+            yAxis: dashCatAxisBars(labels.slice().reverse()),
+            series: [{ type: 'bar', data: rows.map(r => r.blocks).reverse(), itemStyle: { color: DASH_PAL[0] } }],
+          });
+        },
+      },
     ],
   },
   {
@@ -4960,7 +5039,7 @@ const DASHBOARDS = [
         opt: rows => dashBase({
           tooltip: { trigger: 'axis' },
           legend: dashLegend(['fees', 'cumulative']),
-          xAxis: dashCatAxis(rows.map(r => r.time)),
+          xAxis: dashCatAxisBars(rows.map(r => r.time)),
           yAxis: [
             dashValAxis('ugnot'),
             Object.assign(dashValAxis('cumulative'), { position: 'right' }),
@@ -4984,13 +5063,42 @@ function infoTip(text) {
 function dashCard(chart) {
   const head = el('div', { className: 'dash-head' }, el('span', { className: 'dash-title' }, chart.title));
   if (chart.why) head.appendChild(infoTip(chart.why));
-  const host = el('div', { className: 'dash-chart', id: 'dash-chart-' + chart.id });
-  return el('div', { className: 'dash-card' + (chart.wide ? ' wide' : '') }, head, host);
+  const parts = [head];
+  if (chart.controls) parts.push(el('div', { className: 'dash-controls', id: 'dash-controls-' + chart.id }));
+  parts.push(el('div', { className: 'dash-chart', id: 'dash-chart-' + chart.id }));
+  const card = el('div', { className: 'dash-card' + (chart.wide ? ' wide' : '') });
+  parts.forEach(p => card.appendChild(p));
+  return card;
+}
+
+// dashGranularityOf infers the bucket size from the shape of the server's
+// `time` strings rather than re-deriving it from the window client-side, so
+// it cannot drift from the server's own window->bucket mapping.
+//   2026-08          -> monthly
+//   2026-W33         -> weekly
+//   2026-08-13       -> daily
+//   2026-08-13T13    -> hourly
+function dashGranularityOf(rows) {
+  const t = rows && rows.length ? String(rows[0].time || '') : '';
+  if (/^\d{4}-W\d{2}$/.test(t)) return 'weekly';
+  if (/^\d{4}-\d{2}$/.test(t)) return 'monthly';
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}$/.test(t)) return 'hourly';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return 'daily';
+  return 'unknown';
 }
 
 async function renderDashChart(chart, gen) {
   const host = document.getElementById('dash-chart-' + chart.id);
   if (!host) return;
+  if (chart.networkScoped && getNetwork() === 'all') {
+    // Three of the four block queries are not meaningfully aggregatable across
+    // chains (interleaved heights, merged proposer identities, a union
+    // coverage range), so a networkScoped chart must not fetch or draw at all
+    // in the all-networks state rather than rendering a misleading aggregate.
+    host.textContent = '';
+    host.appendChild(el('div', { className: 'dash-msg' }, 'select a specific network to see this chart'));
+    return;
+  }
   let rows;
   try {
     // chart.window pins a chart to its own range, ignoring the global picker.
@@ -5016,9 +5124,25 @@ async function renderDashChart(chart, gen) {
     return;
   }
   rows = trimLeadingEmptyRows(rows);
+  // If the error or empty-data path above already ran for this host, it
+  // cleared the host's contents with textContent = '' but left an ECharts
+  // instance registered against that node. echarts.init(host) would then
+  // return that same instance, whose canvas was just removed — dispose it
+  // first so init() creates a fresh one on the live DOM node.
+  const existing = echarts.getInstanceByDom(host);
+  if (existing) existing.dispose();
   const inst = echarts.init(host);
-  inst.setOption(chart.opt(rows), true);
+  const ctx = { window: chart.window || _dashWindow, granularity: dashGranularityOf(rows) };
+  inst.setOption(chart.opt(rows, ctx), true);
   _dashCharts[chart.id] = inst;
+  if (chart.controls) {
+    const bar = document.getElementById('dash-controls-' + chart.id);
+    if (bar) {
+      bar.textContent = '';
+      chart.state = chart.state || {};
+      chart.controls(bar, () => renderDashChart(chart, _dashGen), chart.state);
+    }
+  }
 }
 
 // trimLeadingEmptyRows drops leading all-zero rows (e.g. window=all's
@@ -5091,6 +5215,26 @@ function loadDashboards() {
   const grid = el('div', { className: 'dash-grid' });
   section.charts.forEach(c => grid.appendChild(dashCard(c)));
   root.appendChild(grid);
+  // A 90d window showing three days of blocks is indistinguishable from a
+  // chain that was down. Say which it is while the backfill is still running.
+  // Skipped in the all-networks state: the block charts themselves render
+  // "select a specific network" there and never fetch, so a coverage note
+  // would be commenting on charts that aren't even trying to show data.
+  if (section.charts.some(c => c.id.startsWith('block')) && getNetwork() !== 'all') {
+    api('blocks/coverage').then(cov => {
+      if (!cov || cov.complete || !cov.min_time) return;
+      const note = el('div', { className: 'dash-note' },
+        'history backfilling — block charts currently cover ' +
+        cov.min_time.slice(0, 10) + ' to ' + cov.max_time.slice(0, 10));
+      // insertBefore(note, grid) is safe even if grid were ever stale (e.g. a
+      // superseded render) only because insertBefore throws NotFoundError on
+      // a detached reference node, and that throw is swallowed by the
+      // .catch(() => {}) below. appendChild would not throw and would
+      // silently attach the note to a dead, unattached node instead — this
+      // relies on insertBefore's semantics, not on grid always being live.
+      root.insertBefore(note, grid);
+    }).catch(() => {});
+  }
   section.charts.forEach(c => renderDashChart(c, gen));
 }
 

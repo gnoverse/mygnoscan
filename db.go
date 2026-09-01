@@ -459,6 +459,22 @@ func initSchema(db *sql.DB) error {
 			value TEXT NOT NULL
 		);
 
+		CREATE TABLE IF NOT EXISTS proposers (
+			id      INTEGER PRIMARY KEY,
+			network TEXT NOT NULL,
+			address TEXT NOT NULL,
+			UNIQUE (network, address)
+		);
+
+		CREATE TABLE IF NOT EXISTS blocks (
+			network     TEXT NOT NULL DEFAULT 'gnoland1',
+			height      INTEGER NOT NULL,
+			time        TEXT NOT NULL,
+			proposer_id INTEGER,
+			num_txs     INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (network, height)
+		) WITHOUT ROWID;
+
 		CREATE INDEX IF NOT EXISTS idx_txs_height ON transactions(network, block_height);
 		CREATE INDEX IF NOT EXISTS idx_calls_pkg ON calls(pkg_path);
 		CREATE INDEX IF NOT EXISTS idx_calls_caller ON calls(caller);
@@ -477,6 +493,7 @@ func initSchema(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_runs_block_time   ON msg_runs(network, block_time);
 		CREATE INDEX IF NOT EXISTS idx_sends_block_time  ON bank_sends(network, block_time);
 		CREATE INDEX IF NOT EXISTS idx_txs_block_time    ON transactions(network, block_time);
+		CREATE INDEX IF NOT EXISTS idx_blocks_time ON blocks(network, time);
 
 		-- The gas view's "most expensive transactions" sorts by gas_used within a
 		-- network and keeps 20 rows. Without this the sort cannot be served from
@@ -817,11 +834,19 @@ var networkScopedTables = []string{
 	"msg_runs",
 	"bank_sends",
 	"transactions",
+	"blocks",
+	"proposers",
 }
 
 // DeleteNetworkData removes every row belonging to a network, in one transaction.
 // Used when a chain reset makes the stored history refer to blocks that no longer
 // exist. Returns the number of rows removed.
+//
+// The blocks backfill flag in sync_state goes with them. Leaving it set would
+// mark an empty blocks table as fully backfilled, so the coverage endpoint would
+// report complete history for a network that has none — and the backfill would
+// never run again to fix it. It is bookkeeping rather than data, so it is not
+// counted in the returned row total.
 func (d *DB) DeleteNetworkData(network string) (int64, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -842,6 +867,11 @@ func (d *DB) DeleteNetworkData(network string) (int64, error) {
 		if n, err := res.RowsAffected(); err == nil {
 			total += n
 		}
+	}
+	if _, err := tx.Exec(
+		`DELETE FROM sync_state WHERE key = ?`, blocksBackfillDoneKey(network),
+	); err != nil {
+		return 0, fmt.Errorf("clear blocks backfill flag: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
@@ -3684,4 +3714,304 @@ func (d *DB) gasRollupReady() (bool, string) {
 	var at string
 	d.db.QueryRow(`SELECT value FROM sync_state WHERE key = ?`, gasRollupKey).Scan(&at)
 	return true, at
+}
+
+// --- blocks ---
+
+// InternProposer maps a proposer address to a small integer id, creating the
+// row on first sight. Storing the id rather than the 40-byte address on every
+// block row saves roughly 119MB across a 3.3M-block chain.
+//
+// The unique key is (network, address), so the same validator address on two
+// chains gets two ids and an id can never span networks.
+func (d *DB) InternProposer(network, address string) (int64, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if _, err := d.db.Exec(
+		`INSERT INTO proposers (network, address) VALUES (?, ?) ON CONFLICT DO NOTHING`,
+		network, address,
+	); err != nil {
+		return 0, err
+	}
+	var id int64
+	err := d.db.QueryRow(
+		`SELECT id FROM proposers WHERE network = ? AND address = ?`, network, address,
+	).Scan(&id)
+	return id, err
+}
+
+type BlockRow struct {
+	Height     int
+	Time       string
+	ProposerID int64
+	NumTxs     int
+}
+
+// UpsertBlocks writes many blocks under a single lock and a single SQLite
+// transaction, mirroring UpsertTransactions.
+//
+// This is not an optimisation. The comment on UpsertTransactions records that
+// writing rows individually made read requests queue behind a backfill of a
+// hundred rows; a block page is 5,000 rows and the full backfill is 3.3M, so
+// per-row writes here would stall the API for the entire backfill.
+//
+// Idempotent on (network, height), so a re-synced page is a no-op.
+func (d *DB) UpsertBlocks(network string, rows []BlockRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO blocks (network, height, time, proposer_id, num_txs)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT (network, height) DO UPDATE SET
+			time = excluded.time,
+			proposer_id = excluded.proposer_id,
+			num_txs = excluded.num_txs`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, r := range rows {
+		if _, err := stmt.Exec(network, r.Height, r.Time, r.ProposerID, r.NumTxs); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// UpsertBlock stores a single block. Convenience wrapper over UpsertBlocks for
+// tests and one-off writes.
+func (d *DB) UpsertBlock(network string, height int, blockTime string, proposerID int64, numTxs int) error {
+	return d.UpsertBlocks(network, []BlockRow{{
+		Height: height, Time: blockTime, ProposerID: proposerID, NumTxs: numTxs,
+	}})
+}
+
+// BlockHeightBounds returns the lowest and highest stored height for a network.
+// The syncer derives both its cursors from these rather than from separate
+// state; ok is false when the network has no blocks yet.
+func (d *DB) BlockHeightBounds(network string) (minH, maxH int, ok bool, err error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var lo, hi sql.NullInt64
+	err = d.db.QueryRow(
+		`SELECT MIN(height), MAX(height) FROM blocks WHERE network = ?`, network,
+	).Scan(&lo, &hi)
+	if err != nil {
+		return 0, 0, false, err
+	}
+	if !lo.Valid || !hi.Valid {
+		return 0, 0, false, nil
+	}
+	return int(lo.Int64), int(hi.Int64), true, nil
+}
+
+type BlockTimePoint struct {
+	Time   string `json:"time"`
+	Blocks int    `json:"blocks"`
+	Txs    int    `json:"txs"`
+}
+
+type BlockTimeBin struct {
+	Bin    string `json:"bin"`
+	Blocks int    `json:"blocks"`
+}
+
+type ProposerCount struct {
+	Address string `json:"address"`
+	Blocks  int    `json:"blocks"`
+}
+
+type BlockCoverage struct {
+	MinTime  string `json:"min_time"`
+	MaxTime  string `json:"max_time"`
+	Complete bool   `json:"complete"`
+}
+
+// blockTimeBinExpr bins a block-time delta (seconds) into the ranges below.
+// Edges come from measurement against gnoland1: median 4.34s, observed
+// 3.69-10.11s, so the resolution is concentrated where the mass actually is.
+// Lower edges are inclusive.
+const blockTimeBinExpr = `CASE
+	WHEN d <  4.0 THEN '<4.0'
+	WHEN d <  4.5 THEN '4.0-4.5'
+	WHEN d <  5.0 THEN '4.5-5.0'
+	WHEN d <  5.5 THEN '5.0-5.5'
+	WHEN d <  6.0 THEN '5.5-6.0'
+	WHEN d <  7.0 THEN '6.0-7.0'
+	WHEN d <  8.0 THEN '7.0-8.0'
+	WHEN d < 10.0 THEN '8.0-10.0'
+	ELSE '>=10.0'
+END`
+
+// BlockTimeBinOrder is the display order of the histogram's bins.
+var BlockTimeBinOrder = []string{
+	"<4.0", "4.0-4.5", "4.5-5.0", "5.0-5.5", "5.5-6.0", "6.0-7.0", "7.0-8.0", "8.0-10.0", ">=10.0",
+}
+
+// GetBlockTimeSeries returns blocks and transactions per bucket.
+func (d *DB) GetBlockTimeSeries(network, granularity string, days int) ([]BlockTimePoint, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	sqlFmt, step, truncFn := timeseriesFormat(granularity)
+	start := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
+
+	q := fmt.Sprintf(
+		`SELECT strftime('%s', time) AS bucket, COUNT(*), COALESCE(SUM(num_txs), 0)
+		 FROM blocks WHERE network = ? AND time >= ?
+		 GROUP BY bucket ORDER BY bucket ASC`, sqlFmt)
+
+	rows, err := d.db.Query(q, network, start)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	buckets := make(map[string]*BlockTimePoint)
+	for rows.Next() {
+		var p BlockTimePoint
+		if err := rows.Scan(&p.Time, &p.Blocks, &p.Txs); err != nil {
+			return nil, err
+		}
+		cp := p
+		buckets[p.Time] = &cp
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return fillBuckets(buckets, days, granularity, step, truncFn,
+		func(k string) BlockTimePoint { return BlockTimePoint{Time: k} },
+		func(p *BlockTimePoint) {}), nil
+}
+
+// GetBlockTimeHistogram bins the interval between consecutive blocks.
+//
+// Deltas are computed at query time with LAG rather than stored per block: it
+// needs no extra column and, crucially, no handling for the page boundaries the
+// syncer fetches across, where an ingest-time computation would have no
+// predecessor to subtract from. The window's first block has a NULL delta and
+// is excluded.
+func (d *DB) GetBlockTimeHistogram(network string, days int) ([]BlockTimeBin, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	start := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
+
+	// The delta is rounded to milliseconds: julianday's double-precision julian
+	// day number is large enough (~2.46M) that subtracting two close values
+	// loses a few microseconds to floating-point cancellation, which is enough
+	// to flip a delta landing exactly on a bin edge (e.g. 4.500000 computed as
+	// 4.499996). Real block-time gaps are never meaningfully precise below a
+	// millisecond, so rounding away that noise costs nothing.
+	q := fmt.Sprintf(`
+		WITH deltas AS (
+			SELECT ROUND((julianday(time) - julianday(LAG(time) OVER (ORDER BY height))) * 86400.0, 3) AS d
+			FROM blocks WHERE network = ? AND time >= ?
+		)
+		SELECT %s AS bin, COUNT(*) FROM deltas WHERE d IS NOT NULL GROUP BY bin`, blockTimeBinExpr)
+
+	rows, err := d.db.Query(q, network, start)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int)
+	for rows.Next() {
+		var bin string
+		var n int
+		if err := rows.Scan(&bin, &n); err != nil {
+			return nil, err
+		}
+		counts[bin] = n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	out := make([]BlockTimeBin, 0, len(BlockTimeBinOrder))
+	for _, bin := range BlockTimeBinOrder {
+		out = append(out, BlockTimeBin{Bin: bin, Blocks: counts[bin]})
+	}
+	return out, nil
+}
+
+// GetBlockProposers counts blocks proposed per validator in the window.
+// Addresses only — moniker resolution lives in the frontend's _valMonikers.
+func (d *DB) GetBlockProposers(network string, days, topN int) ([]ProposerCount, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	if topN <= 0 {
+		topN = 25
+	}
+	start := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
+
+	// p.network is filtered as well as b.network: proposer ids are already
+	// network-scoped by construction, but relying on that would make this join
+	// silently wrong if the intern key ever changed.
+	rows, err := d.db.Query(`
+		SELECT p.address, COUNT(*) AS n
+		FROM blocks b JOIN proposers p ON p.id = b.proposer_id
+		WHERE b.network = ? AND p.network = ? AND b.time >= ?
+		GROUP BY p.address ORDER BY n DESC LIMIT ?`,
+		network, network, start, topN)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []ProposerCount
+	for rows.Next() {
+		var c ProposerCount
+		if err := rows.Scan(&c.Address, &c.Blocks); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// GetBlockCoverage reports the stored block range and whether backfill finished.
+//
+// Complete comes from the syncer's flag, not from MIN(height) <= 1: an indexer
+// that prunes early history never yields height 1, and an inferred version would
+// report incomplete forever.
+func (d *DB) GetBlockCoverage(network string) (BlockCoverage, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var cov BlockCoverage
+	var lo, hi sql.NullString
+	err := d.db.QueryRow(
+		`SELECT MIN(time), MAX(time) FROM blocks WHERE network = ?`, network,
+	).Scan(&lo, &hi)
+	if err != nil {
+		return cov, err
+	}
+	cov.MinTime, cov.MaxTime = lo.String, hi.String
+
+	var done string
+	err = d.db.QueryRow(
+		`SELECT value FROM sync_state WHERE key = ?`, blocksBackfillDoneKey(network),
+	).Scan(&done)
+	if err != nil && err != sql.ErrNoRows {
+		return cov, err
+	}
+	cov.Complete = done == "1"
+	return cov, nil
 }

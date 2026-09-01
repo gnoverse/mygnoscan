@@ -1067,6 +1067,10 @@ func (a *API) HandleBlock(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err.Error(), 404)
 		return
 	}
+	if block == nil {
+		jsonError(w, fmt.Sprintf("block not found: %d", height), 404)
+		return
+	}
 	// Also get transactions in this block
 	txs, _ := client.GetTransactionsByBlock(r.Context(), height)
 	jsonResponse(w, map[string]any{
@@ -1681,6 +1685,59 @@ func (a *API) HandleTimeSeriesActiveAddresses(w http.ResponseWriter, r *http.Req
 	jsonResponse(w, pts)
 }
 
+func (a *API) HandleTimeSeriesBlocks(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	days, granularity := parseTimeseriesParams(r)
+	pts, err := a.db.GetBlockTimeSeries(network, granularity, days)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	if pts == nil {
+		pts = []BlockTimePoint{}
+	}
+	jsonResponse(w, pts)
+}
+
+func (a *API) HandleBlockTimeHistogram(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	days, _ := parseTimeseriesParams(r)
+	bins, err := a.db.GetBlockTimeHistogram(network, days)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	if bins == nil {
+		bins = []BlockTimeBin{}
+	}
+	jsonResponse(w, bins)
+}
+
+func (a *API) HandleBlockProposers(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	days, _ := parseTimeseriesParams(r)
+	topN, _ := strconv.Atoi(r.URL.Query().Get("topN"))
+	props, err := a.db.GetBlockProposers(network, days, topN)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	if props == nil {
+		props = []ProposerCount{}
+	}
+	jsonResponse(w, props)
+}
+
+func (a *API) HandleBlockCoverage(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	cov, err := a.db.GetBlockCoverage(network)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	jsonResponse(w, cov)
+}
+
 // RegisterRoutes wires every API endpoint onto a mux.
 //
 // These lived inline in run(), which meant nothing could reach them: a test
@@ -1710,6 +1767,10 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/sanity/overview", a.HandleSanityOverview)
 	mux.HandleFunc("GET /api/timeseries/health", a.HandleTimeSeriesHealth)
 	mux.HandleFunc("GET /api/timeseries/active-addresses", a.HandleTimeSeriesActiveAddresses)
+	mux.HandleFunc("GET /api/timeseries/blocks", a.HandleTimeSeriesBlocks)
+	mux.HandleFunc("GET /api/blocks/time-histogram", a.HandleBlockTimeHistogram)
+	mux.HandleFunc("GET /api/blocks/proposers", a.HandleBlockProposers)
+	mux.HandleFunc("GET /api/blocks/coverage", a.HandleBlockCoverage)
 	mux.HandleFunc("GET /api/gas", a.HandleGas)
 	mux.HandleFunc("GET /api/bankstats", a.HandleBankStats)
 	mux.HandleFunc("GET /api/storage/{path...}", a.HandleStorage)
