@@ -121,7 +121,7 @@ labels this figure "recent" for the same reason.
 |---|---|
 | `GET /api/stats` | totals: transactions, calls, deploys, msg_runs, sends, realms, packages, unique callers, latest block |
 | `GET /api/analytics` | leaderboards and aggregate breakdowns. Every ranking row carries its `network`; rankings are scoped to the selected chain |
-| `GET /api/gas` | gas usage, by realm |
+| `GET /api/gas` | gas usage, by realm. Totals and the per-realm breakdown come from rollups rebuilt every 5 minutes, with `computed_at` saying when. Neither can be indexed away — attributing gas per realm means touching every call — and both had reached 14s. Falls back to computing live if the rollups are not built yet |
 | `GET /api/bankstats` | transfer volume statistics. Carries `by_network` in all-networks mode, because volume cannot be summed across chains. Every ranking row is keyed by `(address, network)` and carries its `network` |
 | `GET /api/tokens` | detected token packages. Rows carry their `network` |
 | `GET /api/validators` | valoper registrations, **served from storage** rather than the indexer. Flat rows with `address`, `moniker`, `func` and `success` — `address` is the validator the call is about, which is not always the caller |

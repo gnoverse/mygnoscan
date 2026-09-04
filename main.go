@@ -109,6 +109,45 @@ func run() error {
 		}
 	}
 
+	// Keep the gas rollups warm.
+	//
+	// The two aggregates behind the gas page scale with the chain and had
+	// reached 14 seconds on sapphire, against a 30-second write timeout. They
+	// cannot be indexed away — attributing gas per realm means touching every
+	// call — so they are precomputed here instead of per request.
+	//
+	// Every five minutes, not every sync pass: these are all-time totals, so
+	// five minutes of staleness costs nothing a reader would notice, and the
+	// recompute takes the write lock for a few seconds. The response carries
+	// computed_at so the page can say how fresh it is rather than implying live.
+	go func() {
+		refresh := func() {
+			start := time.Now()
+			if err := db.RefreshGasRollups(); err != nil {
+				log.Printf("gas rollup: %v", err)
+				return
+			}
+			log.Printf("gas rollup refreshed in %s", time.Since(start).Round(time.Millisecond))
+		}
+		// Wait out the startup ANALYZE before the first build. Both take the
+		// write lock, and racing it loses the whole refresh to SQLITE_BUSY —
+		// which is silent, because the read path just falls back to computing
+		// live and the page stays slow with nothing obviously broken.
+		db.WaitBackground()
+		refresh() // once at startup, so the first visitor is not the one who pays
+
+		ticker := time.NewTicker(gasRollupInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				refresh()
+			}
+		}
+	}()
+
 	// Set up API routes
 	api := NewAPI(db, clients, cfg.Networks, analyzer)
 	mux := http.NewServeMux()

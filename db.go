@@ -396,6 +396,39 @@ func initSchema(db *sql.DB) error {
 			PRIMARY KEY (network, tx_hash)
 		);
 
+		-- Gas rollups: the gas page's two expensive aggregates, precomputed.
+		--
+		-- Both scale with the chain and had reached 14s on sapphire, against a
+		-- 30s server write timeout — the same trajectory that broke the address
+		-- page twice. Neither can be indexed away: attributing gas per realm
+		-- means touching every call, and the totals are a sum over every
+		-- transaction.
+		--
+		-- Refreshed wholesale on a timer rather than maintained per insert.
+		-- Incremental maintenance would have to be exactly right across
+		-- re-syncs, backfills and chain resets, any of which would otherwise
+		-- double-count; a periodic recompute is idempotent by construction.
+		CREATE TABLE IF NOT EXISTS gas_realm_rollup (
+			network   TEXT NOT NULL,
+			path      TEXT NOT NULL,
+			gas_used  INTEGER NOT NULL,
+			gas_fee   INTEGER NOT NULL,
+			tx_count  INTEGER NOT NULL,
+			PRIMARY KEY (network, path)
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_gas_rollup_gas
+			ON gas_realm_rollup(network, gas_used DESC);
+
+		CREATE TABLE IF NOT EXISTS gas_totals_rollup (
+			network       TEXT PRIMARY KEY,
+			tx_count      INTEGER NOT NULL,
+			gas_used      INTEGER NOT NULL,
+			gas_wanted    INTEGER NOT NULL,
+			gas_fee       INTEGER NOT NULL,
+			success_count INTEGER NOT NULL
+		);
+
 		CREATE TABLE IF NOT EXISTS sync_state (
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL
@@ -1044,6 +1077,10 @@ type GasTx struct {
 
 // GasStats aggregates gas usage for a network.
 type GasStats struct {
+	// ComputedAt is when the rollups behind these figures were built, empty if
+	// they were computed live. Surfaced so a reader can tell fresh from stale.
+	ComputedAt string `json:"computed_at,omitempty"`
+
 	TotalTxs       int
 	TotalGasUsed   int
 	TotalGasWanted int
@@ -1064,6 +1101,12 @@ func (d *DB) GetGasStats(network string, topN int) (*GasStats, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
+	// Prefer the rollup. Both aggregates below scale with the chain and had
+	// reached 14s on sapphire; precomputed they are a lookup. ComputedAt tells
+	// the reader how fresh the figures are — showing stale numbers without
+	// saying so is the failure mode this avoids.
+	rollupReady, computedAt := d.gasRollupReady()
+
 	// Always filter, even for "all networks": an empty WHERE cannot use the
 	// (network, gas_used) index, which is what makes the top-gas sort scan the
 	// whole table. Scoping to the configured set keeps the index usable and
@@ -1071,14 +1114,22 @@ func (d *DB) GetGasStats(network string, topN int) (*GasStats, error) {
 	where := " WHERE " + d.networkFilter("network", network)
 	args := []any{}
 
-	out := &GasStats{}
-	err := d.db.QueryRow(`
+	out := &GasStats{ComputedAt: computedAt}
+
+	totalsQuery := `
 		SELECT COUNT(*),
 		       COALESCE(SUM(gas_used), 0),
 		       COALESCE(SUM(gas_wanted), 0),
 		       COALESCE(SUM(gas_fee), 0),
 		       COALESCE(SUM(CASE WHEN success THEN 1 ELSE 0 END), 0)
-		FROM transactions`+where, args...).
+		FROM transactions` + where
+	if rollupReady {
+		totalsQuery = `
+		SELECT COALESCE(SUM(tx_count),0), COALESCE(SUM(gas_used),0), COALESCE(SUM(gas_wanted),0),
+		       COALESCE(SUM(gas_fee),0), COALESCE(SUM(success_count),0)
+		FROM gas_totals_rollup` + where
+	}
+	err := d.db.QueryRow(totalsQuery, args...).
 		Scan(&out.TotalTxs, &out.TotalGasUsed, &out.TotalGasWanted, &out.TotalFees, &out.SuccessCount)
 	if err != nil {
 		return nil, fmt.Errorf("gas totals: %w", err)
@@ -1091,21 +1142,30 @@ func (d *DB) GetGasStats(network string, topN int) (*GasStats, error) {
 	// its ephemeral path is unique per run and would otherwise be one row each.
 	realmWhere := " AND " + d.networkFilter("t.network", network)
 	realmArgs := []any{}
-	rows, err := d.db.Query(`
+
+	realmQuery := `
 		SELECT path, SUM(gas_used), SUM(gas_fee), COUNT(*) FROM (
 			SELECT c.pkg_path AS path, t.gas_used, t.gas_fee, t.tx_hash
 			  FROM calls c JOIN transactions t
-			    ON t.network = c.network AND t.tx_hash = c.tx_hash`+realmWhere+`
+			    ON t.network = c.network AND t.tx_hash = c.tx_hash` + realmWhere + `
 			UNION ALL
 			SELECT p.path AS path, t.gas_used, t.gas_fee, t.tx_hash
 			  FROM packages p JOIN transactions t
-			    ON t.network = p.network AND t.tx_hash = p.tx_hash`+realmWhere+`
+			    ON t.network = p.network AND t.tx_hash = p.tx_hash` + realmWhere + `
 			UNION ALL
 			SELECT 'MsgRun by ' || m.caller AS path, t.gas_used, t.gas_fee, t.tx_hash
 			  FROM msg_runs m JOIN transactions t
-			    ON t.network = m.network AND t.tx_hash = m.tx_hash`+realmWhere+`
-		) GROUP BY path ORDER BY SUM(gas_used) DESC LIMIT ?`,
-		append(realmArgs, topN)...)
+			    ON t.network = m.network AND t.tx_hash = m.tx_hash` + realmWhere + `
+		) GROUP BY path ORDER BY SUM(gas_used) DESC LIMIT ?`
+	if rollupReady {
+		// The rollup is per (network, path); a path on two chains stays two
+		// rows there, so the read re-groups when several networks are in scope.
+		realmQuery = `
+		SELECT path, SUM(gas_used), SUM(gas_fee), SUM(tx_count)
+		FROM gas_realm_rollup WHERE ` + d.networkFilter("network", network) + `
+		GROUP BY path ORDER BY SUM(gas_used) DESC LIMIT ?`
+	}
+	rows, err := d.db.Query(realmQuery, append(realmArgs, topN)...)
 	if err != nil {
 		return nil, fmt.Errorf("gas by realm: %w", err)
 	}
@@ -3346,4 +3406,112 @@ func (d *DB) AddressTransactions(network, addr string, limit, offset int) ([]Sto
 		out = append(out, t)
 	}
 	return out, total, rows.Err()
+}
+
+// --- Gas rollups ------------------------------------------------------------
+
+// gasRollupKey records when the rollups were last recomputed, so the page can
+// say how fresh its numbers are rather than presenting stale ones as live.
+const gasRollupKey = "gas_rollup_at"
+
+// gasRollupInterval is how often the rollups are rebuilt. These are all-time
+// aggregates, so minutes of staleness is invisible to a reader — and the
+// recompute takes the write lock, so doing it per sync pass would mean holding
+// it every 30 seconds for the sake of numbers nobody watches change.
+const gasRollupInterval = 5 * time.Minute
+
+// RefreshGasRollups recomputes both gas aggregates for every configured network.
+//
+// This is the expensive query the gas page used to run per request — 3.4s for
+// the realm attribution and 1.3s for the totals on sapphire, and both grow with
+// the chain. Running it on a timer instead turns a 14-second page into a lookup.
+//
+// Whole-table replacement inside one transaction: readers see either the old
+// rollup or the new one, never a half-written mixture.
+func (d *DB) RefreshGasRollups() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// A busy write lock loses the whole refresh, and the failure is quiet: the
+	// read path falls back to computing live, so the page merely stays slow.
+	// Retry rather than wait for the next tick.
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 2 * time.Second)
+		}
+		if lastErr = d.refreshGasRollups(); lastErr == nil {
+			return nil
+		}
+	}
+	return lastErr
+}
+
+func (d *DB) refreshGasRollups() error {
+
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	scope := d.networkFilter("t.network", "")
+
+	if _, err := tx.Exec(`DELETE FROM gas_realm_rollup`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO gas_realm_rollup (network, path, gas_used, gas_fee, tx_count)
+		SELECT network, path, SUM(gas_used), SUM(gas_fee), COUNT(*) FROM (
+			SELECT t.network, c.pkg_path AS path, t.gas_used, t.gas_fee
+			  FROM calls c JOIN transactions t
+			    ON t.network = c.network AND t.tx_hash = c.tx_hash AND ` + scope + `
+			UNION ALL
+			SELECT t.network, p.path, t.gas_used, t.gas_fee
+			  FROM packages p JOIN transactions t
+			    ON t.network = p.network AND t.tx_hash = p.tx_hash AND ` + scope + `
+			UNION ALL
+			SELECT t.network, 'MsgRun by ' || m.caller, t.gas_used, t.gas_fee
+			  FROM msg_runs m JOIN transactions t
+			    ON t.network = m.network AND t.tx_hash = m.tx_hash AND ` + scope + `
+		) GROUP BY network, path`); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(`DELETE FROM gas_totals_rollup`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO gas_totals_rollup (network, tx_count, gas_used, gas_wanted, gas_fee, success_count)
+		SELECT network, COUNT(*), COALESCE(SUM(gas_used),0), COALESCE(SUM(gas_wanted),0),
+		       COALESCE(SUM(gas_fee),0), COALESCE(SUM(CASE WHEN success THEN 1 ELSE 0 END),0)
+		FROM transactions t WHERE ` + scope + `
+		GROUP BY network`); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(
+		`INSERT INTO sync_state (key, value) VALUES (?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		gasRollupKey, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// gasRollupReady reports whether the rollups hold anything, and when they were
+// built. Callers hold the read lock.
+//
+// An empty rollup means the timer has not fired yet — a fresh database, or the
+// first start after this shipped. The gas page falls back to computing live in
+// that case rather than showing zeros, which would read as "this chain has used
+// no gas".
+func (d *DB) gasRollupReady() (bool, string) {
+	var n int
+	if err := d.db.QueryRow(`SELECT COUNT(*) FROM gas_totals_rollup`).Scan(&n); err != nil || n == 0 {
+		return false, ""
+	}
+	var at string
+	d.db.QueryRow(`SELECT value FROM sync_state WHERE key = ?`, gasRollupKey).Scan(&at)
+	return true, at
 }
