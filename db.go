@@ -454,6 +454,39 @@ func initSchema(db *sql.DB) error {
 			PRIMARY KEY (network, kind, address)
 		);
 
+		-- Active addresses, stored as distinct tuples rather than as counts.
+		--
+		-- /api/timeseries/active-addresses was the slowest endpoint on the site
+		-- at 15.9s on production, and the one the dashboards page waits on. The
+		-- question — how many distinct addresses were active in each bucket —
+		-- means touching every call, deploy and send in the window and
+		-- deduplicating them per bucket, which no index removes: covering
+		-- indexes on (network, block_time, addr) bought 26% and left the plan
+		-- still building a temp B-tree.
+		--
+		-- Counts per day would not work. An address active on three days of a
+		-- week is one weekly active address, not three, so summing daily counts
+		-- overcounts, and the error grows with the bucket width — worst on the
+		-- 1y and all windows, where the number matters most. Storing the tuples
+		-- keeps every granularity exact, because the stored grain is finer than
+		-- anything served: hourly counts the tuples, wider buckets re-deduplicate.
+		--
+		-- Hourly is a measurement, not a guess. On the production database
+		-- 1,274,004 raw rows reduce to 95,615 distinct (network, day, address)
+		-- and 110,073 distinct (network, hour, address) — hourly is only 15%
+		-- larger than daily, so one table serves every window and no separate
+		-- live path is needed for 24h and 7d. Growth is ~1,650 rows/day.
+		--
+		-- WITHOUT ROWID: every column is part of the key, so a rowid would be a
+		-- second b-tree storing the same data twice.
+		CREATE TABLE IF NOT EXISTS active_addr_rollup (
+			network TEXT NOT NULL,
+			bucket  TEXT NOT NULL,   -- UTC hour, 'YYYY-MM-DDTHH'
+			kind    TEXT NOT NULL,   -- callers | deployers | senders
+			addr    TEXT NOT NULL,
+			PRIMARY KEY (network, bucket, kind, addr)
+		) WITHOUT ROWID;
+
 		CREATE TABLE IF NOT EXISTS sync_state (
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL
@@ -843,6 +876,18 @@ func (d *DB) DeleteNetworkData(network string) (int64, error) {
 			total += n
 		}
 	}
+
+	// Derived rows go too, in the same transaction.
+	//
+	// Not counted in the total: the caller reports how much *data* a reset threw
+	// away, and a rollup tuple is a restatement of rows already counted above.
+	// Leaving them would keep the series reporting activity for a chain whose
+	// history has just been deleted, until the next refresh up to five minutes
+	// later — which is the stale-after-reset shape #19 was about.
+	if _, err := tx.Exec(`DELETE FROM active_addr_rollup WHERE network = ?`, network); err != nil {
+		return 0, fmt.Errorf("delete from active_addr_rollup: %w", err)
+	}
+
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
@@ -1941,7 +1986,7 @@ func (d *DB) bankRollupReady() (bool, string) {
 		return false, ""
 	}
 	var at string
-	d.db.QueryRow(`SELECT value FROM sync_state WHERE key = ?`, gasRollupKey).Scan(&at)
+	d.db.QueryRow(`SELECT value FROM sync_state WHERE key = ?`, rollupComputedAtKey).Scan(&at)
 	return true, at
 }
 
@@ -2914,10 +2959,30 @@ func (d *DB) GetRealmsWithStorage(network string, days int) ([]string, error) {
 	return paths, rows.Err()
 }
 
+// GetActiveAddressTimeSeries answers how many distinct addresses were active in
+// each bucket, from the rollup where it can and from the source tables where it
+// must.
+//
+// Before the first refresh there is no rollup — a fresh database, or the first
+// start after this shipped — and the whole series is computed live rather than
+// reported as zero, which would read as "nobody has ever used this chain".
 func (d *DB) GetActiveAddressTimeSeries(network, granularity string, days int) ([]ActiveAddressTimePoint, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
+	if boundary, ok := d.activeAddrRollupBoundary(); ok {
+		return d.activeAddrSeriesRolledUp(network, granularity, days, boundary)
+	}
+	return d.activeAddrSeriesLive(network, granularity, days)
+}
+
+// activeAddrSeriesLive computes the series from calls, packages and bank_sends.
+//
+// This is what the endpoint used to do on every request: 15.9s on production,
+// growing with the chain. It stays as the fallback for a database whose rollup
+// has not been built yet, and as the reference the rollup path is diffed
+// against. Callers hold the read lock.
+func (d *DB) activeAddrSeriesLive(network, granularity string, days int) ([]ActiveAddressTimePoint, error) {
 	sqlFmt, step, truncFn := timeseriesFormat(granularity)
 	startTime := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
 
@@ -3008,6 +3073,167 @@ func (d *DB) GetActiveAddressTimeSeries(network, granularity string, days int) (
 		return nil, err
 	}
 
+	return activeAddrPoints(buckets, days, granularity, step, truncFn), nil
+}
+
+// activeAddrSeriesRolledUp answers the same question from the stored tuples,
+// merged with whatever is newer than the rollup.
+//
+// One statement, one shared source. The rolled-up hours and the live tail feed
+// the same deduplication rather than being counted separately and added, because
+// adding them would double-count every address that was active on both sides of
+// the boundary — which, on any bucket wider than an hour, is most of them.
+//
+// Both counts come back from one round trip: the per-kind figures grouped by
+// (bucket, kind), and the union total grouped by bucket, unioned into the
+// (bucket, typ, count) shape the live path already returns. Callers hold the
+// read lock.
+func (d *DB) activeAddrSeriesRolledUp(network, granularity string, days int, boundary time.Time) ([]ActiveAddressTimePoint, error) {
+	_, step, truncFn := timeseriesFormat(granularity)
+
+	start := time.Now().UTC().AddDate(0, 0, -days)
+	netFilter := d.networkFilter("network", network)
+
+	// The window opens at an instant — "now minus 30 days" — and the stored
+	// grain is the hour, so the hour the window opens in cannot be answered from
+	// the rollup: its tuples say the address was active somewhere in that hour,
+	// not whether it was before or after 14:23. Taking the whole hour would make
+	// the first bucket count activity from outside the window and disagree with
+	// the live path by exactly the rows in between. So the rollup starts at the
+	// next whole hour and that opening hour is read live.
+	firstWholeHour := start.Truncate(time.Hour)
+	if firstWholeHour.Before(start) {
+		firstWholeHour = firstWholeHour.Add(time.Hour)
+	}
+
+	// Buckets are fixed-width UTC hours, so string comparison is chronological
+	// and the primary key's leading (network, bucket) serves the range directly.
+	branches := []string{fmt.Sprintf(
+		"SELECT bucket AS hour, network, kind, addr FROM active_addr_rollup"+
+			" WHERE bucket >= ? AND bucket < ? AND %s", netFilter)}
+	args := []any{firstWholeHour.Format(activeAddrBucketLayout), boundary.Format(activeAddrBucketLayout)}
+
+	// The two stretches the rollup does not cover: the hour the window opens in,
+	// and everything newer than the build.
+	//
+	// They overlap whenever the last build is older than the window, and that is
+	// harmless rather than lucky — every branch feeds the same SELECT DISTINCT,
+	// and a row reaching it from two branches is identical in all four columns,
+	// so it collapses. Counting the stretches separately and adding them up is
+	// what would double.
+	liveWindows := []struct{ from, until time.Time }{
+		{start, firstWholeHour},
+		{boundary, time.Time{}},
+	}
+	for _, k := range activeAddrKinds {
+		for _, w := range liveWindows {
+			cond := "block_time >= ?"
+			args = append(args, w.from.Format(time.RFC3339))
+			if !w.until.IsZero() {
+				cond += " AND block_time < ?"
+				args = append(args, w.until.Format(time.RFC3339))
+			}
+			branches = append(branches, fmt.Sprintf(
+				"SELECT strftime('%%Y-%%m-%%dT%%H', block_time), network, '%s', %s FROM %s"+
+					" WHERE %s AND %s", k.kind, k.column, k.table, cond, netFilter))
+		}
+	}
+
+	// MATERIALIZED because src is read twice — once per grouping — and without
+	// it SQLite is free to inline the union into both, paying for the whole scan
+	// twice over.
+	//
+	// Chaining a second CTE, so that the total dedups the per-kind result rather
+	// than the raw union again, looks like it should be strictly cheaper and
+	// measured as noise on the wide windows and a regression on 24h: it trades
+	// one scan of src for an extra materialisation and re-sort, and the two are
+	// the same size whenever the bucket is the stored hour. Left as two passes.
+	bucket := activeAddrBucketExpr(granularity)
+	q := fmt.Sprintf(`
+		WITH src(hour, network, kind, addr) AS MATERIALIZED (%s)
+		SELECT bucket, kind AS typ, COUNT(*) AS cnt FROM (
+			SELECT DISTINCT %s AS bucket, kind, network, addr FROM src
+		) GROUP BY bucket, kind
+		UNION ALL
+		SELECT bucket, 'total' AS typ, COUNT(*) AS cnt FROM (
+			SELECT DISTINCT %s AS bucket, network, addr FROM src
+		) GROUP BY bucket`,
+		strings.Join(branches, " UNION ALL "), bucket, bucket)
+
+	rows, err := d.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	buckets := make(map[string]*ActiveAddressTimePoint)
+	for rows.Next() {
+		var bucket, typ string
+		var cnt int
+		if err := rows.Scan(&bucket, &typ, &cnt); err != nil {
+			return nil, err
+		}
+		pt, ok := buckets[bucket]
+		if !ok {
+			pt = &ActiveAddressTimePoint{Time: bucket}
+			buckets[bucket] = pt
+		}
+		switch typ {
+		case "callers":
+			pt.UniqueCallers = cnt
+		case "deployers":
+			pt.UniqueDeployers = cnt
+		case "senders":
+			pt.UniqueSenders = cnt
+		case "total":
+			pt.TotalActive = cnt
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return activeAddrPoints(buckets, days, granularity, step, truncFn), nil
+}
+
+// activeAddrBucketLayout is the stored bucket format: a UTC hour, fixed width so
+// that lexical order is chronological order.
+const activeAddrBucketLayout = "2006-01-02T15"
+
+// activeAddrBucketExpr maps a stored hour bucket onto the requested
+// granularity's key, and must agree with bucketKey for every granularity or the
+// series returns buckets the fill loop then cannot find.
+//
+// Three of the four are a prefix of 'YYYY-MM-DDTHH' rather than a strftime call,
+// which is not micro-optimisation: strftime parses a date string per row, and
+// the 90d window puts 135k rows through it. Only the ISO week needs real
+// calendar arithmetic.
+func activeAddrBucketExpr(granularity string) string {
+	switch granularity {
+	case "hourly":
+		return "hour"
+	case "weekly":
+		return "strftime('%G-W%V', hour || ':00:00')"
+	case "monthly":
+		return "substr(hour, 1, 7)"
+	default:
+		return "substr(hour, 1, 10)"
+	}
+}
+
+// activeAddrPoints turns the bucket map into the dense series the API returns,
+// filling the buckets nothing happened in.
+//
+// Shared by both read paths on purpose: an endpoint that answers with a
+// different set of buckets depending on whether a rollup happens to be built is
+// the same bug as answering with different numbers.
+func activeAddrPoints(
+	buckets map[string]*ActiveAddressTimePoint,
+	days int,
+	granularity string,
+	step time.Duration,
+	truncFn func(time.Time) time.Time,
+) []ActiveAddressTimePoint {
 	now := time.Now().UTC()
 	start := truncFn(now.AddDate(0, 0, -days))
 	end := truncFn(now)
@@ -3020,7 +3246,7 @@ func (d *DB) GetActiveAddressTimeSeries(network, granularity string, days int) (
 			out = append(out, ActiveAddressTimePoint{Time: k})
 		}
 	}
-	return out, nil
+	return out
 }
 
 // AddressLabel is a display name for an address, derived from on-chain data.
@@ -3511,21 +3737,27 @@ func (d *DB) AddressTransactions(network, addr string, limit, offset int) ([]Sto
 
 // --- Gas rollups ------------------------------------------------------------
 
-// gasRollupKey records when the rollups were last recomputed, so the page can
-// say how fresh its numbers are rather than presenting stale ones as live.
-const gasRollupKey = "gas_rollup_at"
+// rollupComputedAtKey records when the rollups were last recomputed, so the page
+// can say how fresh its numbers are rather than presenting stale ones as live —
+// and so the active-address series knows from which instant it has to stop
+// trusting stored tuples and read the source tables instead.
+//
+// The stored key still says "gas" because it was written by the first rollup to
+// need it and renaming it would reset every deployed instance's freshness stamp
+// to "never built" for one refresh interval.
+const rollupComputedAtKey = "gas_rollup_at"
 
-// gasRollupInterval is how often the rollups are rebuilt. These are all-time
+// rollupInterval is how often the rollups are rebuilt. These are all-time
 // aggregates, so minutes of staleness is invisible to a reader — and the
 // recompute takes the write lock, so doing it per sync pass would mean holding
 // it every 30 seconds for the sake of numbers nobody watches change.
-const gasRollupInterval = 5 * time.Minute
+const rollupInterval = 5 * time.Minute
 
 // bankTopRollupLimit is how many rows each bank leaderboard keeps. The read
 // shows ten; the slack absorbs a network filter narrowing the set afterwards.
 const bankTopRollupLimit = 400
 
-// RefreshGasRollups recomputes both gas aggregates for every configured network.
+// RefreshRollups recomputes both gas aggregates for every configured network.
 //
 // This is the expensive query the gas page used to run per request — 3.4s for
 // the realm attribution and 1.3s for the totals on sapphire, and both grow with
@@ -3533,7 +3765,7 @@ const bankTopRollupLimit = 400
 //
 // Whole-table replacement inside one transaction: readers see either the old
 // rollup or the new one, never a half-written mixture.
-func (d *DB) RefreshGasRollups() error {
+func (d *DB) RefreshRollups() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -3545,14 +3777,14 @@ func (d *DB) RefreshGasRollups() error {
 		if attempt > 0 {
 			time.Sleep(time.Duration(attempt) * 2 * time.Second)
 		}
-		if lastErr = d.refreshGasRollups(); lastErr == nil {
+		if lastErr = d.refreshRollups(); lastErr == nil {
 			return nil
 		}
 	}
 	return lastErr
 }
 
-func (d *DB) refreshGasRollups() error {
+func (d *DB) refreshRollups() error {
 
 	tx, err := d.db.Begin()
 	if err != nil {
@@ -3601,10 +3833,17 @@ func (d *DB) refreshGasRollups() error {
 		return err
 	}
 
+	// The active-address tuples too, for the same reason. They are also the
+	// reason the stamp written below has to be inside this transaction: the
+	// series reads it back to decide which hours it can trust.
+	if err := d.refreshActiveAddrRollup(tx); err != nil {
+		return err
+	}
+
 	if _, err := tx.Exec(
 		`INSERT INTO sync_state (key, value) VALUES (?, ?)
 		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-		gasRollupKey, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		rollupComputedAtKey, time.Now().UTC().Format(time.RFC3339)); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -3682,6 +3921,87 @@ func (d *DB) gasRollupReady() (bool, string) {
 		return false, ""
 	}
 	var at string
-	d.db.QueryRow(`SELECT value FROM sync_state WHERE key = ?`, gasRollupKey).Scan(&at)
+	d.db.QueryRow(`SELECT value FROM sync_state WHERE key = ?`, rollupComputedAtKey).Scan(&at)
 	return true, at
+}
+
+// --- Active-address rollup ---------------------------------------------------
+
+// activeAddrKinds are the three activities that make an address active, and the
+// values stored in active_addr_rollup.kind.
+//
+// They are named exactly as the series has always named them, so the read path
+// scans `kind` straight into the field it already had a case for. msg_runs is
+// deliberately absent: the series has never counted it, and adding it here would
+// change the numbers under cover of a performance change.
+var activeAddrKinds = []struct{ kind, table, column string }{
+	{"callers", "calls", "caller"},
+	{"deployers", "packages", "creator"},
+	{"senders", "bank_sends", "from_address"},
+}
+
+// refreshActiveAddrRollup rebuilds the distinct (network, hour, kind, address)
+// tuples for every configured network. Shares the caller's transaction, so
+// readers see either the whole previous generation or the whole new one.
+//
+// A full rebuild rather than an append from a watermark. The append would stay
+// flat as history grows, where this scales with all of it — 2.5s on production
+// today — but it would need a reset hook to be exactly right across chain
+// resets and backfills, and getting that wrong leaves tuples that no later pass
+// revisits. The gas rollups made the same trade for the same reason; a periodic
+// recompute is idempotent by construction. Revisit when the rebuild, not the
+// query, is what costs.
+func (d *DB) refreshActiveAddrRollup(tx *sql.Tx) error {
+	if _, err := tx.Exec(`DELETE FROM active_addr_rollup`); err != nil {
+		return err
+	}
+
+	scope := d.networkFilter("network", "")
+	branches := make([]string, 0, len(activeAddrKinds))
+	for _, k := range activeAddrKinds {
+		branches = append(branches, fmt.Sprintf(
+			"SELECT network, strftime('%%Y-%%m-%%dT%%H', block_time) AS bucket, '%s' AS kind, %s AS addr FROM %s WHERE %s",
+			k.kind, k.column, k.table, scope))
+	}
+
+	// block_time is nullable, and rows the syncer stored before it knew the
+	// block's timestamp produce a NULL bucket. The primary key would reject
+	// those and take the whole refresh down with it — silently, because the read
+	// path falls back to computing live and the endpoint merely stays slow. The
+	// live query drops the same rows, by way of `block_time >= ?`.
+	_, err := tx.Exec(`
+		INSERT INTO active_addr_rollup (network, bucket, kind, addr)
+		SELECT DISTINCT network, bucket, kind, addr
+		FROM (` + strings.Join(branches, " UNION ALL ") + `)
+		WHERE bucket IS NOT NULL`)
+	return err
+}
+
+// activeAddrRollupBoundary reports the instant from which the series still has
+// to read the source tables, and whether the rollup can be used at all.
+//
+// The rebuild runs on a timer, so between two builds the rollup holds part of
+// the hour it was built in and nothing after it. Serving the newest bucket from
+// it would make this endpoint lag by up to the refresh interval and disagree
+// with the live transaction feed on the same page — the class of bug that makes
+// every other number on the site suspect.
+//
+// So the boundary is the *hour containing* the build, not the build instant:
+// tuples strictly before it cover complete hours, and everything from it onward
+// is recomputed live over a window of at most one interval plus one hour, which
+// the (network, block_time) indexes serve directly.
+func (d *DB) activeAddrRollupBoundary() (time.Time, bool) {
+	var any int
+	if err := d.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM active_addr_rollup)`).Scan(&any); err != nil || any == 0 {
+		return time.Time{}, false
+	}
+	var at string
+	if err := d.db.QueryRow(`SELECT value FROM sync_state WHERE key = ?`, rollupComputedAtKey).Scan(&at); err != nil {
+		return time.Time{}, false
+	}
+	built, err := time.Parse(time.RFC3339, at)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return built.UTC().Truncate(time.Hour), true
 }
