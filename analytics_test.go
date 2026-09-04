@@ -551,3 +551,150 @@ func TestGasRollups(t *testing.T) {
 		}
 	})
 }
+
+// The bank rollup must give the same answers as computing live — including the
+// per-chain keying, which is the part most easily lost when precomputing.
+func TestBankRollupMatchesLiveComputation(t *testing.T) {
+	db := newTestDB(t)
+	db.SetConfiguredNetworks([]NetworkConfig{{ID: "busy"}, {ID: "quiet"}})
+	seedCrossChainSends(t, db)
+
+	// Extra shape: an address that both sends and receives, so the distinct
+	// address count cannot be a simple sum of senders and receivers.
+	if err := db.InsertBankSend("busy", "back", 200, "2026-08-01T00:00:00Z",
+		"g1receiver", "g1shared", "7ugnot", true); err != nil {
+		t.Fatalf("InsertBankSend: %v", err)
+	}
+
+	live, err := db.GetBankStats("")
+	if err != nil {
+		t.Fatalf("GetBankStats live: %v", err)
+	}
+	if live.ComputedAt != "" {
+		t.Error("computed_at set before any refresh")
+	}
+
+	if err := db.RefreshGasRollups(); err != nil {
+		t.Fatalf("RefreshGasRollups: %v", err)
+	}
+
+	rolled, err := db.GetBankStats("")
+	if err != nil {
+		t.Fatalf("GetBankStats rolled: %v", err)
+	}
+	if rolled.ComputedAt == "" {
+		t.Error("no computed_at, so the page cannot say how fresh these are")
+	}
+
+	for _, c := range []struct {
+		name         string
+		live, rolled int
+	}{
+		{"total sends", live.TotalSends, rolled.TotalSends},
+		{"unique senders", live.UniqueSenders, rolled.UniqueSenders},
+		{"unique receivers", live.UniqueReceivers, rolled.UniqueReceivers},
+		{"unique addresses", live.UniqueAddresses, rolled.UniqueAddresses},
+	} {
+		if c.live != c.rolled {
+			t.Errorf("%s: live=%d rolled=%d", c.name, c.live, c.rolled)
+		}
+	}
+	if live.TotalVolume != rolled.TotalVolume {
+		t.Errorf("volume: live=%d rolled=%d", live.TotalVolume, rolled.TotalVolume)
+	}
+
+	t.Run("the per-chain split survives", func(t *testing.T) {
+		if len(rolled.ByNetwork) != len(live.ByNetwork) {
+			t.Fatalf("by_network has %d entries rolled vs %d live", len(rolled.ByNetwork), len(live.ByNetwork))
+		}
+		for net, slice := range live.ByNetwork {
+			if rolled.ByNetwork[net] != slice {
+				t.Errorf("%s: live=%+v rolled=%+v", net, slice, rolled.ByNetwork[net])
+			}
+		}
+	})
+
+	t.Run("rankings stay keyed by network", func(t *testing.T) {
+		// One chain's ugnot is not another's, so a row summing them would be
+		// meaningless — the defect fixed in #111 and easy to reintroduce here.
+		for _, r := range rolled.TopSenders {
+			if r.Network == "" {
+				t.Errorf("ranking row has no network: %+v", r)
+			}
+		}
+		byNet := map[string]int64{}
+		for _, r := range rolled.TopSenders {
+			if r.Address == "g1shared" {
+				byNet[r.Network] = r.Total
+			}
+		}
+		if len(byNet) != 2 {
+			t.Errorf("g1shared produced %d rows, want one per chain: %v", len(byNet), byNet)
+		}
+	})
+
+	t.Run("a single network scopes and drops the split", func(t *testing.T) {
+		one, err := db.GetBankStats("quiet")
+		if err != nil {
+			t.Fatalf("GetBankStats(quiet): %v", err)
+		}
+		if one.TotalVolume != 5 {
+			t.Errorf("quiet volume = %d, want 5", one.TotalVolume)
+		}
+		if one.ByNetwork != nil {
+			t.Errorf("by_network sent for a single network: %+v", one.ByNetwork)
+		}
+	})
+}
+
+// A leaderboard bounded by the wrong key silently loses its top entry.
+//
+// The rollup first stored the top receivers by *count* and re-sorted those by
+// volume, so an address with one enormous transfer never reached the volume
+// ranking. Every total still matched, which is exactly how this class of bug
+// hides — it was caught by diffing against live computation on production.
+//
+// The fixture has to exceed the rollup's own LIMIT to exercise it. My first
+// version used six receivers, so nothing was ever truncated and the test passed
+// against the bug.
+func TestBankRollupKeepsEachRankingsOwnTop(t *testing.T) {
+	db := newTestDB(t)
+	db.SetConfiguredNetworks([]NetworkConfig{{ID: "n"}})
+
+	const when = "2026-08-01T00:00:00Z"
+	// More frequent receivers than the rollup keeps, each with several receipts,
+	// so a single-receipt address cannot be in the count-ordered top slice.
+	const frequent = bankTopRollupLimit + 50
+	for who := 0; who < frequent; who++ {
+		for i := 0; i < 3; i++ {
+			if err := db.InsertBankSend("n", fmt.Sprintf("s-%d-%d", who, i), 100+i, when,
+				"g1sender", fmt.Sprintf("g1frequent%05d", who), "1ugnot", true); err != nil {
+				t.Fatalf("InsertBankSend: %v", err)
+			}
+		}
+	}
+	// One receipt, enormous: dominates by volume, invisible by count.
+	if err := db.InsertBankSend("n", "whale", 500, when, "g1sender", "g1whale", "999999999ugnot", true); err != nil {
+		t.Fatalf("InsertBankSend: %v", err)
+	}
+
+	if err := db.RefreshGasRollups(); err != nil {
+		t.Fatalf("RefreshGasRollups: %v", err)
+	}
+	s, err := db.GetBankStats("n")
+	if err != nil {
+		t.Fatalf("GetBankStats: %v", err)
+	}
+
+	if len(s.TopReceiversVol) == 0 || s.TopReceiversVol[0].Address != "g1whale" {
+		got := "none"
+		if len(s.TopReceiversVol) > 0 {
+			got = s.TopReceiversVol[0].Address
+		}
+		t.Errorf("top receiver by volume = %s, want g1whale — a one-off large transfer "+
+			"must not be lost to a count-ordered truncation", got)
+	}
+	if len(s.TopReceiversCnt) == 0 || s.TopReceiversCnt[0].Count != 3 {
+		t.Errorf("top receiver by count = %+v, want one of the frequent receivers", s.TopReceiversCnt)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"log"
 	_ "modernc.org/sqlite"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -427,6 +428,30 @@ func initSchema(db *sql.DB) error {
 			gas_wanted    INTEGER NOT NULL,
 			gas_fee       INTEGER NOT NULL,
 			success_count INTEGER NOT NULL
+		);
+
+		-- Bank rollups, on the same timer and for the same reason as the gas
+		-- ones: seven aggregate passes over bank_sends, three of them
+		-- COUNT(DISTINCT) over the whole table, measured at 5.4s and growing.
+		CREATE TABLE IF NOT EXISTS bank_totals_rollup (
+			network          TEXT PRIMARY KEY,
+			total_sends      INTEGER NOT NULL,
+			unique_senders   INTEGER NOT NULL,
+			unique_receivers INTEGER NOT NULL,
+			unique_addresses INTEGER NOT NULL,
+			total_volume     INTEGER NOT NULL
+		);
+
+		-- One row per (network, leaderboard, address). The kind column names
+		-- which leaderboard, so the three rankings share a table rather than
+		-- needing three that differ only in ORDER BY.
+		CREATE TABLE IF NOT EXISTS bank_top_rollup (
+			network TEXT NOT NULL,
+			kind    TEXT NOT NULL,
+			address TEXT NOT NULL,
+			count   INTEGER NOT NULL,
+			total   INTEGER NOT NULL,
+			PRIMARY KEY (network, kind, address)
 		);
 
 		CREATE TABLE IF NOT EXISTS sync_state (
@@ -1801,6 +1826,9 @@ type AddrStat struct {
 }
 
 type BankStats struct {
+	// ComputedAt is when the rollups behind these figures were built, empty if
+	// computed live.
+	ComputedAt      string     `json:"computed_at,omitempty"`
 	TotalSends      int        `json:"total_sends"`
 	UniqueSenders   int        `json:"unique_senders"`
 	UniqueReceivers int        `json:"unique_receivers"`
@@ -1832,11 +1860,51 @@ func (d *DB) GetBankStats(network string) (*BankStats, error) {
 	nFilter := " WHERE " + d.networkFilter("network", network)
 
 	var s BankStats
+
+	// Prefer the rollup. Seven passes over bank_sends, three of them
+	// COUNT(DISTINCT) over the whole table, measured at 5.4s and growing.
+	if ready, at := d.bankRollupReady(); ready {
+		s.ComputedAt = at
+		d.db.QueryRow(`SELECT COALESCE(SUM(total_sends),0), COALESCE(SUM(total_volume),0)
+			FROM bank_totals_rollup`+nFilter).Scan(&s.TotalSends, &s.TotalVolume)
+
+		// Counted per (address, network) — the same address on two chains is
+		// two actors — so these sum across the rollup's per-network rows.
+		d.db.QueryRow(`SELECT COALESCE(SUM(unique_senders),0), COALESCE(SUM(unique_receivers),0),
+			COALESCE(SUM(unique_addresses),0) FROM bank_totals_rollup`+nFilter).
+			Scan(&s.UniqueSenders, &s.UniqueReceivers, &s.UniqueAddresses)
+
+		if network == "" {
+			if rows, err := d.db.Query(`SELECT network, total_sends, total_volume
+				FROM bank_totals_rollup` + nFilter); err == nil {
+				s.ByNetwork = map[string]BankSlice{}
+				for rows.Next() {
+					var net string
+					var slice BankSlice
+					if err := rows.Scan(&net, &slice.TotalSends, &slice.TotalVolume); err == nil {
+						s.ByNetwork[net] = slice
+					}
+				}
+				rows.Close()
+			}
+		}
+
+		top := func(kind, order string) []AddrStat {
+			return d.queryAddrStats(`SELECT network, address, count, total FROM bank_top_rollup
+				WHERE kind = '` + kind + `' AND ` + d.networkFilter("network", network) + `
+				ORDER BY ` + order + ` DESC LIMIT 10`)
+		}
+		s.TopSenders = top("sender", "count")
+		s.TopReceiversVol = top("receiver_volume", "total")
+		s.TopReceiversCnt = top("receiver_count", "count")
+		return &s, nil
+	}
+
+	// Not built yet — a fresh database, or the first start after this shipped.
+	// Computing live is slow but right; zeros would read as "no transfers".
 	d.db.QueryRow(`SELECT COUNT(*) FROM bank_sends` + nFilter).Scan(&s.TotalSends)
 	d.db.QueryRow(`SELECT ` + amountExpr + ` FROM bank_sends` + nFilter).Scan(&s.TotalVolume)
 
-	// One pass for the per-chain breakdown; the grouping key already leads the
-	// indexes this reads.
 	if network == "" {
 		if rows, err := d.db.Query(`SELECT network, COUNT(*), ` + amountExpr +
 			` FROM bank_sends` + nFilter + ` GROUP BY network`); err == nil {
@@ -1852,22 +1920,29 @@ func (d *DB) GetBankStats(network string) (*BankStats, error) {
 		}
 	}
 
-	// Addresses are counted per chain, like everywhere else: the same string on
-	// two chains is two actors. Blended, production reports 68,580 against
-	// 68,672 counted honestly.
 	d.db.QueryRow(`SELECT COUNT(*) FROM (SELECT DISTINCT addr, network FROM (
 		SELECT from_address as addr, network FROM bank_sends` + nFilter + `
 		UNION SELECT to_address, network FROM bank_sends` + nFilter + `))`).Scan(&s.UniqueAddresses)
 	d.db.QueryRow(`SELECT COUNT(*) FROM (SELECT DISTINCT from_address, network FROM bank_sends` + nFilter + `)`).Scan(&s.UniqueSenders)
 	d.db.QueryRow(`SELECT COUNT(*) FROM (SELECT DISTINCT to_address, network FROM bank_sends` + nFilter + `)`).Scan(&s.UniqueReceivers)
 
-	// Every ranking leads its GROUP BY with the network, which both keys the row
-	// correctly and matches the (network, address) indexes these read.
 	s.TopSenders = d.queryAddrStats(`SELECT network, from_address, COUNT(*), ` + amountExpr + ` FROM bank_sends` + nFilter + ` GROUP BY network, from_address ORDER BY COUNT(*) DESC LIMIT 10`)
 	s.TopReceiversVol = d.queryAddrStats(`SELECT network, to_address, COUNT(*), ` + amountExpr + ` FROM bank_sends` + nFilter + ` GROUP BY network, to_address ORDER BY ` + amountExpr + ` DESC LIMIT 10`)
 	s.TopReceiversCnt = d.queryAddrStats(`SELECT network, to_address, COUNT(*), ` + amountExpr + ` FROM bank_sends` + nFilter + ` GROUP BY network, to_address ORDER BY COUNT(*) DESC LIMIT 10`)
 
 	return &s, nil
+}
+
+// bankRollupReady reports whether the bank rollups hold anything, and when they
+// were built. Callers hold the read lock.
+func (d *DB) bankRollupReady() (bool, string) {
+	var n int
+	if err := d.db.QueryRow(`SELECT COUNT(*) FROM bank_totals_rollup`).Scan(&n); err != nil || n == 0 {
+		return false, ""
+	}
+	var at string
+	d.db.QueryRow(`SELECT value FROM sync_state WHERE key = ?`, gasRollupKey).Scan(&at)
+	return true, at
 }
 
 // Every ranking row carries the chain it belongs to.
@@ -3420,6 +3495,10 @@ const gasRollupKey = "gas_rollup_at"
 // it every 30 seconds for the sake of numbers nobody watches change.
 const gasRollupInterval = 5 * time.Minute
 
+// bankTopRollupLimit is how many rows each bank leaderboard keeps. The read
+// shows ten; the slack absorbs a network filter narrowing the set afterwards.
+const bankTopRollupLimit = 400
+
 // RefreshGasRollups recomputes both gas aggregates for every configured network.
 //
 // This is the expensive query the gas page used to run per request — 3.4s for
@@ -3490,6 +3569,12 @@ func (d *DB) refreshGasRollups() error {
 		return err
 	}
 
+	// Bank aggregates share this transaction and this timer: same shape, same
+	// reason, and one refresh means one write-lock window rather than two.
+	if err := d.refreshBankRollups(tx); err != nil {
+		return err
+	}
+
 	if _, err := tx.Exec(
 		`INSERT INTO sync_state (key, value) VALUES (?, ?)
 		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
@@ -3497,6 +3582,65 @@ func (d *DB) refreshGasRollups() error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// RefreshBankRollups recomputes the bank aggregates for every configured
+// network.
+//
+// GetBankStats runs seven passes over bank_sends, three of them COUNT(DISTINCT)
+// over the whole table — 5.4s and growing. Same treatment as the gas rollups and
+// on the same timer: whole-table replacement in one transaction, so a reader
+// sees one consistent generation.
+func (d *DB) refreshBankRollups(tx *sql.Tx) error {
+	scope := d.networkFilter("network", "")
+
+	if _, err := tx.Exec(`DELETE FROM bank_totals_rollup`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO bank_totals_rollup
+			(network, total_sends, unique_senders, unique_receivers, unique_addresses, total_volume)
+		SELECT s.network, COUNT(*),
+		       COUNT(DISTINCT s.from_address),
+		       COUNT(DISTINCT s.to_address),
+		       (SELECT COUNT(*) FROM (
+		            SELECT DISTINCT addr FROM (
+		                SELECT from_address addr FROM bank_sends b WHERE b.network = s.network
+		                UNION SELECT to_address FROM bank_sends b WHERE b.network = s.network))),
+		       ` + amountExpr + `
+		FROM bank_sends s WHERE ` + scope + `
+		GROUP BY s.network`); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(`DELETE FROM bank_top_rollup`); err != nil {
+		return err
+	}
+	// Bounded per network per leaderboard: the read only ever shows ten, and
+	// storing every address would make the rollup as large as the table.
+	//
+	// One kind per *ordering*, not one per address column. Storing the top 400
+	// receivers by count and re-sorting those by volume gives the wrong answer:
+	// an address that received one enormous transfer is not in the top 400 by
+	// count, so it never reaches the volume ranking. Caught by diffing against
+	// live computation on production — every total matched and only that one
+	// list differed, which is exactly how a truncation bug looks.
+	for _, r := range []struct{ kind, addr, order string }{
+		{"sender", "from_address", "COUNT(*)"},
+		{"receiver_count", "to_address", "COUNT(*)"},
+		{"receiver_volume", "to_address", amountExpr},
+	} {
+		if _, err := tx.Exec(`
+			INSERT INTO bank_top_rollup (network, kind, address, count, total)
+			SELECT network, ?, `+r.addr+`, COUNT(*), `+amountExpr+`
+			FROM bank_sends WHERE `+scope+`
+			GROUP BY network, `+r.addr+`
+			ORDER BY `+r.order+` DESC
+			LIMIT `+strconv.Itoa(bankTopRollupLimit)+``, r.kind); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // gasRollupReady reports whether the rollups hold anything, and when they were
