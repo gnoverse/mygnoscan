@@ -3425,6 +3425,17 @@ async function loadRealmDetail(path, initialTab) {
     const storageEl = clear('tab-storage'); if (activeTab === 'storage') storageEl.classList.add('active'); else storageEl.classList.remove('active');
     skeletonBlock(storageEl);
     (async () => {
+      // /api/storage refuses the all-networks case, and it is right to: storage
+      // figures are denominated amounts, so blending chains would be
+      // meaningless. Asking anyway turned every realm page view in the default
+      // mode into a 400 and a console error, and told the reader "something
+      // broke" when the real state is "pick a chain first".
+      if (getNetwork() === 'all') {
+        storageEl.textContent = '';
+        storageEl.appendChild(el('div', { style: { color: 'var(--fg2)' } },
+          'storage is denominated per chain — select a specific network to see it'));
+        return;
+      }
       try {
         const storagePath = path.replace('gno.land/', '');
         const sData = await api('storage/' + storagePath);
@@ -3675,15 +3686,23 @@ async function loadTxDetail(hash) {
           (txDelta >= 0 ? '+' : '') + fmtNum(txDelta) + ' B' + (Math.abs(txDelta) >= 1024 ? ' (' + (txDelta/1024).toFixed(2) + ' KB)' : ''));
         stBody.appendChild(el('tr', {}, realmTd, beforeTd, deltaCol, afterTd,
           el('td', { style: { ...mono, color: 'var(--fg2)' } }, fmtNum(txFee) + ' ugnot')));
-        // Async fetch before/after from storage history
+        // Async fetch before/after from storage history. Same all-networks
+        // guard as the realm page: the endpoint answers 400 there by design,
+        // and the .catch below would quietly render that as "?" — a failure
+        // dressed up as missing data.
         const apiPath = sPath.replace('gno.land/', '');
-        api('storage/' + apiPath).then(sd => {
-          let net = 0;
-          for (const e of (sd.storage?.entries || [])) net += e.type === 'deposit' ? e.bytes_delta : -e.bytes_delta;
-          const before = net - txDelta;
-          beforeTd.textContent = fmtNum(before) + ' B';
-          afterTd.textContent = fmtNum(net) + ' B';
-        }).catch(() => { beforeTd.textContent = '?'; afterTd.textContent = '?'; });
+        if (getNetwork() === 'all') {
+          beforeTd.textContent = '—'; afterTd.textContent = '—';
+          beforeTd.title = afterTd.title = 'select a specific network: storage is denominated per chain';
+        } else {
+          api('storage/' + apiPath).then(sd => {
+            let net = 0;
+            for (const e of (sd.storage?.entries || [])) net += e.type === 'deposit' ? e.bytes_delta : -e.bytes_delta;
+            const before = net - txDelta;
+            beforeTd.textContent = fmtNum(before) + ' B';
+            afterTd.textContent = fmtNum(net) + ' B';
+          }).catch(() => { beforeTd.textContent = '?'; afterTd.textContent = '?'; });
+        }
       }
       // Totals row
       stBody.appendChild(el('tr', { style: { borderTop: '1px solid var(--border)' } },
