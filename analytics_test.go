@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 )
 
 // seedSharedRealm deploys the same package path on two chains and gives it very
@@ -697,4 +698,100 @@ func TestBankRollupKeepsEachRankingsOwnTop(t *testing.T) {
 	if len(s.TopReceiversCnt) == 0 || s.TopReceiversCnt[0].Count != 3 {
 		t.Errorf("top receiver by count = %+v, want one of the frequent receivers", s.TopReceiversCnt)
 	}
+}
+
+// Deduplicating twice costs twice and buys nothing.
+//
+// Five queries wrapped an inner UNION in an outer SELECT DISTINCT over the same
+// key — or, for the time series, a coarser one. The inner dedup could only
+// remove rows the outer one would remove anyway. Measured on production: the
+// active-address series went 4.81s to 2.58s with byte-identical output.
+//
+// This pins the *results*, since that is what switching to UNION ALL could have
+// changed. Duplicate rows are seeded deliberately so a missing outer DISTINCT
+// would show up as inflated counts.
+func TestDedupOnceGivesTheSameCounts(t *testing.T) {
+	db := newTestDB(t)
+	db.SetConfiguredNetworks([]NetworkConfig{{ID: "a"}, {ID: "b"}})
+
+	when := time.Now().UTC().Add(-2 * time.Hour).Format("2006-01-02T15:04:05Z")
+
+	// One address reachable through every table, on both chains, several times —
+	// so every branch of every union produces rows that overlap the others.
+	for _, net := range []string{"a", "b"} {
+		for i := 0; i < 3; i++ {
+			if err := db.InsertCall(net, fmt.Sprintf("c-%s-%d", net, i), 100+i, when,
+				"g1everywhere", "gno.land/r/demo/boards", "Post", true); err != nil {
+				t.Fatalf("InsertCall: %v", err)
+			}
+			if err := db.InsertBankSend(net, fmt.Sprintf("s-%s-%d", net, i), 200+i, when,
+				"g1everywhere", "g1everywhere", "1ugnot", true); err != nil {
+				t.Fatalf("InsertBankSend: %v", err)
+			}
+		}
+		if err := db.UpsertPackage(net, "gno.land/r/"+net+"/pkg", "pkg", "g1everywhere",
+			net+"-deploy", 300, when, true, 1); err != nil {
+			t.Fatalf("UpsertPackage: %v", err)
+		}
+		if err := db.InsertMsgRun(net, net+"-run", 400, when, "g1everywhere", "package main", true); err != nil {
+			t.Fatalf("InsertMsgRun: %v", err)
+		}
+	}
+
+	t.Run("analytics counts the address once per chain", func(t *testing.T) {
+		a, err := db.GetAnalytics("")
+		if err != nil {
+			t.Fatalf("GetAnalytics: %v", err)
+		}
+		// g1everywhere on two chains = 2. It appears in four tables and as both
+		// sender and receiver; none of that should multiply it.
+		if a.TotalAddresses != 2 {
+			t.Errorf("total addresses = %d, want 2 — the dedup collapsed to the wrong key", a.TotalAddresses)
+		}
+	})
+
+	t.Run("sanity counts the address once per chain", func(t *testing.T) {
+		ov, err := db.GetSanityOverview("")
+		if err != nil {
+			t.Fatalf("GetSanityOverview: %v", err)
+		}
+		if ov.ActiveAddresses24h != 2 {
+			t.Errorf("active addresses = %d, want 2", ov.ActiveAddresses24h)
+		}
+	})
+
+	t.Run("the time series counts it once per bucket per chain", func(t *testing.T) {
+		pts, err := db.GetActiveAddressTimeSeries("", "daily", 7)
+		if err != nil {
+			t.Fatalf("GetActiveAddressTimeSeries: %v", err)
+		}
+		total := 0
+		for _, p := range pts {
+			total += p.TotalActive
+		}
+		// One day of activity, one address, two chains.
+		if total != 2 {
+			t.Errorf("total active across buckets = %d, want 2", total)
+		}
+	})
+
+	t.Run("bank stats count it once per chain, live and rolled up", func(t *testing.T) {
+		live, err := db.GetBankStats("")
+		if err != nil {
+			t.Fatalf("GetBankStats: %v", err)
+		}
+		if err := db.RefreshGasRollups(); err != nil {
+			t.Fatalf("RefreshGasRollups: %v", err)
+		}
+		rolled, err := db.GetBankStats("")
+		if err != nil {
+			t.Fatalf("GetBankStats rolled: %v", err)
+		}
+		if live.UniqueAddresses != 2 {
+			t.Errorf("live unique addresses = %d, want 2", live.UniqueAddresses)
+		}
+		if rolled.UniqueAddresses != live.UniqueAddresses {
+			t.Errorf("rolled=%d live=%d", rolled.UniqueAddresses, live.UniqueAddresses)
+		}
+	})
 }
