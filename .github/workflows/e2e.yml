@@ -1,0 +1,62 @@
+name: e2e
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  browser:
+    name: browser tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      # Node is a development dependency here and nowhere else: it drives the
+      # browser and never touches the binary, which still embeds the frontend
+      # with no build step.
+      - name: Set up Node
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: e2e
+
+      - name: Install browser
+        run: npx playwright install --with-deps chromium
+        working-directory: e2e
+
+      - name: Run
+        run: npx playwright test
+        working-directory: e2e
+
+      # Screenshot, video and trace for anything that failed. Without these a
+      # red run in CI is a mystery, which is most of why this suite exists.
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-artifacts
+          path: |
+            e2e/test-results/
+            e2e/playwright-report/
+          if-no-files-found: warn
+          retention-days: 7
