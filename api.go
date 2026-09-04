@@ -1388,6 +1388,9 @@ func (a *API) HandleGas(w http.ResponseWriter, r *http.Request) {
 		"total_source_bytes": a.db.TotalSourceBytes(network),
 		"top_realms":         stats.TopRealms,
 		"top_txs":            stats.TopTxs,
+		// When the rollups behind these figures were built. Empty means they
+		// were computed live, which happens before the first refresh.
+		"computed_at": stats.ComputedAt,
 	})
 }
 

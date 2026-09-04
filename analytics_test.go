@@ -442,3 +442,112 @@ func TestDerivedAddressLabels(t *testing.T) {
 		}
 	}
 }
+
+// The gas page reads precomputed rollups.
+//
+// Its two aggregates scale with the chain and had reached 14s on sapphire,
+// against a 30s server write timeout — the trajectory that broke the address
+// page twice. Neither can be indexed away: attributing gas per realm means
+// touching every call, and the totals sum every transaction.
+func TestGasRollups(t *testing.T) {
+	db := newTestDB(t)
+	db.SetConfiguredNetworks([]NetworkConfig{{ID: "live"}, {ID: "other"}})
+
+	const when = "2026-08-01T00:00:00Z"
+	seed := func(net, hash, path string, gas, fee int) {
+		t.Helper()
+		if err := db.UpsertTransaction(net, hash, 100, when, gas, gas*2, fee, true); err != nil {
+			t.Fatalf("UpsertTransaction: %v", err)
+		}
+		if err := db.InsertCall(net, hash, 100, when, "g1caller", path, "Post", true); err != nil {
+			t.Fatalf("InsertCall: %v", err)
+		}
+	}
+	seed("live", "a", "gno.land/r/demo/boards", 100, 10)
+	seed("live", "b", "gno.land/r/demo/boards", 200, 20)
+	seed("live", "c", "gno.land/r/demo/users", 50, 5)
+	// The same path on another chain must stay a separate row in the rollup.
+	seed("other", "d", "gno.land/r/demo/boards", 999, 99)
+
+	t.Run("before any refresh it computes live rather than showing zeros", func(t *testing.T) {
+		// Zeros would read as "this chain has used no gas".
+		stats, err := db.GetGasStats("live", 10)
+		if err != nil {
+			t.Fatalf("GetGasStats: %v", err)
+		}
+		if stats.TotalGasUsed != 350 {
+			t.Errorf("gas used = %d, want 350 computed live", stats.TotalGasUsed)
+		}
+		if stats.ComputedAt != "" {
+			t.Errorf("computed_at = %q, want empty when computed live", stats.ComputedAt)
+		}
+	})
+
+	if err := db.RefreshGasRollups(); err != nil {
+		t.Fatalf("RefreshGasRollups: %v", err)
+	}
+
+	t.Run("the rollup gives the same answer", func(t *testing.T) {
+		stats, err := db.GetGasStats("live", 10)
+		if err != nil {
+			t.Fatalf("GetGasStats: %v", err)
+		}
+		if stats.TotalGasUsed != 350 || stats.TotalTxs != 3 {
+			t.Errorf("gas=%d txs=%d, want 350 and 3", stats.TotalGasUsed, stats.TotalTxs)
+		}
+		if stats.ComputedAt == "" {
+			t.Error("no computed_at, so the page cannot say how fresh these are")
+		}
+		if len(stats.TopRealms) == 0 || stats.TopRealms[0].Path != "gno.land/r/demo/boards" {
+			t.Errorf("top realm = %+v, want boards with 300 gas", stats.TopRealms)
+		}
+		if stats.TopRealms[0].Gas != 300 {
+			t.Errorf("boards gas = %d, want 300", stats.TopRealms[0].Gas)
+		}
+	})
+
+	t.Run("another chain's gas stays out", func(t *testing.T) {
+		stats, err := db.GetGasStats("live", 10)
+		if err != nil {
+			t.Fatalf("GetGasStats: %v", err)
+		}
+		if stats.TotalGasUsed != 350 {
+			t.Errorf("gas used = %d — the other chain's 999 leaked in", stats.TotalGasUsed)
+		}
+	})
+
+	t.Run("all networks re-groups a shared path across chains", func(t *testing.T) {
+		// The rollup stores (network, path); a path on two chains is two rows
+		// there and must be summed on read when both are in scope.
+		stats, err := db.GetGasStats("", 10)
+		if err != nil {
+			t.Fatalf("GetGasStats: %v", err)
+		}
+		if stats.TotalGasUsed != 1349 {
+			t.Errorf("gas used = %d, want 1349 across both chains", stats.TotalGasUsed)
+		}
+		var boards int
+		for _, r := range stats.TopRealms {
+			if r.Path == "gno.land/r/demo/boards" {
+				boards = r.Gas
+			}
+		}
+		if boards != 1299 {
+			t.Errorf("boards gas = %d, want 1299 (300 + 999) summed across chains", boards)
+		}
+	})
+
+	t.Run("a refresh replaces rather than accumulates", func(t *testing.T) {
+		// Whole-table replacement, so running it twice must not double anything.
+		if err := db.RefreshGasRollups(); err != nil {
+			t.Fatalf("RefreshGasRollups: %v", err)
+		}
+		stats, err := db.GetGasStats("live", 10)
+		if err != nil {
+			t.Fatalf("GetGasStats: %v", err)
+		}
+		if stats.TotalGasUsed != 350 {
+			t.Errorf("gas used = %d after a second refresh, want 350", stats.TotalGasUsed)
+		}
+	})
+}

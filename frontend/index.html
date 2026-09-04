@@ -2937,6 +2937,16 @@ async function loadGas() {
   try {
     const data = await api('gas');
     container.textContent = '';
+    // Say how fresh these are. They come from rollups rebuilt on a timer, and
+    // presenting precomputed numbers as live is how a page quietly stops being
+    // trustworthy.
+    if (data.computed_at) {
+      const note = el('div', { className: 'section-sub' });
+      note.append('totals and per-realm gas as of ');
+      note.appendChild(timeEl(data.computed_at));
+      note.append(' \u00b7 rebuilt every few minutes');
+      container.appendChild(note);
+    }
     // Stats
     const statsBar = el('div', { className: 'stats-bar' });
     statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total txs'), el('span', { className: 'value' }, fmtNum(data.total_txs))));
