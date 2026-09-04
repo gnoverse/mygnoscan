@@ -29,3 +29,10 @@ mygnoscan.db
 
 # local dev server config (machine-specific paths)
 .claude/launch.json
+
+# browser tests: dependencies and per-run output. e2e/package-lock.json is
+# committed, everything else here is generated.
+e2e/node_modules/
+e2e/.tmp/
+e2e/test-results/
+e2e/playwright-report/
