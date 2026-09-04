@@ -484,8 +484,8 @@ func TestGasRollups(t *testing.T) {
 		}
 	})
 
-	if err := db.RefreshGasRollups(); err != nil {
-		t.Fatalf("RefreshGasRollups: %v", err)
+	if err := db.RefreshRollups(); err != nil {
+		t.Fatalf("RefreshRollups: %v", err)
 	}
 
 	t.Run("the rollup gives the same answer", func(t *testing.T) {
@@ -540,8 +540,8 @@ func TestGasRollups(t *testing.T) {
 
 	t.Run("a refresh replaces rather than accumulates", func(t *testing.T) {
 		// Whole-table replacement, so running it twice must not double anything.
-		if err := db.RefreshGasRollups(); err != nil {
-			t.Fatalf("RefreshGasRollups: %v", err)
+		if err := db.RefreshRollups(); err != nil {
+			t.Fatalf("RefreshRollups: %v", err)
 		}
 		stats, err := db.GetGasStats("live", 10)
 		if err != nil {
@@ -575,8 +575,8 @@ func TestBankRollupMatchesLiveComputation(t *testing.T) {
 		t.Error("computed_at set before any refresh")
 	}
 
-	if err := db.RefreshGasRollups(); err != nil {
-		t.Fatalf("RefreshGasRollups: %v", err)
+	if err := db.RefreshRollups(); err != nil {
+		t.Fatalf("RefreshRollups: %v", err)
 	}
 
 	rolled, err := db.GetBankStats("")
@@ -679,8 +679,8 @@ func TestBankRollupKeepsEachRankingsOwnTop(t *testing.T) {
 		t.Fatalf("InsertBankSend: %v", err)
 	}
 
-	if err := db.RefreshGasRollups(); err != nil {
-		t.Fatalf("RefreshGasRollups: %v", err)
+	if err := db.RefreshRollups(); err != nil {
+		t.Fatalf("RefreshRollups: %v", err)
 	}
 	s, err := db.GetBankStats("n")
 	if err != nil {
@@ -780,8 +780,8 @@ func TestDedupOnceGivesTheSameCounts(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetBankStats: %v", err)
 		}
-		if err := db.RefreshGasRollups(); err != nil {
-			t.Fatalf("RefreshGasRollups: %v", err)
+		if err := db.RefreshRollups(); err != nil {
+			t.Fatalf("RefreshRollups: %v", err)
 		}
 		rolled, err := db.GetBankStats("")
 		if err != nil {
