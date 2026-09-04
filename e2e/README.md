@@ -31,6 +31,10 @@ npx playwright show-trace test-results/<test>/trace.zip
 
 CI uploads the same directory as an artifact.
 
+**Node 24 or newer.** The fixture writes through `node:sqlite`, which needs
+`--experimental-sqlite` on 22 and is stable from 24 — which is also why there is
+no `sqlite3` CLI dependency here.
+
 ## About the Node dependency
 
 Node lives here and nowhere else. It is not a build step for the frontend, it is
