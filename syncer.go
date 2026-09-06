@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 type Syncer struct {
@@ -23,6 +25,12 @@ type Syncer struct {
 	// real blocks to observe it is not a unit test.
 	blockPageSize     int
 	blockPagesPerPass int
+
+	// blockHistoryDays caps how far back syncBlocks backfills. See the flag of
+	// the same name in main.go for the sentinels. The zero value means
+	// unlimited, so a Syncer built without setting it behaves exactly as it did
+	// before the cap existed.
+	blockHistoryDays int
 }
 
 func NewSyncer(client *IndexerClient, db *DB, analyzer *Analyzer, networkID string) *Syncer {
@@ -388,6 +396,22 @@ func blocksBackfillDoneKey(network string) string {
 	return "blocks_backfill_done:" + network
 }
 
+// blocksBackfillDepthKey namespaces the -block-history-days value the backfill
+// stopped at, when it stopped because of the cap. See markBackfillDone and
+// shouldResumeBackfill.
+func blocksBackfillDepthKey(network string) string {
+	return "blocks_backfill_depth:" + network
+}
+
+// blockHistoryCutoff is the oldest block time worth backfilling, and whether a
+// cutoff applies at all. See main.go's -block-history-days.
+func (s *Syncer) blockHistoryCutoff() (time.Time, bool) {
+	if s.blockHistoryDays <= 0 {
+		return time.Time{}, false
+	}
+	return time.Now().UTC().AddDate(0, 0, -s.blockHistoryDays), true
+}
+
 // syncBlocks keeps the blocks table current and backfills history.
 //
 // Two cursors, both derived from the table itself: head sync walks forward from
@@ -398,6 +422,13 @@ func blocksBackfillDoneKey(network string) string {
 // Backward rather than forward: filling oldest-first would leave the dashboard's
 // default 90d window empty until the backfill nearly finished.
 func (s *Syncer) syncBlocks(ctx context.Context) {
+	// A negative depth declines block persistence outright: no seeding, no head
+	// sync, no backfill. The block charts then render empty, which is the
+	// operator's stated choice.
+	if s.blockHistoryDays < 0 {
+		return
+	}
+
 	tip, err := s.client.LatestBlockHeight(ctx)
 	if err != nil {
 		log.Printf("[%s] syncBlocks: tip: %v", s.networkID, err)
@@ -443,9 +474,31 @@ func (s *Syncer) syncBlocks(ctx context.Context) {
 
 	// Backfill: walk down until genesis or an empty page, bounded per pass.
 	if done, _ := s.db.GetSyncState(blocksBackfillDoneKey(s.networkID)); done == "1" {
-		return
+		if !s.shouldResumeBackfill() {
+			return
+		}
+		// The operator raised -block-history-days (including to 0, unlimited)
+		// past the depth this backfill stopped at. Clear the flag and fall
+		// through into the same pass instead of waiting for the next one, so
+		// resuming doesn't cost an extra 30s cycle.
+		log.Printf("[%s] syncBlocks: -block-history-days raised past the recorded cap, resuming backfill", s.networkID)
+		if err := s.db.SetSyncState(blocksBackfillDoneKey(s.networkID), ""); err != nil {
+			log.Printf("[%s] syncBlocks: clear backfill done flag: %v", s.networkID, err)
+			return
+		}
+	}
+	cutoff, capped := s.blockHistoryCutoff()
+	if capped {
+		// Checked before the first page as well as after each one, so a pass
+		// that starts already past the cutoff (e.g. the operator lowered the
+		// depth between restarts) terminates instead of fetching one more page.
+		if oldest, ok, err := s.db.OldestBlockTime(s.networkID); err == nil && ok && oldest.Before(cutoff) {
+			s.markBackfillDone("history cap reached", minH, s.blockHistoryDays)
+			return
+		}
 	}
 	reachedFloor := false
+	reachedCap := false
 	for i := 0; i < pagesLeft && minH > 1; i++ {
 		to := minH - 1
 		from := to - s.blockPageSize + 1
@@ -485,18 +538,73 @@ func (s *Syncer) syncBlocks(ctx context.Context) {
 			break
 		}
 		minH = newMin
-	}
-	if minH <= 1 || reachedFloor {
-		if err := s.db.SetSyncState(blocksBackfillDoneKey(s.networkID), "1"); err != nil {
-			log.Printf("[%s] syncBlocks: mark done: %v", s.networkID, err)
-			return
+		if capped {
+			oldest, ok, err := s.db.OldestBlockTime(s.networkID)
+			if err == nil && ok && oldest.Before(cutoff) {
+				reachedCap = true
+				break
+			}
 		}
-		reason := "reached genesis"
-		if reachedFloor {
-			reason = "pruned floor confirmed by probe"
-		}
-		log.Printf("[%s] syncBlocks: backfill done (%s), floor height %d", s.networkID, reason, minH)
 	}
+	// A several-hundred-megabyte backfill that logs only failures gives an
+	// operator no way to tell "still working" from "silently stopped" short of
+	// reading sync_state out of SQLite. One line per pass is cheap.
+	log.Printf("[%s] syncBlocks: backfill at height %d (tip %d)", s.networkID, minH, tip)
+	switch {
+	case reachedCap:
+		s.markBackfillDone(fmt.Sprintf("history cap of %dd reached", s.blockHistoryDays), minH, s.blockHistoryDays)
+	case reachedFloor:
+		s.markBackfillDone("pruned floor confirmed by probe", minH, 0)
+	case minH <= 1:
+		s.markBackfillDone("reached genesis", minH, 0)
+	}
+}
+
+// markBackfillDone marks the block backfill as finished and records the depth
+// it stopped at.
+//
+// depth is the configured -block-history-days value when the stop reason was
+// the history cap, and 0 for every other reason (genesis reached, or a pruned
+// floor confirmed by probe): those two have nothing deeper to fetch no matter
+// what -block-history-days is set to, so recording 0 clears any cap depth left
+// over from an earlier, shallower run and keeps shouldResumeBackfill from
+// trying to resume a backfill that cannot go any further.
+func (s *Syncer) markBackfillDone(reason string, floor, depth int) {
+	if err := s.db.SetSyncState(blocksBackfillDoneKey(s.networkID), "1"); err != nil {
+		log.Printf("[%s] syncBlocks: mark done: %v", s.networkID, err)
+		return
+	}
+	depthVal := ""
+	if depth > 0 {
+		depthVal = strconv.Itoa(depth)
+	}
+	if err := s.db.SetSyncState(blocksBackfillDepthKey(s.networkID), depthVal); err != nil {
+		log.Printf("[%s] syncBlocks: record backfill depth: %v", s.networkID, err)
+	}
+	log.Printf("[%s] syncBlocks: backfill done (%s), floor height %d", s.networkID, reason, floor)
+}
+
+// shouldResumeBackfill reports whether a backfill previously marked done
+// should resume because the operator raised -block-history-days past the
+// depth it stopped at (including raising it to 0, meaning unlimited).
+//
+// Only a cap-terminated backfill ever records a depth (see markBackfillDone):
+// one that stopped at genesis or a confirmed pruned floor has nothing deeper
+// to fetch regardless of how the flag changes, so a missing or zero recorded
+// depth means "do not resume" — there is nothing to resume.
+func (s *Syncer) shouldResumeBackfill() bool {
+	recorded, err := s.db.GetSyncState(blocksBackfillDepthKey(s.networkID))
+	if err != nil || recorded == "" {
+		return false
+	}
+	recordedDepth, err := strconv.Atoi(recorded)
+	if err != nil || recordedDepth <= 0 {
+		return false
+	}
+	if s.blockHistoryDays == 0 {
+		return true // unlimited is deeper than any finite recorded cap
+	}
+	return s.blockHistoryDays > recordedDepth
 }
 
 // proposerID returns the interned id for an address, memoised in the syncer so

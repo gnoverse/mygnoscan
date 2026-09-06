@@ -1508,9 +1508,100 @@ func parseTimeseriesParams(r *http.Request) (days int, granularity string) {
 	return
 }
 
+// Target point counts for granularityForSpan's bands, chosen so the bands
+// are explainable without reference to any chain's current age (see that
+// function's comment for why hardcoded day counts don't work here).
+//
+//   - targetHourlyMaxPoints: sized so an 8-day chain — the original bug
+//     report — lands on hourly. resolveTimeseriesParams rounds a span up by
+//     one day, so an 8-day history arrives here as 9 days (216 hourly
+//     points); 250 clears that with room to spare while staying the same
+//     order of magnitude as 7d's fixed 168 hourly points.
+//   - targetDailyMaxPoints: sized in days directly (one point per day), set
+//     to ~18 months so gno.land mainnet (~165 days as of 2026-08-14) has
+//     roughly a year of headroom before this boundary, rather than the two
+//     weeks a fixed 180-day ceiling gave it.
+//   - targetWeeklyMaxPoints: sized in weeks, set to ~5 years so multi-year
+//     spans still read as a weekly curve before falling back to monthly.
+const (
+	targetHourlyMaxPoints = 250 // ~10.4 days of hourly points
+	targetDailyMaxPoints  = 550 // ~18 months of daily points
+	targetWeeklyMaxPoints = 260 // ~5 years of weekly points
+)
+
+// granularityForSpan picks a bucket that keeps an "all" series readable, by
+// keeping each candidate granularity's point count under its target. The
+// targets are expressed as point counts, not day counts, because a day-count
+// boundary is really a stand-in for "how many points does this produce" —
+// naming the point count directly means the boundary doesn't need re-tuning
+// as a specific chain (e.g. gno.land mainnet) ages past whatever day count
+// happened to work when it was chosen.
+func granularityForSpan(days int) string {
+	switch {
+	case days*24 <= targetHourlyMaxPoints:
+		return "hourly"
+	case days <= targetDailyMaxPoints:
+		return "daily"
+	case days/7 <= targetWeeklyMaxPoints:
+		return "weekly"
+	default:
+		return "monthly"
+	}
+}
+
+// resolveTimeseriesParams is parseTimeseriesParams plus the one thing a pure
+// function cannot do: size the "all" window against the data that exists.
+//
+// windowSpecs maps "all" to a fixed (allWindowDays, monthly) because the window
+// table assumed a chain with years of history. No gno chain is that old —
+// mainnet is ~165 days — so a fixed monthly bucket flattens the whole history
+// into a handful of points, and on a chain younger than a calendar month into
+// exactly one, which draws as a lone dot instead of a curve. Measuring the
+// network's real span fixes both the bucket and the range, the latter also
+// sparing fillBuckets ~120 dead leading buckets on every "all" request.
+func (a *API) resolveTimeseriesParams(r *http.Request, network string) (int, string) {
+	days, granularity := parseTimeseriesParams(r)
+
+	q := r.URL.Query()
+	if strings.ToLower(q.Get("window")) != "all" {
+		return days, granularity
+	}
+	// Explicit values win, exactly as they do in parseTimeseriesParams. Compare
+	// against the parsed value, not the raw query string: parseTimeseriesParams
+	// treats unparseable days (e.g. "notanumber") as "not supplied" and falls
+	// through to its own default, so garbage input here should fall through to
+	// the sizing below too, rather than opting out of it into the old fixed
+	// (allWindowDays, monthly) mapping.
+	if explicitDays, err := strconv.Atoi(q.Get("days")); err == nil && explicitDays > 0 {
+		return days, granularity
+	}
+	if q.Get("granularity") != "" {
+		return days, granularity
+	}
+
+	start, ok, err := a.db.NetworkDataStart(network)
+	if err != nil || !ok {
+		// Nothing indexed, or the lookup failed: the fixed mapping is as good an
+		// answer as any, since every window returns empty anyway.
+		return days, granularity
+	}
+
+	spanDays := int(time.Since(start).Hours()/24) + 1
+	if spanDays < 1 {
+		spanDays = 1 // a start in the future means clock skew, not a negative range
+	}
+	if spanDays > allWindowDays {
+		// A corrupt row (e.g. a year-1 timestamp) can otherwise produce a span of
+		// tens of thousands of days, which fillBuckets would then iterate one
+		// bucket at a time.
+		spanDays = allWindowDays
+	}
+	return spanDays, granularityForSpan(spanDays)
+}
+
 func (a *API) HandleTimeSeriesTransactions(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
-	days, granularity := parseTimeseriesParams(r)
+	days, granularity := a.resolveTimeseriesParams(r, network)
 	pts, err := a.db.GetTransactionTimeSeries(network, granularity, days)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
@@ -1524,7 +1615,7 @@ func (a *API) HandleTimeSeriesTransactions(w http.ResponseWriter, r *http.Reques
 
 func (a *API) HandleTimeSeriesPackages(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
-	days, granularity := parseTimeseriesParams(r)
+	days, granularity := a.resolveTimeseriesParams(r, network)
 	pts, err := a.db.GetPackageTimeSeries(network, granularity, days)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
@@ -1538,7 +1629,7 @@ func (a *API) HandleTimeSeriesPackages(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) HandleTimeSeriesStorage(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
-	days, granularity := parseTimeseriesParams(r)
+	days, granularity := a.resolveTimeseriesParams(r, network)
 	realmPath := r.URL.Query().Get("realm")
 	pts, err := a.db.GetStorageTimeSeries(network, realmPath, granularity, days)
 	if err != nil {
@@ -1553,7 +1644,7 @@ func (a *API) HandleTimeSeriesStorage(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) HandleStorageRealms(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
-	days, _ := parseTimeseriesParams(r)
+	days, _ := a.resolveTimeseriesParams(r, network)
 	paths, err := a.db.GetRealmsWithStorage(network, days)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
@@ -1567,7 +1658,7 @@ func (a *API) HandleStorageRealms(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) HandleTimeSeriesGas(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
-	days, granularity := parseTimeseriesParams(r)
+	days, granularity := a.resolveTimeseriesParams(r, network)
 	pts, err := a.db.GetGasTimeSeries(network, granularity, days)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
@@ -1581,7 +1672,7 @@ func (a *API) HandleTimeSeriesGas(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) HandleTimeSeriesCallers(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
-	days, granularity := parseTimeseriesParams(r)
+	days, granularity := a.resolveTimeseriesParams(r, network)
 	pts, err := a.db.GetCallerTimeSeries(network, granularity, days)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
@@ -1659,7 +1750,7 @@ func livenessOf(ctx context.Context, client *IndexerClient) SanityLiveness {
 
 func (a *API) HandleTimeSeriesHealth(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
-	days, granularity := parseTimeseriesParams(r)
+	days, granularity := a.resolveTimeseriesParams(r, network)
 	pts, err := a.db.GetHealthTimeSeries(network, granularity, days)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
@@ -1673,7 +1764,7 @@ func (a *API) HandleTimeSeriesHealth(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) HandleTimeSeriesActiveAddresses(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
-	days, granularity := parseTimeseriesParams(r)
+	days, granularity := a.resolveTimeseriesParams(r, network)
 	pts, err := a.db.GetActiveAddressTimeSeries(network, granularity, days)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
@@ -1687,7 +1778,7 @@ func (a *API) HandleTimeSeriesActiveAddresses(w http.ResponseWriter, r *http.Req
 
 func (a *API) HandleTimeSeriesBlocks(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
-	days, granularity := parseTimeseriesParams(r)
+	days, granularity := a.resolveTimeseriesParams(r, network)
 	pts, err := a.db.GetBlockTimeSeries(network, granularity, days)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
@@ -1701,7 +1792,7 @@ func (a *API) HandleTimeSeriesBlocks(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) HandleBlockTimeHistogram(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
-	days, _ := parseTimeseriesParams(r)
+	days, _ := a.resolveTimeseriesParams(r, network)
 	bins, err := a.db.GetBlockTimeHistogram(network, days)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
@@ -1715,7 +1806,7 @@ func (a *API) HandleBlockTimeHistogram(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) HandleBlockProposers(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
-	days, _ := parseTimeseriesParams(r)
+	days, _ := a.resolveTimeseriesParams(r, network)
 	topN, _ := strconv.Atoi(r.URL.Query().Get("topN"))
 	props, err := a.db.GetBlockProposers(network, days, topN)
 	if err != nil {
@@ -1736,6 +1827,115 @@ func (a *API) HandleBlockCoverage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, cov)
+}
+
+// --- batch 2b handlers ---
+
+// funcHeatmapDays pins the function-call heatmap's range. Daily columns past
+// about a fortnight stop being legible, and the chart is about the shape of a
+// realm's recent function mix, not its history.
+const funcHeatmapDays = 14
+
+func (a *API) HandleActivityHeatmap(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	days, _ := a.resolveTimeseriesParams(r, network)
+	cells, err := a.db.GetActivityHeatmap(network, days)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	if cells == nil {
+		cells = []ActivityCell{}
+	}
+	jsonResponse(w, cells)
+}
+
+func (a *API) HandleTimeSeriesNewAddresses(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	days, granularity := a.resolveTimeseriesParams(r, network)
+	pts, err := a.db.GetNewAddressTimeSeries(network, granularity, days)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	if pts == nil {
+		pts = []NewAddressPoint{}
+	}
+	jsonResponse(w, pts)
+}
+
+// HandleTimeSeriesActiveRolling ignores ?granularity= on purpose: DAU/WAU/MAU
+// are trailing *day* windows, so the series is daily whatever the caller asks.
+func (a *API) HandleTimeSeriesActiveRolling(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	days, _ := a.resolveTimeseriesParams(r, network)
+	// resolveTimeseriesParams' cap is 365 only when granularity != "monthly", and
+	// this handler discards granularity entirely, so a request such as
+	// ?days=3650&granularity=monthly (or window=all on an empty database, which
+	// falls back to the fixed (allWindowDays, monthly) mapping) would otherwise
+	// reach GetRollingActiveTimeSeries uncapped. The series is always daily, so
+	// its own cap is independent of the granularity-aware one above.
+	if days > rollingMaxDays {
+		days = rollingMaxDays
+	}
+	pts, err := a.db.GetRollingActiveTimeSeries(network, days)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	if pts == nil {
+		pts = []RollingActivePoint{}
+	}
+	jsonResponse(w, pts)
+}
+
+func (a *API) HandleGasPerTxHistogram(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	days, _ := a.resolveTimeseriesParams(r, network)
+	bins, err := a.db.GetGasPerTxHistogram(network, days)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	if bins == nil {
+		bins = []GasBin{}
+	}
+	jsonResponse(w, bins)
+}
+
+func (a *API) HandleCallRealms(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	paths, err := a.db.GetRealmsWithCalls(network, funcHeatmapDays, limit)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	if paths == nil {
+		paths = []string{}
+	}
+	jsonResponse(w, paths)
+}
+
+// HandleFunctionCallHeatmap serves one realm's function x day call grid. The
+// range is fixed at funcHeatmapDays; ?window= and ?days= are not honoured,
+// because the y-axis is functions and the x-axis is days either way.
+func (a *API) HandleFunctionCallHeatmap(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	realm := r.URL.Query().Get("realm")
+	if realm == "" {
+		jsonError(w, "realm is required", 400)
+		return
+	}
+	cells, err := a.db.GetFunctionCallHeatmap(network, realm, funcHeatmapDays)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	if cells == nil {
+		cells = []FuncCallCell{}
+	}
+	jsonResponse(w, cells)
 }
 
 // RegisterRoutes wires every API endpoint onto a mux.
@@ -1771,6 +1971,12 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/blocks/time-histogram", a.HandleBlockTimeHistogram)
 	mux.HandleFunc("GET /api/blocks/proposers", a.HandleBlockProposers)
 	mux.HandleFunc("GET /api/blocks/coverage", a.HandleBlockCoverage)
+	mux.HandleFunc("GET /api/activity/heatmap", a.HandleActivityHeatmap)
+	mux.HandleFunc("GET /api/timeseries/new-addresses", a.HandleTimeSeriesNewAddresses)
+	mux.HandleFunc("GET /api/timeseries/active-rolling", a.HandleTimeSeriesActiveRolling)
+	mux.HandleFunc("GET /api/gas/per-tx-histogram", a.HandleGasPerTxHistogram)
+	mux.HandleFunc("GET /api/calls/realms", a.HandleCallRealms)
+	mux.HandleFunc("GET /api/calls/function-heatmap", a.HandleFunctionCallHeatmap)
 	mux.HandleFunc("GET /api/gas", a.HandleGas)
 	mux.HandleFunc("GET /api/bankstats", a.HandleBankStats)
 	mux.HandleFunc("GET /api/storage/{path...}", a.HandleStorage)
