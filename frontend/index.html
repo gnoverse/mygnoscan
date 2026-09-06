@@ -4961,7 +4961,7 @@ const DASHBOARDS = [
         title: 'block proposers',
         wide: true,
         state: { topN: 15 },
-        why: 'Decentralisation. Blocks proposed per validator over the window — a heavily skewed bar means a few validators dominate block production. Names come from the r/gnops/valopers registry; validators that never registered a moniker show as truncated addresses.',
+        why: 'Decentralisation. Blocks proposed per validator over the window — a heavily skewed bar means a few validators dominate block production. Proposers are identified by their consensus key, which is never published to the valopers registry, so these are raw addresses rather than monikers (see #84).',
         networkScoped: true,
         controls: (bar, rerender, state) => {
           bar.appendChild(el('span', { className: 'label' }, 'top'));
@@ -4973,19 +4973,11 @@ const DASHBOARDS = [
           });
           bar.appendChild(seg);
         },
-        fetch: async function (w) {
-          // _valMonikers is only populated by the blocks view, so this chart
-          // loads it itself. loadValMonikers already swallows its own errors,
-          // so a registry failure degrades to truncated addresses rather than
-          // failing the card.
-          const [rows] = await Promise.all([
-            dashApi('blocks/proposers?topN=' + (this.state && this.state.topN ? this.state.topN : 15), w),
-            loadValMonikers(),
-          ]);
-          return rows;
+        fetch: function (w) {
+          return dashApi('blocks/proposers?topN=' + (this.state && this.state.topN ? this.state.topN : 15), w);
         },
         opt: rows => {
-          const labels = rows.map(r => _valMonikers[r.address] || truncAddr(r.address));
+          const labels = rows.map(r => truncAddr(r.address));
           return dashBase({
             grid: { left: 130, right: 20, top: 10, bottom: 28 },
             tooltip: { trigger: 'axis' },
