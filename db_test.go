@@ -1094,3 +1094,175 @@ func TestMonthlyStepAlwaysAdvances(t *testing.T) {
 		cur = next
 	}
 }
+
+func TestInternProposer(t *testing.T) {
+	db := newTestDB(t)
+
+	a1, err := db.InternProposer("gnoland1", "g1aaa")
+	if err != nil {
+		t.Fatalf("intern: %v", err)
+	}
+	a2, err := db.InternProposer("gnoland1", "g1aaa")
+	if err != nil {
+		t.Fatalf("intern repeat: %v", err)
+	}
+	if a1 != a2 {
+		t.Errorf("same address interned to different ids: %d vs %d", a1, a2)
+	}
+
+	// The same validator address on two chains must never share an id, or a
+	// per-network aggregate would silently mix chains.
+	b1, err := db.InternProposer("test12", "g1aaa")
+	if err != nil {
+		t.Fatalf("intern other network: %v", err)
+	}
+	if b1 == a1 {
+		t.Errorf("same address on two networks shares id %d", a1)
+	}
+}
+
+func TestUpsertBlockIsIdempotent(t *testing.T) {
+	db := newTestDB(t)
+	pid, _ := db.InternProposer("gnoland1", "g1aaa")
+
+	for i := 0; i < 3; i++ {
+		if err := db.UpsertBlock("gnoland1", 100, "2026-08-13T13:00:00Z", pid, 2); err != nil {
+			t.Fatalf("upsert %d: %v", i, err)
+		}
+	}
+
+	var n int
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM blocks WHERE network = ?`, "gnoland1").Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("row count = %d, want 1 after repeated upsert", n)
+	}
+}
+
+func TestBlockHeightBounds(t *testing.T) {
+	db := newTestDB(t)
+	pid, _ := db.InternProposer("gnoland1", "g1aaa")
+
+	if _, _, ok, err := db.BlockHeightBounds("gnoland1"); err != nil || ok {
+		t.Fatalf("empty table: ok = %v, err = %v; want ok=false, err=nil", ok, err)
+	}
+
+	for _, h := range []int{50, 51, 52} {
+		if err := db.UpsertBlock("gnoland1", h, "2026-08-13T13:00:00Z", pid, 0); err != nil {
+			t.Fatalf("upsert %d: %v", h, err)
+		}
+	}
+	// A different network's rows must not move this network's cursors.
+	opid, _ := db.InternProposer("test12", "g1bbb")
+	if err := db.UpsertBlock("test12", 9999, "2026-08-13T13:00:00Z", opid, 0); err != nil {
+		t.Fatalf("upsert other network: %v", err)
+	}
+
+	minH, maxH, ok, err := db.BlockHeightBounds("gnoland1")
+	if err != nil || !ok {
+		t.Fatalf("ok = %v, err = %v; want ok=true, err=nil", ok, err)
+	}
+	if minH != 50 || maxH != 52 {
+		t.Errorf("bounds = (%d, %d), want (50, 52)", minH, maxH)
+	}
+}
+
+// seedBlocks stores blocks at fixed 1-second-multiples from a base time so
+// delta bins are exactly predictable.
+func seedBlocks(t *testing.T, db *DB, network string, proposer string, base time.Time, offsets []float64) {
+	t.Helper()
+	pid, err := db.InternProposer(network, proposer)
+	if err != nil {
+		t.Fatalf("intern: %v", err)
+	}
+	for i, off := range offsets {
+		ts := base.Add(time.Duration(off * float64(time.Second))).UTC().Format("2006-01-02T15:04:05.000000000Z")
+		if err := db.UpsertBlock(network, 1000+i, ts, pid, i); err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+	}
+}
+
+func TestGetBlockTimeHistogram(t *testing.T) {
+	db := newTestDB(t)
+	base := time.Now().UTC().Add(-2 * time.Hour)
+	// Cumulative offsets producing deltas of exactly:
+	//   4.2 (bin 4.0-4.5), 4.5 (bin 4.5-5.0, lower edge is inclusive),
+	//   6.5 (bin 6.0-7.0), 12.0 (bin >=10.0)
+	seedBlocks(t, db, "gnoland1", "g1aaa", base, []float64{0, 4.2, 8.7, 15.2, 27.2})
+
+	bins, err := db.GetBlockTimeHistogram("gnoland1", 1)
+	if err != nil {
+		t.Fatalf("histogram: %v", err)
+	}
+
+	got := map[string]int{}
+	total := 0
+	for _, b := range bins {
+		got[b.Bin] = b.Blocks
+		total += b.Blocks
+	}
+	// 5 blocks produce 4 deltas; the first block has a NULL delta and must be
+	// excluded rather than counted as a zero-second interval.
+	if total != 4 {
+		t.Errorf("total binned = %d, want 4 (5 blocks - 1 with no predecessor)", total)
+	}
+	for bin, want := range map[string]int{"4.0-4.5": 1, "4.5-5.0": 1, "6.0-7.0": 1, ">=10.0": 1} {
+		if got[bin] != want {
+			t.Errorf("bin %q = %d, want %d (all bins: %v)", bin, got[bin], want, got)
+		}
+	}
+}
+
+func TestGetBlockProposersIsNetworkScoped(t *testing.T) {
+	// Two networks holding blocks at the SAME heights. AGENTS.md calls this the
+	// failure mode that goes wrong silently.
+	db := newTestDB(t)
+	base := time.Now().UTC().Add(-2 * time.Hour)
+	seedBlocks(t, db, "gnoland1", "g1aaa", base, []float64{0, 5, 10})
+	seedBlocks(t, db, "test12", "g1bbb", base, []float64{0, 5, 10})
+
+	got, err := db.GetBlockProposers("gnoland1", 1, 10)
+	if err != nil {
+		t.Fatalf("proposers: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d proposers, want 1 (only gnoland1's)", len(got))
+	}
+	if got[0].Address != "g1aaa" {
+		t.Errorf("address = %q, want g1aaa", got[0].Address)
+	}
+	if got[0].Blocks != 3 {
+		t.Errorf("blocks = %d, want 3 — other network's rows leaked in", got[0].Blocks)
+	}
+}
+
+func TestGetBlockCoverage(t *testing.T) {
+	db := newTestDB(t)
+
+	cov, err := db.GetBlockCoverage("gnoland1")
+	if err != nil {
+		t.Fatalf("empty coverage: %v", err)
+	}
+	if cov.Complete || cov.MinTime != "" {
+		t.Errorf("empty table: %+v, want zero value and Complete=false", cov)
+	}
+
+	base := time.Now().UTC().Add(-2 * time.Hour)
+	seedBlocks(t, db, "gnoland1", "g1aaa", base, []float64{0, 5})
+	if err := db.SetSyncState(blocksBackfillDoneKey("gnoland1"), "1"); err != nil {
+		t.Fatalf("set state: %v", err)
+	}
+
+	cov, err = db.GetBlockCoverage("gnoland1")
+	if err != nil {
+		t.Fatalf("coverage: %v", err)
+	}
+	if !cov.Complete {
+		t.Error("Complete = false after the done flag was set")
+	}
+	if cov.MinTime == "" || cov.MaxTime == "" {
+		t.Errorf("times not populated: %+v", cov)
+	}
+}

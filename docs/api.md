@@ -156,9 +156,24 @@ All accept `days` and `granularity`.
 | `GET /api/timeseries/health` | chain health indicators |
 | `GET /api/timeseries/storage` | storage growth. `realm=<path>` scopes it to one realm |
 | `GET /api/timeseries/storage/realms` | realms that have storage data, for populating a selector |
+| `GET /api/timeseries/blocks` | blocks and transactions per bucket. **Single-network** |
 
 There is no per-realm **activity** time series; `storage` is the only endpoint that
 accepts a `realm` parameter.
+
+## Blocks analytics
+
+Read from the local `blocks` table, which the syncer keeps current and backfills
+backward. **All four are single-network**: pass `network=<id>`. With no filter
+they return empty or all-zero results rather than an aggregate — block-time
+deltas across two interleaved chains are meaningless, proposer identities do not
+merge across chains, and a union coverage range would hide a lagging network.
+
+| endpoint | description |
+|---|---|
+| `GET /api/blocks/time-histogram` | interval between consecutive blocks, binned. Accepts `days`/`window` |
+| `GET /api/blocks/proposers` | blocks proposed per validator address. Accepts `days`/`window` and `topN` (defaults to 25 when absent, unparseable or ≤ 0) |
+| `GET /api/blocks/coverage` | `min_time`, `max_time` of stored blocks and `complete`, which is true once the backward backfill has reached genesis or the indexer's pruned floor |
 
 ## Search
 
