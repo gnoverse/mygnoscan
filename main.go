@@ -36,6 +36,13 @@ func run() error {
 		rpcFlag     = flag.String("rpc", "", "single network RPC URL")
 		dbPath      = flag.String("db", "mygnoscan.db", "SQLite database path")
 		syncOnStart = flag.Bool("sync", true, "sync data from indexer on start")
+		// Block backfill is the one sync phase that can pull hundreds of
+		// megabytes per network (~130 bytes/block, ~430MB at mainnet's 3.3M
+		// blocks), so it is the one phase an operator must be able to bound.
+		// 90 days is the dashboards' default window, so the default depth is
+		// exactly what the default view shows.
+		blockHistoryDays = flag.Int("block-history-days", 90,
+			"days of block history to backfill (0 = full chain history, negative = do not store blocks at all)")
 	)
 	flag.Parse()
 
@@ -52,6 +59,14 @@ func run() error {
 		return err
 	}
 	log.Printf("networks %v (from %s)", cfg.IDs(), cfgSource)
+	switch {
+	case *blockHistoryDays < 0:
+		log.Printf("block history: disabled (-block-history-days=%d); block charts will be empty", *blockHistoryDays)
+	case *blockHistoryDays == 0:
+		log.Printf("block history: full chain (-block-history-days=0)")
+	default:
+		log.Printf("block history: %d days (-block-history-days)", *blockHistoryDays)
+	}
 
 	// Rows outlive a network being retired from the config, so tell the database
 	// which ones still count before anything reads an all-networks total.
@@ -87,6 +102,7 @@ func run() error {
 		for _, n := range cfg.Networks {
 			go func(net NetworkConfig) {
 				syncer := NewSyncer(syncClients[net.ID], db, analyzer, net.ID)
+				syncer.blockHistoryDays = *blockHistoryDays
 				log.Printf("[%s] starting initial sync...", net.ID)
 				if err := syncer.SyncAll(ctx); err != nil {
 					log.Printf("[%s] sync error: %v", net.ID, err)

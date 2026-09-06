@@ -388,6 +388,28 @@ func (f *fakeIndexer) seedChain(from, n int) {
 	}
 }
 
+// fakeBlockTime is the deterministic height-to-time mapping setBlockRange uses,
+// so a test that cares about block *times* (the -block-history-days cutoff) can
+// convert between the two in either direction.
+//
+// The spacing is an hour rather than the few seconds a real chain uses. The
+// cutoff is computed with AddDate, so it always lands on a whole-day boundary:
+// at realistic spacing a chain short enough to seed as real rows would span
+// minutes, and no whole-day cutoff could fall inside it. An hour per block lets
+// a few hundred rows span a few weeks.
+var fakeBlockEpoch = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+const fakeBlockSpacing = time.Hour
+
+func fakeBlockTime(height int) time.Time {
+	return fakeBlockEpoch.Add(time.Duration(height) * fakeBlockSpacing)
+}
+
+// fakeBlockHeightAt is fakeBlockTime's inverse, rounded down.
+func fakeBlockHeightAt(t time.Time) int {
+	return int(t.Sub(fakeBlockEpoch) / fakeBlockSpacing)
+}
+
 // setBlockRange replaces the fake's blocks with the contiguous range [lo, hi]
 // and reports hi as the tip. Nothing exists below lo, which is what a pruned
 // indexer looks like from the outside.
@@ -395,12 +417,11 @@ func (f *fakeIndexer) setBlockRange(lo, hi int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	base := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
 	f.blocks = f.blocks[:0]
 	for h := lo; h <= hi; h++ {
 		f.blocks = append(f.blocks, Block{
 			Hash: fmt.Sprintf("block-%d", h), Height: h, ChainID: f.chainID,
-			Time:               base.Add(time.Duration(h-lo) * time.Minute).Format(time.RFC3339),
+			Time:               fakeBlockTime(h).Format(time.RFC3339),
 			NumTxs:             1,
 			TotalTxs:           h - lo + 1,
 			ProposerAddressRaw: "g1proposer",

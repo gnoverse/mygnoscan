@@ -66,12 +66,24 @@ the whole window. `/api/live` and `/api/version` bypass the cache entirely.
 
 `window` is the current contract and sets both `days` and `granularity` at once:
 `24h`→(1, hourly), `7d`→(7, hourly), `30d`→(30, daily), `90d`→(90, daily),
-`1y`→(365, weekly), `all`→(3650, monthly). It is case-insensitive, and an
-unrecognised value is ignored rather than rejected.
+`1y`→(365, weekly). It is case-insensitive, and an unrecognised value is ignored
+rather than rejected. `days` and `granularity` predate it, still work, and win
+when supplied alongside it.
 
-`days` and `granularity` predate `window` and still work. Either one, given
-explicitly, overrides what `window` would have set — so `window=all&days=7`
-is 7 days at monthly granularity.
+`all` is the exception: it is sized against the network's real history rather
+than a fixed pair, because a fixed one is wrong for any chain younger than its
+bucket. The server takes the earliest indexed timestamp for that network — or,
+with `network=all` (or omitted), the minimum across every configured network —
+and picks the bucket by keeping each candidate granularity's point count under
+a target: hourly up to ~250 points (~10 days), daily up to ~550 points (~18
+months), weekly up to ~260 points (~5 years), monthly beyond that. This keeps
+`all` returning a readable series on a week-old devnet and on a multi-year
+chain alike, without the bucket boundaries needing to be re-tuned as any one
+chain ages. The resulting span is clamped to the same 3650-day ceiling as
+`days`. A network with nothing indexed falls back to (3650, monthly).
+Supplying `days` or `granularity` opts out of the sizing entirely; an
+unparseable `days` value does not count as supplying it, since
+`parseTimeseriesParams` treats it as absent too.
 
 The 365-day clamp keeps hourly, daily and weekly bucket counts bounded.
 `monthly` exists to span longer ranges, so it is exempt from that clamp and
@@ -157,9 +169,34 @@ All accept `days` and `granularity`.
 | `GET /api/timeseries/storage` | storage growth. `realm=<path>` scopes it to one realm |
 | `GET /api/timeseries/storage/realms` | realms that have storage data, for populating a selector |
 | `GET /api/timeseries/blocks` | blocks and transactions per bucket. **Single-network** |
+| `GET /api/timeseries/new-addresses` | addresses seen on-chain for the first time, bucketed by that first appearance. First-seen is derived over all indexed history, so widening the window never relabels an old address as new |
+| `GET /api/timeseries/active-rolling` | `dau`, `wau`, `mau` — distinct active addresses over trailing 1/7/30-day windows. **Always daily**: `granularity` is ignored, because the three windows are day-defined. A request shorter than 7 days is widened to 7, and capped at 365 regardless of `window`/`days`/`granularity` |
 
-There is no per-realm **activity** time series; `storage` is the only endpoint that
-accepts a `realm` parameter.
+`storage` and `calls/function-heatmap` are the only endpoints that accept a
+`realm` parameter; there is no general per-realm activity time series.
+
+An **active address** is one that authored a message — a caller, a package
+creator, a `MsgRun` caller, or a bank-send sender. Bank-send *receivers* do not
+count, and failed messages do count. Every endpoint that says "address" here
+means that.
+
+Counts over `calls` / `packages` / `msg_runs` / `bank_sends` are counts of
+**messages**, not transactions: one transaction carries one or more messages.
+Only `transactions` rows count transactions, and `gas/per-tx-histogram` is the
+one endpoint reading them.
+
+## Distributions and heatmaps
+
+Range-filtered rather than bucketed: the window decides what is *counted*, but
+the response shape is fixed — a 24x7 grid, a fixed bin set, a functions x days
+grid. Empty cells come back as an explicit `0`.
+
+| endpoint | description |
+|---|---|
+| `GET /api/activity/heatmap` | messages per (hour-of-day, day-of-week) in UTC. Always 168 cells. `dow` is 0=Monday..6=Sunday, not SQLite's Sunday-first `%w`. Accepts `days`/`window`, snapped down to a whole number of weeks (floor 7 days) so every weekday column gets an equal number of occurrences |
+| `GET /api/gas/per-tx-histogram` | transactions binned by `gas_used`, in half-decade log steps. Rows with `gas_used = 0` are excluded as never-recorded rather than counted as free. Accepts `days`/`window` |
+| `GET /api/calls/realms` | realms called in the last 14 days, busiest first. Accepts `limit` (default 30, capped at 100) |
+| `GET /api/calls/function-heatmap` | calls per (function, day) for one realm over the last 14 days, zero-filled and capped at the 20 busiest functions. `realm=<path>` is **required** (400 without it). Fixed range: `days`/`window` are ignored |
 
 ## Blocks analytics
 
@@ -173,7 +210,11 @@ merge across chains, and a union coverage range would hide a lagging network.
 |---|---|
 | `GET /api/blocks/time-histogram` | interval between consecutive blocks, binned. Accepts `days`/`window` |
 | `GET /api/blocks/proposers` | blocks proposed per validator address. Accepts `days`/`window` and `topN` (defaults to 25 when absent, unparseable or ≤ 0) |
-| `GET /api/blocks/coverage` | `min_time`, `max_time` of stored blocks and `complete`, which is true once the backward backfill has reached genesis or the indexer's pruned floor |
+| `GET /api/blocks/coverage` | `min_time`, `max_time` of stored blocks and `complete`, which is true once the backward backfill has reached genesis, the indexer's pruned floor, or the configured history depth |
+
+How much history these cover is set by `-block-history-days` (default 90; `0`
+backfills the full chain, a negative value stores no blocks at all). With blocks
+declined, these three endpoints return empty rather than failing.
 
 ## Search
 

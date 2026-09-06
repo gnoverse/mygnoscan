@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // newTestSyncer wires a syncer against a fake indexer and a real temp database.
@@ -583,5 +584,222 @@ func TestSyncBlocksAbandonsPageOnProposerInternFailure(t *testing.T) {
 		t.Fatalf("bounds: %v", err)
 	} else if ok {
 		t.Error("page was partially written despite a proposer intern failure")
+	}
+}
+
+func TestSyncBlocksHonoursHistoryCap(t *testing.T) {
+	// The fake serves blocks timestamped in early 2026, so a one-day cap puts
+	// every one of them past the cutoff. The backfill must stop and mark itself
+	// done after the seed page rather than draining its whole page budget.
+	s, fake, db := newBlockTestSyncer(t, "gnoland1", 10, 3)
+	s.blockHistoryDays = 1
+	const chainTip = 500
+	fake.setBlockRange(1, chainTip)
+
+	s.syncBlocks(context.Background())
+
+	minH, maxH, ok, err := db.BlockHeightBounds("gnoland1")
+	if err != nil || !ok {
+		t.Fatalf("bounds: ok=%v err=%v", ok, err)
+	}
+	stored := maxH - minH + 1
+	if stored > s.blockPageSize {
+		t.Errorf("stored %d blocks under a 1-day cap, want no more than one seed page (%d)", stored, s.blockPageSize)
+	}
+	done, err := db.GetSyncState(blocksBackfillDoneKey("gnoland1"))
+	if err != nil {
+		t.Fatalf("get sync state: %v", err)
+	}
+	if done != "1" {
+		t.Errorf("backfill done flag = %q, want \"1\" — a capped backfill that never terminates refetches forever", done)
+	}
+
+	// And it stays stopped: a later pass must not resume walking backward.
+	before := fake.blockQueryCount()
+	s.syncBlocks(context.Background())
+	minAfter, _, _, _ := db.BlockHeightBounds("gnoland1")
+	if minAfter < minH {
+		t.Errorf("a capped backfill resumed: min went %d -> %d", minH, minAfter)
+	}
+	if fake.blockQueryCount() > before+1 {
+		t.Errorf("made %d extra range queries after the cap was reached, want at most 1 (head sync)", fake.blockQueryCount()-before)
+	}
+}
+
+func TestSyncBlocksHistoryCapBreaksPartwayThroughBackfill(t *testing.T) {
+	// TestSyncBlocksHonoursHistoryCap only exercises the pre-loop cap check:
+	// its 1-day cap puts the seed page itself past the cutoff, so the in-loop
+	// break inside the per-page backfill loop (and its "history cap of %dd
+	// reached" log line) never runs. Here the cutoff falls roughly halfway
+	// through the fake's block range, so several passes must walk backward,
+	// crossing the cutoff mid-loop on one of them.
+	s, fake, db := newBlockTestSyncer(t, "gnoland1", 25, 4)
+	const tip = 500
+	fake.setBlockRange(1, tip)
+
+	// fakeBlockTime maps height to time. Aim the cutoff at the chain's midpoint,
+	// then derive -block-history-days from the real wall clock so the cutoff
+	// actually lands there.
+	targetTime := fakeBlockTime(tip / 2)
+	capDays := int(time.Since(targetTime).Hours() / 24)
+	if capDays <= 0 {
+		t.Fatalf("test environment clock is not far enough past the fake's simulated chain to build a mid-range cutoff (capDays=%d)", capDays)
+	}
+	s.blockHistoryDays = capDays
+
+	// Derive the actual cutoff height from the same cutoff syncBlocks computes,
+	// rather than from the midpoint directly, so AddDate's day-level rounding
+	// doesn't skew the expected stop point.
+	cutoff, ok := s.blockHistoryCutoff()
+	if !ok {
+		t.Fatalf("blockHistoryCutoff reported uncapped with blockHistoryDays=%d", capDays)
+	}
+	cutoffHeight := fakeBlockHeightAt(cutoff)
+	if cutoffHeight <= 1 || cutoffHeight >= tip {
+		t.Fatalf("bad test setup: cutoff height %d is not strictly inside (1, %d)", cutoffHeight, tip)
+	}
+
+	for i := 0; i < 10; i++ {
+		s.syncBlocks(context.Background())
+		if done, _ := db.GetSyncState(blocksBackfillDoneKey("gnoland1")); done == "1" {
+			break
+		}
+	}
+
+	done, err := db.GetSyncState(blocksBackfillDoneKey("gnoland1"))
+	if err != nil {
+		t.Fatalf("get sync state: %v", err)
+	}
+	if done != "1" {
+		t.Fatalf("backfill never marked done; test needs more iterations or a different cutoff")
+	}
+
+	minH, _, ok, err := db.BlockHeightBounds("gnoland1")
+	if err != nil || !ok {
+		t.Fatalf("bounds: ok=%v err=%v", ok, err)
+	}
+	if minH <= 1 {
+		t.Fatalf("reached genesis instead of stopping at the cap (minH=%d)", minH)
+	}
+	// Page-level granularity means the stop height lands within one page of
+	// the true cutoff height, not exactly on it.
+	if minH > cutoffHeight {
+		t.Errorf("did not walk back far enough: minH=%d, cutoff height=%d", minH, cutoffHeight)
+	}
+	if minH < cutoffHeight-s.blockPageSize {
+		t.Errorf("walked back past the cutoff by more than a page: minH=%d, cutoff height=%d", minH, cutoffHeight)
+	}
+}
+
+func TestSyncBlocksWideHistoryCapStillReachesGenesis(t *testing.T) {
+	// A cap far wider than the available history must not stop the backfill
+	// short — genesis wins, exactly as with no cap at all.
+	s, fake, db := newBlockTestSyncer(t, "gnoland1", 10, 3)
+	s.blockHistoryDays = 100_000
+	fake.setBlockRange(1, 20)
+
+	for i := 0; i < 5; i++ {
+		s.syncBlocks(context.Background())
+	}
+
+	minH, _, ok, err := db.BlockHeightBounds("gnoland1")
+	if err != nil || !ok {
+		t.Fatalf("bounds: ok=%v err=%v", ok, err)
+	}
+	if minH != 1 {
+		t.Errorf("did not reach genesis under a wide cap: minH=%d", minH)
+	}
+	done, err := db.GetSyncState(blocksBackfillDoneKey("gnoland1"))
+	if err != nil {
+		t.Fatalf("get sync state: %v", err)
+	}
+	if done != "1" {
+		t.Errorf("backfill done flag = %q, want \"1\"", done)
+	}
+}
+
+func TestSyncBlocksZeroHistoryDaysMeansUnlimited(t *testing.T) {
+	// blockHistoryDays == 0 must behave exactly like the pre-flag code: no
+	// cap, full backfill to genesis.
+	s, fake, db := newBlockTestSyncer(t, "gnoland1", 10, 3)
+	s.blockHistoryDays = 0
+	fake.setBlockRange(1, 20)
+
+	for i := 0; i < 5; i++ {
+		s.syncBlocks(context.Background())
+	}
+
+	minH, _, ok, err := db.BlockHeightBounds("gnoland1")
+	if err != nil || !ok {
+		t.Fatalf("bounds: ok=%v err=%v", ok, err)
+	}
+	if minH != 1 {
+		t.Errorf("blockHistoryDays=0 did not reach genesis: minH=%d", minH)
+	}
+	// No cap depth should ever be recorded under an unlimited backfill: a
+	// leftover depth would make a later positive -block-history-days look like
+	// a shallower cap that must be resumed from, when actually nothing is
+	// capped at all.
+	depth, err := db.GetSyncState(blocksBackfillDepthKey("gnoland1"))
+	if err != nil {
+		t.Fatalf("get sync state: %v", err)
+	}
+	if depth != "" {
+		t.Errorf("recorded a backfill depth %q under an unlimited (0) cap", depth)
+	}
+}
+
+func TestSyncBlocksResumesWhenHistoryDaysIsRaised(t *testing.T) {
+	// Fix 3: the done flag is depth-blind by itself. If the operator raises
+	// -block-history-days after a capped backfill already marked itself done,
+	// the old flag must not permanently freeze history at the old, shallower
+	// depth.
+	s, fake, db := newBlockTestSyncer(t, "gnoland1", 10, 3)
+	s.blockHistoryDays = 1
+	const chainTip = 500
+	fake.setBlockRange(1, chainTip)
+
+	s.syncBlocks(context.Background())
+
+	done, err := db.GetSyncState(blocksBackfillDoneKey("gnoland1"))
+	if err != nil || done != "1" {
+		t.Fatalf("precondition failed: backfill not marked done under the 1-day cap (done=%q err=%v)", done, err)
+	}
+	minCapped, _, ok, err := db.BlockHeightBounds("gnoland1")
+	if err != nil || !ok {
+		t.Fatalf("bounds after capped backfill: ok=%v err=%v", ok, err)
+	}
+
+	// Operator restarts with a much deeper (still capped) depth.
+	s.blockHistoryDays = 5000
+	beforeCalls := fake.blockQueryCount()
+	s.syncBlocks(context.Background())
+
+	if fake.blockQueryCount() <= beforeCalls {
+		t.Error("no additional range queries were made after raising -block-history-days")
+	}
+	minAfter, _, ok, err := db.BlockHeightBounds("gnoland1")
+	if err != nil || !ok {
+		t.Fatalf("bounds after resume: ok=%v err=%v", ok, err)
+	}
+	if minAfter >= minCapped {
+		t.Errorf("backfill did not resume walking backward after being raised: min stayed at %d (was %d)", minAfter, minCapped)
+	}
+}
+
+func TestSyncBlocksCanBeDeclined(t *testing.T) {
+	// A negative depth is the operator declining block persistence outright.
+	s, fake, db := newBlockTestSyncer(t, "gnoland1", 10, 3)
+	s.blockHistoryDays = -1
+	const chainTip = 500
+	fake.setBlockRange(1, chainTip)
+
+	s.syncBlocks(context.Background())
+
+	if _, _, ok, err := db.BlockHeightBounds("gnoland1"); err != nil || ok {
+		t.Errorf("stored blocks despite -block-history-days<0: ok=%v err=%v", ok, err)
+	}
+	if fake.blockQueryCount() != 0 {
+		t.Errorf("made %d indexer range queries with block sync declined, want 0", fake.blockQueryCount())
 	}
 }

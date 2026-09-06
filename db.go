@@ -7,6 +7,7 @@ import (
 	"log"
 	_ "modernc.org/sqlite"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -3007,17 +3008,23 @@ func (d *DB) GetActiveAddressTimeSeries(network, granularity string, days int) (
 	// it is two actors with two histories — the same reasoning as everywhere
 	// else. The inner query already carries the network, so counting the pair
 	// costs nothing extra.
+	//
+	// The four source tables are the same four activityMsgTables lists for the
+	// activity heatmap, so the two endpoints report the same total for the same
+	// network and window. Keep the two lists in sync by hand; nothing enforces
+	// the agreement automatically.
 	unionNetFilter := " AND " + d.networkFilter("network", network)
 	unionQ := fmt.Sprintf(
 		"SELECT bucket, COUNT(*) as cnt FROM ("+
 			" SELECT DISTINCT strftime('%s', block_time) as bucket, addr, network FROM ("+
 			"  SELECT caller as addr, block_time, network FROM calls WHERE block_time >= ?%s"+
 			"  UNION ALL SELECT creator, block_time, network FROM packages WHERE block_time >= ?%s"+
+			"  UNION ALL SELECT caller, block_time, network FROM msg_runs WHERE block_time >= ?%s"+
 			"  UNION ALL SELECT from_address, block_time, network FROM bank_sends WHERE block_time >= ?%s"+
 			" )) GROUP BY bucket ORDER BY bucket ASC",
-		sqlFmt, unionNetFilter, unionNetFilter, unionNetFilter)
+		sqlFmt, unionNetFilter, unionNetFilter, unionNetFilter, unionNetFilter)
 
-	urows, err := d.db.Query(unionQ, startTime, startTime, startTime)
+	urows, err := d.db.Query(unionQ, startTime, startTime, startTime, startTime)
 	if err != nil {
 		return nil, err
 	}
@@ -3716,6 +3723,64 @@ func (d *DB) gasRollupReady() (bool, string) {
 	return true, at
 }
 
+// blockTimeSources are the tables recording a chain timestamp, with the column
+// that holds it. NetworkDataStart takes the minimum across all of them.
+var blockTimeSources = []struct{ table, col string }{
+	{"calls", "block_time"},
+	{"packages", "block_time"},
+	{"msg_runs", "block_time"},
+	{"bank_sends", "block_time"},
+	{"transactions", "block_time"},
+	{"blocks", "time"},
+}
+
+// NetworkDataStart returns the earliest chain time this network has data for,
+// across every table that records one. ok is false when nothing is indexed.
+//
+// The "all" window needs this. Without it the window must guess a range and a
+// bucket size, and any fixed guess is wrong for a chain younger than the
+// bucket — which is every gno chain that currently exists.
+//
+// The minimum spans tables rather than reading one: a network's earliest datum
+// can be a package deploy while its latest is a call, so a single-table MIN
+// would report a start later than the real one.
+func (d *DB) NetworkDataStart(network string) (time.Time, bool, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	parts := make([]string, 0, len(blockTimeSources))
+	for _, s := range blockTimeSources {
+		// "all networks" means every configured network. It matters here more
+		// than most: this start date sizes the window=all range, so counting a
+		// retired chain's earliest row would stretch every all-window request
+		// back to a chain the instance no longer serves.
+		filter := " AND " + d.networkFilter(s.table+".network", network)
+		// Table and column names come from the constant above, never from input.
+		parts = append(parts, fmt.Sprintf(
+			"SELECT MIN(%[1]s.%[2]s) AS t FROM %[1]s WHERE %[1]s.%[2]s IS NOT NULL AND %[1]s.%[2]s != ''%[3]s",
+			s.table, s.col, filter))
+	}
+
+	var earliest sql.NullString
+	q := "SELECT MIN(t) FROM (" + strings.Join(parts, " UNION ALL ") + ")"
+	if err := d.db.QueryRow(q).Scan(&earliest); err != nil {
+		return time.Time{}, false, err
+	}
+	if !earliest.Valid || earliest.String == "" {
+		return time.Time{}, false, nil
+	}
+	ts, err := time.Parse(time.RFC3339, earliest.String)
+	if err != nil {
+		// Errors go up, not into logs. AGENTS.md singles out query-path readers
+		// that swallow an error and return a zero value as "a known bug, not a
+		// style to follow" — logging and returning ok=false was exactly that.
+		// The caller already treats a non-nil error the same as "no span", so
+		// propagating costs nothing and keeps the failure visible.
+		return time.Time{}, false, fmt.Errorf("unparseable block_time %q: %w", earliest.String, err)
+	}
+	return ts, true, nil
+}
+
 // --- blocks ---
 
 // InternProposer maps a proposer address to a small integer id, creating the
@@ -3986,6 +4051,31 @@ func (d *DB) GetBlockProposers(network string, days, topN int) ([]ProposerCount,
 	return out, rows.Err()
 }
 
+// OldestBlockTime is the chain time of the oldest stored block for a network.
+// ok is false when the network has no blocks yet.
+//
+// The backfill's history cap needs this: the cap is expressed in days but the
+// backfill cursor is a height, and there is no fixed blocks-per-day rate to
+// convert between them.
+func (d *DB) OldestBlockTime(network string) (time.Time, bool, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var oldest sql.NullString
+	err := d.db.QueryRow(`SELECT MIN(time) FROM blocks WHERE network = ?`, network).Scan(&oldest)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if !oldest.Valid || oldest.String == "" {
+		return time.Time{}, false, nil
+	}
+	ts, err := time.Parse(time.RFC3339, oldest.String)
+	if err != nil {
+		return time.Time{}, false, nil
+	}
+	return ts, true, nil
+}
+
 // GetBlockCoverage reports the stored block range and whether backfill finished.
 //
 // Complete comes from the syncer's flag, not from MIN(height) <= 1: an indexer
@@ -4014,4 +4104,578 @@ func (d *DB) GetBlockCoverage(network string) (BlockCoverage, error) {
 	}
 	cov.Complete = done == "1"
 	return cov, nil
+}
+
+// --- batch 2b: activity rhythm, acquisition, distributions ---
+//
+// Nothing here adds a table. Every query below reads `block_time`, already
+// denormalized onto calls / packages / msg_runs / bank_sends / transactions.
+//
+// Vocabulary, settled here per the design doc's §9 open question: these four
+// tables are per-*message*, so anything counting rows from them is counting
+// messages, not transactions. Only `transactions` counts transactions, and the
+// gas histogram below is the one reader of it. Axis labels say which.
+//
+// "Active address", also per §9: an address that *authored* a message — a
+// caller, a deployer, or a bank-send sender. Bank-send **receivers do not
+// count** (receiving is passive; an airdrop would otherwise manufacture
+// thousands of "active users"), and **failed messages do count** (a failed call
+// still proves key custody and still burned gas). Batch 1's
+// GetActiveAddressTimeSeries deliberately sources the same four tables so the
+// two endpoints report the same total; that agreement is maintained by hand
+// across both call sites, not automatic, so keep them in sync if this list
+// ever changes.
+
+// activityMsgTables are the per-message tables, with the column naming the
+// address that authored the message. Used by the activity heatmap and by
+// first-seen derivation, so both cover exactly the same notion of "activity".
+var activityMsgTables = []struct{ table, addrCol string }{
+	{"calls", "caller"},
+	{"packages", "creator"},
+	{"msg_runs", "caller"},
+	{"bank_sends", "from_address"},
+}
+
+// ActivityCell is one cell of the hour x day-of-week grid.
+//
+// Dow is 0=Monday..6=Sunday, not SQLite's %w (0=Sunday). Rotating server-side
+// keeps the weekend adjacent at the end of the axis, which is the whole point
+// of the chart, and keeps the frontend from re-deriving a convention.
+type ActivityCell struct {
+	Hour     int `json:"hour"`
+	Dow      int `json:"dow"`
+	Messages int `json:"messages"`
+}
+
+// GetActivityHeatmap counts messages per (hour-of-day, day-of-week) in UTC.
+//
+// Mode B: the window filters which messages are counted, but the output is
+// always the full 24x7 grid, zero-filled. Empty cells are a real zero — "no
+// messages at 03:00 on a Sunday" is the finding, not missing data — so per the
+// design doc's §10.1 table this is a count series and empty means 0.
+//
+// The window is snapped down to a whole number of weeks (floor 7 days) before
+// filtering: a window that is not a multiple of 7 gives some weekday columns
+// one more occurrence than others (a 90-day window is 12.857 weeks), which
+// systematically inflates whichever columns fall on the long side of the
+// split — in a chart whose entire point is comparing those columns against
+// each other.
+func (d *DB) GetActivityHeatmap(network string, days int) ([]ActivityCell, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	weeks := days / 7
+	if weeks < 1 {
+		weeks = 1
+	}
+	start := time.Now().UTC().AddDate(0, 0, -weeks*7).Format(time.RFC3339)
+
+	// "all networks" means every configured network, never "no filter": an
+	// unfiltered query also counts chains that were retired but whose rows are
+	// still stored.
+	netFilter := " AND " + d.networkFilter("t.network", network)
+	parts := make([]string, 0, len(activityMsgTables))
+	args := make([]any, 0, len(activityMsgTables))
+	for _, s := range activityMsgTables {
+		// Table names come from the constant above, never from input.
+		parts = append(parts, fmt.Sprintf(
+			"SELECT strftime('%%H', t.block_time) AS h, strftime('%%w', t.block_time) AS w, COUNT(*) AS c"+
+				" FROM %s t WHERE t.block_time >= ?%s GROUP BY h, w", s.table, netFilter))
+		args = append(args, start)
+	}
+	q := "SELECT h, w, SUM(c) FROM (" + strings.Join(parts, " UNION ALL ") + ") GROUP BY h, w"
+
+	rows, err := d.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	counts := make(map[[2]int]int)
+	for rows.Next() {
+		// block_time is nullable TEXT and the window predicate above is a string
+		// comparison, so a garbage value (e.g. "not-a-timestamp") can pass it and
+		// make strftime() yield NULL. Scanning into sql.NullString rather than
+		// string lets that row's contribution be skipped as a data-quality issue
+		// instead of failing the whole heatmap.
+		var hs, ws sql.NullString
+		var c int
+		if err := rows.Scan(&hs, &ws, &c); err != nil {
+			return nil, err
+		}
+		if !hs.Valid || !ws.Valid {
+			continue // an unparseable block_time cannot be placed on the grid
+		}
+		h, err := strconv.Atoi(hs.String)
+		if err != nil {
+			continue // an unparseable block_time cannot be placed on the grid
+		}
+		w, err := strconv.Atoi(ws.String)
+		if err != nil {
+			continue
+		}
+		counts[[2]int{h, (w + 6) % 7}] += c
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	out := make([]ActivityCell, 0, 24*7)
+	for dow := range 7 {
+		for hour := range 24 {
+			out = append(out, ActivityCell{Hour: hour, Dow: dow, Messages: counts[[2]int{hour, dow}]})
+		}
+	}
+	return out, nil
+}
+
+// NewAddressPoint counts addresses seen on-chain for the first time in a bucket.
+type NewAddressPoint struct {
+	Time         string `json:"time"`
+	NewAddresses int    `json:"new_addresses"`
+}
+
+// GetNewAddressTimeSeries buckets addresses by their first-ever appearance.
+//
+// First-seen is computed over *all* history and only then filtered to the
+// window: deriving it from rows inside the window instead would relabel every
+// long-standing address as "new" the moment the window moved, which is the
+// difference between acquisition and plain activity.
+//
+// Empty bucket is 0 — a count series per §10.1.
+func (d *DB) GetNewAddressTimeSeries(network, granularity string, days int) ([]NewAddressPoint, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	sqlFmt, step, truncFn := timeseriesFormat(granularity)
+	start := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
+
+	// "all networks" means every configured network, never "no filter": an
+	// unfiltered query also counts chains that were retired but whose rows are
+	// still stored.
+	netFilter := " AND " + d.networkFilter("t.network", network)
+	parts := make([]string, 0, len(activityMsgTables))
+	args := make([]any, 0, len(activityMsgTables))
+	for _, s := range activityMsgTables {
+		// Column and table names come from the constant above, never from input.
+		parts = append(parts, fmt.Sprintf(
+			"SELECT t.%s AS addr, t.block_time AS bt FROM %s t"+
+				" WHERE t.block_time IS NOT NULL AND t.block_time != ''%s",
+			s.addrCol, s.table, netFilter))
+	}
+	args = append(args, start)
+	q := fmt.Sprintf(
+		"SELECT strftime('%s', first_seen) AS bucket, COUNT(*) FROM ("+
+			" SELECT addr, MIN(bt) AS first_seen FROM (%s) GROUP BY addr"+
+			") WHERE first_seen >= ? GROUP BY bucket ORDER BY bucket ASC",
+		sqlFmt, strings.Join(parts, " UNION ALL "))
+
+	rows, err := d.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	buckets := make(map[string]*NewAddressPoint)
+	for rows.Next() {
+		// The WHERE first_seen >= ? predicate above is a string comparison against
+		// nullable TEXT, so a garbage block_time (e.g. "not-a-timestamp") can pass
+		// it and make strftime() yield a NULL bucket. Scanning into sql.NullString
+		// lets that row be skipped as a data-quality issue rather than failing the
+		// whole series.
+		var bucket sql.NullString
+		var n int
+		if err := rows.Scan(&bucket, &n); err != nil {
+			return nil, err
+		}
+		if !bucket.Valid {
+			continue
+		}
+		p := NewAddressPoint{Time: bucket.String, NewAddresses: n}
+		buckets[p.Time] = &p
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return fillBuckets(buckets, days, granularity, step, truncFn,
+		func(k string) NewAddressPoint { return NewAddressPoint{Time: k} },
+		func(p *NewAddressPoint) {}), nil
+}
+
+// RollingActivePoint holds one day's active-address counts over three trailing
+// windows. Ratios (DAU/MAU stickiness) are left to the caller.
+type RollingActivePoint struct {
+	Time string `json:"time"`
+	DAU  int    `json:"dau"`
+	WAU  int    `json:"wau"`
+	MAU  int    `json:"mau"`
+}
+
+const (
+	wauDays = 7
+	mauDays = 30
+	// rollingMinDays keeps a 24h window from collapsing the chart to one point.
+	// DAU/WAU/MAU is a shape, and a shape needs more than a single column.
+	rollingMinDays = 7
+	// rollingMaxDays caps the rolling series independently of the general
+	// 365-day timeseries cap: it is always a daily series (the handler drops
+	// granularity), so days and output points are the same number, and nothing
+	// upstream bounds it — parseTimeseriesParams exempts "monthly" from its cap,
+	// and window=all on an empty database falls back to a fixed multi-year
+	// (allWindowDays, monthly) mapping that reaches this endpoint too.
+	rollingMaxDays = 365
+)
+
+// GetRollingActiveTimeSeries returns DAU, WAU and MAU per day.
+//
+// Always daily, whatever granularity the caller asked for: the three series are
+// defined as trailing 1/7/30-*day* windows, so bucketing them hourly or monthly
+// would make the labels lie. The handler drops granularity for this reason.
+//
+// The trailing windows are computed in Go over distinct (day, address) pairs
+// rather than in SQL: a self-join over a 30-day trailing range would re-scan the
+// union four times per day of output, whereas one pass produces every window.
+// Rows are read from mauDays-1 days *before* the requested start so the first
+// output day has a full trailing window rather than a truncated one.
+//
+// The window slides day by day rather than being rebuilt from scratch per
+// output point: each day's addresses are folded into a reference count as the
+// day enters the window, and unfolded (decrement, delete at zero) as it leaves.
+// A rebuild-per-point approach was previously used here on the theory that a
+// sliding window "cannot cheaply remove an address that also appears in a day
+// still inside the window" — that reasoning does not hold: a ref count handles
+// exactly that case, since the address stays present until every day
+// contributing to it has left the window. The rebuild approach measured at
+// 1.59s/2.78s for a 90/365-day window against 800k rows; the ref-count version
+// is a single pass over the loaded days.
+//
+// Empty bucket is 0 — a count series per §10.1.
+func (d *DB) GetRollingActiveTimeSeries(network string, days int) ([]RollingActivePoint, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	if days < rollingMinDays {
+		days = rollingMinDays
+	}
+	now := time.Now().UTC()
+	firstDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -days)
+	loadFrom := firstDay.AddDate(0, 0, -(mauDays - 1)).Format(time.RFC3339)
+
+	// "all networks" means every configured network, never "no filter": an
+	// unfiltered query also counts chains that were retired but whose rows are
+	// still stored.
+	netFilter := " AND " + d.networkFilter("t.network", network)
+	parts := make([]string, 0, len(activityMsgTables))
+	args := make([]any, 0, len(activityMsgTables))
+	for _, s := range activityMsgTables {
+		// Column and table names come from the constant above, never from input.
+		parts = append(parts, fmt.Sprintf(
+			"SELECT strftime('%%Y-%%m-%%d', t.block_time) AS day, t.%s AS addr FROM %s t"+
+				" WHERE t.block_time >= ?%s", s.addrCol, s.table, netFilter))
+		args = append(args, loadFrom)
+	}
+	q := "SELECT DISTINCT day, addr FROM (" + strings.Join(parts, " UNION ALL ") + ")"
+
+	rows, err := d.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	perDay := make(map[string]map[string]struct{})
+	for rows.Next() {
+		// day comes from strftime() over nullable TEXT block_time; a garbage value
+		// (e.g. "not-a-timestamp") makes it NULL rather than failing the query.
+		// sql.NullString lets that row be skipped as a data-quality issue instead
+		// of erroring the whole series.
+		var day sql.NullString
+		var addr string
+		if err := rows.Scan(&day, &addr); err != nil {
+			return nil, err
+		}
+		if !day.Valid {
+			continue
+		}
+		set, ok := perDay[day.String]
+		if !ok {
+			set = make(map[string]struct{})
+			perDay[day.String] = set
+		}
+		set[addr] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	loadFromDay := firstDay.AddDate(0, 0, -(mauDays - 1))
+	wCounts := make(map[string]int)
+	mCounts := make(map[string]int)
+
+	// advance folds one more day into both trailing windows and evicts whichever
+	// day just fell outside each window's span, keeping wCounts/mCounts always
+	// equal to a reference count over exactly the trailing wauDays/mauDays days
+	// ending at day.
+	advance := func(day time.Time) {
+		for addr := range perDay[day.Format("2006-01-02")] {
+			wCounts[addr]++
+			mCounts[addr]++
+		}
+		if wLeave := day.AddDate(0, 0, -wauDays); !wLeave.Before(loadFromDay) {
+			for addr := range perDay[wLeave.Format("2006-01-02")] {
+				wCounts[addr]--
+				if wCounts[addr] == 0 {
+					delete(wCounts, addr)
+				}
+			}
+		}
+		if mLeave := day.AddDate(0, 0, -mauDays); !mLeave.Before(loadFromDay) {
+			for addr := range perDay[mLeave.Format("2006-01-02")] {
+				mCounts[addr]--
+				if mCounts[addr] == 0 {
+					delete(mCounts, addr)
+				}
+			}
+		}
+	}
+
+	// Pre-roll the window across the mauDays-1 days before the first output day,
+	// so by the time output starts both windows already hold their full trailing
+	// span instead of a truncated one.
+	for d := loadFromDay; d.Before(firstDay); d = d.AddDate(0, 0, 1) {
+		advance(d)
+	}
+
+	out := make([]RollingActivePoint, 0, days+1)
+	for i := 0; i <= days; i++ {
+		day := firstDay.AddDate(0, 0, i)
+		advance(day)
+		out = append(out, RollingActivePoint{
+			Time: day.Format("2006-01-02"),
+			DAU:  len(perDay[day.Format("2006-01-02")]),
+			WAU:  len(wCounts),
+			MAU:  len(mCounts),
+		})
+	}
+	return out, nil
+}
+
+// GasBin is one bucket of the gas-used-per-transaction distribution.
+type GasBin struct {
+	Bin string `json:"bin"`
+	Txs int    `json:"txs"`
+}
+
+// gasPerTxBinExpr bins a transaction's gas_used.
+//
+// Unlike blockTimeBinExpr, whose edges were measured against one chain, gas has
+// no target value to cluster around and spans four orders of magnitude between
+// chains — the local sapphire data runs 6.2e5 to 1.2e9 with a 6.5e7 median,
+// while a bare mainnet transfer is orders of magnitude cheaper. So the edges are
+// half-decade log steps, which keep *some* resolution wherever a chain's mass
+// happens to sit instead of being right for one chain and degenerate on others.
+// Lower edges are inclusive.
+const gasPerTxBinExpr = `CASE
+	WHEN g <       100000 THEN '<100k'
+	WHEN g <       500000 THEN '100k-500k'
+	WHEN g <      1000000 THEN '500k-1M'
+	WHEN g <      5000000 THEN '1M-5M'
+	WHEN g <     10000000 THEN '5M-10M'
+	WHEN g <     50000000 THEN '10M-50M'
+	WHEN g <    100000000 THEN '50M-100M'
+	WHEN g <    500000000 THEN '100M-500M'
+	ELSE '>=500M'
+END`
+
+// GasPerTxBinOrder is the display order of the gas histogram's bins.
+var GasPerTxBinOrder = []string{
+	"<100k", "100k-500k", "500k-1M", "1M-5M", "5M-10M", "10M-50M", "50M-100M", "100M-500M", ">=500M",
+}
+
+// GetGasPerTxHistogram bins gas_used across transactions in the window.
+//
+// This is the one reader here counting *transactions* rather than messages: gas
+// is charged per transaction, so binning per message would count one fee several
+// times. Rows with gas_used = 0 are excluded — that is the default for a row
+// whose gas was never backfilled, not a transaction that genuinely burned none.
+//
+// Mode B: the window filters which transactions are counted; the bin set is
+// fixed. Empty bin is 0, a count series per §10.1, matching what batch 2a's
+// block-time histogram already does.
+func (d *DB) GetGasPerTxHistogram(network string, days int) ([]GasBin, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	start := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
+
+	netFilter := " AND " + d.networkFilter("network", network)
+	args := []any{start}
+	q := fmt.Sprintf(
+		"WITH g AS (SELECT gas_used AS g FROM transactions WHERE block_time >= ? AND gas_used > 0%s)"+
+			" SELECT %s AS bin, COUNT(*) FROM g GROUP BY bin", netFilter, gasPerTxBinExpr)
+
+	rows, err := d.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int)
+	for rows.Next() {
+		var bin string
+		var n int
+		if err := rows.Scan(&bin, &n); err != nil {
+			return nil, err
+		}
+		counts[bin] = n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	out := make([]GasBin, 0, len(GasPerTxBinOrder))
+	for _, bin := range GasPerTxBinOrder {
+		out = append(out, GasBin{Bin: bin, Txs: counts[bin]})
+	}
+	return out, nil
+}
+
+// FuncCallCell is one cell of a realm's function x day call grid.
+type FuncCallCell struct {
+	Func  string `json:"func"`
+	Day   string `json:"day"`
+	Calls int    `json:"calls"`
+}
+
+// funcHeatmapMaxFuncs caps the rows of the function heatmap. A realm with 200
+// exported functions would otherwise render rows one pixel tall.
+const funcHeatmapMaxFuncs = 20
+
+// realmsWithCallsMaxLimit caps ?limit= on the realm selector. It feeds a
+// dropdown, not a paginated list, so there is no legitimate reason to ask for
+// more than this many rows; without a cap an unvalidated limit is unbounded.
+const realmsWithCallsMaxLimit = 100
+
+// GetRealmsWithCalls lists the realms called in the window, busiest first.
+// Feeds the function heatmap's realm selector.
+func (d *DB) GetRealmsWithCalls(network string, days, limit int) ([]string, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	if limit <= 0 {
+		limit = 30
+	} else if limit > realmsWithCallsMaxLimit {
+		limit = realmsWithCallsMaxLimit
+	}
+	// Midnight of day-(days-1), the same start instant GetFunctionCallHeatmap
+	// uses. GetFunctionCallHeatmap's grid begins there, so a realm whose only
+	// calls fall between that instant and time.Now().AddDate(0, 0, -days) would
+	// otherwise appear in this selector and yield an empty heatmap.
+	now := time.Now().UTC()
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).
+		AddDate(0, 0, -(days - 1)).Format(time.RFC3339)
+
+	netFilter := " AND " + d.networkFilter("network", network)
+	args := []any{start}
+	args = append(args, limit)
+
+	rows, err := d.db.Query(fmt.Sprintf(
+		"SELECT pkg_path, COUNT(*) AS n FROM calls WHERE block_time >= ?%s"+
+			" GROUP BY pkg_path ORDER BY n DESC, pkg_path ASC LIMIT ?", netFilter), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var p string
+		var n int
+		if err := rows.Scan(&p, &n); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// GetFunctionCallHeatmap returns calls per (function, day) for one realm.
+//
+// The grid is zero-filled server-side over the full day range and the selected
+// functions, so the caller never has to re-derive which days the window covers.
+// Cells come back function-major, functions ordered busiest-first.
+//
+// Empty cell is 0 — "this function was not called that day" is a real zero, not
+// missing data (§10.1).
+func (d *DB) GetFunctionCallHeatmap(network, pkgPath string, days int) ([]FuncCallCell, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	if pkgPath == "" {
+		return nil, nil
+	}
+	now := time.Now().UTC()
+	firstDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -(days - 1))
+
+	netFilter := " AND " + d.networkFilter("network", network)
+	args := []any{pkgPath, firstDay.Format(time.RFC3339)}
+	q := "SELECT func_name, strftime('%Y-%m-%d', block_time) AS day, COUNT(*)" +
+		" FROM calls WHERE pkg_path = ? AND block_time >= ?" + netFilter +
+		" GROUP BY func_name, day"
+
+	rows, err := d.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type key struct{ fn, day string }
+	cells := make(map[key]int)
+	totals := make(map[string]int)
+	for rows.Next() {
+		var fn string
+		// day comes from strftime() over nullable TEXT block_time; a garbage
+		// value (e.g. "not-a-timestamp") makes it NULL rather than failing the
+		// query. sql.NullString lets that row be skipped as a data-quality issue
+		// instead of erroring the whole heatmap.
+		var day sql.NullString
+		var n int
+		if err := rows.Scan(&fn, &day, &n); err != nil {
+			return nil, err
+		}
+		if !day.Valid {
+			continue
+		}
+		cells[key{fn, day.String}] = n
+		totals[fn] += n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(totals) == 0 {
+		return nil, nil
+	}
+
+	funcs := make([]string, 0, len(totals))
+	for fn := range totals {
+		funcs = append(funcs, fn)
+	}
+	sort.Slice(funcs, func(i, j int) bool {
+		if totals[funcs[i]] != totals[funcs[j]] {
+			return totals[funcs[i]] > totals[funcs[j]]
+		}
+		return funcs[i] < funcs[j]
+	})
+	if len(funcs) > funcHeatmapMaxFuncs {
+		funcs = funcs[:funcHeatmapMaxFuncs]
+	}
+
+	out := make([]FuncCallCell, 0, len(funcs)*days)
+	for _, fn := range funcs {
+		for i := range days {
+			day := firstDay.AddDate(0, 0, i).Format("2006-01-02")
+			out = append(out, FuncCallCell{Func: fn, Day: day, Calls: cells[key{fn, day}]})
+		}
+	}
+	return out, nil
 }
