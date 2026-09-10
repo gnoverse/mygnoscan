@@ -4365,15 +4365,108 @@ function renderDepGraph(imports, dependents, centerPath) {
     .attr('fill', d => depthColor(d.depth))
     .attr('stroke', '#000').attr('stroke-width', 1);
 
-  const labelEl = zoomG.append('g').selectAll('text').data(nodeArr).join('text')
+  // Labels are decluttered rather than all drawn.
+  //
+  // Every node carrying a label meant the dense centre of a graph like
+  // r/gnoswap/router rendered as a smear of overlapping text — worse than no
+  // labels, because it hides the shape of the graph as well as the names. And
+  // zooming could not help: the labels lived inside the zoomed group, so text
+  // and positions scaled together and two labels that overlapped at one scale
+  // overlapped at every scale.
+  //
+  // So labels sit outside the zoom group at a constant screen size, positioned
+  // by applying the current transform, and a greedy pass in screen space keeps
+  // the ones that fit. Zooming in now genuinely reveals more of them, because
+  // the nodes spread apart while the text does not grow. Anything dropped is
+  // one hover away, and the centre node always keeps its label.
+  const LABEL_FONT = 10;
+  const LABEL_CELL = 14;
+  // Rough, and deliberately so: measuring every label with getBBox would force
+  // a layout per label per frame. 0.55em per character over-estimates slightly
+  // for this font, which errs toward dropping a label rather than overlapping.
+  const LABEL_EM = 0.55;
+
+  // How many edges a node carries, as the tiebreak for who keeps their label.
+  // Read before the simulation starts, while link ends are still plain ids —
+  // forceLink replaces them with node objects on initialisation.
+  const degree = new Map();
+  for (const l of links) {
+    for (const end of [l.source, l.target]) {
+      const id = end && end.id !== undefined ? end.id : end;
+      degree.set(id, (degree.get(id) || 0) + 1);
+    }
+  }
+
+  const labelEl = svg.append('g').attr('pointer-events', 'none')
+    .selectAll('text').data(nodeArr).join('text')
     .text(d => d.id.split('/').slice(-2).join('/'))
-    .attr('font-size', 10).attr('fill', '#ccc').attr('dx', 14).attr('dy', 4);
+    .attr('font-size', LABEL_FONT).attr('fill', '#ccc');
+
+  // The order the greedy pass considers labels in, which is the order that
+  // decides who wins contested space: the centre, then the most-connected, then
+  // the shallowest.
+  const labelOrder = labelEl.nodes()
+    .map((node, i) => ({ node, d: nodeArr[i] }))
+    .sort((a, b) =>
+      (a.d.depth === 0 ? 0 : 1) - (b.d.depth === 0 ? 0 : 1) ||
+      (degree.get(b.d.id) || 0) - (degree.get(a.d.id) || 0) ||
+      a.d.depth - b.d.depth);
+
+  let hoveredNode = null;
+
+  function placeLabels() {
+    const t = d3.zoomTransform(svg.node());
+    const taken = new Set();
+    for (const entry of labelOrder) {
+      const d = entry.d, node = entry.node;
+      const x = t.applyX(d.x) + 14, y = t.applyY(d.y) + 4;
+      node.setAttribute('x', x);
+      node.setAttribute('y', y);
+
+      // A label panned off the canvas should neither be drawn — the svg does not
+      // clip, so it would land on the page around the panel — nor reserve space
+      // in the collision map for room nobody can see. Hovering is not a way back
+      // in here, because a node you cannot see is a node you cannot point at.
+      const MARGIN = 20;
+      if (x < -MARGIN || x > width + MARGIN || y < -MARGIN || y > height + MARGIN) {
+        node.style.display = 'none';
+        continue;
+      }
+
+      // The box the text actually occupies, not just its baseline: two labels
+      // one pixel apart vertically overlap on screen, and a grid keyed on the
+      // baseline row alone puts them in different rows and lets both through.
+      const left = x, right = x + node.textContent.length * LABEL_FONT * LABEL_EM;
+      const top = y - LABEL_FONT, bottom = y + 2;
+
+      const cells = [];
+      let clash = false;
+      for (let row = Math.floor(top / LABEL_CELL); row <= Math.floor(bottom / LABEL_CELL) && !clash; row++) {
+        for (let col = Math.floor(left / LABEL_CELL); col <= Math.floor(right / LABEL_CELL); col++) {
+          const key = col + ':' + row;
+          if (taken.has(key)) { clash = true; break; }
+          cells.push(key);
+        }
+      }
+
+      const keep = !clash || d.depth === 0 || d === hoveredNode;
+      node.style.display = keep ? '' : 'none';
+      if (keep) for (const key of cells) taken.add(key);
+    }
+  }
+
+  // Hovering a node reveals its label even when the pass dropped it, so a
+  // crowded cluster stays explorable without zooming.
+  nodeG.on('mouseenter', (e, d) => { hoveredNode = d; placeLabels(); })
+    .on('mouseleave', () => { hoveredNode = null; placeLabels(); });
+
+  zoom.on('zoom.labels', () => placeLabels());
 
   sim.on('tick', () => {
     linkEl.attr('x1', d => d.source.x).attr('y1', d => d.source.y)
       .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
     nodeG.attr('transform', d => 'translate(' + d.x + ',' + d.y + ')');
-    labelEl.attr('x', d => d.x).attr('y', d => d.y);
+    placeLabels();
   });
 }
 
