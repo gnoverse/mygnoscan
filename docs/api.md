@@ -152,7 +152,7 @@ All accept `days` and `granularity`.
 | `GET /api/timeseries/packages` | deployments |
 | `GET /api/timeseries/callers` | unique callers |
 | `GET /api/timeseries/gas` | gas consumption. Buckets carry `by_network` in all-networks mode, so fees can be shown per chain rather than summed |
-| `GET /api/timeseries/active-addresses` | active addresses |
+| `GET /api/timeseries/active-addresses` | active addresses. Served from a rollup of distinct `(network, hour, kind, address)` tuples rebuilt every 5 minutes, merged with a live read of everything newer than the rollup — so the newest bucket does not lag the refresh interval. Falls back to computing live before the first build. Distinct tuples rather than per-day counts, because an address active on three days of a week is one weekly active address, not three |
 | `GET /api/timeseries/health` | chain health indicators |
 | `GET /api/timeseries/storage` | storage growth. `realm=<path>` scopes it to one realm |
 | `GET /api/timeseries/storage/realms` | realms that have storage data, for populating a selector |

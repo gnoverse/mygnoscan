@@ -12,13 +12,15 @@ import (
 // newTestDB opens a real SQLite file in a temp dir. The driver is pure Go, so
 // this works everywhere including CI, and it exercises the actual schema rather
 // than a mock.
-func newTestDB(t *testing.T) *DB {
-	t.Helper()
-	db, err := NewDB(filepath.Join(t.TempDir(), "test.db"))
+// Takes testing.TB rather than *testing.T so benchmarks can build the same
+// database the tests do.
+func newTestDB(tb testing.TB) *DB {
+	tb.Helper()
+	db, err := NewDB(filepath.Join(tb.TempDir(), "test.db"))
 	if err != nil {
-		t.Fatalf("NewDB: %v", err)
+		tb.Fatalf("NewDB: %v", err)
 	}
-	t.Cleanup(func() { db.Close() })
+	tb.Cleanup(func() { db.Close() })
 	return db
 }
 

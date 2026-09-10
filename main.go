@@ -109,25 +109,29 @@ func run() error {
 		}
 	}
 
-	// Keep the gas rollups warm.
+	// Keep the rollups warm.
 	//
-	// The two aggregates behind the gas page scale with the chain and had
-	// reached 14 seconds on sapphire, against a 30-second write timeout. They
-	// cannot be indexed away — attributing gas per realm means touching every
-	// call — so they are precomputed here instead of per request.
+	// The aggregates behind the gas page, the bank page and the active-address
+	// series scale with the chain and had reached 14, 5 and 16 seconds on
+	// sapphire, against a 30-second write timeout. None can be indexed away —
+	// attributing gas per realm means touching every call, and counting distinct
+	// active addresses means touching every call, deploy and send — so they are
+	// precomputed here instead of per request.
 	//
-	// Every five minutes, not every sync pass: these are all-time totals, so
-	// five minutes of staleness costs nothing a reader would notice, and the
-	// recompute takes the write lock for a few seconds. The response carries
-	// computed_at so the page can say how fresh it is rather than implying live.
+	// Every five minutes, not every sync pass: the recompute takes the write
+	// lock for a few seconds, and nothing here is a number a reader watches tick.
+	// The gas and bank responses carry computed_at so the page can say how fresh
+	// they are; the active-address series instead reads everything newer than
+	// the build live, because a lagging newest bucket would disagree with the
+	// live feed beside it.
 	go func() {
 		refresh := func() {
 			start := time.Now()
-			if err := db.RefreshGasRollups(); err != nil {
-				log.Printf("gas rollup: %v", err)
+			if err := db.RefreshRollups(); err != nil {
+				log.Printf("rollups: %v", err)
 				return
 			}
-			log.Printf("gas rollup refreshed in %s", time.Since(start).Round(time.Millisecond))
+			log.Printf("rollups refreshed in %s", time.Since(start).Round(time.Millisecond))
 		}
 		// Wait out the startup ANALYZE before the first build. Both take the
 		// write lock, and racing it loses the whole refresh to SQLITE_BUSY —
@@ -136,7 +140,7 @@ func run() error {
 		db.WaitBackground()
 		refresh() // once at startup, so the first visitor is not the one who pays
 
-		ticker := time.NewTicker(gasRollupInterval)
+		ticker := time.NewTicker(rollupInterval)
 		defer ticker.Stop()
 		for {
 			select {

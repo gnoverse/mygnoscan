@@ -45,6 +45,28 @@ Derived, not stored:
 - **Account activity** is aggregated across `calls`, `msg_runs` and `bank_sends`.
 - **Balances** are not stored. They are fetched live from RPC per request.
 
+Derived and stored, on a timer:
+
+The `*_rollup` tables hold nothing the source tables do not already imply. They
+exist because a few aggregates cannot be indexed away and had grown into
+double-digit seconds. All of them are replaced wholesale inside one transaction
+every five minutes, so a reader sees one consistent generation, and all of them
+fall back to computing live before the first build rather than reporting zero.
+
+| table | grain | answers |
+|---|---|---|
+| `gas_realm_rollup` | one row per `(network, path)` | gas and fees attributed per realm |
+| `gas_totals_rollup` | one row per network | chain-wide gas totals |
+| `bank_totals_rollup` | one row per network | transfer volume and unique participants |
+| `bank_top_rollup` | one row per `(network, leaderboard, address)` | the transfer leaderboards, truncated per leaderboard |
+| `active_addr_rollup` | one row per `(network, hour, kind, address)` | how many distinct addresses were active per bucket |
+
+`active_addr_rollup` stores tuples rather than counts because counts cannot be
+re-aggregated: an address active on three days of a week is one weekly active
+address, not three. The hourly grain is finer than any bucket served, so every
+granularity is an exact re-deduplication. Reads merge it with a live query over
+everything newer than the build, so the newest bucket does not lag the timer.
+
 ## Semantics worth knowing
 
 - **`network` IDs are labels.** They name a configured network and key its rows.
