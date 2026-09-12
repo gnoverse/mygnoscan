@@ -154,6 +154,33 @@ func run() error {
 
 	// Set up API routes
 	api := NewAPI(db, clients, cfg.Networks, analyzer)
+
+	// A network pairs an indexer with an RPC, and nothing checked they serve the
+	// same chain. Verify before serving rather than after someone reads a
+	// balance from one chain beside history from another.
+	//
+	// Re-checked periodically because an endpoint can be repointed under a
+	// running process — which is exactly what a mainnet launch on an existing
+	// hostname does.
+	go func() {
+		check := func() {
+			ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+			api.verifyRPCChains(ctx)
+		}
+		check()
+
+		ticker := time.NewTicker(rpcChainRecheckInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				check()
+			}
+		}
+	}()
 	mux := http.NewServeMux()
 
 	// API routes

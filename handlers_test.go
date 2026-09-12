@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -982,4 +983,166 @@ func TestAddressFromStorage(t *testing.T) {
 			t.Errorf("balance %q reported in all-networks mode", out["balance"])
 		}
 	})
+}
+
+// A network pairs an indexer with an RPC, and nothing used to check they serve
+// the same chain.
+//
+// gno.land's mainnet launched as a fresh chain, `gnoland-1`, on `rpc.gno.land` —
+// one hyphen from the long-running `gnoland1` this instance indexes locally and
+// had configured as its RPC. Once mainnet answered there, an address page would
+// have served the old chain's transactions beside mainnet's balance, and nothing
+// would have noticed: the chain-reset detection fingerprints the indexer's
+// block 1 and never asks the RPC anything.
+func TestRPCChainMustMatchTheIndexer(t *testing.T) {
+	// An RPC that reports whichever chain the test wants.
+	rpcServing := func(chainID string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if chainID == "" {
+				http.Error(w, "unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			fmt.Fprintf(w, `{"result":{"node_info":{"network":%q}}}`, chainID)
+		}))
+	}
+
+	tests := []struct {
+		name     string
+		rpcChain string // what the RPC reports; "" means it is down
+		wantKept bool
+		reason   string
+	}{
+		{
+			name:     "same chain is kept",
+			rpcChain: "alpha-1",
+			wantKept: true,
+		},
+		{
+			name:     "a different chain is refused",
+			rpcChain: "gnoland-1",
+			wantKept: false,
+			reason:   "one hyphen apart is still a different chain",
+		},
+		{
+			// Unknown is not the same as mismatched, but the safe side of
+			// unknown is still "do not show a balance we cannot attribute".
+			name:     "an unreachable rpc is refused until it answers",
+			rpcChain: "",
+			wantKept: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake, client := newFakeIndexer(t)
+			fake.chainID = "alpha-1"
+			fake.set("genesis-hash", 100)
+
+			rpc := rpcServing(tt.rpcChain)
+			defer rpc.Close()
+
+			db := newTestDB(t)
+			nets := []NetworkConfig{{ID: "alpha", RPCURL: rpc.URL}}
+			db.SetConfiguredNetworks(nets)
+			api := NewAPI(db, map[string]*IndexerClient{"alpha": client}, nets, NewAnalyzer(db))
+
+			api.verifyRPCChains(context.Background())
+
+			kept := api.rpcURLFor("alpha") != ""
+			if kept != tt.wantKept {
+				t.Errorf("rpc kept = %v, want %v — %s", kept, tt.wantKept, tt.reason)
+			}
+		})
+	}
+}
+
+// Refusing an RPC must cost only the balance, not the page.
+func TestAddressPageSurvivesARefusedRPC(t *testing.T) {
+	fake, client := newFakeIndexer(t)
+	fake.chainID = "alpha-1"
+	fake.set("genesis-hash", 100)
+
+	rpc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"result":{"node_info":{"network":"a-different-chain"}}}`)
+	}))
+	defer rpc.Close()
+
+	db := newTestDB(t)
+	nets := []NetworkConfig{{ID: "alpha", RPCURL: rpc.URL}}
+	db.SetConfiguredNetworks(nets)
+	if err := db.InsertCall("alpha", "c1", 100, "2026-08-01T00:00:00Z",
+		"g1me", "gno.land/r/demo/boards", "Post", true); err != nil {
+		t.Fatalf("InsertCall: %v", err)
+	}
+	api := NewAPI(db, map[string]*IndexerClient{"alpha": client}, nets, NewAnalyzer(db))
+	api.verifyRPCChains(context.Background())
+
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("GET", "/api/address/g1me?network=alpha", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var out map[string]any
+	mustJSON(t, rec.Body.Bytes(), &out)
+
+	if out["balance"] != "" {
+		t.Errorf("balance %q served from a chain that is not this one", out["balance"])
+	}
+	if len(out["transactions"].([]any)) == 0 {
+		t.Error("the page lost its transactions along with the balance")
+	}
+}
+
+// A refusal has to be reversible.
+//
+// My first version cleared NetworkConfig.RPCURL in place, so an RPC that was
+// merely down at startup — which is exactly what a launching mainnet looks like —
+// stayed disabled for the life of the process, because the next pass skipped
+// every network whose URL was empty.
+func TestARefusedRPCRecoversWhenItAgreesAgain(t *testing.T) {
+	fake, client := newFakeIndexer(t)
+	fake.chainID = "alpha-1"
+	fake.set("genesis-hash", 100)
+
+	// Starts unavailable, as a node mid-launch does, then comes up on the right
+	// chain.
+	var serving atomic.Value
+	serving.Store("")
+	rpc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		chain := serving.Load().(string)
+		if chain == "" {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		fmt.Fprintf(w, `{"result":{"node_info":{"network":%q}}}`, chain)
+	}))
+	defer rpc.Close()
+
+	db := newTestDB(t)
+	nets := []NetworkConfig{{ID: "alpha", RPCURL: rpc.URL}}
+	db.SetConfiguredNetworks(nets)
+	api := NewAPI(db, map[string]*IndexerClient{"alpha": client}, nets, NewAnalyzer(db))
+
+	api.verifyRPCChains(context.Background())
+	if api.rpcURLFor("alpha") != "" {
+		t.Fatal("an unreachable rpc was trusted")
+	}
+
+	serving.Store("alpha-1")
+	api.verifyRPCChains(context.Background())
+	if api.rpcURLFor("alpha") == "" {
+		t.Error("the rpc came up on the right chain and was still refused — " +
+			"a refusal that cannot be undone disables balances permanently")
+	}
+
+	// And the reverse: an endpoint repointed to another chain under a running
+	// process must lose its verdict, which is the mainnet-launch case.
+	serving.Store("gnoland-1")
+	api.verifyRPCChains(context.Background())
+	if api.rpcURLFor("alpha") != "" {
+		t.Error("the rpc was repointed to another chain and stayed trusted")
+	}
 }
