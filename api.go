@@ -23,6 +23,14 @@ type API struct {
 	networks []NetworkConfig
 	analyzer *Analyzer
 	health   *healthTracker
+
+	// rpcOK records, per network, whether its RPC has been confirmed to serve
+	// the same chain as its indexer. Written by a background re-check and read
+	// by every request that wants a balance, hence the mutex.
+	//
+	// Absent means unverified, which is treated as unusable — see rpcURLFor.
+	rpcMu sync.RWMutex
+	rpcOK map[string]bool
 }
 
 func NewAPI(db *DB, clients map[string]*IndexerClient, networks []NetworkConfig, analyzer *Analyzer) *API {
@@ -344,11 +352,17 @@ func (a *API) clientFor(network string) *IndexerClient {
 	return a.clients[network]
 }
 
-// rpcURLFor returns the RPC URL for a network (or first network with an RPC URL).
+// rpcURLFor returns the RPC URL for a network, but only once that RPC has been
+// confirmed to serve the same chain as the network's indexer.
+//
+// Unverified is treated as unusable rather than as probably-fine: the cost of
+// withholding a balance is a missing figure, and the cost of trusting a
+// mismatched one is a number from a different chain shown beside this chain's
+// history. See verifyRPCChains.
 func (a *API) rpcURLFor(network string) string {
 	for _, n := range a.networks {
 		if network == "" || n.ID == network {
-			if n.RPCURL != "" {
+			if n.RPCURL != "" && a.rpcVerified(n.ID) {
 				return n.RPCURL
 			}
 		}
@@ -1723,4 +1737,120 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/labels", a.HandleLabels)
 	mux.HandleFunc("GET /api/watch", a.HandleWatch)
 	mux.HandleFunc("GET /api/govdao", a.HandleGovDAO)
+}
+
+// --- RPC / indexer chain agreement -----------------------------------------
+
+// rpcChainRecheckInterval is how often the indexer/RPC pairing is re-verified.
+//
+// An endpoint can be repointed under a running process, so checking only at
+// startup would make the guard depend on when the process happened to restart.
+const rpcChainRecheckInterval = 10 * time.Minute
+
+// rpcChainID asks an RPC node which chain it is serving.
+//
+// The endpoint is the same one a node operator uses to check liveness, and the
+// field is the chain id the node reports for itself.
+func rpcChainID(ctx context.Context, rpcURL string) (string, error) {
+	if rpcURL == "" {
+		return "", errors.New("no rpc url")
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", rpcURL+"/status", nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("rpc returned %s", resp.Status)
+	}
+
+	var out struct {
+		Result struct {
+			NodeInfo struct {
+				Network string `json:"network"`
+			} `json:"node_info"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	if out.Result.NodeInfo.Network == "" {
+		return "", errors.New("rpc reported no chain id")
+	}
+	return out.Result.NodeInfo.Network, nil
+}
+
+// verifyRPCChains records which RPCs are serving the same chain as the indexer
+// they are configured beside.
+//
+// A network is a *pair*: an indexer supplying history and an RPC supplying live
+// balance. Nothing previously checked they agreed. The chain-reset detection
+// fingerprints the indexer's block 1, so it sees a replaced indexer — it cannot
+// see an RPC repointed underneath, because it never asks the RPC anything.
+//
+// That is not hypothetical. gno.land's mainnet launched as a fresh chain,
+// `gnoland-1`, on the endpoint `rpc.gno.land` — one hyphen away from the
+// long-running `gnoland1` this instance indexes locally, and configured as its
+// RPC. Once mainnet answered there, an address page would have served the old
+// chain's transactions beside mainnet's balance, with nothing to notice.
+//
+// Refusing the RPC costs a balance figure. Trusting it costs a number that is
+// wrong in a way no one can see.
+//
+// The verdict is kept beside the config rather than by editing it: a refusal has
+// to be reversible, or an RPC that was merely down at startup stays disabled for
+// the life of the process.
+func (a *API) verifyRPCChains(ctx context.Context) {
+	for _, n := range a.networks {
+		if n.RPCURL == "" {
+			continue
+		}
+		client := a.clients[n.ID]
+		if client == nil {
+			continue
+		}
+
+		block, err := client.GetBlock(ctx, 1)
+		if err != nil || block == nil || block.ChainID == "" {
+			// Unknown, not mismatched. Leave the previous verdict alone rather
+			// than changing it because an indexer was briefly unreachable.
+			continue
+		}
+
+		rpcChain, err := rpcChainID(ctx, n.RPCURL)
+		switch {
+		case err != nil:
+			log.Printf("[%s] rpc chain unverified (%v); balances stay off until it answers", n.ID, err)
+			a.setRPCVerified(n.ID, false)
+		case rpcChain != block.ChainID:
+			log.Printf("[%s] REFUSING RPC %s: it serves chain %q while the indexer serves %q — "+
+				"balances would come from a different chain than the history beside them",
+				n.ID, n.RPCURL, rpcChain, block.ChainID)
+			a.setRPCVerified(n.ID, false)
+		default:
+			if !a.rpcVerified(n.ID) {
+				log.Printf("[%s] rpc chain %q matches the indexer", n.ID, rpcChain)
+			}
+			a.setRPCVerified(n.ID, true)
+		}
+	}
+}
+
+func (a *API) setRPCVerified(network string, ok bool) {
+	a.rpcMu.Lock()
+	defer a.rpcMu.Unlock()
+	if a.rpcOK == nil {
+		a.rpcOK = map[string]bool{}
+	}
+	a.rpcOK[network] = ok
+}
+
+func (a *API) rpcVerified(network string) bool {
+	a.rpcMu.RLock()
+	defer a.rpcMu.RUnlock()
+	return a.rpcOK[network]
 }
