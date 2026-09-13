@@ -48,7 +48,11 @@ type fakeIndexer struct {
 }
 
 var (
-	reGT       = regexp.MustCompile(`height:\s*{[^}]*\bgt:\s*(-?\d+)`)
+	reGT = regexp.MustCompile(`height:\s*{[^}]*\bgt:\s*(-?\d+)`)
+	// gte is a separate pattern because `\bgt:` deliberately does not match
+	// `gte:` — modelling one as the other would hide an off-by-one at the
+	// bottom of the chain, which is exactly where genesis lives.
+	reGTE      = regexp.MustCompile(`height:\s*{[^}]*\bgte:\s*(-?\d+)`)
 	reLT       = regexp.MustCompile(`height:\s*{[^}]*\blt:\s*(-?\d+)`)
 	reLike     = regexp.MustCompile(`like:\s*"([^"]*)"`)
 	reEq       = regexp.MustCompile(`\beq:\s*"([^"]*)"`)
@@ -205,6 +209,10 @@ func heightBounds(where string) (lo, hi int) {
 	if m := reGT.FindStringSubmatch(where); m != nil {
 		n, _ := strconv.Atoi(m[1])
 		lo = n + 1
+	}
+	if m := reGTE.FindStringSubmatch(where); m != nil {
+		n, _ := strconv.Atoi(m[1])
+		lo = n
 	}
 	if m := reLT.FindStringSubmatch(where); m != nil {
 		n, _ := strconv.Atoi(m[1])

@@ -621,7 +621,23 @@ func (c *IndexerClient) recentTransactionsWindowed(
 	for window := initialTxWindow; ; window *= txWindowGrowth {
 		from := tip - window
 		if from < 0 {
+			// Clamped, not left negative: the loop below exits on `from == 0`,
+			// meaning "the whole chain has been scanned". Letting it run negative
+			// makes that condition unreachable and the widening never stops.
 			from = 0
+		}
+
+		// `gt` excludes the bound, so a window reaching the bottom of the chain
+		// still misses block 0 — and genesis transactions live there.
+		//
+		// On a freshly launched chain that is everything: gno.land mainnet went
+		// live with 89 curated packages deployed at genesis, all at height 0, and
+		// the transactions page showed nothing while the stats row counted 96.
+		// Switching to `gte` at the bottom is the whole fix; above it the
+		// exclusive bound is what stops successive windows re-reading their edge.
+		op := "gt"
+		if from == 0 {
+			op = "gte"
 		}
 
 		var result struct {
@@ -629,10 +645,10 @@ func (c *IndexerClient) recentTransactionsWindowed(
 		}
 		q := fmt.Sprintf(`{
 		getTransactions(
-			where: { block_height: { gt: %d } %s }
+			where: { block_height: { %s: %d } %s }
 			order: { heightAndIndex: DESC }
 		) { %s }
-	}`, from, extraWhere, txFieldsLight)
+	}`, op, from, extraWhere, txFieldsLight)
 		if err := c.query(ctx, q, nil, &result); err != nil {
 			// A capped result set is not a failure here, it is the answer.
 			//
