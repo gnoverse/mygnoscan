@@ -364,18 +364,35 @@ func TestAddressQueryIsWindowedFromTheTip(t *testing.T) {
 		t.Fatal("the address's own transaction was not found")
 	}
 
-	// Every query must carry a height bound in its *where* clause.
+	// The walk must start windowed and stay windowed until it reaches the
+	// bottom of the chain, where the last query drops its lower bound to take
+	// in genesis — FilterInt has no `gte`, so there is no inclusive bound to
+	// use instead. That final query is the full scan this test exists to
+	// ration, so exactly one of them is allowed and it may not come first.
 	//
 	// Checking the whole query text passes for the wrong reason: txFieldsLight
 	// selects `block_height` as a field, so the string appears in every query
 	// regardless of what was filtered. Only the argument says what was asked.
+	var asked []string
 	for _, q := range f.askedQueries() {
-		if !strings.Contains(q, "getTransactions") {
-			continue
+		if strings.Contains(q, "getTransactions") {
+			asked = append(asked, whereClause(q))
 		}
-		if !strings.Contains(whereClause(q), "block_height") {
-			t.Errorf("an unbounded transaction query went out, where clause: %s", whereClause(q))
+	}
+	if len(asked) == 0 {
+		t.Fatal("no transaction query went out")
+	}
+	if !strings.Contains(asked[0], "block_height") {
+		t.Errorf("the walk opened with a full-chain scan: %s", asked[0])
+	}
+	unbounded := 0
+	for _, where := range asked {
+		if !strings.Contains(where, "block_height") {
+			unbounded++
 		}
+	}
+	if unbounded > 1 {
+		t.Errorf("%d unbounded queries went out; only the bottom window may drop its bound", unbounded)
 	}
 }
 

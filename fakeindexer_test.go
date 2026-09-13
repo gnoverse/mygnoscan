@@ -49,15 +49,15 @@ type fakeIndexer struct {
 
 var (
 	reGT = regexp.MustCompile(`height:\s*{[^}]*\bgt:\s*(-?\d+)`)
-	// gte is a separate pattern because `\bgt:` deliberately does not match
-	// `gte:` — modelling one as the other would hide an off-by-one at the
-	// bottom of the chain, which is exactly where genesis lives.
-	reGTE      = regexp.MustCompile(`height:\s*{[^}]*\bgte:\s*(-?\d+)`)
-	reLT       = regexp.MustCompile(`height:\s*{[^}]*\blt:\s*(-?\d+)`)
-	reLike     = regexp.MustCompile(`like:\s*"([^"]*)"`)
-	reEq       = regexp.MustCompile(`\beq:\s*"([^"]*)"`)
-	reHashEq   = regexp.MustCompile(`hash:\s*{\s*eq:\s*"([^"]*)"`)
-	reHeightEq = regexp.MustCompile(`(?:block_)?height:\s*{\s*eq:\s*(-?\d+)`)
+	reLT = regexp.MustCompile(`height:\s*{[^}]*\blt:\s*(-?\d+)`)
+	// Every comparator applied to a height, so the fake can reject the ones
+	// FilterInt does not have. See intFilterOps.
+	reHeightOps = regexp.MustCompile(`height:\s*{([^}]*)}`)
+	reOpName    = regexp.MustCompile(`(\w+)\s*:`)
+	reLike      = regexp.MustCompile(`like:\s*"([^"]*)"`)
+	reEq        = regexp.MustCompile(`\beq:\s*"([^"]*)"`)
+	reHashEq    = regexp.MustCompile(`hash:\s*{\s*eq:\s*"([^"]*)"`)
+	reHeightEq  = regexp.MustCompile(`(?:block_)?height:\s*{\s*eq:\s*(-?\d+)`)
 )
 
 // newFakeIndexer starts a fake and returns it with a client pointed at it.
@@ -101,6 +101,12 @@ func (f *fakeIndexer) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	if gqlErr != "" {
 		writeGQL(w, map[string]any{"errors": []map[string]string{{"message": gqlErr}}})
+		return
+	}
+	if op := unsupportedHeightOp(req.Query); op != "" {
+		writeGQL(w, map[string]any{"errors": []map[string]string{{
+			"message": fmt.Sprintf("Field %q is not defined by type \"FilterInt\"", op),
+		}}})
 		return
 	}
 
@@ -200,6 +206,28 @@ func whereClause(q string) string {
 	return q[start:]
 }
 
+// intFilterOps is FilterInt's full set of comparators, read off the live
+// schema. It is deliberately short: there is no `gte`.
+//
+// A fake that answers queries the real indexer rejects is worse than no fake,
+// because it reports the bug as fixed. This exact gap shipped a `gte` bound
+// that passed every test here and returned a GRAPHQL_VALIDATION_FAILED against
+// gno.land — "Field \"gte\" is not defined by type \"FilterInt\"".
+var intFilterOps = map[string]bool{"exists": true, "eq": true, "gt": true, "lt": true}
+
+// unsupportedHeightOp returns the first comparator used on a height that
+// FilterInt does not define, or "" when the query is valid.
+func unsupportedHeightOp(q string) string {
+	for _, block := range reHeightOps.FindAllStringSubmatch(q, -1) {
+		for _, op := range reOpName.FindAllStringSubmatch(block[1], -1) {
+			if !intFilterOps[op[1]] {
+				return op[1]
+			}
+		}
+	}
+	return ""
+}
+
 func heightBounds(where string) (lo, hi int) {
 	lo, hi = -1<<62, 1<<62
 	if m := reHeightEq.FindStringSubmatch(where); m != nil {
@@ -208,11 +236,12 @@ func heightBounds(where string) (lo, hi int) {
 	}
 	if m := reGT.FindStringSubmatch(where); m != nil {
 		n, _ := strconv.Atoi(m[1])
+		if n < 0 {
+			// A negative bound is not a way to reach genesis: the indexer
+			// answers `gt: -1` with a null result set, not with every row.
+			return 1 << 62, -1 << 62
+		}
 		lo = n + 1
-	}
-	if m := reGTE.FindStringSubmatch(where); m != nil {
-		n, _ := strconv.Atoi(m[1])
-		lo = n
 	}
 	if m := reLT.FindStringSubmatch(where); m != nil {
 		n, _ := strconv.Atoi(m[1])
