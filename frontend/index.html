@@ -830,8 +830,31 @@ function stoneOf(id) {
   return NET_STONES[String(id).toLowerCase().split(/[-_.]/)[0]] || '';
 }
 
+// isMainnet matches the network id and the chain id it carries.
+//
+// Exact matches only: `gnoland1` is a *different* chain from `gnoland-1`, and a
+// prefix or substring test would claim both.
+function isMainnet(id) {
+  const s = String(id || '').toLowerCase();
+  return s === 'mainnet' || s === 'gnoland-1';
+}
+
+// Mainnet is not a gemstone and must not take a rotating slot.
+//
+// Every other network is a testnet, and the testnets are named after stones that
+// retire as new ones launch. Mainnet is the one chain where mistaking it for a
+// testnet costs something real, so it gets a fixed colour that no rotation can
+// hand to something else — gold, and deliberately unlike any stone in the table
+// above.
+//
+// gno.land's mainnet chain id is `gnoland-1`, one hyphen from the long-running
+// `gnoland1` testnet this instance also indexes, so the two must never look
+// alike either.
+const NET_MAINNET = '#f5c542';
+
 function netColor(id) {
   if (!id) return 'var(--fg2)';
+  if (isMainnet(id)) return NET_MAINNET;
   const stone = stoneOf(id);
   if (stone) return stone;
 
