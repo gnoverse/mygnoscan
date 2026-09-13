@@ -633,11 +633,16 @@ func (c *IndexerClient) recentTransactionsWindowed(
 		// On a freshly launched chain that is everything: gno.land mainnet went
 		// live with 89 curated packages deployed at genesis, all at height 0, and
 		// the transactions page showed nothing while the stats row counted 96.
-		// Switching to `gte` at the bottom is the whole fix; above it the
-		// exclusive bound is what stops successive windows re-reading their edge.
-		op := "gt"
+		//
+		// The bottom window therefore carries no lower bound at all. `gte` would
+		// read better but FilterInt does not have it — it offers only exists, eq,
+		// gt and lt — and `gt: -1` is not an escape hatch either: the indexer
+		// answers a negative bound with a null result set rather than everything.
+		// Above the bottom the exclusive bound stays, so successive windows do
+		// not re-read their own edge.
+		heightFilter := fmt.Sprintf("block_height: { gt: %d }", from)
 		if from == 0 {
-			op = "gte"
+			heightFilter = ""
 		}
 
 		var result struct {
@@ -645,10 +650,10 @@ func (c *IndexerClient) recentTransactionsWindowed(
 		}
 		q := fmt.Sprintf(`{
 		getTransactions(
-			where: { block_height: { %s: %d } %s }
+			where: { %s %s }
 			order: { heightAndIndex: DESC }
 		) { %s }
-	}`, op, from, extraWhere, txFieldsLight)
+	}`, heightFilter, extraWhere, txFieldsLight)
 		if err := c.query(ctx, q, nil, &result); err != nil {
 			// A capped result set is not a failure here, it is the answer.
 			//
