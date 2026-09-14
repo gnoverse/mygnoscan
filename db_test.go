@@ -402,12 +402,79 @@ func TestGetGasStatsUsesStoredTransactions(t *testing.T) {
 	if stats.TopRealms[0].Gas != 1500 || stats.TopRealms[0].TxCount != 2 {
 		t.Errorf("realm gas/txs = %d/%d, want 1500/2", stats.TopRealms[0].Gas, stats.TopRealms[0].TxCount)
 	}
+	if len(stats.TopCallers) != 1 || stats.TopCallers[0].Address != "g1c" {
+		t.Fatalf("top callers = %+v, want the one caller", stats.TopCallers)
+	}
+	if stats.TopCallers[0].Gas != 1500 || stats.TopCallers[0].TxCount != 2 {
+		t.Errorf("caller gas/txs = %d/%d, want 1500/2", stats.TopCallers[0].Gas, stats.TopCallers[0].TxCount)
+	}
 	if len(stats.TopTxs) == 0 || stats.TopTxs[0].Hash != "T1" {
 		t.Errorf("top txs = %+v, want the most expensive first", stats.TopTxs)
 	}
 	if stats.TopTxs[0].Type != "MsgCall" {
 		t.Errorf("type = %q, want MsgCall resolved from the call row", stats.TopTxs[0].Type)
 	}
+}
+
+// A multicall stores several `calls` rows under one tx_hash (see msg_index).
+// Gas-by-caller must attribute that transaction's gas once, not once per
+// message — the transaction paid for its gas a single time regardless of how
+// many calls it bundled. Checked both live and off the rollup RefreshRollups
+// builds, since they are two different queries reaching the same answer.
+func TestGasByCallerDoesNotDoubleCountMulticalls(t *testing.T) {
+	db := newTestDB(t)
+	db.SetConfiguredNetworks([]NetworkConfig{{ID: "topaz"}})
+
+	if err := db.UpsertTransaction("topaz", "MULTI", 10, "", 1000, 2000, 30, true); err != nil {
+		t.Fatalf("seed tx: %v", err)
+	}
+	for i, fn := range []string{"Post", "Post", "Post"} {
+		if err := db.InsertCall("topaz", "MULTI", 10, i, "", "g1caller", "gno.land/r/demo/boards", fn, true); err != nil {
+			t.Fatalf("seed call %d: %v", i, err)
+		}
+	}
+	// An unrelated single call from someone else, so the assertion is not
+	// vacuously true for a database holding only one row.
+	if err := db.UpsertTransaction("topaz", "SOLO", 11, "", 100, 200, 3, true); err != nil {
+		t.Fatalf("seed tx: %v", err)
+	}
+	if err := db.InsertCall("topaz", "SOLO", 11, 0, "", "g1other", "gno.land/r/demo/boards", "Post", true); err != nil {
+		t.Fatalf("seed call: %v", err)
+	}
+
+	assertCaller := func(t *testing.T, stats *GasStats) {
+		t.Helper()
+		var got *GasCaller
+		for i := range stats.TopCallers {
+			if stats.TopCallers[i].Address == "g1caller" {
+				got = &stats.TopCallers[i]
+			}
+		}
+		if got == nil {
+			t.Fatalf("g1caller missing from top callers: %+v", stats.TopCallers)
+		}
+		if got.Gas != 1000 || got.TxCount != 1 {
+			t.Errorf("g1caller gas/txs = %d/%d, want 1000/1 (the multicall's tx, counted once)", got.Gas, got.TxCount)
+		}
+	}
+
+	live, err := db.GetGasStats("topaz", 20)
+	if err != nil {
+		t.Fatalf("gas stats (live): %v", err)
+	}
+	assertCaller(t, live)
+
+	if err := db.RefreshRollups(); err != nil {
+		t.Fatalf("refresh rollups: %v", err)
+	}
+	rolled, err := db.GetGasStats("topaz", 20)
+	if err != nil {
+		t.Fatalf("gas stats (rollup): %v", err)
+	}
+	if rolled.ComputedAt == "" {
+		t.Fatalf("gas stats did not come off the rollup after RefreshRollups")
+	}
+	assertCaller(t, rolled)
 }
 
 func TestUpsertTransactionsIsBatchedAndIdempotent(t *testing.T) {

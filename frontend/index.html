@@ -3061,7 +3061,7 @@ async function loadGas() {
     // trustworthy.
     if (data.computed_at) {
       const note = el('div', { className: 'section-sub' });
-      note.append('totals and per-realm gas as of ');
+      note.append('totals and per-realm/per-user gas as of ');
       note.appendChild(timeEl(data.computed_at));
       note.append(' \u00b7 rebuilt every few minutes');
       container.appendChild(note);
@@ -3148,6 +3148,24 @@ async function loadGas() {
       ));
     }
     rtbl.appendChild(rbody); container.appendChild(rtbl);
+
+    // Top callers by gas — same shape as the realm table, attributed to
+    // whoever paid instead of what was touched.
+    container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'top users by gas usage'));
+    const ctbl = el('table');
+    ctbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'address'), el('th', {}, 'gas used'), el('th', {}, 'fees (ugnot)'), el('th', {}, 'txs'), el('th', {}, 'avg gas/tx'))));
+    const cbody = el('tbody');
+    for (const c of (data.top_callers || [])) {
+      const avg = c.tx_count > 0 ? Math.floor(c.gas / c.tx_count) : 0;
+      cbody.appendChild(el('tr', {},
+        el('td', {}, addrLink(c.address)),
+        el('td', {}, fmtNum(c.gas)),
+        el('td', {}, fmtNum(c.fees)),
+        el('td', {}, fmtNum(c.tx_count)),
+        el('td', {}, fmtNum(avg))
+      ));
+    }
+    ctbl.appendChild(cbody); container.appendChild(ctbl);
 
     // Top txs by gas
     container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'top transactions by gas'));
