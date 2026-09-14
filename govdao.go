@@ -22,6 +22,13 @@ const govDAOCacheTTL = 30 * time.Second
 
 // fetchGovDAORender runs a vm/qrender ABCI query and returns the realm's
 // rendered markdown for the given query string (e.g. "gno.land/r/gov/dao:4").
+func fetchGovDAORender(ctx context.Context, rpcURL, query string) (string, error) {
+	return fetchABCIQuery(ctx, rpcURL, "vm/qrender", query)
+}
+
+// fetchABCIQuery runs a CometBFT abci_query JSON-RPC call at the given
+// query path (e.g. "vm/qrender", "vm/qpkgmeta_json", "vm/qinertpaths?limit=500")
+// with data as the raw query payload, and returns the decoded response data.
 //
 // The `data` field of CometBFT's abci_query JSON-RPC is typed as raw bytes,
 // which the JSON-RPC layer expects base64-encoded — not hex, despite this
@@ -29,7 +36,7 @@ const govDAOCacheTTL = 30 * time.Second
 // payload for its no-data case. Hex looked plausible by analogy and produced
 // "illegal base64 data" or a decoded-garbage query path; base64 is what
 // CometBFT actually wants here.
-func fetchGovDAORender(ctx context.Context, rpcURL, query string) (string, error) {
+func fetchABCIQuery(ctx context.Context, rpcURL, queryPath, data string) (string, error) {
 	if rpcURL == "" {
 		return "", fmt.Errorf("no verified RPC endpoint")
 	}
@@ -38,8 +45,8 @@ func fetchGovDAORender(ctx context.Context, rpcURL, query string) (string, error
 		"id":      1,
 		"method":  "abci_query",
 		"params": map[string]any{
-			"path": "vm/qrender",
-			"data": base64.StdEncoding.EncodeToString([]byte(query)),
+			"path": queryPath,
+			"data": base64.StdEncoding.EncodeToString([]byte(data)),
 		},
 	})
 	if err != nil {
@@ -81,11 +88,11 @@ func fetchGovDAORender(ctx context.Context, rpcURL, query string) (string, error
 	if result.Result.Response.ResponseBase.Error != nil {
 		return "", fmt.Errorf("abci error: %v (%s)", result.Result.Response.ResponseBase.Error, result.Result.Response.Log)
 	}
-	data := result.Result.Response.ResponseBase.Data
-	if data == "" {
+	respData := result.Result.Response.ResponseBase.Data
+	if respData == "" {
 		return "", nil
 	}
-	decoded, err := base64.StdEncoding.DecodeString(data)
+	decoded, err := base64.StdEncoding.DecodeString(respData)
 	if err != nil {
 		return "", err
 	}

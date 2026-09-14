@@ -142,12 +142,26 @@ func (a *API) stampBlockTimes(ctx context.Context, network string, client *Index
 		}
 	}
 
+	bt := a.blockTimesForHeights(ctx, network, client, heights)
+	for i := range txs {
+		txs[i].BlockTime = bt[txs[i].BlockHeight]
+	}
+}
+
+// blockTimesForHeights resolves height -> block_time for an arbitrary set of
+// heights, preferring stored times over asking the indexer — the same
+// lookup stampBlockTimes does for a transaction list, factored out for
+// callers that need times for heights that are not necessarily any
+// transaction's own block_height (e.g. an inert package's submission
+// height, which is a value carried *inside* a later MsgEnablePackage, not
+// the height of that message's own transaction).
+func (a *API) blockTimesForHeights(ctx context.Context, network string, client *IndexerClient, heights []int) map[int]string {
 	bt, err := a.db.BlockTimesForHeights(network, heights)
 	if err != nil || bt == nil {
 		bt = make(map[int]string, len(heights))
 	}
 
-	missing := heights[:0:0]
+	missing := make([]int, 0, len(heights))
 	for _, h := range heights {
 		if bt[h] == "" {
 			missing = append(missing, h)
@@ -160,10 +174,7 @@ func (a *API) stampBlockTimes(ctx context.Context, network string, client *Index
 			}
 		}
 	}
-
-	for i := range txs {
-		txs[i].BlockTime = bt[txs[i].BlockHeight]
-	}
+	return bt
 }
 
 // perNetworkDeadline bounds how long a single network may hold up a merged
@@ -1333,6 +1344,200 @@ func (a *API) HandleGovDAO(w http.ResponseWriter, r *http.Request) {
 // against its storage — the realm is the source of truth for its own rules,
 // including ones mygnoscan does not know about (a tier threshold changing,
 // say).
+// HandleInertQueue serves the current parked-package queue: every path
+// vm/qinertpaths reports, enriched with each one's own vm/qpkgmeta_json
+// metadata (creator, submission height, why it is stuck). See inert.go.
+func (a *API) HandleInertQueue(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	cached, err := FetchInertQueue(r.Context(), network, a.rpcURLFor(network))
+	if err != nil && len(cached) == 0 {
+		jsonError(w, err.Error(), 502)
+		return
+	}
+
+	// Copied, not enriched in place: FetchInertQueue's return shares its
+	// cache's backing array, and this handler's own block-time lookups are
+	// a per-request concern (they need a.db/the indexer client, which
+	// inert.go's cache does not have), not something to mutate into a
+	// value other concurrent requests may be reading.
+	queue := make([]InertPackage, len(cached))
+	copy(queue, cached)
+	heights := make([]int, 0, len(queue))
+	for _, p := range queue {
+		if p.Height > 0 {
+			heights = append(heights, p.Height)
+		}
+	}
+	bt := a.blockTimesForHeights(r.Context(), network, a.clientFor(network), heights)
+	for i := range queue {
+		queue[i].SubmittedTime = bt[queue[i].Height]
+	}
+
+	jsonResponse(w, map[string]any{"queue": queue})
+}
+
+// HandleInertHistory serves recent package-approval activity (every
+// MsgEnablePackage and MsgRejectPackage the indexer has) plus queue-depth
+// and approval-speed stats. "Speed" is measured from a resolved
+// MsgEnablePackage: BlockHeight (when the enable landed) minus PkgHeight
+// (the submission it approved, which MsgEnablePackage itself pins) — the
+// only place that pairing exists, since a parked submission is otherwise
+// silent between AddPackage and whatever eventually resolves it.
+func (a *API) HandleInertHistory(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	limit := eventTxLimit(r)
+	enabled, rejected := a.inertLifecycleEvents(r.Context(), network, limit)
+
+	queue, _ := FetchInertQueue(r.Context(), network, a.rpcURLFor(network))
+	stats := ComputeInertStats(len(queue), enabled, rejected)
+
+	jsonResponse(w, map[string]any{
+		"enabled":  enabled,
+		"rejected": rejected,
+		"stats":    stats,
+	})
+}
+
+// HandleInertPackage serves one path's inert-lifecycle detail: its current
+// vm/qpkgmeta_json status plus every AddPackage/EnablePackage/RejectPackage
+// transaction naming it, chronological — a redeploy parked while an earlier
+// submission at the same path was still pending shows as two distinct
+// "submitted" entries, exactly as the chain recorded it.
+func (a *API) HandleInertPackage(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	path := "gno.land/" + r.PathValue("path")
+
+	meta, metaErr := fetchPackageMeta(r.Context(), a.rpcURLFor(network), path)
+	if metaErr != nil {
+		meta = InertPackage{Path: path, Status: PackageStatusAbsent}
+	}
+
+	var history []InertLifecycleEvent
+	client := a.clientFor(network)
+	if client != nil {
+		if txs, err := client.GetPackageLifecycleTransactions(r.Context(), path, 200); err == nil {
+			a.stampBlockTimes(r.Context(), network, client, txs)
+			history = buildLifecycleHistory(txs)
+		}
+	}
+
+	jsonResponse(w, map[string]any{"meta": meta, "history": history})
+}
+
+// inertLifecycleEvents fetches every MsgEnablePackage/MsgRejectPackage,
+// normalizes them, and — for enables — resolves each one's wait time by
+// looking up the block_time at both the enable's own height and the
+// submission height it names.
+func (a *API) inertLifecycleEvents(ctx context.Context, network string, limit int) (enabled, rejected []InertLifecycleEvent) {
+	client := a.clientFor(network)
+	if client == nil {
+		return nil, nil
+	}
+
+	enableTxs, _ := client.GetPackageEnableTransactions(ctx, limit)
+	rejectTxs, _ := client.GetPackageRejectTransactions(ctx, limit)
+	a.stampBlockTimes(ctx, network, client, enableTxs)
+	a.stampBlockTimes(ctx, network, client, rejectTxs)
+
+	// Submission heights (MsgEnablePackage.PkgHeight) are not any of these
+	// transactions' own block_height, so stampBlockTimes cannot resolve
+	// them — a second, explicit lookup over that separate set of heights.
+	var subHeights []int
+	for _, tx := range enableTxs {
+		for _, m := range tx.Messages {
+			if m.Value.Typename == "MsgEnablePackage" && m.Value.PkgHeight > 0 {
+				subHeights = append(subHeights, m.Value.PkgHeight)
+			}
+		}
+	}
+	subTimes := a.blockTimesForHeights(ctx, network, client, subHeights)
+
+	for _, tx := range enableTxs {
+		for _, m := range tx.Messages {
+			if m.Value.Typename != "MsgEnablePackage" {
+				continue
+			}
+			ev := InertLifecycleEvent{
+				Kind: "enabled", TxHash: tx.Hash, BlockHeight: tx.BlockHeight, BlockTime: tx.BlockTime,
+				PkgPath: m.Value.PkgPath, Actor: m.Value.Approver, SubmittedHeight: m.Value.PkgHeight,
+			}
+			if t := subTimes[m.Value.PkgHeight]; t != "" {
+				ev.SubmittedTime = t
+			}
+			if ev.SubmittedHeight > 0 {
+				ev.WaitBlocks = tx.BlockHeight - ev.SubmittedHeight
+			}
+			if tx.BlockTime != "" && ev.SubmittedTime != "" {
+				if d, ok := secondsBetween(ev.SubmittedTime, tx.BlockTime); ok {
+					ev.WaitSeconds = d
+				}
+			}
+			enabled = append(enabled, ev)
+		}
+	}
+	for _, tx := range rejectTxs {
+		for _, m := range tx.Messages {
+			if m.Value.Typename != "MsgRejectPackage" {
+				continue
+			}
+			rejected = append(rejected, InertLifecycleEvent{
+				Kind: "rejected", TxHash: tx.Hash, BlockHeight: tx.BlockHeight, BlockTime: tx.BlockTime,
+				PkgPath: m.Value.PkgPath, Actor: m.Value.Sender,
+			})
+		}
+	}
+	return enabled, rejected
+}
+
+// buildLifecycleHistory turns a mixed AddPackage/EnablePackage/RejectPackage
+// transaction list (oldest-relevant-first is not assumed — the caller
+// windows by height DESC) into a chronological set of normalized events.
+func buildLifecycleHistory(txs []Transaction) []InertLifecycleEvent {
+	var out []InertLifecycleEvent
+	for _, tx := range txs {
+		for _, m := range tx.Messages {
+			switch m.Value.Typename {
+			case "MsgAddPackage":
+				out = append(out, InertLifecycleEvent{
+					Kind: "submitted", TxHash: tx.Hash, BlockHeight: tx.BlockHeight, BlockTime: tx.BlockTime,
+					PkgPath: pkgPathOf(m.Value), Actor: m.Value.Creator,
+				})
+			case "MsgEnablePackage":
+				out = append(out, InertLifecycleEvent{
+					Kind: "enabled", TxHash: tx.Hash, BlockHeight: tx.BlockHeight, BlockTime: tx.BlockTime,
+					PkgPath: m.Value.PkgPath, Actor: m.Value.Approver, SubmittedHeight: m.Value.PkgHeight,
+				})
+			case "MsgRejectPackage":
+				out = append(out, InertLifecycleEvent{
+					Kind: "rejected", TxHash: tx.Hash, BlockHeight: tx.BlockHeight, BlockTime: tx.BlockTime,
+					PkgPath: m.Value.PkgPath, Actor: m.Value.Sender,
+				})
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].BlockHeight < out[j].BlockHeight })
+	return out
+}
+
+func pkgPathOf(v MessageValue) string {
+	if v.Package != nil {
+		return v.Package.Path
+	}
+	return ""
+}
+
+// secondsBetween parses two RFC3339 timestamps and returns b-a in seconds.
+// The bool is false when either fails to parse, so a caller can leave the
+// wait time unset rather than report a nonsense duration.
+func secondsBetween(a, b string) (float64, bool) {
+	ta, err1 := time.Parse(time.RFC3339, a)
+	tb, err2 := time.Parse(time.RFC3339, b)
+	if err1 != nil || err2 != nil {
+		return 0, false
+	}
+	return tb.Sub(ta).Seconds(), true
+}
+
 func (a *API) HandleGovDAOOverview(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
 	rpcURL := a.rpcURLFor(network)
@@ -2241,6 +2446,9 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/govdao", a.HandleGovDAO)
 	mux.HandleFunc("GET /api/govdao/overview", a.HandleGovDAOOverview)
 	mux.HandleFunc("GET /api/govdao/proposals/{id}", a.HandleGovDAOProposal)
+	mux.HandleFunc("GET /api/inert/queue", a.HandleInertQueue)
+	mux.HandleFunc("GET /api/inert/history", a.HandleInertHistory)
+	mux.HandleFunc("GET /api/inert/package/{path...}", a.HandleInertPackage)
 }
 
 // --- RPC / indexer chain agreement -----------------------------------------

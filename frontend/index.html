@@ -292,14 +292,24 @@ footer a:hover { color: var(--accent); }
       <th class="rs" data-sort="calls">calls</th>
       <th class="rs" data-sort="last_call">last call</th>
       <th class="rs" data-sort="newest">added</th></tr></thead><tbody id="realms-list"></tbody></table></div></main></div>
-  <div class="view" id="view-packages"><main><div id="packages-stats" class="stats-bar" style="display:none"></div><div class="section"><div class="section-title">all packages</div>
-    <table><thead><tr><th>path</th><th>creator</th>
-      <th class="rs" data-sort="calls">calls</th>
-      <th class="rs" data-sort="importers">dependents</th>
-      <th class="rs" data-sort="imports">dependencies</th>
-      <th class="rs" data-sort="users">unique users</th>
-      <th class="rs" data-sort="newest">block</th>
-      <th>files</th></tr></thead><tbody id="packages-list"></tbody></table></div></main></div>
+  <div class="view" id="view-packages"><main>
+    <div class="tabs" id="packages-subnav">
+      <div class="tab active" data-pv="all" onclick="switchPackagesView('all', this)">all packages</div>
+      <div class="tab" data-pv="inert" onclick="switchPackagesView('inert', this)">inert queue</div>
+    </div>
+    <div id="packages-view-all">
+      <div id="packages-stats" class="stats-bar" style="display:none"></div>
+      <div class="section"><div class="section-title">all packages</div>
+        <table><thead><tr><th>path</th><th>creator</th>
+          <th class="rs" data-sort="calls">calls</th>
+          <th class="rs" data-sort="importers">dependents</th>
+          <th class="rs" data-sort="imports">dependencies</th>
+          <th class="rs" data-sort="users">unique users</th>
+          <th class="rs" data-sort="newest">block</th>
+          <th>files</th></tr></thead><tbody id="packages-list"></tbody></table></div>
+    </div>
+    <div id="packages-view-inert" style="display:none"></div>
+  </main></div>
   <div class="view" id="view-txs"><main>
     <div id="txs-stats" class="stats-bar" style="display:none"></div>
     <div id="txs-filter" style="display:none"></div>
@@ -346,6 +356,7 @@ footer a:hover { color: var(--accent); }
     <div class="tab-content" id="tab-storage"></div>
     <div class="tab-content" id="tab-deps"></div>
     <div class="tab-content" id="tab-graph"><div id="dep-graph"></div></div>
+    <div class="tab-content" id="tab-inert"></div>
   </main></div>
   <div class="view" id="view-tx-detail"><main><div id="tx-detail-content"></div></main></div>
   <div class="view" id="view-address-detail"><main><div id="address-detail-content"></div></main></div>
@@ -2228,6 +2239,125 @@ async function loadPackages(page) {
   }
 }
 
+// fmtDuration renders a raw duration in seconds compactly — unlike shortAge,
+// which takes a past timestamp and compares it to now, this takes an
+// already-computed span (a validation wait time, say) directly.
+function fmtDuration(seconds) {
+  if (seconds == null) return '';
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60) return s + 's';
+  if (s < 3600) return Math.floor(s / 60) + 'm';
+  if (s < 86400) return Math.floor(s / 3600) + 'h';
+  return Math.floor(s / 86400) + 'd';
+}
+
+let _inertQueueLoaded = false;
+function switchPackagesView(view, tabEl) {
+  document.querySelectorAll('#packages-subnav .tab').forEach(t => t.classList.remove('active'));
+  if (tabEl) tabEl.classList.add('active');
+  document.getElementById('packages-view-all').style.display = view === 'all' ? '' : 'none';
+  document.getElementById('packages-view-inert').style.display = view === 'inert' ? '' : 'none';
+  // Loaded on first switch, not with the main package list: the queue view
+  // costs the server a vm/qpkgmeta_json round trip per parked path (dozens
+  // of them), and most /packages visits never look at it.
+  if (view === 'inert' && !_inertQueueLoaded) {
+    _inertQueueLoaded = true;
+    loadInertQueue();
+  }
+}
+
+async function loadInertQueue() {
+  const container = clear('packages-view-inert');
+  skeletonRows(container, 4, 6);
+  try {
+    const [queueData, historyData] = await Promise.all([api('inert/queue'), api('inert/history')]);
+    container.textContent = '';
+    const queue = queueData.queue || [];
+    const enabled = historyData.enabled || [];
+    const rejected = historyData.rejected || [];
+    const stats = historyData.stats || {};
+
+    const statsBar = el('div', { className: 'stats-bar' });
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'queue'), el('span', { className: 'value' }, fmtNum(stats.queue_length ?? queue.length))));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'enabled'), el('span', { className: 'value' }, fmtNum(stats.enabled_count || 0))));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'rejected'), el('span', { className: 'value' }, fmtNum(stats.rejected_count || 0))));
+    if (stats.median_wait_seconds) {
+      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'median wait'), el('span', { className: 'value' }, fmtDuration(stats.median_wait_seconds))));
+    }
+    if (stats.median_wait_blocks) {
+      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'median wait (blocks)'), el('span', { className: 'value' }, fmtNum(stats.median_wait_blocks))));
+    }
+    container.appendChild(statsBar);
+
+    // Queue: everything currently parked, awaiting an approver.
+    container.appendChild(el('div', { className: 'section-title' }, 'awaiting approval (' + fmtNum(queue.length) + ')'));
+    container.appendChild(el('div', { className: 'section-sub' },
+      'packages parked under the "inert" code submission policy, newest submission first. An approver — usually the gpao oracle — must send a MsgEnablePackage before one of these becomes importable and callable.'));
+    const qTbl = el('table');
+    qTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'path'), el('th', {}, 'creator'), el('th', {}, 'submitted'), el('th', {}, 'max deposit'), el('th', {}, 'reason'))));
+    const qBody = el('tbody');
+    if (!queue.length) {
+      qBody.appendChild(el('tr', {}, el('td', { colspan: '5', style: { color: 'var(--fg2)' } }, 'nothing parked right now')));
+    }
+    for (const p of queue) {
+      qBody.appendChild(el('tr', {},
+        el('td', {}, realmPathEl(p.path)),
+        el('td', {}, addrLink(p.creator)),
+        el('td', {}, p.height ? blockWithAge(p.height, p.submitted_time) : '–'),
+        el('td', {}, p.max_deposit ? fmtCoins(p.max_deposit) : '–'),
+        el('td', { style: { color: 'var(--fg2)', fontSize: '12px' } }, p.reason || '')
+      ));
+    }
+    qTbl.appendChild(qBody);
+    container.appendChild(qTbl);
+
+    // Refused: dropped explicitly, distinct from simply still waiting.
+    container.appendChild(el('div', { className: 'section-title', style: { marginTop: '20px' } }, 'refused (' + fmtNum(rejected.length) + ')'));
+    container.appendChild(el('div', { className: 'section-sub' },
+      'submissions an approver, the creator, or a live package’s owner explicitly dropped, rather than left parked.'));
+    const rTbl = el('table');
+    rTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'path'), el('th', {}, 'by'), el('th', {}, 'when'), el('th', {}, 'tx'))));
+    const rBody = el('tbody');
+    if (!rejected.length) {
+      rBody.appendChild(el('tr', {}, el('td', { colspan: '4', style: { color: 'var(--fg2)' } }, 'none found')));
+    }
+    for (const r of rejected) {
+      rBody.appendChild(el('tr', {},
+        el('td', {}, realmPathEl(r.pkg_path)),
+        el('td', {}, addrLink(r.actor)),
+        el('td', {}, blockWithAge(r.block_height, r.block_time)),
+        el('td', {}, txLink(r.tx_hash, r.block_height, null, { showBlock: false }))
+      ));
+    }
+    rTbl.appendChild(rBody);
+    container.appendChild(rTbl);
+
+    // Recently enabled: the speed-of-validation feed the stats bar summarizes.
+    container.appendChild(el('div', { className: 'section-title', style: { marginTop: '20px' } }, 'recently enabled (' + fmtNum(enabled.length) + ')'));
+    const eTbl = el('table');
+    eTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'path'), el('th', {}, 'approver'), el('th', {}, 'submitted'), el('th', {}, 'enabled'), el('th', {}, 'wait'), el('th', {}, 'tx'))));
+    const eBody = el('tbody');
+    if (!enabled.length) {
+      eBody.appendChild(el('tr', {}, el('td', { colspan: '6', style: { color: 'var(--fg2)' } }, 'none found')));
+    }
+    for (const e of enabled.slice(0, 50)) {
+      eBody.appendChild(el('tr', {},
+        el('td', {}, realmPathEl(e.pkg_path)),
+        el('td', {}, addrLink(e.actor)),
+        el('td', {}, e.submitted_height ? blockLink(e.submitted_height) : '–'),
+        el('td', {}, blockWithAge(e.block_height, e.block_time)),
+        el('td', {}, e.wait_seconds ? fmtDuration(e.wait_seconds) : (e.wait_blocks ? fmtNum(e.wait_blocks) + ' blocks' : '–')),
+        el('td', {}, txLink(e.tx_hash, e.block_height, null, { showBlock: false }))
+      ));
+    }
+    eTbl.appendChild(eBody);
+    container.appendChild(eTbl);
+  } catch (err) {
+    console.error(err);
+    failBlock(clear('packages-view-inert'), err, loadInertQueue);
+  }
+}
+
 let _txsCache = null;
 let _pendingTxType = null; // set by a home stat tile, consumed by loadTxs
 let _txsFilterType = null; // null = all
@@ -3850,11 +3980,82 @@ async function loadGovDAODetail(id) {
   }
 }
 
+// renderInertTab draws a realm/package's inert-lifecycle tab: current
+// status plus the full submitted/enabled/rejected timeline for its path.
+// gpao (the usual approver) leaves no on-chain comment beyond a status code
+// and a reason string — there is no "why" text to show beyond what the
+// status/reason line already says.
+function renderInertTab(container, inert) {
+  container.textContent = '';
+  if (!inert) {
+    container.appendChild(el('p', { style: { color: 'var(--fg2)' } }, 'inert-lifecycle data is unavailable right now.'));
+    return;
+  }
+  const meta = inert.meta || {};
+  const history = inert.history || [];
+  if (!history.length && (!meta.status || meta.status === 'absent')) {
+    container.appendChild(el('p', { style: { color: 'var(--fg2)' } },
+      'no inert-policy history for this path — it was never submitted while parking was in effect, or its submission and activation happened as one message.'));
+    return;
+  }
+
+  container.appendChild(el('div', { className: 'section-title' }, 'current status'));
+  const statusRow = el('div', { style: { marginBottom: '16px' } });
+  statusRow.appendChild(
+    meta.status === 'live' ? badge('ok', 'live')
+      : meta.status === 'inert' ? badge('fail', 'inert — parked')
+        : badge('', meta.status || 'unknown'));
+  if (meta.pending && meta.status === 'live') {
+    statusRow.appendChild(document.createTextNode(' '));
+    statusRow.appendChild(badge('', 'redeploy pending'));
+  }
+  if (meta.reason) {
+    statusRow.appendChild(el('div', { style: { color: 'var(--fg2)', fontSize: '13px', marginTop: '6px' } }, meta.reason));
+  }
+  container.appendChild(statusRow);
+
+  container.appendChild(el('div', { className: 'section-title', style: { marginTop: '16px' } }, 'history'));
+  container.appendChild(el('div', { className: 'section-sub' },
+    'every submission, approval and rejection recorded for this path, oldest first.'));
+  const tbl = el('table');
+  tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'when'), el('th', {}, 'event'), el('th', {}, 'by'), el('th', {}, 'tx'))));
+  const body = el('tbody');
+  for (const ev of history) {
+    const label = ev.kind === 'submitted' ? badge('pkg', 'submitted')
+      : ev.kind === 'enabled' ? badge('ok', 'enabled')
+        : badge('fail', 'rejected');
+    const eventTd = el('td', {}, label);
+    if (ev.kind === 'enabled' && ev.submitted_height) {
+      eventTd.appendChild(el('span', { className: 'block-ctx' },
+        ' (submitted at ' + fmtNum(ev.submitted_height) + (ev.wait_blocks ? ', ' + fmtNum(ev.wait_blocks) + ' blocks later' : '') + ')'));
+    }
+    body.appendChild(el('tr', {},
+      el('td', {}, blockWithAge(ev.block_height, ev.block_time)),
+      eventTd,
+      el('td', {}, addrLink(ev.actor)),
+      el('td', {}, txLink(ev.tx_hash, ev.block_height, null, { showBlock: false }))
+    ));
+  }
+  tbl.appendChild(body);
+  container.appendChild(tbl);
+}
+
 async function loadRealmDetail(path, initialTab) {
   const header = clear('realm-header');
   skeletonBlock(header);
   try {
-    const detail = await api('realm/' + path.replace('gno.land/', ''));
+    // Fetched together, not as two sequential awaits: route() can run twice
+    // back-to-back on initial page load (see loadGovDAO's comment on the
+    // same issue), and a second await here would let this call's tail
+    // resume after a later call already rebuilt the header, duplicating
+    // whatever came after it. inert/package is allowed to fail
+    // independently \u2014 a realm that was never parked has nothing there, and
+    // the endpoint itself is best-effort RPC \u2014 so it is caught rather than
+    // failing the whole page.
+    const [detail, inert] = await Promise.all([
+      api('realm/' + path.replace('gno.land/', '')),
+      api('inert/package/' + path.replace('gno.land/', '')).catch(() => null),
+    ]);
     header.textContent = '';
     const titleRow = el('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', margin: '16px 0 8px' } },
       el('h2', { style: { margin: 0 } }, detail.path));
@@ -3869,6 +4070,25 @@ async function loadRealmDetail(path, initialTab) {
     header.appendChild(titleRow);
     const meta = el('div', { style: { color: 'var(--fg2)', marginBottom: '16px' } },
       detail.is_realm ? badge('realm', 'realm') : badge('pkg', 'package'));
+    // A package can succeed at MsgAddPackage and still not be callable: under
+    // the "inert" code submission policy a submission is parked until an
+    // approver enables it. Without this, a parked package looks identical to
+    // a live one \u2014 same is_realm, same "0 calls" a brand-new live realm
+    // would also show \u2014 which is exactly the kind of silent gap a reader
+    // has no way to notice on their own. See inert.go.
+    if (inert && inert.meta && inert.meta.status === 'inert') {
+      const parked = badge('fail', 'parked \u2014 not yet callable');
+      parked.title = inert.meta.reason || 'awaiting a package approver';
+      meta.appendChild(document.createTextNode(' '));
+      meta.appendChild(parked);
+    } else if (inert && inert.meta && inert.meta.pending) {
+      // Live, but a redeploy is parked on top of it \u2014 the live code still
+      // answers calls; this just says a newer submission is waiting.
+      const pending = badge('', 'redeploy pending approval');
+      pending.title = inert.meta.reason || 'a parked resubmission is awaiting a package approver';
+      meta.appendChild(document.createTextNode(' '));
+      meta.appendChild(pending);
+    }
     meta.append(' deployed by ');
     meta.appendChild(addrLink(detail.creator));
     meta.append(' at ' + blockLabel(detail.block_height) + ' \u00b7 ' + detail.num_files + ' files \u00b7 ' + detail.call_count + ' calls');
@@ -3880,7 +4100,7 @@ async function loadRealmDetail(path, initialTab) {
     header.appendChild(meta);
     _watchTarget = { kind: 'realms', id: detail.path, height: latestCall };
     const tabs = clear('realm-tabs');
-    const tabNames = ['info', 'source', 'calls', 'events', 'storage', 'deps', 'graph'];
+    const tabNames = ['info', 'source', 'calls', 'events', 'storage', 'deps', 'graph', 'inert'];
     const activeTab = initialTab && tabNames.includes(initialTab) ? initialTab : 'info';
     tabNames.forEach((name) => {
       const tab = el('div', { className: 'tab' + (name === activeTab ? ' active' : ''), onclick: () => switchTab(name, tab) }, name);
@@ -4113,6 +4333,10 @@ async function loadRealmDetail(path, initialTab) {
     // Graph
     const graphEl = document.getElementById('tab-graph'); if (activeTab === 'graph') graphEl.classList.add('active'); else graphEl.classList.remove('active');
     renderDepGraph(imports, dependents, path);
+    // Inert lifecycle: whether this path has ever been submitted, parked,
+    // enabled or rejected under the "inert" code submission policy.
+    const inertEl = clear('tab-inert'); if (activeTab === 'inert') inertEl.classList.add('active'); else inertEl.classList.remove('active');
+    renderInertTab(inertEl, inert);
   } catch (err) {
     header.textContent = '';
     header.appendChild(el('p', { style: { color: 'var(--red)', padding: '20px' } }, 'Error: ' + err.message));

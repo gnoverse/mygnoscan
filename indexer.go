@@ -462,6 +462,14 @@ type MessageValue struct {
 	ToAddress   string `json:"to_address,omitempty"`
 	Amount      string `json:"amount,omitempty"`
 
+	// MsgEnablePackage
+	Approver  string `json:"approver,omitempty"`
+	PkgHash   string `json:"pkg_hash,omitempty"`
+	PkgHeight int    `json:"pkg_height,omitempty"`
+
+	// MsgRejectPackage
+	Sender string `json:"sender,omitempty"`
+
 	// Common
 	Send       string `json:"send,omitempty"`
 	MaxDeposit string `json:"max_deposit,omitempty"`
@@ -537,6 +545,16 @@ const txFieldsLight = `
 				to_address
 				amount
 			}
+			... on MsgEnablePackage {
+				approver
+				pkg_path
+				pkg_hash
+				pkg_height
+			}
+			... on MsgRejectPackage {
+				sender
+				pkg_path
+			}
 		}
 	}
 	response {
@@ -603,6 +621,16 @@ const txFields = `
 				from_address
 				to_address
 				amount
+			}
+			... on MsgEnablePackage {
+				approver
+				pkg_path
+				pkg_hash
+				pkg_height
+			}
+			... on MsgRejectPackage {
+				sender
+				pkg_path
 			}
 		}
 	}
@@ -1229,6 +1257,74 @@ func (c *IndexerClient) GetGovDAOTransactions(ctx context.Context, need int) ([]
 	// which a bare "gov" would also pick up, and it keeps the versioned
 	// subpackages (gov/dao/v3/impl and friends).
 	const where = `messages: { value: { MsgCall: { pkg_path: { like: "gov/dao"} } } }`
+	return c.recentTransactionsWindowed(ctx, need, where, func() ([]Transaction, error) {
+		var result struct {
+			GetTransactions []Transaction `json:"getTransactions"`
+		}
+		q := fmt.Sprintf(`{
+		getTransactions(
+			where: { %s }
+			order: { heightAndIndex: DESC }
+		) { %s }
+	}`, where, txFieldsLight)
+		err := c.query(ctx, q, nil, &result)
+		return result.GetTransactions, err
+	})
+}
+
+// GetPackageEnableTransactions fetches every MsgEnablePackage this chain has
+// seen — the approval half of the "inert" code-submission policy's package
+// lifecycle (see inert.go). Unlike gov/dao's old substring predicate, these
+// fields are typed and marked @filterable in the indexer's own schema, so
+// this is an ordinary indexed lookup, not a scan.
+func (c *IndexerClient) GetPackageEnableTransactions(ctx context.Context, need int) ([]Transaction, error) {
+	const where = `messages: { value: { MsgEnablePackage: {} } }`
+	return c.recentTransactionsWindowed(ctx, need, where, func() ([]Transaction, error) {
+		var result struct {
+			GetTransactions []Transaction `json:"getTransactions"`
+		}
+		q := fmt.Sprintf(`{
+		getTransactions(
+			where: { %s }
+			order: { heightAndIndex: DESC }
+		) { %s }
+	}`, where, txFieldsLight)
+		err := c.query(ctx, q, nil, &result)
+		return result.GetTransactions, err
+	})
+}
+
+// GetPackageRejectTransactions fetches every MsgRejectPackage this chain has
+// seen — a parked package an approver, its own creator, or a live package's
+// owner explicitly dropped rather than left to expire.
+func (c *IndexerClient) GetPackageRejectTransactions(ctx context.Context, need int) ([]Transaction, error) {
+	const where = `messages: { value: { MsgRejectPackage: {} } }`
+	return c.recentTransactionsWindowed(ctx, need, where, func() ([]Transaction, error) {
+		var result struct {
+			GetTransactions []Transaction `json:"getTransactions"`
+		}
+		q := fmt.Sprintf(`{
+		getTransactions(
+			where: { %s }
+			order: { heightAndIndex: DESC }
+		) { %s }
+	}`, where, txFieldsLight)
+		err := c.query(ctx, q, nil, &result)
+		return result.GetTransactions, err
+	})
+}
+
+// GetPackageLifecycleTransactions fetches every AddPackage, EnablePackage and
+// RejectPackage transaction naming pkgPath — the full submission history for
+// one package path, including redeploys parked while an earlier submission
+// at the same path was still pending (see keeper_inert.go's redeploy case).
+func (c *IndexerClient) GetPackageLifecycleTransactions(ctx context.Context, pkgPath string, need int) ([]Transaction, error) {
+	e := gqlEscape(pkgPath)
+	where := fmt.Sprintf(`_or: [
+					{ messages: { value: { MsgAddPackage: { package: { path: { eq: "%s" } } } } } }
+					{ messages: { value: { MsgEnablePackage: { pkg_path: { eq: "%s" } } } } }
+					{ messages: { value: { MsgRejectPackage: { pkg_path: { eq: "%s" } } } } }
+				]`, e, e, e)
 	return c.recentTransactionsWindowed(ctx, need, where, func() ([]Transaction, error) {
 		var result struct {
 			GetTransactions []Transaction `json:"getTransactions"`
