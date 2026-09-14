@@ -30,8 +30,8 @@ type API struct {
 	// by every request that wants a balance, hence the mutex.
 	//
 	// Absent means unverified, which is treated as unusable — see rpcURLFor.
-	rpcMu sync.RWMutex
-	rpcOK map[string]bool
+	rpcMu   sync.RWMutex
+	rpcPick map[string]string
 }
 
 func NewAPI(db *DB, clients map[string]*IndexerClient, networks []NetworkConfig, analyzer *Analyzer) *API {
@@ -363,8 +363,8 @@ func (a *API) clientFor(network string) *IndexerClient {
 func (a *API) rpcURLFor(network string) string {
 	for _, n := range a.networks {
 		if network == "" || n.ID == network {
-			if n.RPCURL != "" && a.rpcVerified(n.ID) {
-				return n.RPCURL
+			if url := a.rpcVerified(n.ID); url != "" {
+				return url
 			}
 		}
 	}
@@ -1777,25 +1777,27 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 // startup would make the guard depend on when the process happened to restart.
 const rpcChainRecheckInterval = 10 * time.Minute
 
-// rpcChainID asks an RPC node which chain it is serving.
+// rpcStatus reports the chain an RPC serves and how far along it is.
 //
-// The endpoint is the same one a node operator uses to check liveness, and the
-// field is the chain id the node reports for itself.
-func rpcChainID(ctx context.Context, rpcURL string) (string, error) {
+// The endpoint is the same one a node operator uses to check liveness. The
+// height matters as much as the identity. rpc.gno.land kept answering
+// /status with the right chain ID while frozen 500 blocks behind the network,
+// so "does it respond and is it the right chain" is not enough to choose by.
+func rpcStatus(ctx context.Context, rpcURL string) (string, int, error) {
 	if rpcURL == "" {
-		return "", errors.New("no rpc url")
+		return "", 0, errors.New("no rpc url")
 	}
 	req, err := http.NewRequestWithContext(ctx, "GET", rpcURL+"/status", nil)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("rpc returned %s", resp.Status)
+		return "", 0, fmt.Errorf("rpc returned %s", resp.Status)
 	}
 
 	var out struct {
@@ -1803,15 +1805,19 @@ func rpcChainID(ctx context.Context, rpcURL string) (string, error) {
 			NodeInfo struct {
 				Network string `json:"network"`
 			} `json:"node_info"`
+			SyncInfo struct {
+				LatestBlockHeight string `json:"latest_block_height"`
+			} `json:"sync_info"`
 		} `json:"result"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", err
+		return "", 0, err
 	}
 	if out.Result.NodeInfo.Network == "" {
-		return "", errors.New("rpc reported no chain id")
+		return "", 0, errors.New("rpc reported no chain id")
 	}
-	return out.Result.NodeInfo.Network, nil
+	height, _ := strconv.Atoi(out.Result.SyncInfo.LatestBlockHeight)
+	return out.Result.NodeInfo.Network, height, nil
 }
 
 // verifyRPCChains records which RPCs are serving the same chain as the indexer
@@ -1836,7 +1842,8 @@ func rpcChainID(ctx context.Context, rpcURL string) (string, error) {
 // the life of the process.
 func (a *API) verifyRPCChains(ctx context.Context) {
 	for _, n := range a.networks {
-		if n.RPCURL == "" {
+		rpcs := n.RPCs()
+		if len(rpcs) == 0 {
 			continue
 		}
 		client := a.clients[n.ID]
@@ -1851,36 +1858,60 @@ func (a *API) verifyRPCChains(ctx context.Context) {
 			continue
 		}
 
-		rpcChain, err := rpcChainID(ctx, n.RPCURL)
-		switch {
-		case err != nil:
-			log.Printf("[%s] rpc chain unverified (%v); balances stay off until it answers", n.ID, err)
-			a.setRPCVerified(n.ID, false)
-		case rpcChain != block.ChainID:
-			log.Printf("[%s] REFUSING RPC %s: it serves chain %q while the indexer serves %q — "+
-				"balances would come from a different chain than the history beside them",
-				n.ID, n.RPCURL, rpcChain, block.ChainID)
-			a.setRPCVerified(n.ID, false)
-		default:
-			if !a.rpcVerified(n.ID) {
-				log.Printf("[%s] rpc chain %q matches the indexer", n.ID, rpcChain)
+		// Among the RPCs that serve the right chain, take the one furthest
+		// along. Being on the right chain is a floor, not a recommendation:
+		// rpc.gno.land reported the correct chain ID for 44 minutes while
+		// frozen behind the network, and the balances it served were as stale
+		// as the tip it reported.
+		var (
+			best       string
+			bestHeight = -1
+			lastErr    error
+			mismatch   string
+		)
+		for _, rpcURL := range rpcs {
+			rpcChain, height, err := rpcStatus(ctx, rpcURL)
+			switch {
+			case err != nil:
+				lastErr = err
+			case rpcChain != block.ChainID:
+				mismatch = fmt.Sprintf("%s serves chain %q", rpcURL, rpcChain)
+				log.Printf("[%s] REFUSING RPC %s: it serves chain %q while the indexer serves %q — "+
+					"balances would come from a different chain than the history beside them",
+					n.ID, rpcURL, rpcChain, block.ChainID)
+			case height > bestHeight:
+				best, bestHeight = rpcURL, height
 			}
-			a.setRPCVerified(n.ID, true)
+		}
+
+		switch best {
+		case "":
+			if lastErr != nil {
+				log.Printf("[%s] rpc chain unverified (%v); balances stay off until it answers", n.ID, lastErr)
+			} else if mismatch != "" {
+				log.Printf("[%s] no usable RPC: %s", n.ID, mismatch)
+			}
+			a.setRPCVerified(n.ID, "")
+		default:
+			if prev := a.rpcVerified(n.ID); prev != best {
+				log.Printf("[%s] using RPC %s (chain %q, height %d)", n.ID, best, block.ChainID, bestHeight)
+			}
+			a.setRPCVerified(n.ID, best)
 		}
 	}
 }
 
-func (a *API) setRPCVerified(network string, ok bool) {
+func (a *API) setRPCVerified(network, url string) {
 	a.rpcMu.Lock()
 	defer a.rpcMu.Unlock()
-	if a.rpcOK == nil {
-		a.rpcOK = map[string]bool{}
+	if a.rpcPick == nil {
+		a.rpcPick = map[string]string{}
 	}
-	a.rpcOK[network] = ok
+	a.rpcPick[network] = url
 }
 
-func (a *API) rpcVerified(network string) bool {
+func (a *API) rpcVerified(network string) string {
 	a.rpcMu.RLock()
 	defer a.rpcMu.RUnlock()
-	return a.rpcOK[network]
+	return a.rpcPick[network]
 }
