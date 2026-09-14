@@ -477,6 +477,65 @@ func TestGasByCallerDoesNotDoubleCountMulticalls(t *testing.T) {
 	assertCaller(t, rolled)
 }
 
+// The realm-attribution counterpart to TestGasByCallerDoesNotDoubleCountMulticalls:
+// a multicall bundling several messages to the same realm must not multiply
+// that transaction's gas by the message count either.
+func TestGasByRealmDoesNotDoubleCountMulticalls(t *testing.T) {
+	db := newTestDB(t)
+	db.SetConfiguredNetworks([]NetworkConfig{{ID: "topaz"}})
+
+	if err := db.UpsertTransaction("topaz", "MULTI", 10, "", 1000, 2000, 30, true); err != nil {
+		t.Fatalf("seed tx: %v", err)
+	}
+	for i, fn := range []string{"Post", "Post", "Post"} {
+		if err := db.InsertCall("topaz", "MULTI", 10, i, "", "g1caller", "gno.land/r/demo/boards", fn, true); err != nil {
+			t.Fatalf("seed call %d: %v", i, err)
+		}
+	}
+	// An unrelated single call to a different realm, so the assertion is not
+	// vacuously true for a database holding only one row.
+	if err := db.UpsertTransaction("topaz", "SOLO", 11, "", 100, 200, 3, true); err != nil {
+		t.Fatalf("seed tx: %v", err)
+	}
+	if err := db.InsertCall("topaz", "SOLO", 11, 0, "", "g1other", "gno.land/r/demo/elsewhere", "Post", true); err != nil {
+		t.Fatalf("seed call: %v", err)
+	}
+
+	assertRealm := func(t *testing.T, stats *GasStats) {
+		t.Helper()
+		var got *GasRealm
+		for i := range stats.TopRealms {
+			if stats.TopRealms[i].Path == "gno.land/r/demo/boards" {
+				got = &stats.TopRealms[i]
+			}
+		}
+		if got == nil {
+			t.Fatalf("gno.land/r/demo/boards missing from top realms: %+v", stats.TopRealms)
+		}
+		if got.Gas != 1000 || got.TxCount != 1 {
+			t.Errorf("boards gas/txs = %d/%d, want 1000/1 (the multicall's tx, counted once)", got.Gas, got.TxCount)
+		}
+	}
+
+	live, err := db.GetGasStats("topaz", 20)
+	if err != nil {
+		t.Fatalf("gas stats (live): %v", err)
+	}
+	assertRealm(t, live)
+
+	if err := db.RefreshRollups(); err != nil {
+		t.Fatalf("refresh rollups: %v", err)
+	}
+	rolled, err := db.GetGasStats("topaz", 20)
+	if err != nil {
+		t.Fatalf("gas stats (rollup): %v", err)
+	}
+	if rolled.ComputedAt == "" {
+		t.Fatalf("gas stats did not come off the rollup after RefreshRollups")
+	}
+	assertRealm(t, rolled)
+}
+
 func TestUpsertTransactionsIsBatchedAndIdempotent(t *testing.T) {
 	db, err := NewDB(filepath.Join(t.TempDir(), "batch.db"))
 	if err != nil {
@@ -896,15 +955,15 @@ func TestGasByRealmJoinStaysInTheIndex(t *testing.T) {
 
 	const q = `
 		SELECT path, SUM(gas_used), SUM(gas_fee), COUNT(*) FROM (
-			SELECT c.pkg_path AS path, t.gas_used, t.gas_fee, t.tx_hash
+			SELECT DISTINCT c.pkg_path AS path, t.tx_hash, t.gas_used, t.gas_fee
 			  FROM calls c JOIN transactions t
 			    ON t.network = c.network AND t.tx_hash = c.tx_hash AND t.network = ?
-			UNION ALL
-			SELECT p.path AS path, t.gas_used, t.gas_fee, t.tx_hash
+			UNION
+			SELECT DISTINCT p.path AS path, t.tx_hash, t.gas_used, t.gas_fee
 			  FROM packages p JOIN transactions t
 			    ON t.network = p.network AND t.tx_hash = p.tx_hash AND t.network = ?
-			UNION ALL
-			SELECT 'MsgRun by ' || m.caller AS path, t.gas_used, t.gas_fee, t.tx_hash
+			UNION
+			SELECT DISTINCT 'MsgRun by ' || m.caller AS path, t.tx_hash, t.gas_used, t.gas_fee
 			  FROM msg_runs m JOIN transactions t
 			    ON t.network = m.network AND t.tx_hash = m.tx_hash AND t.network = ?
 		) GROUP BY path ORDER BY SUM(gas_used) DESC LIMIT 20`
