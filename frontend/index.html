@@ -32,10 +32,22 @@ nav { display: flex; gap: 12px; flex-wrap: wrap; }
 nav a { color: var(--fg2); font-size: 13px; cursor: pointer; }
 nav a:hover, nav a.active { color: var(--accent); text-decoration: none; }
 .search-box { margin-left: auto; position: relative; }
-.search-box input { background: var(--bg2); border: 1px solid var(--border); color: var(--fg); padding: 6px 12px; border-radius: 4px; font-family: var(--mono); font-size: 13px; width: 240px; outline: none; }
-.search-box input:focus { border-color: var(--accent); }
-#search-results { position: absolute; top: 100%; left: 0; right: 0; background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; margin-top: 4px; max-height: 300px; overflow-y: auto; display: none; z-index: 200; }
+.search-box input { background: var(--bg2); border: 1px solid var(--border); color: var(--fg); padding: 6px 30px 6px 12px; border-radius: 4px; font-family: var(--mono); font-size: 13px; width: 240px; outline: none; transition: box-shadow 0.15s, border-color 0.15s, width 0.15s; }
+/* A visible glow, not just the border-color swap it had before — the box
+   looks identical whether focused or not otherwise, easy to lose track of
+   which element a keystroke actually goes to. */
+.search-box input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(78,205,196,0.2); width: 280px; }
+/* The "/" shortcut only ever showed up in the "?" help overlay — nothing on
+   the box itself said it was there. Hidden once there's something to search
+   for or the field already has focus, so it never fights the caret. */
+.search-box .kbd-hint { position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+  font-size: 11px; color: var(--fg2); border: 1px solid var(--border); border-radius: 3px;
+  padding: 1px 5px; pointer-events: none; background: var(--bg); }
+.search-box input:focus + .kbd-hint, .search-box input:not(:placeholder-shown) + .kbd-hint { display: none; }
+#search-results { position: absolute; top: 100%; left: 0; right: 0; background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; margin-top: 4px; max-height: 340px; overflow-y: auto; display: none; z-index: 200; }
 #search-results.open { display: block; }
+.search-section-label { padding: 6px 12px 4px; font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--fg2); }
+.search-loading { padding: 8px 12px; color: var(--fg2); font-size: 12px; }
 .stats-bar { display: flex; gap: 24px; padding: 16px 0; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
 .stat { display: flex; flex-direction: column; }
 .stat .label { font-size: 11px; color: var(--fg2); text-transform: uppercase; letter-spacing: 1px; }
@@ -119,8 +131,6 @@ tr.total-row td { font-weight: bold; color: var(--accent); }
 .shortcut-row kbd { font-family: var(--mono); background: var(--bg3); border: 1px solid var(--border);
   border-radius: 3px; padding: 1px 6px; font-size: 11px; white-space: nowrap; }
 .shortcut-row span { color: var(--fg2); }
-.search-direct { padding: 8px 12px; cursor: pointer; border-bottom: 1px solid var(--border);
-  border-left: 2px solid var(--accent); font-family: var(--mono); word-break: break-all; }
 /* Load failures: shown where a skeleton would otherwise shimmer forever. */
 .load-error { padding: 16px 4px; text-align: left; }
 .load-error-head { color: var(--red); font-weight: bold; margin-bottom: 4px; }
@@ -238,6 +248,7 @@ footer a:hover { color: var(--accent); }
     </nav>
     <div class="search-box">
       <input type="text" id="search-input" placeholder="search...">
+      <span class="kbd-hint" aria-hidden="true">/</span>
       <div id="search-results"></div>
     </div>
     <span class="net-swatch" id="network-swatch" title=""></span><select class="network-select" id="network-select" onchange="onNetworkChange()"></select>
@@ -523,7 +534,12 @@ function truncAddr(addr) {
 }
 function shortAddr(addr) {
   if (!addr) return '';
-  return KNOWN_ADDRS[addr] || truncAddr(addr);
+  // KNOWN_ADDRS[addr] is not always a string - an inferred entry is
+  // {label, why}, and returning that raw here used to concatenate into
+  // "[object Object]" wherever a caller did 'by ' + shortAddr(addr). Route
+  // through addrInfo, which already normalises both forms to a label.
+  const info = addrInfo(addr);
+  return (info && info.label) || truncAddr(addr);
 }
 // network is optional: pass it when the row belongs to a specific chain, so the
 // link lands on that chain rather than on whatever is selected. Without it an
@@ -4785,47 +4801,66 @@ function renderDepGraph(imports, dependents, centerPath) {
 
 // --- Search ---
 let searchTimeout;
+// Bumped on every keystroke; a resolved fetch checks it still matches before
+// touching the DOM. Typing fast enough to have two package-search requests
+// in flight used to let whichever answered second win, even if it was the
+// stale one - flashing yesterday's query's results into today's box.
+let _searchGen = 0;
+function searchResultRow(badgeType, badgeText, title, subtitle, onClick) {
+  const item = el('div', { style: { padding: '8px 12px', cursor: 'pointer', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '8px' } });
+  item.appendChild(badge(badgeType, badgeText));
+  const text = el('div', {});
+  text.appendChild(el('div', { style: { fontSize: '13px' } }, title));
+  if (subtitle) text.appendChild(el('div', { style: { fontSize: '11px', color: 'var(--fg2)' } }, subtitle));
+  item.appendChild(text);
+  item.addEventListener('click', onClick);
+  item.addEventListener('mouseover', () => item.style.background = 'var(--bg3)');
+  item.addEventListener('mouseout', () => item.style.background = '');
+  return item;
+}
 document.getElementById('search-input').addEventListener('input', function() {
   clearTimeout(searchTimeout);
+  const gen = ++_searchGen;
   const q = this.value;
   const results = document.getElementById('search-results');
   if (q.length < 2) { results.classList.remove('open'); return; }
+  results.textContent = '';
+
+  const direct = directDestinations(q);
+  if (direct.length) {
+    results.appendChild(el('div', { className: 'search-section-label' }, 'go to'));
+    for (const d of direct) {
+      results.appendChild(searchResultRow('', d.kind, d.label, null,
+        () => { results.classList.remove('open'); navigate(d.href); }));
+    }
+  }
+  const loading = el('div', { className: 'search-loading' }, 'searching packages...');
+  results.appendChild(loading);
+  results.classList.add('open');
+
   searchTimeout = setTimeout(async () => {
     try {
       const data = await api('search?q=' + encodeURIComponent(q));
-      results.textContent = '';
-
-      // The box looks like a universal search, so make it one. /api/search covers
-      // package paths, names and creators only — an address, a transaction hash
-      // or a block height returned nothing at all, which reads as "not found"
-      // rather than "not searched". These are recognised by shape and offered as
-      // direct destinations above the package matches.
-      for (const d of directDestinations(q)) {
-        const item = el('div', { className: 'search-direct' });
-        item.appendChild(el('div', { style: { fontSize: '13px' } }, d.label));
-        item.appendChild(el('div', { style: { fontSize: '11px', color: 'var(--fg2)' } }, d.kind));
-        item.addEventListener('click', () => { results.classList.remove('open'); navigate(d.href); });
-        item.addEventListener('mouseover', () => item.style.background = 'var(--bg3)');
-        item.addEventListener('mouseout', () => item.style.background = '');
-        results.appendChild(item);
-      }
+      if (gen !== _searchGen) return;
+      loading.remove();
 
       if (!data || !data.length) {
-        if (!results.childNodes.length) {
+        if (!direct.length) {
           results.appendChild(el('div', { style: { padding: '8px 12px' } }, 'no results'));
         }
+        return;
       }
-      else { for (const r of data) {
-        const item = el('div', { style: { padding: '8px 12px', cursor: 'pointer', borderBottom: '1px solid var(--border)' } });
-        item.appendChild(el('div', { style: { fontSize: '13px' } }, r.path));
-        item.appendChild(el('div', { style: { fontSize: '11px', color: 'var(--fg2)' } }, (r.is_realm ? 'realm' : 'package') + ' \u00b7 ' + shortAddr(r.creator)));
-        item.addEventListener('click', () => { results.classList.remove('open'); navigate('/realm/' + r.path.replace('gno.land/', '')); });
-        item.addEventListener('mouseover', () => item.style.background = 'var(--bg3)');
-        item.addEventListener('mouseout', () => item.style.background = '');
-        results.appendChild(item);
-      }}
-      results.classList.add('open');
-    } catch (err) { results.classList.remove('open'); }
+      results.appendChild(el('div', { className: 'search-section-label' }, 'packages'));
+      for (const r of data) {
+        results.appendChild(searchResultRow(r.is_realm ? 'realm' : 'pkg', r.is_realm ? 'realm' : 'package',
+          r.path, 'by ' + shortAddr(r.creator),
+          () => { results.classList.remove('open'); navigate('/realm/' + r.path.replace('gno.land/', '')); }));
+      }
+    } catch (err) {
+      if (gen !== _searchGen) return;
+      loading.remove();
+      if (!direct.length) results.classList.remove('open');
+    }
   }, 200);
 });
 document.addEventListener('click', (e) => { if (!e.target.closest('.search-box')) document.getElementById('search-results').classList.remove('open'); });
