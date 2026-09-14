@@ -1294,20 +1294,27 @@ func (d *DB) GetGasStats(network string, topN int) (*GasStats, error) {
 	// joined to at most one realm here; calls and deployments are the two paths
 	// that carry a package path, and MsgRun is grouped under its caller because
 	// its ephemeral path is unique per run and would otherwise be one row each.
+	//
+	// Deduplicated on (network, tx_hash, path) within each branch before
+	// summing: a transaction's gas is paid once, and since the multicall fix a
+	// single tx_hash can carry several `calls` rows bundling different
+	// functions on the same realm (one per message), which would otherwise
+	// multiply that transaction's gas by how many of its messages targeted
+	// this realm. Same reasoning as the gas-by-caller query below.
 	realmWhere := " AND " + d.networkFilter("t.network", network)
 	realmArgs := []any{}
 
 	realmQuery := `
 		SELECT path, SUM(gas_used), SUM(gas_fee), COUNT(*) FROM (
-			SELECT c.pkg_path AS path, t.gas_used, t.gas_fee, t.tx_hash
+			SELECT DISTINCT c.pkg_path AS path, t.tx_hash, t.gas_used, t.gas_fee
 			  FROM calls c JOIN transactions t
 			    ON t.network = c.network AND t.tx_hash = c.tx_hash` + realmWhere + `
-			UNION ALL
-			SELECT p.path AS path, t.gas_used, t.gas_fee, t.tx_hash
+			UNION
+			SELECT DISTINCT p.path AS path, t.tx_hash, t.gas_used, t.gas_fee
 			  FROM packages p JOIN transactions t
 			    ON t.network = p.network AND t.tx_hash = p.tx_hash` + realmWhere + `
-			UNION ALL
-			SELECT 'MsgRun by ' || m.caller AS path, t.gas_used, t.gas_fee, t.tx_hash
+			UNION
+			SELECT DISTINCT 'MsgRun by ' || m.caller AS path, t.tx_hash, t.gas_used, t.gas_fee
 			  FROM msg_runs m JOIN transactions t
 			    ON t.network = m.network AND t.tx_hash = m.tx_hash` + realmWhere + `
 		) GROUP BY path ORDER BY SUM(gas_used) DESC LIMIT ?`
@@ -3966,15 +3973,15 @@ func (d *DB) refreshRollups() error {
 	if _, err := tx.Exec(`
 		INSERT INTO gas_realm_rollup (network, path, gas_used, gas_fee, tx_count)
 		SELECT network, path, SUM(gas_used), SUM(gas_fee), COUNT(*) FROM (
-			SELECT t.network, c.pkg_path AS path, t.gas_used, t.gas_fee
+			SELECT DISTINCT t.network, c.pkg_path AS path, t.tx_hash, t.gas_used, t.gas_fee
 			  FROM calls c JOIN transactions t
 			    ON t.network = c.network AND t.tx_hash = c.tx_hash AND ` + scope + `
-			UNION ALL
-			SELECT t.network, p.path, t.gas_used, t.gas_fee
+			UNION
+			SELECT DISTINCT t.network, p.path, t.tx_hash, t.gas_used, t.gas_fee
 			  FROM packages p JOIN transactions t
 			    ON t.network = p.network AND t.tx_hash = p.tx_hash AND ` + scope + `
-			UNION ALL
-			SELECT t.network, 'MsgRun by ' || m.caller, t.gas_used, t.gas_fee
+			UNION
+			SELECT DISTINCT t.network, 'MsgRun by ' || m.caller, t.tx_hash, t.gas_used, t.gas_fee
 			  FROM msg_runs m JOIN transactions t
 			    ON t.network = m.network AND t.tx_hash = m.tx_hash AND ` + scope + `
 		) GROUP BY network, path`); err != nil {
