@@ -2152,3 +2152,49 @@ func TestBatch2bReadersScopeToConfiguredNetworks(t *testing.T) {
 		}
 	})
 }
+
+// unique_users is a distinct count, not a repeat count: a multicall bundling
+// several messages from the same caller (see the msg_index fix) must not
+// inflate it, and packageSortClause's "users" key must rank on it.
+func TestListPackagesUniqueUsers(t *testing.T) {
+	db := newTestDB(t)
+
+	if err := db.UpsertPackage("gnoland1", "gno.land/r/demo/busy", "busy", "g1creator", "TX1", 10, "", true, 1); err != nil {
+		t.Fatalf("seed package: %v", err)
+	}
+	if err := db.UpsertPackage("gnoland1", "gno.land/r/demo/quiet", "quiet", "g1creator", "TX2", 11, "", true, 1); err != nil {
+		t.Fatalf("seed package: %v", err)
+	}
+
+	// "busy" gets one multicall (3 messages, same caller) plus a second caller:
+	// 4 calls total, but only 2 distinct users.
+	for i, fn := range []string{"Post", "Post", "Post"} {
+		if err := db.InsertCall("gnoland1", "MULTI", 20, i, "", "g1alice", "gno.land/r/demo/busy", fn, true); err != nil {
+			t.Fatalf("seed call %d: %v", i, err)
+		}
+	}
+	if err := db.InsertCall("gnoland1", "SOLO", 21, 0, "", "g1bob", "gno.land/r/demo/busy", "Post", true); err != nil {
+		t.Fatalf("seed call: %v", err)
+	}
+	// "quiet" gets a single call from a single user.
+	if err := db.InsertCall("gnoland1", "Q1", 22, 0, "", "g1carol", "gno.land/r/demo/quiet", "Post", true); err != nil {
+		t.Fatalf("seed call: %v", err)
+	}
+
+	rows, err := db.ListPackages("gnoland1", true, 100, 0, "users")
+	if err != nil {
+		t.Fatalf("ListPackages: %v", err)
+	}
+	if len(rows) != 2 || rows[0].Path != "gno.land/r/demo/busy" {
+		t.Fatalf("sort=users order = %+v, want busy (2 users) before quiet (1)", rows)
+	}
+	if rows[0].UniqueUsers != 2 {
+		t.Errorf("busy unique_users = %d, want 2 (alice's multicall must not count 3x)", rows[0].UniqueUsers)
+	}
+	if rows[0].Calls != 4 {
+		t.Errorf("busy calls = %d, want 4 (the multicall's 3 messages plus bob's)", rows[0].Calls)
+	}
+	if rows[1].UniqueUsers != 1 || rows[1].Calls != 1 {
+		t.Errorf("quiet users/calls = %d/%d, want 1/1", rows[1].UniqueUsers, rows[1].Calls)
+	}
+}

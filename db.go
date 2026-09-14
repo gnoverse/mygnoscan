@@ -1452,6 +1452,7 @@ type PackageInfo struct {
 	Calls       int    `json:"calls"`
 	Importers   int    `json:"importers"`
 	Imports     int    `json:"imports"`
+	UniqueUsers int    `json:"unique_users"`
 }
 
 type PackageDetail struct {
@@ -1522,6 +1523,8 @@ func packageSortClause(sortBy string) string {
 		return "importers DESC, p.block_height DESC"
 	case "imports":
 		return "imports DESC, p.block_height DESC"
+	case "users":
+		return "unique_users DESC, p.block_height DESC"
 	case "name":
 		return "p.path ASC"
 	case "oldest":
@@ -1544,7 +1547,9 @@ func (d *DB) ListPackages(network string, realmOnly bool, limit, offset int, sor
 		(SELECT COUNT(*) FROM dependencies d
 		   WHERE d.network = p.network AND d.import_path = p.path) AS importers,
 		(SELECT COUNT(*) FROM dependencies d
-		   WHERE d.network = p.network AND d.package_path = p.path) AS imports
+		   WHERE d.network = p.network AND d.package_path = p.path) AS imports,
+		(SELECT COUNT(DISTINCT c.caller) FROM calls c
+		   WHERE c.network = p.network AND c.pkg_path = p.path) AS unique_users
 		FROM packages p WHERE p.is_realm = ? AND ` + d.networkFilter("p.network", network)
 	args := []any{realmOnly}
 	q += ` ORDER BY ` + packageSortClause(sortBy)
@@ -1562,7 +1567,7 @@ func (d *DB) ListPackages(network string, realmOnly bool, limit, offset int, sor
 	for rows.Next() {
 		var p PackageInfo
 		if err := rows.Scan(&p.Network, &p.Path, &p.Name, &p.Creator, &p.BlockHeight, &p.TxHash,
-			&p.IsRealm, &p.NumFiles, &p.Calls, &p.Importers, &p.Imports); err != nil {
+			&p.IsRealm, &p.NumFiles, &p.Calls, &p.Importers, &p.Imports, &p.UniqueUsers); err != nil {
 			return nil, err
 		}
 		pkgs = append(pkgs, p)

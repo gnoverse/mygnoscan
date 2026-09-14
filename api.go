@@ -451,6 +451,8 @@ func sortMergedPackages(pkgs []PackageInfo, sortBy string) {
 		sort.SliceStable(pkgs, func(i, j int) bool { return pkgs[i].Importers > pkgs[j].Importers })
 	case "imports":
 		sort.SliceStable(pkgs, func(i, j int) bool { return pkgs[i].Imports > pkgs[j].Imports })
+	case "users":
+		sort.SliceStable(pkgs, func(i, j int) bool { return pkgs[i].UniqueUsers > pkgs[j].UniqueUsers })
 	case "name":
 		sort.SliceStable(pkgs, func(i, j int) bool { return pkgs[i].Path < pkgs[j].Path })
 	default:
