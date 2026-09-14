@@ -579,8 +579,8 @@ func TestClientTimeoutsAreSeparate(t *testing.T) {
 		t.Errorf("sync budget %v does not exceed the serve budget %v", sync.client.Timeout, serve.client.Timeout)
 	}
 	// URL normalisation must survive the split.
-	if serve.url != sync.url || serve.url != "http://example.invalid/graphql/query" {
-		t.Errorf("urls diverged: serve=%q sync=%q", serve.url, sync.url)
+	if serve.activeURL() != sync.activeURL() || serve.activeURL() != "http://example.invalid/graphql/query" {
+		t.Errorf("urls diverged: serve=%q sync=%q", serve.activeURL(), sync.activeURL())
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -33,7 +34,7 @@ func seedActivity(t *testing.T, db *DB, network string, calls, realms, sends int
 
 	when := time.Now().UTC().Format("2006-01-02T15:04:05Z")
 	for i := 0; i < calls; i++ {
-		if err := db.InsertCall(network, fmt.Sprintf("%s-call-%d", network, i), 100+i, when,
+		if err := db.InsertCall(network, fmt.Sprintf("%s-call-%d", network, i), 100+i, 0, when,
 			fmt.Sprintf("g1caller%d", i%3), "gno.land/r/demo/board", "Post", true); err != nil {
 			t.Fatalf("InsertCall: %v", err)
 		}
@@ -550,7 +551,7 @@ func TestAccountsPagingAndSort(t *testing.T) {
 		// Descending calls, ascending sends: the two orders disagree, so a sort
 		// that is ignored cannot pass by coincidence.
 		for c := 0; c <= 12-i; c++ {
-			if err := db.InsertCall("alpha", fmt.Sprintf("c-%d-%d", i, c), 100+c, when,
+			if err := db.InsertCall("alpha", fmt.Sprintf("c-%d-%d", i, c), 100+c, 0, when,
 				addr, "gno.land/r/demo/boards", "Post", true); err != nil {
 				t.Fatalf("InsertCall: %v", err)
 			}
@@ -635,7 +636,7 @@ func TestWatchEndpoint(t *testing.T) {
 		t.Fatalf("UpsertPackage: %v", err)
 	}
 	for i := 0; i < 10; i++ {
-		if err := db.InsertCall("alpha", fmt.Sprintf("c%d", i), 200+i, when, "g1watched", realm, "Post", true); err != nil {
+		if err := db.InsertCall("alpha", fmt.Sprintf("c%d", i), 200+i, 0, when, "g1watched", realm, "Post", true); err != nil {
 			t.Fatalf("InsertCall: %v", err)
 		}
 	}
@@ -727,7 +728,7 @@ func TestFilteredTransactionsFromStorage(t *testing.T) {
 
 	const when = "2026-08-01T00:00:00Z"
 	for i := 0; i < 30; i++ {
-		if err := db.InsertCall("alpha", fmt.Sprintf("call-%d", i), 1000+i, when,
+		if err := db.InsertCall("alpha", fmt.Sprintf("call-%d", i), 1000+i, 0, when,
 			"g1caller", "gno.land/r/demo/boards", "Post", i%5 != 0); err != nil {
 			t.Fatalf("InsertCall: %v", err)
 		}
@@ -836,16 +837,16 @@ func TestGovDAOFromStorage(t *testing.T) {
 
 	const when = "2026-08-01T00:00:00Z"
 	// Governance calls, including a versioned subpackage.
-	if err := db.InsertCall("alpha", "gov-1", 100, when, "g1voter", "gno.land/r/gov/dao", "Propose", true); err != nil {
+	if err := db.InsertCall("alpha", "gov-1", 100, 0, when, "g1voter", "gno.land/r/gov/dao", "Propose", true); err != nil {
 		t.Fatalf("InsertCall: %v", err)
 	}
-	if err := db.InsertCall("alpha", "gov-2", 101, when, "g1voter", "gno.land/r/gov/dao/v3/impl", "Vote", true); err != nil {
+	if err := db.InsertCall("alpha", "gov-2", 101, 0, when, "g1voter", "gno.land/r/gov/dao/v3/impl", "Vote", true); err != nil {
 		t.Fatalf("InsertCall: %v", err)
 	}
 	// Near-misses that must not be picked up: gnoswap ships these, and a bare
 	// "gov" match would take them.
 	for _, path := range []string{"gno.land/r/gnoswap/gov/staker", "gno.land/r/gnoswap/gov/governance"} {
-		if err := db.InsertCall("alpha", "swap-"+path, 102, when, "g1trader", path, "Stake", true); err != nil {
+		if err := db.InsertCall("alpha", "swap-"+path, 102, 0, when, "g1trader", path, "Stake", true); err != nil {
 			t.Fatalf("InsertCall: %v", err)
 		}
 	}
@@ -898,7 +899,7 @@ func TestAddressFromStorage(t *testing.T) {
 	const when = "2026-08-01T00:00:00Z"
 	const me = "g1me"
 	for i := 0; i < 25; i++ {
-		if err := db.InsertCall("alpha", fmt.Sprintf("call-%d", i), 100+i, when,
+		if err := db.InsertCall("alpha", fmt.Sprintf("call-%d", i), 100+i, 0, when,
 			me, "gno.land/r/demo/boards", "Post", true); err != nil {
 			t.Fatalf("InsertCall: %v", err)
 		}
@@ -914,7 +915,7 @@ func TestAddressFromStorage(t *testing.T) {
 		t.Fatalf("InsertBankSend: %v", err)
 	}
 	// Someone else's activity must not appear.
-	if err := db.InsertCall("alpha", "theirs", 500, when, "g1other", "gno.land/r/demo/boards", "Post", true); err != nil {
+	if err := db.InsertCall("alpha", "theirs", 500, 0, when, "g1other", "gno.land/r/demo/boards", "Post", true); err != nil {
 		t.Fatalf("InsertCall: %v", err)
 	}
 
@@ -982,4 +983,166 @@ func TestAddressFromStorage(t *testing.T) {
 			t.Errorf("balance %q reported in all-networks mode", out["balance"])
 		}
 	})
+}
+
+// A network pairs an indexer with an RPC, and nothing used to check they serve
+// the same chain.
+//
+// gno.land's mainnet launched as a fresh chain, `gnoland-1`, on `rpc.gno.land` —
+// one hyphen from the long-running `gnoland1` this instance indexes locally and
+// had configured as its RPC. Once mainnet answered there, an address page would
+// have served the old chain's transactions beside mainnet's balance, and nothing
+// would have noticed: the chain-reset detection fingerprints the indexer's
+// block 1 and never asks the RPC anything.
+func TestRPCChainMustMatchTheIndexer(t *testing.T) {
+	// An RPC that reports whichever chain the test wants.
+	rpcServing := func(chainID string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if chainID == "" {
+				http.Error(w, "unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			fmt.Fprintf(w, `{"result":{"node_info":{"network":%q}}}`, chainID)
+		}))
+	}
+
+	tests := []struct {
+		name     string
+		rpcChain string // what the RPC reports; "" means it is down
+		wantKept bool
+		reason   string
+	}{
+		{
+			name:     "same chain is kept",
+			rpcChain: "alpha-1",
+			wantKept: true,
+		},
+		{
+			name:     "a different chain is refused",
+			rpcChain: "gnoland-1",
+			wantKept: false,
+			reason:   "one hyphen apart is still a different chain",
+		},
+		{
+			// Unknown is not the same as mismatched, but the safe side of
+			// unknown is still "do not show a balance we cannot attribute".
+			name:     "an unreachable rpc is refused until it answers",
+			rpcChain: "",
+			wantKept: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake, client := newFakeIndexer(t)
+			fake.chainID = "alpha-1"
+			fake.set("genesis-hash", 100)
+
+			rpc := rpcServing(tt.rpcChain)
+			defer rpc.Close()
+
+			db := newTestDB(t)
+			nets := []NetworkConfig{{ID: "alpha", RPCURL: rpc.URL}}
+			db.SetConfiguredNetworks(nets)
+			api := NewAPI(db, map[string]*IndexerClient{"alpha": client}, nets, NewAnalyzer(db))
+
+			api.verifyRPCChains(context.Background())
+
+			kept := api.rpcURLFor("alpha") != ""
+			if kept != tt.wantKept {
+				t.Errorf("rpc kept = %v, want %v — %s", kept, tt.wantKept, tt.reason)
+			}
+		})
+	}
+}
+
+// Refusing an RPC must cost only the balance, not the page.
+func TestAddressPageSurvivesARefusedRPC(t *testing.T) {
+	fake, client := newFakeIndexer(t)
+	fake.chainID = "alpha-1"
+	fake.set("genesis-hash", 100)
+
+	rpc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"result":{"node_info":{"network":"a-different-chain"}}}`)
+	}))
+	defer rpc.Close()
+
+	db := newTestDB(t)
+	nets := []NetworkConfig{{ID: "alpha", RPCURL: rpc.URL}}
+	db.SetConfiguredNetworks(nets)
+	if err := db.InsertCall("alpha", "c1", 100, 0, "2026-08-01T00:00:00Z",
+		"g1me", "gno.land/r/demo/boards", "Post", true); err != nil {
+		t.Fatalf("InsertCall: %v", err)
+	}
+	api := NewAPI(db, map[string]*IndexerClient{"alpha": client}, nets, NewAnalyzer(db))
+	api.verifyRPCChains(context.Background())
+
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("GET", "/api/address/g1me?network=alpha", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var out map[string]any
+	mustJSON(t, rec.Body.Bytes(), &out)
+
+	if out["balance"] != "" {
+		t.Errorf("balance %q served from a chain that is not this one", out["balance"])
+	}
+	if len(out["transactions"].([]any)) == 0 {
+		t.Error("the page lost its transactions along with the balance")
+	}
+}
+
+// A refusal has to be reversible.
+//
+// My first version cleared NetworkConfig.RPCURL in place, so an RPC that was
+// merely down at startup — which is exactly what a launching mainnet looks like —
+// stayed disabled for the life of the process, because the next pass skipped
+// every network whose URL was empty.
+func TestARefusedRPCRecoversWhenItAgreesAgain(t *testing.T) {
+	fake, client := newFakeIndexer(t)
+	fake.chainID = "alpha-1"
+	fake.set("genesis-hash", 100)
+
+	// Starts unavailable, as a node mid-launch does, then comes up on the right
+	// chain.
+	var serving atomic.Value
+	serving.Store("")
+	rpc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		chain := serving.Load().(string)
+		if chain == "" {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		fmt.Fprintf(w, `{"result":{"node_info":{"network":%q}}}`, chain)
+	}))
+	defer rpc.Close()
+
+	db := newTestDB(t)
+	nets := []NetworkConfig{{ID: "alpha", RPCURL: rpc.URL}}
+	db.SetConfiguredNetworks(nets)
+	api := NewAPI(db, map[string]*IndexerClient{"alpha": client}, nets, NewAnalyzer(db))
+
+	api.verifyRPCChains(context.Background())
+	if api.rpcURLFor("alpha") != "" {
+		t.Fatal("an unreachable rpc was trusted")
+	}
+
+	serving.Store("alpha-1")
+	api.verifyRPCChains(context.Background())
+	if api.rpcURLFor("alpha") == "" {
+		t.Error("the rpc came up on the right chain and was still refused — " +
+			"a refusal that cannot be undone disables balances permanently")
+	}
+
+	// And the reverse: an endpoint repointed to another chain under a running
+	// process must lose its verdict, which is the mainnet-launch case.
+	serving.Store("gnoland-1")
+	api.verifyRPCChains(context.Background())
+	if api.rpcURLFor("alpha") != "" {
+		t.Error("the rpc was repointed to another chain and stayed trusted")
+	}
 }

@@ -63,6 +63,41 @@ Give each network an `rpc` if you can. Balance lookups resolve against a single
 network, and with no network filter they fall back to the first configured network
 that has one.
 
+### Fallback endpoints
+
+`indexers` and `rpcs` list additional interchangeable endpoints for the same
+chain:
+
+```json
+{
+  "id": "mainnet",
+  "indexer": "https://indexer.gno.land/graphql/query",
+  "indexers": ["https://indexer.example.org/graphql/query"],
+  "rpc": "https://rpc.gno.land",
+  "rpcs": ["https://rpc.example.org"]
+}
+```
+
+They buy two different things, and the second is the one that matters:
+
+- An endpoint that is **down** is skipped.
+- An endpoint that is merely **behind** is overtaken. This is the failure that
+  is worth configuring for, because it does not look like a failure: gno.land's
+  mainnet indexer once sat at block 785 while the chain was at 36,000, answering
+  every query promptly and correctly for the 785 blocks it knew about. Nothing
+  errored; the explorer simply reported a stalled chain as a healthy one.
+
+So endpoints are ranked by how far along they are, re-checked every couple of
+minutes, and the singular `indexer`/`rpc` is just the first entry — listing a
+stale endpoint first costs nothing.
+
+Members must serve the same chain. The first entry that can identify itself
+defines which chain that is (by chain ID *and* the hash of block 1, so a reset
+network is not mistaken for the original), and any endpoint disagreeing with it
+is never selected — however healthy or far along it is. A fast, healthy, wrong
+chain is the worst member a pool can have: `gnoland-1` and `gnoland1` are one
+hyphen apart.
+
 ## Choosing network IDs
 
 The `id` labels the network and keys every row belonging to it. It is not the chain

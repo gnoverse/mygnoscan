@@ -8,9 +8,42 @@ import (
 )
 
 type NetworkConfig struct {
-	ID         string `json:"id"`
+	ID string `json:"id"`
+	// IndexerURL and RPCURL are the single-endpoint spelling, kept because most
+	// networks have exactly one of each and `"indexer": "..."` reads better
+	// than a one-element list.
 	IndexerURL string `json:"indexer"`
 	RPCURL     string `json:"rpc,omitempty"`
+	// IndexerURLs and RPCURLs are additional interchangeable endpoints for the
+	// same chain. Listing more than one buys two different things: an endpoint
+	// that is down is skipped, and an endpoint that is merely *behind* is
+	// overtaken. The second is what these exist for — gno.land's mainnet
+	// indexer answered every query correctly while stuck 36,000 blocks back.
+	//
+	// Members must serve the same chain; one that does not is detected by
+	// fingerprint and never selected.
+	IndexerURLs []string `json:"indexers,omitempty"`
+	RPCURLs     []string `json:"rpcs,omitempty"`
+}
+
+// Indexers returns every indexer endpoint for the network, singular form first,
+// in configured order and without duplicates.
+func (n NetworkConfig) Indexers() []string { return mergeEndpoints(n.IndexerURL, n.IndexerURLs) }
+
+// RPCs returns every RPC endpoint for the network, on the same terms.
+func (n NetworkConfig) RPCs() []string { return mergeEndpoints(n.RPCURL, n.RPCURLs) }
+
+func mergeEndpoints(single string, list []string) []string {
+	out := make([]string, 0, len(list)+1)
+	seen := make(map[string]bool, len(list)+1)
+	for _, u := range append([]string{single}, list...) {
+		if u == "" || seen[u] {
+			continue
+		}
+		seen[u] = true
+		out = append(out, u)
+	}
+	return out
 }
 
 type AppConfig struct {
@@ -126,7 +159,7 @@ func (c *AppConfig) validate() error {
 		if n.ID == "" {
 			return fmt.Errorf("network %d: missing id", i)
 		}
-		if n.IndexerURL == "" {
+		if len(n.Indexers()) == 0 {
 			return fmt.Errorf("network %q: missing indexer URL", n.ID)
 		}
 		// Duplicate IDs would give two syncers the same rows to write.

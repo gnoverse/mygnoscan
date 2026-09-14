@@ -58,6 +58,24 @@ go test ./... -run TestResolveConfig -v
 Tests use temp SQLite files rather than mocks, and an `httptest` server in place of
 a real indexer. Table-driven where there is more than one case.
 
+### Browser tests
+
+Go tests cannot see the frontend break. Its failure mode is "the JSON was fine,
+the JS threw", so there is a second suite that runs the real binary against a
+seeded fixture and drives it in a headless browser:
+
+```bash
+make e2e
+```
+
+It is not part of `make test`, because it needs Node and a browser — neither of
+which the binary ever does. Node lives in `e2e/` and nowhere else; the frontend
+still has no build step and the shipped artifact still has no Node in it.
+
+A failure leaves a screenshot, a video and a Playwright trace under
+`e2e/test-results/`, and CI uploads the same directory. See
+[`e2e/README.md`](../e2e/README.md).
+
 ## Before pushing
 
 ```bash

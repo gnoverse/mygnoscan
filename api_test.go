@@ -401,7 +401,7 @@ func TestResolveTimeseriesParamsSizesAllToTheData(t *testing.T) {
 	// windowSpecs mapping would bucket this monthly and collapse it to a single
 	// point.
 	start := time.Now().UTC().AddDate(0, 0, -8).Format(time.RFC3339)
-	if err := db.InsertCall("gnoland1", "TX1", 1, start, "g1a", "gno.land/r/demo/foo", "Bar", true); err != nil {
+	if err := db.InsertCall("gnoland1", "TX1", 1, 0, start, "g1a", "gno.land/r/demo/foo", "Bar", true); err != nil {
 		t.Fatalf("insert call: %v", err)
 	}
 
@@ -445,7 +445,7 @@ func TestResolveTimeseriesParamsClampsClockSkew(t *testing.T) {
 	api := &API{db: db}
 
 	future := time.Now().UTC().Add(48 * time.Hour).Format(time.RFC3339)
-	if err := db.InsertCall("gnoland1", "TX1", 1, future, "g1a", "gno.land/r/demo/foo", "Bar", true); err != nil {
+	if err := db.InsertCall("gnoland1", "TX1", 1, 0, future, "g1a", "gno.land/r/demo/foo", "Bar", true); err != nil {
 		t.Fatalf("insert call: %v", err)
 	}
 
@@ -465,7 +465,7 @@ func TestResolveTimeseriesParamsClampsMalformedFarPastTimestamp(t *testing.T) {
 	db := newTestDB(t)
 	api := &API{db: db}
 
-	if err := db.InsertCall("gnoland1", "TX1", 1, "0001-01-01T00:00:00Z", "g1a", "gno.land/r/demo/foo", "Bar", true); err != nil {
+	if err := db.InsertCall("gnoland1", "TX1", 1, 0, "0001-01-01T00:00:00Z", "g1a", "gno.land/r/demo/foo", "Bar", true); err != nil {
 		t.Fatalf("insert call: %v", err)
 	}
 
@@ -505,7 +505,7 @@ func TestHandleTimeSeriesTransactionsWindowAllOnAYoungChain(t *testing.T) {
 	for i := 0; i < 8*24; i += 3 {
 		ts := start.Add(time.Duration(i) * time.Hour).Format(time.RFC3339)
 		txHash := "TX" + strconv.Itoa(i)
-		if err := db.InsertCall("gnoland1", txHash, i, ts, "g1a", "gno.land/r/demo/foo", "Bar", true); err != nil {
+		if err := db.InsertCall("gnoland1", txHash, i, 0, ts, "g1a", "gno.land/r/demo/foo", "Bar", true); err != nil {
 			t.Fatalf("insert call: %v", err)
 		}
 	}

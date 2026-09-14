@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -353,5 +354,60 @@ func TestPackageEventsOnAnUnknownPackage(t *testing.T) {
 	}
 	if string(body) == "null\n" || string(body) == "null" {
 		t.Error("returned null; the frontend iterates this and would throw")
+	}
+}
+
+// A transaction hash reaches us in either of two encodings of the same 32
+// bytes, and both must resolve.
+//
+// This explorer and the indexer use base64; gnoscan.io and Tendermint-style RPC
+// print 64 hex characters. Someone comparing the two explorers pastes the hex
+// form here and used to get a 404 for a transaction we were holding — the
+// worst possible answer, because it reads as "this chain does not have it".
+func TestTxLookupAcceptsEitherHashEncoding(t *testing.T) {
+	api, alpha, _ := newIndexerAPI(t)
+
+	// The fake seeds base64-looking hashes, so this exercises the real pair
+	// taken from production: the hex form gnoscan.io showed for a mainnet
+	// transaction, and the base64 form the indexer stores.
+	const (
+		hexHash = "7BA0A12FA4EB8A1AF51800700164EF18E024086B4DB6F7E1AF8664A22C6B0408"
+		b64Hash = "e6ChL6Trihr1GABwAWTvGOAkCGtNtvfhr4ZkoixrBAg="
+	)
+	if got := normalizeTxHash(hexHash); got != b64Hash {
+		t.Errorf("normalizeTxHash(hex) = %q, want %q", got, b64Hash)
+	}
+
+	for _, tc := range []struct{ name, in, want string }{
+		{"base64 passes through", b64Hash, b64Hash},
+		{"lowercase hex", strings.ToLower(hexHash), b64Hash},
+		{"0x prefixed", "0x" + hexHash, b64Hash},
+		{"surrounding space", "  " + hexHash + "  ", b64Hash},
+		// Not a hash in either encoding: handed through for the indexer to
+		// reject rather than guessed at.
+		{"too short", "abc", "abc"},
+		{"64 chars but not hex", strings.Repeat("z", 64), strings.Repeat("z", 64)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeTxHash(tc.in); got != tc.want {
+				t.Errorf("normalizeTxHash(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+
+	// End to end through the real route: a transaction the chain holds under
+	// its base64 hash must resolve when asked for by its hex spelling.
+	tx := fakeCall(3_100_007, "2026-08-01T00:00:00Z", "g1caller0", "gno.land/r/demo/boards", "Post")
+	tx.Hash = b64Hash
+	alpha.add(tx)
+
+	rec, body := serve(t, api, "/api/tx/"+hexHash)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("hex hash lookup returned %d: %s", rec.Code, body)
+	}
+	var got map[string]any
+	mustJSON(t, body, &got)
+	if str(got["hash"]) != b64Hash {
+		t.Errorf("resolved to hash %q, want the stored base64 form %q", str(got["hash"]), b64Hash)
 	}
 }

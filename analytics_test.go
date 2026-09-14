@@ -28,12 +28,12 @@ func seedSharedRealm(t *testing.T, db *DB) {
 
 	// 50 calls on busy, 2 on quiet.
 	for i := 0; i < 50; i++ {
-		if err := db.InsertCall("busy", "busy-call-"+itoa(i), 100+i, when, "g1shared", path, "Post", true); err != nil {
+		if err := db.InsertCall("busy", "busy-call-"+itoa(i), 100+i, 0, when, "g1shared", path, "Post", true); err != nil {
 			t.Fatalf("InsertCall: %v", err)
 		}
 	}
 	for i := 0; i < 2; i++ {
-		if err := db.InsertCall("quiet", "quiet-call-"+itoa(i), 100+i, when, "g1shared", path, "Post", true); err != nil {
+		if err := db.InsertCall("quiet", "quiet-call-"+itoa(i), 100+i, 0, when, "g1shared", path, "Post", true); err != nil {
 			t.Fatalf("InsertCall: %v", err)
 		}
 	}
@@ -460,7 +460,7 @@ func TestGasRollups(t *testing.T) {
 		if err := db.UpsertTransaction(net, hash, 100, when, gas, gas*2, fee, true); err != nil {
 			t.Fatalf("UpsertTransaction: %v", err)
 		}
-		if err := db.InsertCall(net, hash, 100, when, "g1caller", path, "Post", true); err != nil {
+		if err := db.InsertCall(net, hash, 100, 0, when, "g1caller", path, "Post", true); err != nil {
 			t.Fatalf("InsertCall: %v", err)
 		}
 	}
@@ -484,8 +484,8 @@ func TestGasRollups(t *testing.T) {
 		}
 	})
 
-	if err := db.RefreshGasRollups(); err != nil {
-		t.Fatalf("RefreshGasRollups: %v", err)
+	if err := db.RefreshRollups(); err != nil {
+		t.Fatalf("RefreshRollups: %v", err)
 	}
 
 	t.Run("the rollup gives the same answer", func(t *testing.T) {
@@ -540,8 +540,8 @@ func TestGasRollups(t *testing.T) {
 
 	t.Run("a refresh replaces rather than accumulates", func(t *testing.T) {
 		// Whole-table replacement, so running it twice must not double anything.
-		if err := db.RefreshGasRollups(); err != nil {
-			t.Fatalf("RefreshGasRollups: %v", err)
+		if err := db.RefreshRollups(); err != nil {
+			t.Fatalf("RefreshRollups: %v", err)
 		}
 		stats, err := db.GetGasStats("live", 10)
 		if err != nil {
@@ -575,8 +575,8 @@ func TestBankRollupMatchesLiveComputation(t *testing.T) {
 		t.Error("computed_at set before any refresh")
 	}
 
-	if err := db.RefreshGasRollups(); err != nil {
-		t.Fatalf("RefreshGasRollups: %v", err)
+	if err := db.RefreshRollups(); err != nil {
+		t.Fatalf("RefreshRollups: %v", err)
 	}
 
 	rolled, err := db.GetBankStats("")
@@ -679,8 +679,8 @@ func TestBankRollupKeepsEachRankingsOwnTop(t *testing.T) {
 		t.Fatalf("InsertBankSend: %v", err)
 	}
 
-	if err := db.RefreshGasRollups(); err != nil {
-		t.Fatalf("RefreshGasRollups: %v", err)
+	if err := db.RefreshRollups(); err != nil {
+		t.Fatalf("RefreshRollups: %v", err)
 	}
 	s, err := db.GetBankStats("n")
 	if err != nil {
@@ -720,7 +720,7 @@ func TestDedupOnceGivesTheSameCounts(t *testing.T) {
 	// so every branch of every union produces rows that overlap the others.
 	for _, net := range []string{"a", "b"} {
 		for i := 0; i < 3; i++ {
-			if err := db.InsertCall(net, fmt.Sprintf("c-%s-%d", net, i), 100+i, when,
+			if err := db.InsertCall(net, fmt.Sprintf("c-%s-%d", net, i), 100+i, 0, when,
 				"g1everywhere", "gno.land/r/demo/boards", "Post", true); err != nil {
 				t.Fatalf("InsertCall: %v", err)
 			}
@@ -780,8 +780,8 @@ func TestDedupOnceGivesTheSameCounts(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetBankStats: %v", err)
 		}
-		if err := db.RefreshGasRollups(); err != nil {
-			t.Fatalf("RefreshGasRollups: %v", err)
+		if err := db.RefreshRollups(); err != nil {
+			t.Fatalf("RefreshRollups: %v", err)
 		}
 		rolled, err := db.GetBankStats("")
 		if err != nil {

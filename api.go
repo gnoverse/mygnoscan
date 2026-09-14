@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +24,14 @@ type API struct {
 	networks []NetworkConfig
 	analyzer *Analyzer
 	health   *healthTracker
+
+	// rpcOK records, per network, whether its RPC has been confirmed to serve
+	// the same chain as its indexer. Written by a background re-check and read
+	// by every request that wants a balance, hence the mutex.
+	//
+	// Absent means unverified, which is treated as unusable — see rpcURLFor.
+	rpcMu   sync.RWMutex
+	rpcPick map[string]string
 }
 
 func NewAPI(db *DB, clients map[string]*IndexerClient, networks []NetworkConfig, analyzer *Analyzer) *API {
@@ -344,12 +353,18 @@ func (a *API) clientFor(network string) *IndexerClient {
 	return a.clients[network]
 }
 
-// rpcURLFor returns the RPC URL for a network (or first network with an RPC URL).
+// rpcURLFor returns the RPC URL for a network, but only once that RPC has been
+// confirmed to serve the same chain as the network's indexer.
+//
+// Unverified is treated as unusable rather than as probably-fine: the cost of
+// withholding a balance is a missing figure, and the cost of trusting a
+// mismatched one is a number from a different chain shown beside this chain's
+// history. See verifyRPCChains.
 func (a *API) rpcURLFor(network string) string {
 	for _, n := range a.networks {
 		if network == "" || n.ID == network {
-			if n.RPCURL != "" {
-				return n.RPCURL
+			if url := a.rpcVerified(n.ID); url != "" {
+				return url
 			}
 		}
 	}
@@ -474,9 +489,38 @@ func (a *API) HandleRealm(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, detail)
 }
 
+// normalizeTxHash accepts a transaction hash in either encoding in circulation
+// and returns the base64 form the indexer stores.
+//
+// The same 32 bytes are printed two ways: gno tooling and this explorer use
+// base64 ("e6ChL6Trihr1GABwAWTvGOAkCGtNtvfhr4ZkoixrBAg="), while gnoscan.io and
+// Tendermint-style RPC use 64 hex characters
+// ("7BA0A12FA4EB8A1AF51800700164EF18E024086B4DB6F7E1AF8664A22C6B0408"). They
+// are the same transaction, so pasting either one must resolve — the hex form
+// used to 404 on a transaction we were holding all along.
+//
+// The two forms cannot be confused: base64 of 32 bytes is always 43 characters
+// and a pad, never 64, so a 64-character string that decodes as hex is
+// unambiguous. Anything else is handed through untouched for the indexer to
+// reject, rather than guessed at.
+func normalizeTxHash(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) == 66 && (strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X")) {
+		s = s[2:]
+	}
+	if len(s) != 64 {
+		return s
+	}
+	raw, err := hex.DecodeString(s)
+	if err != nil {
+		return s
+	}
+	return base64.StdEncoding.EncodeToString(raw)
+}
+
 func (a *API) HandleTx(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
-	hash := r.PathValue("hash")
+	hash := normalizeTxHash(r.PathValue("hash"))
 
 	type txDetail struct {
 		*Transaction
@@ -1990,4 +2034,151 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/labels", a.HandleLabels)
 	mux.HandleFunc("GET /api/watch", a.HandleWatch)
 	mux.HandleFunc("GET /api/govdao", a.HandleGovDAO)
+}
+
+// --- RPC / indexer chain agreement -----------------------------------------
+
+// rpcChainRecheckInterval is how often the indexer/RPC pairing is re-verified.
+//
+// An endpoint can be repointed under a running process, so checking only at
+// startup would make the guard depend on when the process happened to restart.
+const rpcChainRecheckInterval = 10 * time.Minute
+
+// rpcStatus reports the chain an RPC serves and how far along it is.
+//
+// The endpoint is the same one a node operator uses to check liveness. The
+// height matters as much as the identity. rpc.gno.land kept answering
+// /status with the right chain ID while frozen 500 blocks behind the network,
+// so "does it respond and is it the right chain" is not enough to choose by.
+func rpcStatus(ctx context.Context, rpcURL string) (string, int, error) {
+	if rpcURL == "" {
+		return "", 0, errors.New("no rpc url")
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", rpcURL+"/status", nil)
+	if err != nil {
+		return "", 0, err
+	}
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		return "", 0, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", 0, fmt.Errorf("rpc returned %s", resp.Status)
+	}
+
+	var out struct {
+		Result struct {
+			NodeInfo struct {
+				Network string `json:"network"`
+			} `json:"node_info"`
+			SyncInfo struct {
+				LatestBlockHeight string `json:"latest_block_height"`
+			} `json:"sync_info"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", 0, err
+	}
+	if out.Result.NodeInfo.Network == "" {
+		return "", 0, errors.New("rpc reported no chain id")
+	}
+	height, _ := strconv.Atoi(out.Result.SyncInfo.LatestBlockHeight)
+	return out.Result.NodeInfo.Network, height, nil
+}
+
+// verifyRPCChains records which RPCs are serving the same chain as the indexer
+// they are configured beside.
+//
+// A network is a *pair*: an indexer supplying history and an RPC supplying live
+// balance. Nothing previously checked they agreed. The chain-reset detection
+// fingerprints the indexer's block 1, so it sees a replaced indexer — it cannot
+// see an RPC repointed underneath, because it never asks the RPC anything.
+//
+// That is not hypothetical. gno.land's mainnet launched as a fresh chain,
+// `gnoland-1`, on the endpoint `rpc.gno.land` — one hyphen away from the
+// long-running `gnoland1` this instance indexes locally, and configured as its
+// RPC. Once mainnet answered there, an address page would have served the old
+// chain's transactions beside mainnet's balance, with nothing to notice.
+//
+// Refusing the RPC costs a balance figure. Trusting it costs a number that is
+// wrong in a way no one can see.
+//
+// The verdict is kept beside the config rather than by editing it: a refusal has
+// to be reversible, or an RPC that was merely down at startup stays disabled for
+// the life of the process.
+func (a *API) verifyRPCChains(ctx context.Context) {
+	for _, n := range a.networks {
+		rpcs := n.RPCs()
+		if len(rpcs) == 0 {
+			continue
+		}
+		client := a.clients[n.ID]
+		if client == nil {
+			continue
+		}
+
+		block, err := client.GetBlock(ctx, 1)
+		if err != nil || block == nil || block.ChainID == "" {
+			// Unknown, not mismatched. Leave the previous verdict alone rather
+			// than changing it because an indexer was briefly unreachable.
+			continue
+		}
+
+		// Among the RPCs that serve the right chain, take the one furthest
+		// along. Being on the right chain is a floor, not a recommendation:
+		// rpc.gno.land reported the correct chain ID for 44 minutes while
+		// frozen behind the network, and the balances it served were as stale
+		// as the tip it reported.
+		var (
+			best       string
+			bestHeight = -1
+			lastErr    error
+			mismatch   string
+		)
+		for _, rpcURL := range rpcs {
+			rpcChain, height, err := rpcStatus(ctx, rpcURL)
+			switch {
+			case err != nil:
+				lastErr = err
+			case rpcChain != block.ChainID:
+				mismatch = fmt.Sprintf("%s serves chain %q", rpcURL, rpcChain)
+				log.Printf("[%s] REFUSING RPC %s: it serves chain %q while the indexer serves %q — "+
+					"balances would come from a different chain than the history beside them",
+					n.ID, rpcURL, rpcChain, block.ChainID)
+			case height > bestHeight:
+				best, bestHeight = rpcURL, height
+			}
+		}
+
+		switch best {
+		case "":
+			if lastErr != nil {
+				log.Printf("[%s] rpc chain unverified (%v); balances stay off until it answers", n.ID, lastErr)
+			} else if mismatch != "" {
+				log.Printf("[%s] no usable RPC: %s", n.ID, mismatch)
+			}
+			a.setRPCVerified(n.ID, "")
+		default:
+			if prev := a.rpcVerified(n.ID); prev != best {
+				log.Printf("[%s] using RPC %s (chain %q, height %d)", n.ID, best, block.ChainID, bestHeight)
+			}
+			a.setRPCVerified(n.ID, best)
+		}
+	}
+}
+
+func (a *API) setRPCVerified(network, url string) {
+	a.rpcMu.Lock()
+	defer a.rpcMu.Unlock()
+	if a.rpcPick == nil {
+		a.rpcPick = map[string]string{}
+	}
+	a.rpcPick[network] = url
+}
+
+func (a *API) rpcVerified(network string) string {
+	a.rpcMu.RLock()
+	defer a.rpcMu.RUnlock()
+	return a.rpcPick[network]
 }

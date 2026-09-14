@@ -53,12 +53,16 @@ type fakeIndexer struct {
 }
 
 var (
-	reGT       = regexp.MustCompile(`height:\s*{[^}]*\bgt:\s*(-?\d+)`)
-	reLT       = regexp.MustCompile(`height:\s*{[^}]*\blt:\s*(-?\d+)`)
-	reLike     = regexp.MustCompile(`like:\s*"([^"]*)"`)
-	reEq       = regexp.MustCompile(`\beq:\s*"([^"]*)"`)
-	reHashEq   = regexp.MustCompile(`hash:\s*{\s*eq:\s*"([^"]*)"`)
-	reHeightEq = regexp.MustCompile(`(?:block_)?height:\s*{\s*eq:\s*(-?\d+)`)
+	reGT = regexp.MustCompile(`height:\s*{[^}]*\bgt:\s*(-?\d+)`)
+	reLT = regexp.MustCompile(`height:\s*{[^}]*\blt:\s*(-?\d+)`)
+	// Every comparator applied to a height, so the fake can reject the ones
+	// FilterInt does not have. See intFilterOps.
+	reHeightOps = regexp.MustCompile(`height:\s*{([^}]*)}`)
+	reOpName    = regexp.MustCompile(`(\w+)\s*:`)
+	reLike      = regexp.MustCompile(`like:\s*"([^"]*)"`)
+	reEq        = regexp.MustCompile(`\beq:\s*"([^"]*)"`)
+	reHashEq    = regexp.MustCompile(`hash:\s*{\s*eq:\s*"([^"]*)"`)
+	reHeightEq  = regexp.MustCompile(`(?:block_)?height:\s*{\s*eq:\s*(-?\d+)`)
 )
 
 // newFakeIndexer starts a fake and returns it with a client pointed at it.
@@ -104,6 +108,12 @@ func (f *fakeIndexer) serve(w http.ResponseWriter, r *http.Request) {
 		writeGQL(w, map[string]any{"errors": []map[string]string{{"message": gqlErr}}})
 		return
 	}
+	if op := unsupportedHeightOp(req.Query); op != "" {
+		writeGQL(w, map[string]any{"errors": []map[string]string{{
+			"message": fmt.Sprintf("Field %q is not defined by type \"FilterInt\"", op),
+		}}})
+		return
+	}
 
 	data, rows := f.resolve(req.Query)
 
@@ -127,23 +137,36 @@ func (f *fakeIndexer) resolve(q string) (map[string]any, int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	switch {
-	case strings.Contains(q, "latestBlockHeight"):
-		return map[string]any{"latestBlockHeight": f.tip()}, 1
-
-	case strings.Contains(q, "getBlocks"):
+	// Every requested top-level field is resolved, not just the first match.
+	//
+	// This used to be a switch, so a query selecting `latestBlockHeight` and
+	// `getBlocks` together got only the height back and the rest silently came
+	// out empty. A real GraphQL server resolves every field a query asks for,
+	// and the endpoint pool's probe asks for two at once precisely because they
+	// have to be read from the same moment — the tip alone cannot tell "further
+	// along" from "a different chain".
+	out := map[string]any{}
+	count := 0
+	if strings.Contains(q, "latestBlockHeight") {
+		out["latestBlockHeight"] = f.tip()
+		count++
+	}
+	if strings.Contains(q, "getBlocks") {
 		if f.emptyBlocksOnce {
 			f.emptyBlocksOnce = false
-			return map[string]any{"getBlocks": []Block{}}, 0
+			out["getBlocks"] = []Block{}
+		} else {
+			blocks := filterBlocks(f.blocks, q)
+			out["getBlocks"] = blocks
+			count += len(blocks)
 		}
-		blocks := filterBlocks(f.blocks, q)
-		return map[string]any{"getBlocks": blocks}, len(blocks)
-
-	case strings.Contains(q, "getTransactions"):
-		txs := filterTxs(f.txs, q)
-		return map[string]any{"getTransactions": txs}, len(txs)
 	}
-	return map[string]any{}, 0
+	if strings.Contains(q, "getTransactions") {
+		txs := filterTxs(f.txs, q)
+		out["getTransactions"] = txs
+		count += len(txs)
+	}
+	return out, count
 }
 
 func truncate(data map[string]any, n int) map[string]any {
@@ -205,6 +228,28 @@ func whereClause(q string) string {
 	return q[start:]
 }
 
+// intFilterOps is FilterInt's full set of comparators, read off the live
+// schema. It is deliberately short: there is no `gte`.
+//
+// A fake that answers queries the real indexer rejects is worse than no fake,
+// because it reports the bug as fixed. This exact gap shipped a `gte` bound
+// that passed every test here and returned a GRAPHQL_VALIDATION_FAILED against
+// gno.land — "Field \"gte\" is not defined by type \"FilterInt\"".
+var intFilterOps = map[string]bool{"exists": true, "eq": true, "gt": true, "lt": true}
+
+// unsupportedHeightOp returns the first comparator used on a height that
+// FilterInt does not define, or "" when the query is valid.
+func unsupportedHeightOp(q string) string {
+	for _, block := range reHeightOps.FindAllStringSubmatch(q, -1) {
+		for _, op := range reOpName.FindAllStringSubmatch(block[1], -1) {
+			if !intFilterOps[op[1]] {
+				return op[1]
+			}
+		}
+	}
+	return ""
+}
+
 func heightBounds(where string) (lo, hi int) {
 	lo, hi = -1<<62, 1<<62
 	if m := reHeightEq.FindStringSubmatch(where); m != nil {
@@ -213,6 +258,11 @@ func heightBounds(where string) (lo, hi int) {
 	}
 	if m := reGT.FindStringSubmatch(where); m != nil {
 		n, _ := strconv.Atoi(m[1])
+		if n < 0 {
+			// A negative bound is not a way to reach genesis: the indexer
+			// answers `gt: -1` with a null result set, not with every row.
+			return 1 << 62, -1 << 62
+		}
 		lo = n + 1
 	}
 	if m := reLT.FindStringSubmatch(where); m != nil {

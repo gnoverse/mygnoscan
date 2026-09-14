@@ -97,6 +97,51 @@ func TestSyncAllWritesEveryMessageType(t *testing.T) {
 	}
 }
 
+// fakeMulticall builds one transaction bundling n MsgCall messages to the
+// same function — the shape of a "multicall" — so the messages are
+// indistinguishable except for their position in the transaction.
+func fakeMulticall(height int, when, caller, pkgPath, fn string, n int) Transaction {
+	msgs := make([]TxMessage, n)
+	for i := range msgs {
+		msgs[i] = TxMessage{
+			TypeURL: "exec", Route: "vm",
+			Value: MessageValue{Typename: "MsgCall", Caller: caller, PkgPath: pkgPath, Func: fn},
+		}
+	}
+	return Transaction{
+		Hash: fmt.Sprintf("tx-multicall-%d", height), Success: true, BlockHeight: height, BlockTime: when,
+		Messages: msgs,
+	}
+}
+
+// A single transaction bundling several MsgCall messages to the same
+// function must produce one calls row per message, not one row total.
+//
+// The old UNIQUE(network, tx_hash, pkg_path, func_name) treated every repeat
+// call in the bundle as the same row and silently dropped all but the
+// first — an address that multicalled 63 times in one transaction showed up
+// as having made a single call.
+func TestSyncCountsEveryMessageInAMulticall(t *testing.T) {
+	syncer, fake, db := newE2ESyncer(t)
+	fake.mu.Lock()
+	fake.blocks = append(fake.blocks, Block{Hash: "genesis", Height: 1, ChainID: fake.chainID, Time: "2026-08-01T00:00:00Z"})
+	fake.blocks = append(fake.blocks, Block{Hash: "block-10", Height: 10, ChainID: fake.chainID, Time: "2026-08-01T00:10:00Z", NumTxs: 1, TotalTxs: 10})
+	fake.mu.Unlock()
+	fake.add(fakeMulticall(10, "2026-08-01T00:10:00Z", "g1alice", "gno.land/r/demo/boards", "Post", 63))
+
+	if err := syncer.SyncAll(context.Background()); err != nil {
+		t.Fatalf("SyncAll: %v", err)
+	}
+
+	var count int
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM calls WHERE network = 'e2e'`).Scan(&count); err != nil {
+		t.Fatalf("count calls: %v", err)
+	}
+	if count != 63 {
+		t.Errorf("calls = %d after a 63-message multicall, want 63", count)
+	}
+}
+
 // Rows must carry the block time as they are written.
 //
 // Without it a row cannot be ordered against another chain's in a merged view,
