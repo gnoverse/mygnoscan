@@ -1185,6 +1185,11 @@ func (a *API) HandleLabels(w http.ResponseWriter, r *http.Request) {
 // the one endpoint whose size a caller controls directly.
 const maxWatchItems = 100
 
+// watchTimelineLimit bounds the merged recent-activity timeline HandleWatch
+// returns alongside the digest. A fixed cap, not a query parameter: the
+// timeline is a "what just happened" glance, not a paged history browser.
+const watchTimelineLimit = 50
+
 // HandleWatch summarises activity for the realms and addresses a caller watches.
 //
 // Items arrive as repeated `realm=` and `address=` parameters, each optionally
@@ -1218,17 +1223,38 @@ func (a *API) HandleWatch(w http.ResponseWriter, r *http.Request) {
 		return out
 	}
 
-	realms, err := a.db.WatchRealms(network, parse(q["realm"]))
+	realmReqs := parse(q["realm"])
+	addressReqs := parse(q["address"])
+
+	realms, err := a.db.WatchRealms(network, realmReqs)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
 	}
-	addresses, err := a.db.WatchAddresses(network, parse(q["address"]))
+	addresses, err := a.db.WatchAddresses(network, addressReqs)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
 	}
-	jsonResponse(w, map[string]any{"realms": realms, "addresses": addresses})
+
+	ids := func(reqs []WatchRequest) []string {
+		out := make([]string, len(reqs))
+		for i, r := range reqs {
+			out[i] = r.ID
+		}
+		return out
+	}
+	// A timeline alongside the digest: the digest says how much changed,
+	// this is the actual activity behind that count. Capped independently of
+	// maxWatchItems — that bounds how many realms/addresses can be watched,
+	// this bounds how many rows their combined history returns.
+	txs, err := a.db.WatchTransactions(network, ids(realmReqs), ids(addressReqs), watchTimelineLimit)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+
+	jsonResponse(w, map[string]any{"realms": realms, "addresses": addresses, "transactions": txs})
 }
 
 func (a *API) HandleAccounts(w http.ResponseWriter, r *http.Request) {
