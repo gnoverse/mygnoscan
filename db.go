@@ -1720,6 +1720,50 @@ func (d *DB) GetPackageDetail(network, path string) (*PackageDetail, error) {
 	return &p, nil
 }
 
+// GovDAORelatedMsgRuns finds maketx-run scripts that plausibly created or
+// touched a governance proposal. A proposal's own creation is a MsgRun (a
+// `maketx run` script that imports gov/dao and calls
+// dao.MustCreateProposal(...)), not a MsgCall, so it never appears in the
+// `calls` table — this is the same "search msg_runs.source" technique
+// GetPackageDetail's MsgRunRefs already uses for realm-to-script tracing,
+// narrowed with a second predicate on the proposal's own executor package
+// path (from its "Executor created in: `pkgpath`" line) since gov/dao alone
+// matches every proposal ever created.
+//
+// This is a heuristic, not a guarantee: it finds scripts that reference both
+// packages by name, which a script doing something else entirely with both
+// imported could also match. With gov/dao's proposal volume (a handful, not
+// thousands) that tradeoff favors recall over precision — a caller can read
+// the matched script's source and judge for themselves.
+func (d *DB) GovDAORelatedMsgRuns(network, executorPkgPath string) ([]MsgRunInfo, error) {
+	if executorPkgPath == "" {
+		return nil, nil
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	rows, err := d.db.Query(`
+		SELECT tx_hash, block_height, caller, success
+		FROM msg_runs
+		WHERE source LIKE ? AND source LIKE ? AND network = ?
+		ORDER BY block_height ASC LIMIT 20
+	`, "%"+govDAOPathPrefix+"%", "%"+executorPkgPath+"%", network)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []MsgRunInfo
+	for rows.Next() {
+		var r MsgRunInfo
+		if err := rows.Scan(&r.TxHash, &r.BlockHeight, &r.Caller, &r.Success); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // GetDependencyGraph returns the full dependency graph for a package (recursive).
 func (d *DB) GetDependencyGraph(network, path string) (map[string][]string, error) {
 	d.mu.RLock()
