@@ -33,6 +33,9 @@ func seedNetwork(t *testing.T, db *DB, network string, height int) {
 	if err := db.UpsertPackage(network, "gno.land/r/demo/foo", "foo", "g1creator", "TXHASH", height, "", true, 1); err != nil {
 		t.Fatalf("upsert package: %v", err)
 	}
+	if err := db.InsertPackageSubmission(network, "TXHASH", 0, "gno.land/r/demo/foo", "foo", "g1creator", height, "", true, 1, true); err != nil {
+		t.Fatalf("insert package submission: %v", err)
+	}
 	if err := db.UpsertPackageFile(network, "gno.land/r/demo/foo", "foo.gno", "package foo"); err != nil {
 		t.Fatalf("upsert package file: %v", err)
 	}

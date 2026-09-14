@@ -635,6 +635,9 @@ func TestWatchEndpoint(t *testing.T) {
 	if err := db.UpsertPackage("alpha", realm, "boards", "g1creator", "deploy", 100, when, true, 1); err != nil {
 		t.Fatalf("UpsertPackage: %v", err)
 	}
+	if err := db.InsertPackageSubmission("alpha", "deploy", 0, realm, "boards", "g1creator", 100, when, true, 1, true); err != nil {
+		t.Fatalf("InsertPackageSubmission: %v", err)
+	}
 	for i := 0; i < 10; i++ {
 		if err := db.InsertCall("alpha", fmt.Sprintf("c%d", i), 200+i, 0, when, "g1watched", realm, "Post", true); err != nil {
 			t.Fatalf("InsertCall: %v", err)
@@ -755,9 +758,13 @@ func TestFilteredTransactionsFromStorage(t *testing.T) {
 		}
 	}
 	for i := 0; i < 7; i++ {
-		if err := db.UpsertPackage("alpha", fmt.Sprintf("gno.land/r/demo/pkg%d", i), "pkg",
-			"g1deployer", fmt.Sprintf("deploy-%d", i), 2000+i, when, true, 1); err != nil {
+		path := fmt.Sprintf("gno.land/r/demo/pkg%d", i)
+		txHash := fmt.Sprintf("deploy-%d", i)
+		if err := db.UpsertPackage("alpha", path, "pkg", "g1deployer", txHash, 2000+i, when, true, 1); err != nil {
 			t.Fatalf("UpsertPackage: %v", err)
+		}
+		if err := db.InsertPackageSubmission("alpha", txHash, 0, path, "pkg", "g1deployer", 2000+i, when, true, 1, true); err != nil {
+			t.Fatalf("InsertPackageSubmission: %v", err)
 		}
 	}
 	for i := 0; i < 12; i++ {
@@ -927,6 +934,9 @@ func TestAddressFromStorage(t *testing.T) {
 	}
 	if err := db.UpsertPackage("alpha", "gno.land/r/me/pkg", "pkg", me, "deploy", 300, when, true, 1); err != nil {
 		t.Fatalf("UpsertPackage: %v", err)
+	}
+	if err := db.InsertPackageSubmission("alpha", "deploy", 0, "gno.land/r/me/pkg", "pkg", me, 300, when, true, 1, true); err != nil {
+		t.Fatalf("InsertPackageSubmission: %v", err)
 	}
 	// Sent by me, and received by me: both are this address's activity.
 	if err := db.InsertBankSend("alpha", "sent", 400, when, me, "g1other", "5ugnot", true); err != nil {

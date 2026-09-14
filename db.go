@@ -107,6 +107,22 @@ func NewDB(path string) (*DB, error) {
 		}
 	}
 
+	// Migrate: package_submissions didn't always exist. packages has always
+	// been a current-state projection (one row per path, INSERT OR REPLACE),
+	// so on a database that already has packages rows but no
+	// package_submissions table, dropping packages is the only way to make
+	// syncPackages re-walk history and backfill it — its resume cursor is
+	// MAX(block_height) FROM packages itself (see getLastBlockHeight), which
+	// already sits at the tip on an existing install and would otherwise
+	// never look back. package_files and dependencies are untouched: both are
+	// path-keyed and idempotently re-upserted by the same resync, so nothing
+	// there needs dropping. See the comment on package_submissions itself.
+	var pkgSubSQL string
+	db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='package_submissions'`).Scan(&pkgSubSQL)
+	if pkgSubSQL == "" && pkgSQL != "" {
+		db.Exec(`DROP TABLE IF EXISTS packages`)
+	}
+
 	// Migrate: add block_time to tables created before it existed. Must run
 	// before initSchema, which builds indexes on that column.
 	if err := migrateAddBlockTime(db); err != nil {
@@ -320,6 +336,35 @@ func initSchema(db *sql.DB) error {
 			num_files INTEGER NOT NULL,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY (network, path)
+		);
+
+		-- One row per MsgAddPackage ever seen, never overwritten — unlike
+		-- packages above, which is a current-state projection (one row per
+		-- path, INSERT OR REPLACE) and always was. That was fine while a path
+		-- could be deployed exactly once; it no longer is. Under the "inert"
+		-- code submission policy a parked package is invisible to every
+		-- liveness probe (vm/qfile, vm/qrender), so anything that submits and
+		-- then verifies by querying the path concludes the deploy failed and
+		-- resubmits — routinely, once per retry, for as long as an approver
+		-- is stuck. Each resubmission used to silently overwrite the last in
+		-- packages, which made a creator's own AddPackage history undercount
+		-- (187 shown against 256 on-chain, on the account that surfaced this),
+		-- vanished the earlier submission from /txs filtered by MsgAddPackage,
+		-- and from watch. See github.com/moul/gno-meta/issues/126.
+		CREATE TABLE IF NOT EXISTS package_submissions (
+			network TEXT NOT NULL DEFAULT 'gnoland1',
+			tx_hash TEXT NOT NULL,
+			msg_index INTEGER NOT NULL DEFAULT 0,
+			path TEXT NOT NULL,
+			name TEXT NOT NULL,
+			creator TEXT NOT NULL,
+			block_height INTEGER NOT NULL,
+			block_time TEXT,
+			is_realm BOOLEAN NOT NULL,
+			num_files INTEGER NOT NULL,
+			success BOOLEAN NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (network, tx_hash, msg_index)
 		);
 
 		CREATE TABLE IF NOT EXISTS package_files (
@@ -594,6 +639,9 @@ func initSchema(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_runs_net_caller   ON msg_runs(network, caller);
 		CREATE INDEX IF NOT EXISTS idx_sends_net_from    ON bank_sends(network, from_address);
 		CREATE INDEX IF NOT EXISTS idx_sends_net_to      ON bank_sends(network, to_address);
+		CREATE INDEX IF NOT EXISTS idx_pkgsub_net_creator ON package_submissions(network, creator);
+		CREATE INDEX IF NOT EXISTS idx_pkgsub_net_path    ON package_submissions(network, path);
+		CREATE INDEX IF NOT EXISTS idx_pkgsub_block_time  ON package_submissions(network, block_time);
 
 		-- The realm/analytics joins group calls by package and count distinct
 		-- callers within it, which this covers without touching the table.
@@ -643,6 +691,23 @@ func (d *DB) UpsertPackage(network, path, name, creator, txHash string, blockHei
 		INSERT OR REPLACE INTO packages (network, path, name, creator, tx_hash, block_height, block_time, is_realm, num_files)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, network, path, name, creator, txHash, blockHeight, blockTime, isRealm, numFiles)
+	return err
+}
+
+// InsertPackageSubmission records one MsgAddPackage as its own permanent
+// row, independent of whatever UpsertPackage does to packages' current-state
+// row for the same path. msgIndex distinguishes multiple AddPackage messages
+// in one multicall transaction, the same reason calls carries it (#152) —
+// without it two submissions in the same tx would collide on (network,
+// tx_hash) and INSERT OR IGNORE would silently drop the second.
+func (d *DB) InsertPackageSubmission(network, txHash string, msgIndex int, path, name, creator string, blockHeight int, blockTime string, isRealm bool, numFiles int, success bool) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, err := d.db.Exec(`
+		INSERT OR IGNORE INTO package_submissions
+			(network, tx_hash, msg_index, path, name, creator, block_height, block_time, is_realm, num_files, success)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, network, txHash, msgIndex, path, name, creator, blockHeight, blockTime, isRealm, numFiles, success)
 	return err
 }
 
@@ -971,7 +1036,7 @@ func (d *DB) DeleteNetworkData(network string) (int64, error) {
 
 // blockTimeTables lists tables whose rows carry a block_time worth backfilling.
 // package_files and dependencies have no height of their own.
-var backfillTables = []string{"packages", "calls", "msg_runs", "bank_sends", "transactions"}
+var backfillTables = []string{"packages", "package_submissions", "calls", "msg_runs", "bank_sends", "transactions"}
 
 // HeightsMissingBlockTime returns block heights that have rows with no
 // block_time, oldest first, capped at limit.
@@ -3680,7 +3745,10 @@ func (d *DB) WatchAddresses(network string, items []WatchRequest) ([]WatchedAddr
 		w := WatchedAddress{Address: item.ID}
 
 		d.db.QueryRow(`SELECT COUNT(*) FROM calls WHERE caller = ? AND `+nf, item.ID).Scan(&w.Calls)
-		d.db.QueryRow(`SELECT COUNT(*) FROM packages WHERE creator = ? AND `+nf, item.ID).Scan(&w.Deploys)
+		// package_submissions, not packages — see AddressTransactions' own
+		// comment on the same swap (gno-meta#126): packages only ever keeps
+		// the latest submission per path.
+		d.db.QueryRow(`SELECT COUNT(*) FROM package_submissions WHERE creator = ? AND `+nf, item.ID).Scan(&w.Deploys)
 		d.db.QueryRow(`SELECT COUNT(*) FROM bank_sends WHERE from_address = ? AND `+nf, item.ID).Scan(&w.Sends)
 		d.db.QueryRow(`SELECT COUNT(*) FROM bank_sends WHERE to_address = ? AND `+nf, item.ID).Scan(&w.Received)
 		d.db.QueryRow(`SELECT COUNT(*) FROM calls WHERE caller = ? AND block_time >= ? AND `+nf,
@@ -3692,7 +3760,7 @@ func (d *DB) WatchAddresses(network string, items []WatchRequest) ([]WatchedAddr
 		var when sql.NullString
 		d.db.QueryRow(`SELECT block_height, block_time, network FROM (
 			SELECT block_height, block_time, network FROM calls WHERE caller = ? AND `+nf+`
-			UNION ALL SELECT block_height, block_time, network FROM packages WHERE creator = ? AND `+nf+`
+			UNION ALL SELECT block_height, block_time, network FROM package_submissions WHERE creator = ? AND `+nf+`
 			UNION ALL SELECT block_height, block_time, network FROM bank_sends WHERE from_address = ? AND `+nf+`
 			UNION ALL SELECT block_height, block_time, network FROM bank_sends WHERE to_address = ? AND `+nf+`
 		) ORDER BY block_height DESC LIMIT 1`,
@@ -3702,7 +3770,7 @@ func (d *DB) WatchAddresses(network string, items []WatchRequest) ([]WatchedAddr
 		if item.Since > 0 {
 			d.db.QueryRow(`SELECT COUNT(*) FROM (
 				SELECT block_height FROM calls WHERE caller = ? AND block_height > ? AND `+nf+`
-				UNION ALL SELECT block_height FROM packages WHERE creator = ? AND block_height > ? AND `+nf+`
+				UNION ALL SELECT block_height FROM package_submissions WHERE creator = ? AND block_height > ? AND `+nf+`
 				UNION ALL SELECT block_height FROM bank_sends WHERE from_address = ? AND block_height > ? AND `+nf+`
 				UNION ALL SELECT block_height FROM bank_sends WHERE to_address = ? AND block_height > ? AND `+nf+`
 			)`, item.ID, item.Since, item.ID, item.Since, item.ID, item.Since, item.ID, item.Since).Scan(&w.NewSince)
@@ -3733,11 +3801,6 @@ type StoredTx struct {
 
 // txSource maps a message type to the table that records it, and to the columns
 // that describe one of its rows.
-//
-// `success` is the awkward one. Three of these tables carry it; `packages` does
-// not — it is keyed by (network, path) and holds the current state of a package
-// rather than one row per deploy, so there is no per-attempt outcome to store.
-// For that table the flag comes from the transaction row instead.
 type txSource struct {
 	table   string
 	caller  string
@@ -3745,9 +3808,17 @@ type txSource struct {
 	success string
 }
 
+// MsgAddPackage sources from package_submissions, not packages: packages is
+// a current-state projection (one row per path, overwritten by a later
+// submission at the same path), so filtering /txs by MsgAddPackage against
+// it silently hid every resubmission but the newest — see
+// AddressTransactions' own comment on the identical bug (gno-meta#126).
+// package_submissions carries its own success column, one row per attempt,
+// so this no longer needs the join to `transactions` the old
+// COALESCE(t.success, 1) depended on.
 var txSources = map[string]txSource{
 	"MsgCall":       {table: "calls", caller: "caller", detail: "pkg_path || '::' || func_name", success: "e.success"},
-	"MsgAddPackage": {table: "packages", caller: "creator", detail: "path", success: "COALESCE(t.success, 1)"},
+	"MsgAddPackage": {table: "package_submissions", caller: "creator", detail: "path", success: "e.success"},
 	"MsgRun":        {table: "msg_runs", caller: "caller", detail: "''", success: "e.success"},
 	"BankMsgSend":   {table: "bank_sends", caller: "from_address", detail: "to_address || ' ' || amount", success: "e.success"},
 }
@@ -3772,13 +3843,12 @@ func (d *DB) FilteredTransactions(network, msgType string, success *bool, limit,
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	// packages needs the transaction row for its success flag; the others carry
-	// their own. LEFT JOIN so a package whose transaction has not been backfilled
-	// still lists, defaulting to success rather than vanishing.
+	// Every txSource now carries its own success column directly (see
+	// package_submissions), so no source needs a join out to transactions
+	// for it. join stays as a variable, not inlined, so a future source that
+	// does need one can reintroduce it the same way without restructuring
+	// the query below.
 	join := ""
-	if src.success != "e.success" {
-		join = " LEFT JOIN transactions t ON t.network = e.network AND t.tx_hash = e.tx_hash"
-	}
 
 	where := " WHERE " + d.networkFilter("e.network", network)
 	if success != nil {
@@ -3906,8 +3976,14 @@ func (d *DB) AddressTransactions(network, addr string, limit, offset int) ([]Sto
 	union := strings.Join([]string{
 		branch(`network, tx_hash, block_height, COALESCE(block_time,'') bt, 'MsgCall' typ,
 		        caller who, pkg_path || '::' || func_name detail, success`, "calls", "caller = ?"),
+		// package_submissions, not packages: packages is a current-state
+		// projection (one row per path, overwritten by a later submission at
+		// the same path), so it silently drops every resubmission but the
+		// newest from a creator's own history — the bug gno-meta#126
+		// reported (187 MsgAddPackage shown against 256 on-chain). Real
+		// per-submission success now, not a hardcoded 1.
 		branch(`network, tx_hash, block_height, COALESCE(block_time,''), 'MsgAddPackage',
-		        creator, path, 1`, "packages", "creator = ?"),
+		        creator, path, success`, "package_submissions", "creator = ?"),
 		branch(`network, tx_hash, block_height, COALESCE(block_time,''), 'MsgRun',
 		        caller, '', success`, "msg_runs", "caller = ?"),
 		branch(`network, tx_hash, block_height, COALESCE(block_time,''), 'BankMsgSend',
@@ -3920,7 +3996,7 @@ func (d *DB) AddressTransactions(network, addr string, limit, offset int) ([]Sto
 	// because counting needs no sort.
 	countUnion := strings.Join([]string{
 		"SELECT tx_hash FROM calls WHERE caller = ? AND " + nf,
-		"SELECT tx_hash FROM packages WHERE creator = ? AND " + nf,
+		"SELECT tx_hash FROM package_submissions WHERE creator = ? AND " + nf,
 		"SELECT tx_hash FROM msg_runs WHERE caller = ? AND " + nf,
 		"SELECT tx_hash FROM bank_sends WHERE (from_address = ? OR to_address = ?) AND " + nf,
 	}, " UNION ALL ")
@@ -3999,9 +4075,11 @@ func (d *DB) WatchTransactions(network string, realms, addresses []string, limit
 		for _, r := range realms {
 			args = append(args, r)
 		}
+		// package_submissions, not packages — see AddressTransactions'
+		// comment on the same swap (gno-meta#126).
 		branches = append(branches, branch(`network, tx_hash, block_height, COALESCE(block_time,'') bt, 'MsgAddPackage' typ,
-		        creator who, path detail, 1`,
-			"packages", "path IN "+inClause(len(realms))))
+		        creator who, path detail, success`,
+			"package_submissions", "path IN "+inClause(len(realms))))
 		for _, r := range realms {
 			args = append(args, r)
 		}
@@ -4014,8 +4092,8 @@ func (d *DB) WatchTransactions(network string, realms, addresses []string, limit
 			args = append(args, a)
 		}
 		branches = append(branches, branch(`network, tx_hash, block_height, COALESCE(block_time,'') bt, 'MsgAddPackage' typ,
-		        creator who, path detail, 1`,
-			"packages", "creator IN "+inClause(len(addresses))))
+		        creator who, path detail, success`,
+			"package_submissions", "creator IN "+inClause(len(addresses))))
 		for _, a := range addresses {
 			args = append(args, a)
 		}

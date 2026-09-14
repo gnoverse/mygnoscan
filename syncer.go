@@ -144,7 +144,7 @@ func (s *Syncer) syncPackages(ctx context.Context) error {
 		for _, tx := range txs {
 			bt := times[tx.BlockHeight]
 			s.upsertTx(tx, bt)
-			for _, msg := range tx.Messages {
+			for msgIndex, msg := range tx.Messages {
 				if msg.Value.Typename == "MsgAddPackage" && msg.Value.Package != nil {
 					if err := s.analyzer.ProcessPackage(
 						s.networkID,
@@ -152,6 +152,7 @@ func (s *Syncer) syncPackages(ctx context.Context) error {
 						msg.Value.Creator,
 						tx.Hash,
 						tx.BlockHeight,
+						msgIndex,
 						bt,
 						tx.Success,
 					); err != nil {
