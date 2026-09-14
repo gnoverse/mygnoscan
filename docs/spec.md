@@ -33,6 +33,8 @@ path exists on multiple chains and means different things on each.
 | `msg_runs` | one `MsgRun` message | full source of the run |
 | `bank_sends` | one `BankMsgSend` message | from, to, amount |
 | `transactions` | one transaction | height, time, gas used/wanted/fee, success |
+| `blocks` | one block per network | height, time, `num_txs`, and the interned proposer. `WITHOUT ROWID` — the range is contiguous by construction |
+| `proposers` | one validator address per network | interned so a block row stores an id, not a 40-byte address |
 | `sync_state` | key/value | sync bookkeeping, keyed with the network in the key |
 
 Derived, not stored:

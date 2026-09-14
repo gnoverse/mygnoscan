@@ -50,6 +50,13 @@ func seedNetwork(t *testing.T, db *DB, network string, height int) {
 	if err := db.UpsertTransaction(network, "TXHASH", height, "", 100, 200, 1, true); err != nil {
 		t.Fatalf("upsert transaction: %v", err)
 	}
+	proposerID, err := db.InternProposer(network, "g1proposer")
+	if err != nil {
+		t.Fatalf("intern proposer: %v", err)
+	}
+	if err := db.UpsertBlock(network, height, "", proposerID, 1); err != nil {
+		t.Fatalf("upsert block: %v", err)
+	}
 }
 
 func countNetworkRows(t *testing.T, db *DB, network string) int {
@@ -377,5 +384,204 @@ func TestValoperSubject(t *testing.T) {
 				t.Errorf("moniker = %q, want %q", moniker, tt.wantMoniker)
 			}
 		})
+	}
+}
+
+// newBlockTestSyncer bounds the block pager to a handful of blocks per pass.
+// What these tests check is that the budget is respected and that the backward
+// cursor advances; neither depends on the production page size, and seeding
+// 100k real blocks to observe it would not be a unit test.
+func newBlockTestSyncer(t *testing.T, network string, pageSize, pagesPerPass int) (*Syncer, *fakeIndexer, *DB) {
+	t.Helper()
+	s, fake, db := newTestSyncer(t, network)
+	s.blockPageSize, s.blockPagesPerPass = pageSize, pagesPerPass
+	return s, fake, db
+}
+
+func TestSyncBlocksBoundedPerPass(t *testing.T) {
+	// A pass must stop at its page budget rather than draining the whole chain
+	// inline, which would stall package/call/msg-run syncing behind it.
+	s, fake, db := newBlockTestSyncer(t, "gnoland1", 10, 3)
+	fake.setBlockRange(1, 500)
+
+	s.syncBlocks(context.Background())
+
+	minH, maxH, ok, err := db.BlockHeightBounds("gnoland1")
+	if err != nil || !ok {
+		t.Fatalf("bounds after one pass: ok=%v err=%v", ok, err)
+	}
+	stored := maxH - minH + 1
+	budget := s.blockPageSize * s.blockPagesPerPass
+	if stored > budget {
+		t.Errorf("stored %d blocks in one pass, budget is %d", stored, budget)
+	}
+	if stored == 0 {
+		t.Error("stored no blocks at all")
+	}
+	if fake.blockQueryCount() == 0 {
+		t.Error("made no block queries")
+	}
+}
+
+func TestSyncBlocksResumesBackward(t *testing.T) {
+	// Successive passes must extend the range downward, not restart at the tip.
+	s, fake, db := newBlockTestSyncer(t, "gnoland1", 10, 3)
+	fake.setBlockRange(1, 500)
+
+	s.syncBlocks(context.Background())
+	min1, max1, _, _ := db.BlockHeightBounds("gnoland1")
+
+	s.syncBlocks(context.Background())
+	min2, max2, _, _ := db.BlockHeightBounds("gnoland1")
+
+	if min2 >= min1 {
+		t.Errorf("second pass did not extend backward: min went %d -> %d", min1, min2)
+	}
+	if max2 < max1 {
+		t.Errorf("second pass lost head blocks: max went %d -> %d", max1, max2)
+	}
+}
+
+func TestSyncBlocksTerminatesAtGenesis(t *testing.T) {
+	// A small chain must reach the bottom and set the done flag rather than
+	// retrying a range that will never return rows.
+	s, fake, db := newBlockTestSyncer(t, "gnoland1", 10, 3)
+	fake.setBlockRange(1, 20)
+
+	for i := 0; i < 5; i++ {
+		s.syncBlocks(context.Background())
+	}
+
+	done, err := db.GetSyncState(blocksBackfillDoneKey("gnoland1"))
+	if err != nil {
+		t.Fatalf("get sync state: %v", err)
+	}
+	if done != "1" {
+		t.Errorf("backfill done flag = %q, want \"1\"", done)
+	}
+}
+
+func TestSyncBlocksTerminatesOnPrunedIndexer(t *testing.T) {
+	// A pruned indexer never serves below its floor (here 500, well above
+	// genesis). The backfill must notice a page that returns nothing new,
+	// mark itself done, and stop — otherwise every future cycle would refetch
+	// the identical empty range and break again, forever.
+	s, fake, db := newBlockTestSyncer(t, "gnoland1", 10, 3)
+	fake.setBlockRange(500, 600)
+
+	for i := 0; i < 6; i++ {
+		s.syncBlocks(context.Background())
+	}
+	callsBefore := fake.blockQueryCount()
+
+	s.syncBlocks(context.Background())
+	callsAfter := fake.blockQueryCount()
+
+	if callsAfter != callsBefore {
+		t.Errorf("block queries kept growing after termination: %d -> %d", callsBefore, callsAfter)
+	}
+
+	done, err := db.GetSyncState(blocksBackfillDoneKey("gnoland1"))
+	if err != nil {
+		t.Fatalf("get sync state: %v", err)
+	}
+	if done != "1" {
+		t.Errorf("backfill done flag = %q, want \"1\" once the pruned floor is hit", done)
+	}
+
+	minH, _, ok, err := db.BlockHeightBounds("gnoland1")
+	if err != nil || !ok {
+		t.Fatalf("bounds: ok=%v err=%v", ok, err)
+	}
+	if minH < 500 {
+		t.Errorf("stored below the indexer's floor: minH=%d", minH)
+	}
+}
+
+func TestSyncBlocksTransientEmptyPageDoesNotMarkDone(t *testing.T) {
+	// A single empty range response must not be treated as proof of a pruned
+	// floor: a replica still catching up, or a load balancer fronting a
+	// partially-populated node, can return getBlocks: [] for a range that
+	// genuinely has data. Only a confirming probe at the boundary height may
+	// conclude the floor is real; until then, backfill must retry rather than
+	// permanently self-certifying incomplete history as done.
+	s, fake, db := newBlockTestSyncer(t, "gnoland1", 10, 3)
+	fake.setBlockRange(1, 500) // large enough that one pass can't reach genesis
+
+	s.syncBlocks(context.Background())
+	minAfterFirst, _, ok, err := db.BlockHeightBounds("gnoland1")
+	if err != nil || !ok {
+		t.Fatalf("bounds after first pass: ok=%v err=%v", ok, err)
+	}
+	if minAfterFirst <= 1 {
+		t.Fatalf("first pass reached genesis already; test needs more headroom (minH=%d)", minAfterFirst)
+	}
+
+	fake.forceEmptyRange()
+	s.syncBlocks(context.Background())
+
+	done, err := db.GetSyncState(blocksBackfillDoneKey("gnoland1"))
+	if err != nil {
+		t.Fatalf("get sync state: %v", err)
+	}
+	if done == "1" {
+		t.Error("backfill marked done after a single transient empty page")
+	}
+
+	// Progress must resume once the transient condition clears.
+	s.syncBlocks(context.Background())
+	minAfterResume, _, ok, err := db.BlockHeightBounds("gnoland1")
+	if err != nil || !ok {
+		t.Fatalf("bounds after resume pass: ok=%v err=%v", ok, err)
+	}
+	if minAfterResume >= minAfterFirst {
+		t.Errorf("backfill did not resume after the transient empty page cleared: min stayed at %d", minAfterResume)
+	}
+}
+
+func TestSyncBlocksAbandonsPageOnProposerInternFailure(t *testing.T) {
+	// A page is all-or-nothing. If a proposer lookup fails partway through a
+	// page, writing the surviving rows would leave a hole inside the stored
+	// [MIN, MAX] range that no later pass ever revisits (head sync only extends
+	// above MAX, backfill only extends below MIN) — a silent, permanent gap.
+	// The whole page must be abandoned instead.
+	ctx := context.Background()
+	network := "gnoland1"
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+
+	db, err := NewDB(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	fake, client := newFakeIndexer(t)
+	fake.chainID = "testchain"
+	fake.setBlockRange(1, 100)
+
+	s := NewSyncer(client, db, NewAnalyzer(db), network)
+
+	// Force InternProposer to fail: close the database after the fake indexer is
+	// set up but before the page is processed, so GetBlocksInRange (pure HTTP,
+	// no db) still succeeds while the db write path fails.
+	if err := db.db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	if s.fetchBlockPage(ctx, 1, 50) {
+		t.Fatal("fetchBlockPage succeeded despite a broken proposer lookup")
+	}
+
+	// Reopen a fresh connection to the same file: nothing should have been
+	// committed, since the page must be abandoned before any write.
+	db2, err := NewDB(dbPath)
+	if err != nil {
+		t.Fatalf("reopen db: %v", err)
+	}
+	defer db2.Close()
+
+	if _, _, ok, err := db2.BlockHeightBounds(network); err != nil {
+		t.Fatalf("bounds: %v", err)
+	} else if ok {
+		t.Error("page was partially written despite a proposer intern failure")
 	}
 }
