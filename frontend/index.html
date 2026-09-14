@@ -284,7 +284,13 @@ footer a:hover { color: var(--accent); }
       <th class="rs" data-sort="newest">block</th>
       <th>files</th></tr></thead><tbody id="realms-list"></tbody></table></div></main></div>
   <div class="view" id="view-packages"><main><div id="packages-stats" class="stats-bar" style="display:none"></div><div class="section"><div class="section-title">all packages</div>
-    <table><thead><tr><th>path</th><th>creator</th><th>block</th><th>files</th></tr></thead><tbody id="packages-list"></tbody></table></div></main></div>
+    <table><thead><tr><th>path</th><th>creator</th>
+      <th class="rs" data-sort="calls">calls</th>
+      <th class="rs" data-sort="importers">dependents</th>
+      <th class="rs" data-sort="imports">dependencies</th>
+      <th class="rs" data-sort="users">unique users</th>
+      <th class="rs" data-sort="newest">block</th>
+      <th>files</th></tr></thead><tbody id="packages-list"></tbody></table></div></main></div>
   <div class="view" id="view-txs"><main>
     <div id="txs-stats" class="stats-bar" style="display:none"></div>
     <div id="txs-filter" style="display:none"></div>
@@ -2062,15 +2068,24 @@ async function loadRealms(page) {
   }
 }
 
+let _packagesSort = 'newest';
 async function loadPackages(page) {
   page = page || 0;
   const section = document.querySelector('#view-packages .section');
   const tbody = clear('packages-list');
-  skeletonRows(tbody, 4, 10);
+  skeletonRows(tbody, 8, 10);
   section.querySelectorAll('.pager').forEach(p => p.remove());
   const statsBar = document.getElementById('packages-stats');
+  // Sorting is server-side: ordering only the current page would rank 50 rows
+  // out of hundreds and quietly answer a different question.
+  document.querySelectorAll('#view-packages th.rs').forEach(th => {
+    const key = th.getAttribute('data-sort');
+    th.classList.toggle('sort-desc', _packagesSort === key);
+    th.classList.add('sortable');
+    th.onclick = () => { _packagesSort = key; loadPackages(0); };
+  });
   try {
-    const data = await api('packages?limit=' + PAGE_SIZE + '&offset=' + (page * PAGE_SIZE));
+    const data = await api('packages?limit=' + PAGE_SIZE + '&offset=' + (page * PAGE_SIZE) + '&sort=' + _packagesSort);
     if (page === 0) {
       statsBar.textContent = ''; statsBar.style.display = 'flex';
       statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total packages'), el('span', { className: 'value' }, fmtNum(data.total || 0))));
@@ -2080,13 +2095,17 @@ async function loadPackages(page) {
       list.appendChild(netRow(p.network,
         el('td', {}, realmPathEl(p.path, p.network)),
         el('td', {}, addrLink(p.creator)),
+        el('td', {}, countCell(p.calls)),
+        el('td', {}, countCell(p.importers)),
+        el('td', {}, countCell(p.imports)),
+        el('td', {}, countCell(p.unique_users)),
         el('td', {}, blockLink(p.block_height, p.network)), el('td', {}, String(p.num_files))
       ));
     }
     pager(section, page, data.total || 0, loadPackages);
   } catch (err) {
     console.error(err);
-    failRows(clear('packages-list'), 4, err, loadPackages);
+    failRows(clear('packages-list'), 8, err, loadPackages);
   }
 }
 
