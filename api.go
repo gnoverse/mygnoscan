@@ -1327,6 +1327,154 @@ func (a *API) HandleGovDAO(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, calls)
 }
 
+// HandleGovDAOOverview serves the /govdao landing page: the live proposal
+// list plus the memberstore's tiers and members, read straight from gov/dao's
+// own Render() output over RPC (see govdao.go) rather than reimplemented
+// against its storage — the realm is the source of truth for its own rules,
+// including ones mygnoscan does not know about (a tier threshold changing,
+// say).
+func (a *API) HandleGovDAOOverview(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	rpcURL := a.rpcURLFor(network)
+	overview := FetchGovDAOOverview(r.Context(), network, rpcURL)
+	a.enrichGovDAOProposals(r.Context(), network, rpcURL, overview.Proposals)
+	jsonResponse(w, overview)
+}
+
+// enrichGovDAOProposals fills in each summary's vote percentages (from its
+// own cached detail render — one RPC round trip per proposal, but every
+// result is independently cached for govDAOCacheTTL and gov/dao's proposal
+// count is small, so this stays cheap) and its approximate creation/last-
+// activity dates (from one bulk indexer query, bucketed by proposal ID —
+// see govDAORelatedCalls for why this cannot come from the local calls
+// table). Mutates in place; best-effort, so a failure here just leaves a
+// row's extra fields blank rather than failing the whole overview.
+func (a *API) enrichGovDAOProposals(ctx context.Context, network, rpcURL string, proposals []GovDAOProposalSummary) {
+	if len(proposals) == 0 {
+		return
+	}
+	var wg sync.WaitGroup
+	for i := range proposals {
+		wg.Add(1)
+		go func(p *GovDAOProposalSummary) {
+			defer wg.Done()
+			detail := FetchGovDAOProposal(ctx, network, rpcURL, p.ID)
+			p.YesPercent = detail.YesPercent
+			p.NoPercent = detail.NoPercent
+			p.AbstainPercent = detail.AbstainPercent
+		}(&proposals[i])
+	}
+
+	byID := make(map[int]*GovDAOProposalSummary, len(proposals))
+	for i := range proposals {
+		byID[proposals[i].ID] = &proposals[i]
+	}
+	if txs, ok := a.fetchGovDAOTransactions(ctx, network); ok {
+		for _, tx := range txs {
+			for _, m := range tx.Messages {
+				v := m.Value
+				if v.Typename != "MsgCall" || len(v.Args) == 0 {
+					continue
+				}
+				id, err := strconv.Atoi(v.Args[0])
+				if err != nil {
+					continue
+				}
+				p, ok := byID[id]
+				if !ok {
+					continue
+				}
+				if p.CreatedHeight == 0 || tx.BlockHeight < p.CreatedHeight {
+					p.CreatedHeight, p.CreatedTime = tx.BlockHeight, tx.BlockTime
+				}
+				if tx.BlockHeight > p.LastActivityHeight {
+					p.LastActivityHeight, p.LastActivityTime = tx.BlockHeight, tx.BlockTime
+				}
+			}
+		}
+	}
+
+	wg.Wait()
+}
+
+// HandleGovDAOProposal serves one proposal's detail page: the parsed render
+// (description, executor, status, vote percentages, per-address votes) plus
+// two independently sourced "how did this happen" trails — related MsgCalls
+// (vote/execute transactions naming this proposal ID, found live on the
+// indexer since the locally synced calls table does not keep arguments) and
+// related MsgRuns (maketx-run scripts that plausibly created it, found by
+// searching locally synced script source).
+func (a *API) HandleGovDAOProposal(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil || id < 0 {
+		jsonError(w, "invalid proposal id", 400)
+		return
+	}
+	detail := FetchGovDAOProposal(r.Context(), network, a.rpcURLFor(network), id)
+	detail.RelatedCalls = a.govDAORelatedCalls(r.Context(), network, id)
+	if runs, err := a.db.GovDAORelatedMsgRuns(network, detail.ExecutorPkgPath); err == nil {
+		detail.RelatedMsgRuns = runs
+	}
+	jsonResponse(w, detail)
+}
+
+// govDAORelatedCalls finds MsgCalls into gov/dao naming this proposal ID as
+// their first argument — votes, execution, and (if ever issued directly
+// rather than via a MsgRun script) creation. Live on the indexer, not the
+// local calls table: the syncer never persists call arguments, so this is
+// the only place that ID lives.
+//
+// Matching on "args[0] == id" without also pinning the function name is
+// deliberate: gov/dao's set of proposal-related functions is not something
+// this file should have to keep in sync with the realm's own source, and a
+// false positive here is just an unrelated call briefly listed for a
+// human to judge, not a wrong balance or a broken page.
+func (a *API) govDAORelatedCalls(ctx context.Context, network string, id int) []GovDAORelatedCall {
+	txs, ok := a.fetchGovDAOTransactions(ctx, network)
+	if !ok {
+		return nil
+	}
+	idStr := strconv.Itoa(id)
+	var out []GovDAORelatedCall
+	for _, tx := range txs {
+		for _, m := range tx.Messages {
+			v := m.Value
+			if v.Typename != "MsgCall" || len(v.Args) == 0 || v.Args[0] != idStr {
+				continue
+			}
+			out = append(out, GovDAORelatedCall{
+				TxHash:      tx.Hash,
+				BlockHeight: tx.BlockHeight,
+				BlockTime:   tx.BlockTime,
+				Caller:      v.Caller,
+				Func:        v.Func,
+				Success:     tx.Success,
+			})
+		}
+	}
+	return out
+}
+
+// fetchGovDAOTransactions fetches every gov/dao MsgCall, with block times
+// filled in (see stampBlockTimes) so callers can show a date without a
+// second round trip. The bool return is whether an indexer client exists for
+// the network at all, distinct from a zero-length result — a network with a
+// client but genuinely no gov/dao activity should not look identical to one
+// this instance cannot reach.
+func (a *API) fetchGovDAOTransactions(ctx context.Context, network string) ([]Transaction, bool) {
+	client := a.clientFor(network)
+	if client == nil {
+		return nil, false
+	}
+	txs, err := client.GetGovDAOTransactions(ctx, 500)
+	if err != nil {
+		return nil, true
+	}
+	a.stampBlockTimes(ctx, network, client, txs)
+	return txs, true
+}
+
 func (a *API) HandleDeps(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
 	path := "gno.land/" + r.PathValue("path")
@@ -2091,6 +2239,8 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/labels", a.HandleLabels)
 	mux.HandleFunc("GET /api/watch", a.HandleWatch)
 	mux.HandleFunc("GET /api/govdao", a.HandleGovDAO)
+	mux.HandleFunc("GET /api/govdao/overview", a.HandleGovDAOOverview)
+	mux.HandleFunc("GET /api/govdao/proposals/{id}", a.HandleGovDAOProposal)
 }
 
 // --- RPC / indexer chain agreement -----------------------------------------

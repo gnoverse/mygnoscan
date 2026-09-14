@@ -323,8 +323,8 @@ footer a:hover { color: var(--accent); }
     <table><thead><tr><th>path</th><th>creator</th><th>calls</th></tr></thead><tbody id="tokens-list"></tbody></table></div></main></div>
   <div class="view" id="view-validators"><main><div class="section"><div class="section-title">validators</div>
     <div id="validators-content"></div></div></main></div>
-  <div class="view" id="view-govdao"><main><div id="govdao-stats" class="stats-bar" style="display:none"></div><div class="section"><div class="section-title">govdao activity</div>
-    <table><thead><tr><th>block</th><th>caller</th><th>function</th><th>status</th><th>tx</th></tr></thead><tbody id="govdao-list"></tbody></table></div></main></div>
+  <div class="view" id="view-govdao"><main><div id="govdao-content"></div></main></div>
+  <div class="view" id="view-govdao-detail"><main><div id="govdao-detail-content"></div></main></div>
   <div class="view" id="view-analytics"><main><div id="analytics-content"></div></main></div>
   <div class="view" id="view-sanity"><main><div id="sanity-content"></div></main></div>
   <div class="view" id="view-gas"><main><div id="gas-content"></div></main></div>
@@ -1583,6 +1583,7 @@ function route() {
   else if (path === '/sanity') { view = 'sanity'; }
   else if (path === '/watch') { view = 'watch'; }
   else if (path.startsWith('/block/')) { view = 'block-detail'; data = parseInt(path.slice(7)); }
+  else if (path.startsWith('/govdao/')) { view = 'govdao-detail'; data = parseInt(path.slice(8)); }
   else if (path.startsWith('/realm/')) { view = 'realm-detail'; data = 'gno.land/' + path.slice(7); }
   else if (path.startsWith('/tx/')) { view = 'tx-detail'; data = decodeURIComponent(path.slice(4)); }
   else if (path.startsWith('/address/')) { view = 'address-detail'; data = path.slice(9); }
@@ -1615,6 +1616,7 @@ function route() {
     case 'tokens': loadTokens(); break;
     case 'validators': loadValidators(); break;
     case 'govdao': loadGovDAO(); break;
+    case 'govdao-detail': loadGovDAODetail(data); break;
     case 'events': loadEvents(); break;
     case 'gas': loadGas(); break;
     case 'analytics': loadAnalytics(); break;
@@ -3524,54 +3526,312 @@ function renderEventRows() {
   pager(section, _eventsPage, matches.length, p => { _eventsPage = p; renderEventRows(); });
 }
 
+// govDAOStatusBadge labels a proposal's lifecycle state. gov/dao's own text
+// is the source of truth (ACCEPTED / REJECTED, or an in-progress status
+// while voting is still open) — this only maps it onto the badge colors the
+// rest of the app already uses, rather than re-deciding what counts as
+// "done".
+function govDAOStatusBadge(status) {
+  const s = (status || '').toUpperCase();
+  if (s === 'ACCEPTED') return badge('ok', 'accepted');
+  if (s === 'REJECTED' || s === 'DENIED') return badge('fail', 'rejected');
+  if (s) return badge('realm', s.toLowerCase());
+  return badge('', 'unknown');
+}
+// A compact yes/no/abstain stacked bar. Percentages come straight from
+// gov/dao's own render (see govdao.go) — this only draws them.
+function voteBar(yes, no, abstain, big) {
+  const wrap = el('div', {
+    style: {
+      display: 'flex', width: big ? '200px' : '90px', height: big ? '14px' : '8px',
+      borderRadius: '3px', overflow: 'hidden', background: 'var(--bg3)', flex: '0 0 auto',
+    },
+  });
+  wrap.title = 'yes ' + yes.toFixed(1) + '%  ·  no ' + no.toFixed(1) + '%  ·  abstain ' + abstain.toFixed(1) + '%';
+  if (yes + no + abstain > 0) {
+    if (yes > 0) wrap.appendChild(el('div', { style: { width: yes + '%', background: 'var(--green)' } }));
+    if (no > 0) wrap.appendChild(el('div', { style: { width: no + '%', background: 'var(--red)' } }));
+    if (abstain > 0) wrap.appendChild(el('div', { style: { width: abstain + '%', background: 'var(--fg2)' } }));
+  }
+  return wrap;
+}
+let _govDAOTierChart = [];
+// renderGovDAOTierChart draws voting power share by tier. Skipped entirely
+// when total power is 0 (a chain gov/dao has not been seeded on yet) —
+// Chart.js draws a meaningless full circle for an all-zero doughnut.
+function renderGovDAOTierChart(container, tierStats) {
+  destroyChartList(_govDAOTierChart);
+  container.textContent = '';
+  const totalPower = (tierStats || []).reduce((s, t) => s + t.power, 0);
+  if (!totalPower) return;
+  const labels = tierStats.map(t => t.tier + ' (' + t.members + ')');
+  const data = tierStats.map(t => t.power);
+  const colors = tierStats.map((_, i) => DASH_PAL[i % DASH_PAL.length]);
+  const wrap = el('div', { style: { position: 'relative', height: '220px', width: '320px', flex: '0 0 auto' } });
+  const canvas = document.createElement('canvas');
+  wrap.appendChild(canvas);
+  container.appendChild(wrap);
+  _govDAOTierChart.push(new Chart(canvas, {
+    type: 'doughnut',
+    data: { labels, datasets: [{ data, backgroundColor: colors, borderColor: '#141414', borderWidth: 2 }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'right', labels: { color: '#888', boxWidth: 12, font: { size: 11 } } },
+        title: { display: true, text: 'voting power by tier', color: '#888' },
+      },
+    },
+  }));
+}
+
 async function loadGovDAO() {
-  const tbody = clear('govdao-list');
-  skeletonRows(tbody, 5, 5);
-  const statsBar = document.getElementById('govdao-stats');
-  statsBar.style.display = 'none';
+  const container = clear('govdao-content');
+  skeletonRows(container, 4, 6);
   try {
-    const [events, calls] = await Promise.all([api('events/r/gov/dao'), api('govdao')]);
-    // Stats
-    const totalEvents = (events || []).reduce((s, item) => s + item.events.length, 0);
-    const types = new Set();
-    for (const item of (events || [])) for (const ev of item.events) types.add(ev.type || 'unknown');
-    statsBar.textContent = ''; statsBar.style.display = 'flex';
-    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'proposals'), el('span', { className: 'value' }, fmtNum(totalEvents))));
-    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'event types'), el('span', { className: 'value' }, fmtNum(types.size))));
-    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'govdao txs'), el('span', { className: 'value' }, fmtNum((calls || []).length))));
-    const list = clear('govdao-list');
-    // Events (proposals)
-    if ((events || []).length) {
-      // Replace the table header
-      const parent = list.closest('table');
-      const thead = parent.querySelector('thead');
-      thead.textContent = '';
-      thead.appendChild(el('tr', {}, el('th', {}, 'block'), el('th', {}, 'event'), el('th', {}, 'details'), el('th', {}, 'origin'), el('th', {}, 'tx')));
-      for (const item of events) {
-        // Find the originating message
-        let origin = '';
-        // Governance calls come from storage now, so a matched row carries a
-        // flat `detail` (path::func) rather than a messages[] to dig through.
-        const tx = calls?.find(t => t.hash === item.tx_hash);
-        if (tx) origin = tx.detail || '';
-        for (const ev of item.events) {
-          const attrStr = (ev.attrs || []).map(a => a.key + '=' + a.value).join(', ');
-          list.appendChild(el('tr', {},
-            el('td', {}, blockLink(item.block_height)),
-            el('td', {}, badge('realm', ev.type || 'event')),
-            el('td', {}, attrStr ? linkify(attrStr) : el('span', {}, '-')),
-            el('td', {}, origin),
-            el('td', {}, txLink(item.tx_hash, item.block_height))
-          ));
-        }
-      }
+    // One await, not two: route() runs twice on initial page load (see the
+    // loadProposerMonikers().then(route) call near the bottom of this
+    // script), so two loadGovDAO() calls can be in flight together. A second
+    // sequential await here would let the earlier call's tail resume after
+    // the later call has already rebuilt the container, appending a
+    // duplicate of whatever came after that await — caught by actually
+    // looking at a screenshot of this page, where the recent-activity table
+    // appeared twice. A single Promise.all keeps this loader's only race
+    // window the same one every other loader already tolerates.
+    const [overview, calls] = await Promise.all([api('govdao/overview'), api('govdao')]);
+    container.textContent = '';
+
+    const proposals = (overview.proposals || []).slice().sort((a, b) => b.id - a.id);
+    const members = overview.members || [];
+    const tierStats = overview.tier_stats || [];
+    const totalPower = tierStats.reduce((s, t) => s + t.power, 0);
+
+    const statsBar = el('div', { className: 'stats-bar' });
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'proposals'), el('span', { className: 'value' }, fmtNum(proposals.length))));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'accepted'), el('span', { className: 'value' }, fmtNum(proposals.filter(p => (p.status || '').toUpperCase() === 'ACCEPTED').length))));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'members'), el('span', { className: 'value' }, fmtNum(members.length))));
+    statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'voting power'), el('span', { className: 'value' }, fmtNum(totalPower))));
+    container.appendChild(statsBar);
+
+    // Members & tiers
+    container.appendChild(el('div', { className: 'section-title' }, 'members & tiers'));
+    const tierRow = el('div', { style: { display: 'flex', gap: '24px', flexWrap: 'wrap', alignItems: 'flex-start', marginBottom: '12px' } });
+    const chartDiv = el('div');
+    renderGovDAOTierChart(chartDiv, tierStats);
+    if (chartDiv.childNodes.length) tierRow.appendChild(chartDiv);
+    const tierTbl = el('table', { style: { maxWidth: '360px' } });
+    tierTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'tier'), el('th', {}, 'members'), el('th', {}, 'power'), el('th', {}, 'share'))));
+    const tierBody = el('tbody');
+    for (const t of tierStats) {
+      tierBody.appendChild(el('tr', {},
+        el('td', {}, badge('realm', t.tier)),
+        el('td', {}, fmtNum(t.members)),
+        el('td', {}, fmtNum(t.power)),
+        el('td', {}, totalPower ? (t.power / totalPower * 100).toFixed(1) + '%' : '–')
+      ));
     }
-    if (!(events || []).length && !(calls || []).length) {
-      list.appendChild(el('tr', {}, el('td', { colspan: '5', style: { color: 'var(--fg2)' } }, 'no govdao activity found')));
+    tierTbl.appendChild(tierBody);
+    tierRow.appendChild(tierTbl);
+    container.appendChild(tierRow);
+
+    if (members.length) {
+      const membersDetails = el('details', { style: { marginBottom: '8px' } });
+      membersDetails.appendChild(el('summary', { style: { cursor: 'pointer', color: 'var(--fg2)', fontSize: '13px' } }, 'all ' + members.length + ' members'));
+      const mTbl = el('table');
+      mTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'address'), el('th', {}, 'tier'))));
+      const mBody = el('tbody');
+      for (const m of members) {
+        mBody.appendChild(el('tr', {}, el('td', {}, addrLink(m.address)), el('td', {}, badge('realm', m.tier))));
+      }
+      mTbl.appendChild(mBody);
+      membersDetails.appendChild(mTbl);
+      container.appendChild(membersDetails);
+    }
+
+    // Proposals
+    container.appendChild(el('div', { className: 'section-title', style: { marginTop: '20px' } }, 'proposals'));
+    const pTbl = el('table');
+    pTbl.appendChild(el('thead', {}, el('tr', {},
+      el('th', {}, 'id'), el('th', {}, 'title'), el('th', {}, 'author'), el('th', {}, 'status'),
+      el('th', {}, 'votes'), el('th', {}, 'tiers'), el('th', {}, 'created'), el('th', {}, 'last activity')
+    )));
+    const pBody = el('tbody');
+    if (!proposals.length) {
+      pBody.appendChild(el('tr', {}, el('td', { colspan: '8', style: { color: 'var(--fg2)' } }, 'no proposals found')));
+    }
+    for (const p of proposals) {
+      const goToProposal = () => navigate('/govdao/' + p.id);
+      pBody.appendChild(el('tr', { style: { cursor: 'pointer' }, onclick: goToProposal },
+        el('td', {}, link('#' + p.id, goToProposal)),
+        el('td', {}, p.title || ''),
+        el('td', {}, p.author ? ('@' + p.author) : ''),
+        el('td', {}, govDAOStatusBadge(p.status)),
+        el('td', {}, voteBar(p.yes_percent || 0, p.no_percent || 0, p.abstain_percent || 0)),
+        el('td', {}, (p.tiers || []).join(', ')),
+        el('td', {}, p.created_height ? blockWithAge(p.created_height, p.created_time) : el('span', { style: { color: 'var(--fg2)' } }, '–')),
+        el('td', {}, p.last_activity_height ? blockWithAge(p.last_activity_height, p.last_activity_time) : el('span', { style: { color: 'var(--fg2)' } }, '–'))
+      ));
+    }
+    pTbl.appendChild(pBody);
+    container.appendChild(pTbl);
+
+    // Recent on-chain activity, unfiltered by proposal ID — a broader feed
+    // than the proposals table above, and the one place a call gov/dao
+    // received that this page cannot otherwise place (an unrecognized
+    // function, say) is still visible.
+    container.appendChild(el('div', { className: 'section-title', style: { marginTop: '20px' } }, 'recent on-chain activity'));
+    const aTbl = el('table');
+    aTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'caller'), el('th', {}, 'function'), el('th', {}, 'status'), el('th', {}, 'tx'))));
+    const aBody = el('tbody');
+    for (const c of (calls || []).slice(0, 50)) {
+      aBody.appendChild(el('tr', {},
+        el('td', {}, blockWithAge(c.block_height, c.block_time)),
+        el('td', {}, addrLink(c.caller)),
+        el('td', {}, funcSpan(c.detail || '')),
+        el('td', {}, statusBadge(c.success)),
+        el('td', {}, txLink(c.hash, c.block_height, null, { showBlock: false }))
+      ));
+    }
+    if (!(calls || []).length) {
+      aBody.appendChild(el('tr', {}, el('td', { colspan: '5', style: { color: 'var(--fg2)' } }, 'no activity found')));
+    }
+    aTbl.appendChild(aBody);
+    container.appendChild(aTbl);
+
+    if ((overview.errors || []).length) {
+      container.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '12px', marginTop: '12px' } }, 'note: ' + overview.errors.join('; ')));
     }
   } catch (err) {
     console.error(err);
-    failRows(clear('govdao-list'), 5, err, loadGovDAO);
+    failBlock(clear('govdao-content'), err, loadGovDAO);
+  }
+}
+
+async function loadGovDAODetail(id) {
+  const container = clear('govdao-detail-content');
+  skeletonBlock(container);
+  try {
+    const p = await api('govdao/proposals/' + id);
+    container.textContent = '';
+
+    container.appendChild(el('div', { style: { marginBottom: '12px' } }, link('← all proposals', () => navigate('/govdao'))));
+
+    // No title and an error means gov/dao itself said this ID does not
+    // exist (see FetchGovDAOProposal's postcondition check) — stop here
+    // rather than rendering a page shell full of "(untitled)"/"unknown".
+    if (!p.title && (p.errors || []).length) {
+      container.appendChild(el('p', { style: { color: 'var(--fg2)' } }, 'proposal #' + id + ' was not found.'));
+      return;
+    }
+
+    const titleRow = el('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' } },
+      el('h2', { style: { margin: 0 } }, '#' + p.id + ' — ' + (p.title || '(untitled)')),
+      govDAOStatusBadge(p.status));
+    // gnoweb serves gov/dao's own render at this path — the same source this
+    // page's fields were parsed from, for anyone who wants the raw rendering.
+    titleRow.appendChild(el('a', {
+      href: 'https://gno.land/r/gov/dao:' + p.id, target: '_blank', rel: 'noopener',
+      className: 'watch-btn', style: { textDecoration: 'none', fontSize: '12px' },
+    }, 'see on gnoweb ↗'));
+    container.appendChild(titleRow);
+
+    const meta = el('div', { style: { color: 'var(--fg2)', margin: '8px 0 16px' } });
+    meta.append('proposed by ' + (p.author ? ('@' + p.author) : 'unknown'));
+    if ((p.tiers || []).length) meta.append(' · eligible to vote: ' + p.tiers.join(', '));
+    container.appendChild(meta);
+
+    if (p.description) {
+      container.appendChild(el('div', { className: 'section-title' }, 'description'));
+      container.appendChild(el('pre', {
+        style: {
+          whiteSpace: 'pre-wrap', fontFamily: 'inherit', fontSize: '13px', lineHeight: '1.5',
+          background: 'var(--bg2)', padding: '12px', borderRadius: '6px', border: '1px solid var(--border)',
+        },
+      }, p.description));
+    }
+
+    if (p.executor_pkg_path) {
+      const execDiv = el('div', { style: { margin: '12px 0', display: 'flex', alignItems: 'center', gap: '8px' } });
+      execDiv.append('executor package (what runs if accepted): ');
+      execDiv.appendChild(realmPathEl(p.executor_pkg_path));
+      container.appendChild(execDiv);
+    }
+
+    // Votes
+    container.appendChild(el('div', { className: 'section-title', style: { marginTop: '16px' } }, 'votes'));
+    const voteSummary = el('div', { style: { display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' } });
+    voteSummary.appendChild(voteBar(p.yes_percent || 0, p.no_percent || 0, p.abstain_percent || 0, true));
+    voteSummary.appendChild(el('span', { style: { fontSize: '13px' } },
+      'yes ' + (p.yes_percent || 0).toFixed(1) + '%  ·  no ' + (p.no_percent || 0).toFixed(1) + '%  ·  abstain ' + (p.abstain_percent || 0).toFixed(1) + '%'));
+    container.appendChild(voteSummary);
+    if ((p.votes || []).length) {
+      const vTbl = el('table');
+      vTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'voter'), el('th', {}, 'tier'), el('th', {}, 'option'))));
+      const vBody = el('tbody');
+      for (const v of p.votes) {
+        vBody.appendChild(el('tr', {},
+          el('td', {}, '@' + v.address),
+          el('td', {}, badge('realm', v.tier)),
+          el('td', {}, v.option === 'YES' ? badge('ok', 'yes') : v.option === 'NO' ? badge('fail', 'no') : badge('', 'abstain'))
+        ));
+      }
+      vTbl.appendChild(vBody);
+      container.appendChild(vTbl);
+    } else {
+      container.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '13px' } }, 'no votes recorded yet'));
+    }
+
+    // Related on-chain activity: two independent trails, per govdao.go's
+    // comments on RelatedCalls/RelatedMsgRuns — votes/execution (exact,
+    // matched by proposal ID) and a possible creation script (a heuristic
+    // source-text match, since creation is a MsgRun and MsgRun arguments are
+    // never indexed).
+    container.appendChild(el('div', { className: 'section-title', style: { marginTop: '20px' } }, 'related transactions'));
+    container.appendChild(el('div', { className: 'section-sub' }, 'votes, execution, and any other call naming this proposal ID directly.'));
+    if ((p.related_calls || []).length) {
+      const rcTbl = el('table');
+      rcTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'caller'), el('th', {}, 'function'), el('th', {}, 'status'), el('th', {}, 'tx'))));
+      const rcBody = el('tbody');
+      for (const c of p.related_calls.slice().sort((a, b) => a.block_height - b.block_height)) {
+        rcBody.appendChild(el('tr', {},
+          el('td', {}, blockWithAge(c.block_height, c.block_time)),
+          el('td', {}, addrLink(c.caller)),
+          el('td', {}, funcSpan(c.func)),
+          el('td', {}, statusBadge(c.success)),
+          el('td', {}, txLink(c.tx_hash, c.block_height, null, { showBlock: false }))
+        ));
+      }
+      rcTbl.appendChild(rcBody);
+      container.appendChild(rcTbl);
+    } else {
+      container.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '13px' } }, 'none found'));
+    }
+
+    container.appendChild(el('div', { className: 'section-title', style: { marginTop: '20px' } }, 'possible creation script'));
+    container.appendChild(el('div', { className: 'section-sub' }, '`maketx run` scripts whose source references both gov/dao and the executor package above — a heuristic match on source text, not a guarantee. Read the source to confirm.'));
+    if ((p.related_msgruns || []).length) {
+      const rmTbl = el('table');
+      rmTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'caller'), el('th', {}, 'status'), el('th', {}, 'tx'))));
+      const rmBody = el('tbody');
+      for (const r of p.related_msgruns) {
+        rmBody.appendChild(el('tr', {},
+          el('td', {}, blockLink(r.block_height)),
+          el('td', {}, addrLink(r.caller)),
+          el('td', {}, statusBadge(r.success)),
+          el('td', {}, txLink(r.tx_hash, r.block_height, null, { showBlock: false }))
+        ));
+      }
+      rmTbl.appendChild(rmBody);
+      container.appendChild(rmTbl);
+    } else {
+      container.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '13px' } }, 'none found — this proposal may predate mygnoscan’s synced history, or its executor package could not be determined.'));
+    }
+
+    if ((p.errors || []).length) {
+      container.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '12px', marginTop: '16px' } }, 'note: ' + p.errors.join('; ')));
+    }
+  } catch (err) {
+    console.error(err);
+    failBlock(clear('govdao-detail-content'), err, () => loadGovDAODetail(id));
   }
 }
 
