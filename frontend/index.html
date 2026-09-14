@@ -389,6 +389,27 @@ const KNOWN_ADDRS = {
   'g148583t5x66zs6p90ehad6l4qefeyaf54s69wql': '@faucet',
   'g1ecsuj0q572jr0dhu29q9njtnmw03hyu7tyyvv6': '@jaekwon',
 
+  // Inferred from exclusive deployment of a reserved system namespace.
+  // gnomod.toml itself carries nothing beyond the creator address already in
+  // `packages.creator` (checked directly: `module`, `gno` version, and
+  // `[addpkg] creator` — no name/team field exists to read), so there is no
+  // manifest data to derive from; this is the same on-chain deploy history
+  // /api/labels already uses, just extended to reserved namespaces ("sys",
+  // "gov") that are not g1-address-owned and so fall outside its rule.
+  // Measured 2026-09-14 against mainnet.
+  'g1r929wt2qplfawe4lvqv9zuwfdcz4vxdun7qh8l': {
+    label: '@sys_deployer',
+    why: 'inferred: sole deployer of every gno.land/r/sys/* and p/sys/* package (validators, txfees, rewards, names, params, users)',
+  },
+  'g1g73v2anukg4ej7axwqpthsatzrxjsh0wk797da': {
+    label: '@gov_dao_deployer',
+    why: 'inferred: sole deployer of every gno.land/r/gov/dao/* package (loader, init, impl, memberstore)',
+  },
+  'g1g3lsfxhvaqgdv4ccemwpnms4fv6t3aq3p5z6u7': {
+    label: '@gnoland_deployer',
+    why: 'inferred: deployed gno.land/r/gnops/valopers (the validator registry) plus gnoland/coins and gnoland/blog — official gno.land realms, not a single user namespace',
+  },
+
   // Inferred from activity shape. Measured 2026-08-28 against the live chains.
   'g18qhq2fl54lszhmxeyqlvxnwjzc3xpu4nnakclp': {
     label: '@faucet',
