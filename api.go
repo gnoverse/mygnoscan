@@ -1148,6 +1148,22 @@ func (a *API) HandleValidators(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, regs)
 }
 
+// HandleValidatorMonikers serves consensus-address -> name, sourced from
+// gnockpit (see gnockpit.go) rather than this chain's own data: a block
+// proposer is identified by its consensus key, which the valopers realm
+// never records (it registers the *operator* key instead — see the comment
+// on proposerEl in frontend/index.html), so nothing indexed here can answer
+// this. Best-effort: an empty map means gnockpit could not be reached, not
+// an error, since a page that can label proposers most of the time is
+// better than one that breaks whenever a third party is briefly down.
+func (a *API) HandleValidatorMonikers(w http.ResponseWriter, r *http.Request) {
+	monikers := FetchGnockpitMonikers(r.Context())
+	if monikers == nil {
+		monikers = map[string]string{}
+	}
+	jsonResponse(w, monikers)
+}
+
 func (a *API) HandleTokens(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
 	// Get all packages that look like token contracts (import grc20)
@@ -2069,6 +2085,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/blocks", a.HandleBlocks)
 	mux.HandleFunc("GET /api/block/{height}", a.HandleBlock)
 	mux.HandleFunc("GET /api/validators", a.HandleValidators)
+	mux.HandleFunc("GET /api/validators/monikers", a.HandleValidatorMonikers)
 	mux.HandleFunc("GET /api/tokens", a.HandleTokens)
 	mux.HandleFunc("GET /api/accounts", a.HandleAccounts)
 	mux.HandleFunc("GET /api/labels", a.HandleLabels)

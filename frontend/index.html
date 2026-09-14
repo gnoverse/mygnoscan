@@ -425,6 +425,17 @@ async function loadAddrLabels() {
     _derivedAddrLabels = {};
   }
 }
+// Consensus-address -> moniker, from gnockpit (see proposerEl). Best-effort
+// and independent of loadAddrLabels' network-selector gate: a proposer name
+// arriving a moment late just means the first paint shows raw addresses.
+let _proposerMonikers = {};
+async function loadProposerMonikers() {
+  try {
+    _proposerMonikers = await api('validators/monikers') || {};
+  } catch (_) {
+    _proposerMonikers = {};
+  }
+}
 
 // addrInfo resolves an address to {label, why, inferred}.
 //
@@ -461,12 +472,23 @@ function addrInfo(addr) {
 // never published to the valopers realm. The two address sets are disjoint by
 // construction, so no amount of derivation joins them.
 //
-// See #84 for the measurements. If a realm ever records consensus keys, this
-// becomes possible; until then a lookup that cannot succeed is worse than no
-// lookup, because it reads as a feature that is merely missing data.
+// See #84 for the measurements — the analysis stands for anything this chain
+// records itself. gnockpit (github.com/gnoverse/gnockpit) is not that: it
+// builds its own moniker map from genesis data and live peer RPC queries, so
+// it is keyed by the consensus address to begin with, the same space as
+// proposer_address_raw. _proposerMonikers is that map, fetched once via
+// /api/validators/monikers (see gnockpit.go) — best-effort, so a miss here
+// just means gnockpit does not know this address either, not a bug.
 function proposerEl(addr) {
   const span = el('span');
   span.setAttribute('data-hl', addr);
+  const moniker = _proposerMonikers[addr];
+  if (moniker) {
+    const name = el('span', { style: { fontWeight: 'bold' } }, moniker);
+    name.title = addr;
+    span.appendChild(name);
+    span.append(' ');
+  }
   span.appendChild(addrLink(addr));
   return span;
 }
@@ -2588,6 +2610,50 @@ async function loadTokens() {
 let _valopersCache = null;
 let _valopersShowFailed = false;
 
+let _validatorShareChart = [];
+// A donut of block-production share — the top N proposers by blocks
+// produced in the fetched window, with the rest folded into "other" so a
+// long tail of one-block validators doesn't dissolve into unreadable
+// slivers. This is share of *blocks proposed*, not of bonded stake (gno.land
+// does not expose a stake-weight endpoint this app can read), but the two
+// track closely under round-robin-weighted proposer selection, and it is
+// the honest version of "share" this data can actually support.
+function renderValidatorShareChart(container, sorted, total) {
+  destroyChartList(_validatorShareChart);
+  container.textContent = '';
+  if (!sorted.length || !total) return;
+
+  const topN = 10;
+  const top = sorted.slice(0, topN);
+  const otherCount = sorted.slice(topN).reduce((s, [, c]) => s + c, 0);
+
+  const labels = top.map(([addr]) => _proposerMonikers[addr] || truncAddr(addr));
+  const data = top.map(([, c]) => c);
+  const colors = top.map((_, i) => DASH_PAL[i % DASH_PAL.length]);
+  if (otherCount > 0) {
+    labels.push('other (' + (sorted.length - topN) + ')');
+    data.push(otherCount);
+    colors.push('#555');
+  }
+
+  const wrap = el('div', { style: { position: 'relative', height: '260px', maxWidth: '420px' } });
+  const canvas = document.createElement('canvas');
+  wrap.appendChild(canvas);
+  container.appendChild(wrap);
+
+  _validatorShareChart.push(new Chart(canvas, {
+    type: 'doughnut',
+    data: { labels, datasets: [{ data, backgroundColor: colors, borderColor: '#141414', borderWidth: 2 }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'right', labels: { color: '#888', boxWidth: 12, font: { size: 11 } } },
+        title: { display: true, text: 'share of blocks proposed', color: '#888' },
+        tooltip: { callbacks: { label: c => c.label + ': ' + fmtNum(c.raw) + ' (' + (c.raw / total * 100).toFixed(1) + '%)' } },
+      },
+    },
+  }));
+}
 async function loadValidators() {
   const container = clear('validators-content');
   skeletonRows(container, 3, 5);
@@ -2613,13 +2679,16 @@ async function loadValidators() {
 
     // Active validator set
     container.appendChild(el('div', { className: 'section-title' }, 'active validator set'));
+    const shareDiv = el('div', { style: { marginBottom: '16px' } });
+    container.appendChild(shareDiv);
+    const total = (blocks || []).length;
+    renderValidatorShareChart(shareDiv, sorted, total);
     const vsTbl = el('table');
     vsTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'proposer'), el('th', {}, 'blocks'), el('th', {}, 'share'))));
     const vsBody = el('tbody');
-    const total = (blocks || []).length;
     for (const [addr, count] of sorted) {
       vsBody.appendChild(el('tr', {},
-        el('td', {}, addrLink(addr)),
+        el('td', {}, proposerEl(addr)),
         el('td', {}, fmtNum(count)),
         el('td', {}, (count / total * 100).toFixed(1) + '%')
       ));
@@ -4873,6 +4942,10 @@ document.querySelectorAll('.stat-link').forEach(tile => {
 // Labels first: they change how every address renders, and arriving after the
 // first paint would show raw addresses that then silently rewrite themselves.
 loadAddrLabels().then(() => { initNetworkSelector(); });
+// Not gated on anything: a proposer name arriving after the first paint just
+// means blocks/validators re-render plain until it lands, the same way a
+// watch star or an inferred label would.
+loadProposerMonikers().then(() => { route(); });
 renderWatchBadge();
 
 // --- Footer version ---
