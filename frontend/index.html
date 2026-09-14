@@ -541,18 +541,17 @@ function shortAddr(addr) {
   const info = addrInfo(addr);
   return (info && info.label) || truncAddr(addr);
 }
-// network is optional: pass it when the row belongs to a specific chain, so the
-// link lands on that chain rather than on whatever is selected. Without it an
-// address row from a merged view navigated to the current selection, which in
-// all-networks mode meant no network at all.
-function addrLink(addr, network) {
+// addrLinkImpl backs both addrLink (abbreviated) and addrLinkFull (whole
+// address) — identical label/watch-star/inferred-marker handling, differing
+// only in `fallback`: the text shown when there is no label, and the text
+// appended after the label when there is one. Both share data-hl set to the
+// raw address, so hovering either form still cross-highlights every other
+// occurrence of the same address on the page, abbreviated or not.
+function addrLinkImpl(addr, network, fallback) {
   const info = addrInfo(addr);
   const span = el('span');
   span.setAttribute('data-hl', addr);
-  // Show the abbreviated form; a full 40-character address in every table cell
-  // crowds out the content beside it. The full value stays in the tooltip, and
-  // the link target is unchanged.
-  const a = link(info ? info.label : truncAddr(addr), () => navigate('/address/' + addr + netSuffix(network)));
+  const a = link(info ? info.label : fallback, () => navigate('/address/' + addr + netSuffix(network)));
   a.setAttribute('data-hl', addr);
   a.title = addr;
   span.appendChild(a);
@@ -571,9 +570,25 @@ function addrLink(addr, network) {
       mark.title = info.why || 'inferred from activity';
       span.appendChild(mark);
     }
-    span.appendChild(el('span', { className: 'block-ctx' }, ' ' + truncAddr(addr)));
+    span.appendChild(el('span', { className: 'block-ctx' }, ' ' + fallback));
   }
   return span;
+}
+// network is optional: pass it when the row belongs to a specific chain, so the
+// link lands on that chain rather than on whatever is selected. Without it an
+// address row from a merged view navigated to the current selection, which in
+// all-networks mode meant no network at all.
+function addrLink(addr, network) {
+  // Show the abbreviated form; a full 40-character address in every table cell
+  // crowds out the content beside it. The full value stays in the tooltip, and
+  // the link target is unchanged.
+  return addrLinkImpl(addr, network, truncAddr(addr));
+}
+// addrLinkFull is addrLink but never truncates — for tables with only one or
+// two other columns (top senders/receivers on an address page, say) where
+// abbreviating buys back no room worth losing readability for.
+function addrLinkFull(addr, network) {
+  return addrLinkImpl(addr, network, addr);
 }
 // Pretty realm path: /r/namespace/name or /p/namespace/name
 // Colors: type dim, namespace blue, name bold white
@@ -4428,7 +4443,7 @@ async function loadAddressDetail(addr) {
       const sbody = el('tbody');
       for (const [a, c] of topSentTo.slice(0, 10)) {
         if (c < 2) break;
-        sbody.appendChild(el('tr', {}, el('td', {}, addrLink(a)), el('td', {}, fmtNum(c))));
+        sbody.appendChild(el('tr', {}, el('td', {}, addrLinkFull(a)), el('td', {}, fmtNum(c))));
       }
       stbl.appendChild(sbody); container.appendChild(stbl);
     }
@@ -4441,7 +4456,7 @@ async function loadAddressDetail(addr) {
       const rbody = el('tbody');
       for (const [a, c] of topRecvFrom.slice(0, 10)) {
         if (c < 2) break;
-        rbody.appendChild(el('tr', {}, el('td', {}, addrLink(a)), el('td', {}, fmtNum(c))));
+        rbody.appendChild(el('tr', {}, el('td', {}, addrLinkFull(a)), el('td', {}, fmtNum(c))));
       }
       rtbl.appendChild(rbody); container.appendChild(rtbl);
     }
