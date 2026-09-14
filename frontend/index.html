@@ -49,6 +49,7 @@ main { padding: 20px 0; }
 table { width: 100%; border-collapse: collapse; }
 th { text-align: left; font-size: 11px; color: var(--fg2); text-transform: uppercase; letter-spacing: 1px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
 td { padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 13px; word-break: break-all; }
+td[rowspan] { vertical-align: top; }
 tr:hover { background: var(--bg2); }
 tr { white-space: nowrap; }
 .truncate { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -104,6 +105,7 @@ tr.total-row td { font-weight: bold; color: var(--accent); }
 .table-export { display: flex; gap: 6px; align-items: center; margin: 4px 0 8px; }
 .table-export-label { color: var(--fg2); font-size: 11px; }
 .addr-inferred { color: var(--fg2); font-size: 10px; vertical-align: super; cursor: help; margin-left: 1px; }
+.addr-watched { color: var(--accent); font-size: 10px; vertical-align: super; cursor: help; margin-left: 1px; }
 .watch-btn { background: var(--bg2); border: 1px solid var(--border); color: var(--fg2); border-radius: 4px;
   padding: 3px 9px; font-family: inherit; font-size: 12px; cursor: pointer; }
 .watch-btn:hover { border-color: var(--accent); color: var(--accent); }
@@ -282,7 +284,7 @@ footer a:hover { color: var(--accent); }
     <div id="txs-stats" class="stats-bar" style="display:none"></div>
     <div id="txs-filter" style="display:none"></div>
     <div class="section"><div class="section-title">recent transactions</div>
-    <table><thead><tr><th>hash</th><th>block</th><th>type</th><th>detail</th><th>status</th></tr></thead><tbody id="txs-list"></tbody></table></div>
+    <table><thead><tr><th>hash</th><th>signer</th><th>block</th><th>type</th><th>detail</th><th>status</th></tr></thead><tbody id="txs-list"></tbody></table></div>
   </main></div>
   <div class="view" id="view-blocks"><main>
     <div id="blocks-stats" class="stats-bar" style="display:none"></div>
@@ -376,6 +378,7 @@ const KNOWN_ADDRS = {
   'g1manfred47kzduec920z88wfr64ylksmdcedlf5': '@moul',
   'g1m0rgan0rla00ygmdmp55f5m0unvsvknluyg2a4': '@morgan',
   'g148583t5x66zs6p90ehad6l4qefeyaf54s69wql': '@faucet',
+  'g1ecsuj0q572jr0dhu29q9njtnmw03hyu7tyyvv6': '@jaekwon',
 
   // Inferred from activity shape. Measured 2026-08-28 against the live chains.
   'g18qhq2fl54lszhmxeyqlvxnwjzc3xpu4nnakclp': {
@@ -485,6 +488,11 @@ function addrLink(addr, network) {
   a.setAttribute('data-hl', addr);
   a.title = addr;
   span.appendChild(a);
+  if (isWatched('addresses', addr)) {
+    const star = el('span', { className: 'addr-watched' }, '★');
+    star.title = 'on your watchlist';
+    span.appendChild(star);
+  }
   if (info) {
     // The evidence goes in the link's tooltip whatever its source, so any label
     // can be checked. Only an inferred one is marked, because only that one
@@ -563,6 +571,38 @@ function fmtCoins(s) {
 function fmtBytes(n) {
   if (n >= 1024) return fmtNum(n) + ' bytes (' + (n / 1024).toFixed(2) + ' KB)';
   return fmtNum(n) + ' bytes';
+}
+// Wraps a bare function name so hovering it highlights every other call to
+// the same function on the page, the same way addresses and tx hashes do.
+function funcSpan(name) {
+  if (!name) return document.createTextNode('');
+  const span = el('span', {}, name);
+  span.setAttribute('data-hl', 'func:' + name);
+  return span;
+}
+// Marks which rows start a run of consecutive rows sharing keyFn's value, and
+// how long that run is — so a caller can rowspan a shared column (block, tx)
+// instead of repeating it once per row. Rows must already be grouped so equal
+// keys are adjacent; a key that recurs non-adjacently just starts a new run,
+// which degrades gracefully rather than merging rows that are not next to
+// each other in the table.
+function rowSpans(rows, keyFn) {
+  const spans = new Array(rows.length).fill(0);
+  for (let i = 0; i < rows.length; ) {
+    let j = i + 1;
+    while (j < rows.length && keyFn(rows[j]) === keyFn(rows[i])) j++;
+    spans[i] = j - i;
+    i = j;
+  }
+  return spans;
+}
+// A <td> for a rowSpans-grouped column: rendered only on the first row of its
+// group (with rowspan set when the group has more than one row), and omitted
+// entirely on continuation rows — el()'s <tr> builder skips falsy children,
+// so passing this straight into el('tr', {}, spanTd(...), ...) is enough.
+function spanTd(spans, i, ...children) {
+  if (spans[i] === 0) return null;
+  return el('td', spans[i] > 1 ? { rowspan: spans[i] } : {}, ...children);
 }
 // Skeleton loading placeholders
 function skeletonRows(tbody, cols, rows) {
@@ -702,15 +742,22 @@ function msgKind(msg) {
   if (route && type) return route + '/' + type;
   return type || route || '';
 }
-// tx link with block context: "hash (genesis)" or "hash (block N)"
-function txLink(hash, blockHeight, network) {
+// tx link, abbreviated like an address (full hash in the tooltip). Appends
+// "(genesis)" / "(block N)" context unless the caller already shows the
+// block in its own column — pass showBlock: false there to avoid saying it
+// twice.
+function txLink(hash, blockHeight, network, opts) {
+  const showBlock = !opts || opts.showBlock !== false;
   const span = el('span');
   span.setAttribute('data-hl', 'tx:' + hash);
-  const a = link(hash, () => navigate('/tx/' + encodeURIComponent(hash) + netSuffix(network)));
+  const a = link(truncAddr(hash), () => navigate('/tx/' + encodeURIComponent(hash) + netSuffix(network)));
   a.setAttribute('data-hl', 'tx:' + hash);
+  a.title = hash;
   span.appendChild(a);
-  const ctx = blockHeight === 0 ? ' (genesis)' : ' (block ' + fmtNum(blockHeight) + ')';
-  span.appendChild(el('span', { className: 'block-ctx' }, ctx));
+  if (showBlock) {
+    const ctx = blockHeight === 0 ? ' (genesis)' : ' (block ' + fmtNum(blockHeight) + ')';
+    span.appendChild(el('span', { className: 'block-ctx' }, ctx));
+  }
   return span;
 }
 function txDetailEl(msg) {
@@ -718,11 +765,12 @@ function txDetailEl(msg) {
   const s = el('span');
   switch (v.__typename) {
     case 'MsgAddPackage':
-      s.appendChild(link(v.package?.path || '', () => navigate('/realm/' + (v.package?.path || '').replace('gno.land/', ''))));
+      if (v.package?.path) s.appendChild(realmPathEl(v.package.path));
       return s;
     case 'MsgCall':
-      s.appendChild(link(v.pkg_path, () => navigate('/realm/' + v.pkg_path.replace('gno.land/', ''))));
-      s.append('::' + v.func);
+      s.appendChild(realmPathEl(v.pkg_path));
+      s.append('::');
+      s.appendChild(funcSpan(v.func));
       return s;
     case 'MsgRun':
       s.append('run by '); s.appendChild(addrLink(v.caller));
@@ -2059,7 +2107,7 @@ let _txsPage = 0;
 async function loadTxs(page) {
   _txsPage = page || 0;
   const tbody = clear('txs-list');
-  skeletonRows(tbody, 5, 10);
+  skeletonRows(tbody, 6, 10);
   const statsBar = document.getElementById('txs-stats');
   const filterBar = document.getElementById('txs-filter');
 
@@ -2081,7 +2129,7 @@ async function loadTxs(page) {
     console.error(err);
     statsBar.style.display = 'none';
     filterBar.style.display = 'none';
-    failRows(clear('txs-list'), 5, err, () => loadTxs(_txsPage));
+    failRows(clear('txs-list'), 6, err, () => loadTxs(_txsPage));
   }
 }
 
@@ -2148,7 +2196,7 @@ function storedTxDetail(tx) {
     case 'MsgCall': {
       const [path, fn] = (tx.detail || '').split('::');
       if (path) span.appendChild(realmPathEl(path, tx.network));
-      if (fn) span.append('::' + fn);
+      if (fn) { span.append('::'); span.appendChild(funcSpan(fn)); }
       return span;
     }
     case 'MsgAddPackage':
@@ -2186,7 +2234,7 @@ function renderTxRows(data) {
       ? 'no transactions match this filter in the recent window'
       : 'no transactions';
     list.appendChild(el('tr', {}, el('td', {
-      colspan: '5', style: { color: 'var(--fg2)', textAlign: 'center', padding: '20px' } }, what)));
+      colspan: '6', style: { color: 'var(--fg2)', textAlign: 'center', padding: '20px' } }, what)));
   }
 
   for (const tx of rows) {
@@ -2196,8 +2244,15 @@ function renderTxRows(data) {
     const msg = tx.messages?.[0];
     const type = msg ? typeBadge(msg?.value?.__typename, msg) : typeBadge(tx.type);
     const detail = msg ? txDetailEl(msg) : storedTxDetail(tx);
+    // The signer is whichever field carries it for this message type: caller
+    // for MsgCall/MsgRun, creator for MsgAddPackage, from_address for a send.
+    // Storage rows already resolve this into tx.caller (see StoredTx).
+    const signer = msg
+      ? (msg.value?.caller || msg.value?.creator || msg.value?.from_address || '')
+      : (tx.caller || '');
     list.appendChild(netRow(tx.network,
-      el('td', {}, txLink(tx.hash, tx.block_height, tx.network)),
+      el('td', {}, txLink(tx.hash, tx.block_height, tx.network, { showBlock: false })),
+      el('td', {}, signer ? addrLink(signer, tx.network) : ''),
       el('td', {}, blockLink(tx.block_height, tx.network)),
       el('td', {}, type),
       el('td', {}, detail),
@@ -3323,7 +3378,17 @@ async function loadRealmDetail(path, initialTab) {
   try {
     const detail = await api('realm/' + path.replace('gno.land/', ''));
     header.textContent = '';
-    header.appendChild(el('h2', { style: { margin: '16px 0 8px' } }, detail.path));
+    const titleRow = el('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', margin: '16px 0 8px' } },
+      el('h2', { style: { margin: 0 } }, detail.path));
+    // gnoweb serves the package at the same path under its own domain \u2014 only
+    // exact for mainnet (path is always a "gno.land/..." string regardless of
+    // which chain deployed it), which is what this points at.
+    const gnowebLink = el('a', {
+      href: 'https://' + detail.path, target: '_blank', rel: 'noopener',
+      className: 'watch-btn', style: { textDecoration: 'none', fontSize: '12px' },
+    }, 'see on gnoweb \u2197');
+    titleRow.appendChild(gnowebLink);
+    header.appendChild(titleRow);
     const meta = el('div', { style: { color: 'var(--fg2)', marginBottom: '16px' } },
       detail.is_realm ? badge('realm', 'realm') : badge('pkg', 'package'));
     meta.append(' deployed by ');
@@ -3347,9 +3412,9 @@ async function loadRealmDetail(path, initialTab) {
     const info = clear('tab-info');
     if (activeTab === 'info') info.classList.add('active'); else info.classList.remove('active');
     const tbl = el('table');
-    for (const [l, v] of [['path', detail.path], ['name', detail.name], ['creator', detail.creator]]) {
-      tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, l), el('td', {}, v)));
-    }
+    tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'path'), el('td', {}, realmPathEl(detail.path))));
+    tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'name'), el('td', {}, detail.name)));
+    tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'creator'), el('td', {}, addrLink(detail.creator))));
     // tx with block context
     const txRow = el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'tx'));
     txRow.appendChild(el('td', {}, txLink(detail.tx_hash, detail.block_height)));
@@ -3411,17 +3476,20 @@ async function loadRealmDetail(path, initialTab) {
       const callTbl = el('table');
       callTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'type'), el('th', {}, 'caller'), el('th', {}, 'detail'), el('th', {}, 'status'), el('th', {}, 'tx'))));
       const callBody = el('tbody');
-      for (const row of allRows) {
+      // A multicall produces several call rows sharing one tx (and so one
+      // block); span those columns across the group instead of repeating.
+      const callSpans = rowSpans(allRows, row => row.tx);
+      allRows.forEach((row, i) => {
         const typeBdg = row.type === 'call' ? badge('realm', 'call') : row.type === 'run' ? badge('ok', 'run') : badge('pkg', 'deploy');
         callBody.appendChild(el('tr', {},
-          el('td', {}, blockLink(row.block)),
+          spanTd(callSpans, i, blockLink(row.block)),
           el('td', {}, typeBdg),
           el('td', { className: 'truncate' }, addrLink(row.caller)),
-          el('td', {}, row.detail),
+          el('td', {}, row.type === 'call' ? funcSpan(row.detail) : row.detail),
           el('td', {}, statusBadge(row.success)),
-          el('td', {}, txLink(row.tx, row.block))
+          spanTd(callSpans, i, txLink(row.tx, row.block, null, { showBlock: false }))
         ));
-      }
+      });
       callTbl.appendChild(callBody); calls.appendChild(callTbl);
 
     } else {
@@ -3492,15 +3560,19 @@ async function loadRealmDetail(path, initialTab) {
           const stTbl = el('table');
           stTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'type'), el('th', {}, 'bytes'), el('th', {}, 'fee'), el('th', {}, 'tx'))));
           const stBody = el('tbody');
-          for (const e of st.entries) {
+          // Storage events from the same call (e.g. a multicall posting
+          // several times at once) share a block and a tx; span those
+          // columns across the group instead of repeating them per row.
+          const stSpans = rowSpans(st.entries, e => e.tx_hash);
+          st.entries.forEach((e, i) => {
             stBody.appendChild(el('tr', {},
-              el('td', {}, blockLink(e.block_height)),
+              spanTd(stSpans, i, blockLink(e.block_height)),
               el('td', {}, badge(e.type === 'deposit' ? 'pkg' : 'ok', e.type)),
               el('td', {}, fmtNum(e.bytes_delta)),
               el('td', {}, fmtNum(e.fee_amount) + ' ' + (e.fee_denom || '')),
-              el('td', {}, txLink(e.tx_hash, e.block_height))
+              spanTd(stSpans, i, txLink(e.tx_hash, e.block_height, null, { showBlock: false }))
             ));
-          }
+          });
           // Total row
           const totalBytes = st.entries.reduce((s, e) => s + e.bytes_delta, 0);
           const totalFee = st.entries.reduce((s, e) => s + e.fee_amount, 0);
@@ -3522,12 +3594,12 @@ async function loadRealmDetail(path, initialTab) {
             const pct = e.gas_wanted > 0 ? (e.gas_used / e.gas_wanted * 100).toFixed(0) + '%' : '-';
             gsBody.appendChild(el('tr', {},
               el('td', {}, blockLink(e.block_height)),
-              el('td', {}, e.func || '-'),
+              el('td', {}, e.func ? funcSpan(e.func) : '-'),
               el('td', {}, fmtNum(e.gas_used) + ' (' + pct + ')'),
               el('td', {}, fmtNum(e.gas_wanted)),
               el('td', {}, fmtNum(e.gas_fee) + ' ugnot'),
               el('td', {}, statusBadge(e.success)),
-              el('td', {}, txLink(e.tx_hash, e.block_height))
+              el('td', {}, txLink(e.tx_hash, e.block_height, null, { showBlock: false }))
             ));
           }
           // Total row
@@ -4009,7 +4081,7 @@ function csvEscape(v) {
 // unusable as a key. Everything in .block-ctx is that kind of restatement.
 function cellText(td) {
   const copy = td.cloneNode(true);
-  copy.querySelectorAll('.block-ctx, .addr-inferred').forEach(n => n.remove());
+  copy.querySelectorAll('.block-ctx, .addr-inferred, .addr-watched').forEach(n => n.remove());
   return copy.textContent.replace(/\s+/g, ' ').trim();
 }
 
@@ -4857,8 +4929,10 @@ function onLiveTx(tx) {
   const txsList = document.getElementById('txs-list');
   if (txsList && document.getElementById('view-txs')?.classList.contains('active')) {
     const msg = tx.messages?.[0];
+    const signer = msg?.value?.caller || msg?.value?.creator || msg?.value?.from_address || '';
     const tr = el('tr', { className: 'live-new' },
-      el('td', {}, txLink(tx.hash, tx.block_height, tx.network)),
+      el('td', {}, txLink(tx.hash, tx.block_height, tx.network, { showBlock: false })),
+      el('td', {}, signer ? addrLink(signer, tx.network) : ''),
       el('td', {}, blockLink(tx.block_height, tx.network)),
       el('td', {}, typeBadge(msg?.value?.__typename, msg)),
       el('td', {}, txDetailEl(msg)),
