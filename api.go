@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -488,9 +489,38 @@ func (a *API) HandleRealm(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, detail)
 }
 
+// normalizeTxHash accepts a transaction hash in either encoding in circulation
+// and returns the base64 form the indexer stores.
+//
+// The same 32 bytes are printed two ways: gno tooling and this explorer use
+// base64 ("e6ChL6Trihr1GABwAWTvGOAkCGtNtvfhr4ZkoixrBAg="), while gnoscan.io and
+// Tendermint-style RPC use 64 hex characters
+// ("7BA0A12FA4EB8A1AF51800700164EF18E024086B4DB6F7E1AF8664A22C6B0408"). They
+// are the same transaction, so pasting either one must resolve — the hex form
+// used to 404 on a transaction we were holding all along.
+//
+// The two forms cannot be confused: base64 of 32 bytes is always 43 characters
+// and a pad, never 64, so a 64-character string that decodes as hex is
+// unambiguous. Anything else is handed through untouched for the indexer to
+// reject, rather than guessed at.
+func normalizeTxHash(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) == 66 && (strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X")) {
+		s = s[2:]
+	}
+	if len(s) != 64 {
+		return s
+	}
+	raw, err := hex.DecodeString(s)
+	if err != nil {
+		return s
+	}
+	return base64.StdEncoding.EncodeToString(raw)
+}
+
 func (a *API) HandleTx(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
-	hash := r.PathValue("hash")
+	hash := normalizeTxHash(r.PathValue("hash"))
 
 	type txDetail struct {
 		*Transaction

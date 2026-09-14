@@ -1007,6 +1007,12 @@ function directDestinations(raw) {
   if (/^[A-Za-z0-9+/]{43}=$/.test(q)) {
     out.push({ label: q, kind: 'transaction', href: '/tx/' + encodeURIComponent(q) + net });
   }
+  // The same 32 bytes are also printed as 64 hex characters — gnoscan.io shows
+  // that form, so it is what gets pasted in from elsewhere. The server accepts
+  // either encoding; offering it here is what makes the search box route it.
+  if (/^(0[xX])?[0-9a-fA-F]{64}$/.test(q)) {
+    out.push({ label: q, kind: 'transaction', href: '/tx/' + encodeURIComponent(q) + net });
+  }
   // A bare number is a block height. It needs a network — a height identifies a
   // different block on every chain — so this is offered only when one is picked.
   if (/^\d+$/.test(q) && net) {
