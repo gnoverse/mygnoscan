@@ -714,6 +714,27 @@ func TestWatchEndpoint(t *testing.T) {
 			t.Errorf("missing keys on an empty watchlist: %v", out)
 		}
 	})
+
+	t.Run("the timeline carries the watched realm's calls and its deploy", func(t *testing.T) {
+		out := get(t, "/api/watch?realm="+realm)
+		txs, _ := out["transactions"].([]any)
+		if len(txs) != 11 {
+			t.Fatalf("timeline has %d rows, want the realm's 10 calls plus its deploy: %v", len(txs), txs)
+		}
+	})
+
+	t.Run("a row matching both a watched realm and a watched address is not duplicated", func(t *testing.T) {
+		// g1watched called `realm` in all 10 seeded calls, so those 10 match
+		// through two branches of the union (by pkg_path and by caller); the
+		// deploy only matches through the realm branch (its creator is
+		// g1creator, not g1watched). 11 rows either way is what proves the
+		// overlap was deduplicated rather than doubled.
+		out := get(t, "/api/watch?realm="+realm+"&address=g1watched")
+		txs, _ := out["transactions"].([]any)
+		if len(txs) != 11 {
+			t.Fatalf("timeline has %d rows watching both, want still 11 (no duplicates): %v", len(txs), txs)
+		}
+	})
 }
 
 // A type-filtered transaction list is served from storage, not the indexer.

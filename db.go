@@ -3915,6 +3915,109 @@ func (d *DB) AddressTransactions(network, addr string, limit, offset int) ([]Sto
 	return out, total, rows.Err()
 }
 
+// WatchTransactions returns the most recent transactions touching any of the
+// given realm paths or addresses, merged into one timeline — the row shape
+// AddressTransactions uses, generalised from one address to a whole
+// watchlist. Empty if both lists are empty.
+//
+// Same bounded-branch-then-union shape as AddressTransactions and for the
+// same reason: unbounded, the union has to be fully materialised and sorted
+// before the outer LIMIT can pick anything.
+//
+// A UNION (not UNION ALL) merges the branches: a watched address calling a
+// watched realm matches both the realm-path and the caller branch of calls
+// with an identical row, and UNION's own deduplication is what keeps that
+// from showing up twice rather than needing a second pass here.
+func (d *DB) WatchTransactions(network string, realms, addresses []string, limit int) ([]StoredTx, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	if len(realms) == 0 && len(addresses) == 0 {
+		return []StoredTx{}, nil
+	}
+
+	nf := d.networkFilter("network", network)
+	inClause := func(n int) string {
+		return "(" + strings.TrimSuffix(strings.Repeat("?,", n), ",") + ")"
+	}
+	branch := func(sel, table, cond string) string {
+		return fmt.Sprintf("SELECT * FROM (SELECT %s FROM %s WHERE %s AND %s"+
+			" ORDER BY block_height DESC LIMIT %d)", sel, table, cond, nf, limit)
+	}
+
+	var branches []string
+	var args []any
+
+	if len(realms) > 0 {
+		branches = append(branches, branch(`network, tx_hash, block_height, COALESCE(block_time,'') bt, 'MsgCall' typ,
+		        caller who, pkg_path || '::' || func_name detail, success`,
+			"calls", "pkg_path IN "+inClause(len(realms))))
+		for _, r := range realms {
+			args = append(args, r)
+		}
+		branches = append(branches, branch(`network, tx_hash, block_height, COALESCE(block_time,'') bt, 'MsgAddPackage' typ,
+		        creator who, path detail, 1`,
+			"packages", "path IN "+inClause(len(realms))))
+		for _, r := range realms {
+			args = append(args, r)
+		}
+	}
+	if len(addresses) > 0 {
+		branches = append(branches, branch(`network, tx_hash, block_height, COALESCE(block_time,'') bt, 'MsgCall' typ,
+		        caller who, pkg_path || '::' || func_name detail, success`,
+			"calls", "caller IN "+inClause(len(addresses))))
+		for _, a := range addresses {
+			args = append(args, a)
+		}
+		branches = append(branches, branch(`network, tx_hash, block_height, COALESCE(block_time,'') bt, 'MsgAddPackage' typ,
+		        creator who, path detail, 1`,
+			"packages", "creator IN "+inClause(len(addresses))))
+		for _, a := range addresses {
+			args = append(args, a)
+		}
+		branches = append(branches, branch(`network, tx_hash, block_height, COALESCE(block_time,'') bt, 'MsgRun' typ,
+		        caller who, '' detail, success`,
+			"msg_runs", "caller IN "+inClause(len(addresses))))
+		for _, a := range addresses {
+			args = append(args, a)
+		}
+		branches = append(branches, branch(`network, tx_hash, block_height, COALESCE(block_time,'') bt, 'BankMsgSend' typ,
+		        from_address who, to_address || ' ' || amount detail, success`,
+			"bank_sends", "(from_address IN "+inClause(len(addresses))+" OR to_address IN "+inClause(len(addresses))+")"))
+		for _, a := range addresses {
+			args = append(args, a)
+		}
+		for _, a := range addresses {
+			args = append(args, a)
+		}
+	}
+
+	union := strings.Join(branches, " UNION ")
+
+	rows, err := d.db.Query(`
+		SELECT e.network, e.tx_hash, e.block_height, e.bt, e.typ, e.who, e.detail, e.success,
+		       COALESCE(t.gas_used, 0), COALESCE(t.gas_fee, 0)
+		FROM (`+union+`) e
+		LEFT JOIN transactions t ON t.network = e.network AND t.tx_hash = e.tx_hash
+		ORDER BY e.block_height DESC, e.tx_hash ASC LIMIT ?`,
+		append(args, limit)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []StoredTx{}
+	for rows.Next() {
+		var t StoredTx
+		if err := rows.Scan(&t.Network, &t.Hash, &t.BlockHeight, &t.BlockTime,
+			&t.Type, &t.Caller, &t.Detail, &t.Success, &t.GasUsed, &t.GasFee); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
 // --- Gas rollups ------------------------------------------------------------
 
 // rollupComputedAtKey records when the rollups were last recomputed, so the page

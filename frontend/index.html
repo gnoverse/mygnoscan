@@ -1311,6 +1311,29 @@ async function loadWatchlist() {
         ? totalNew + ' new event' + (totalNew === 1 ? '' : 's') + ' since you last reviewed these.'
         : 'Nothing new since you last reviewed these.'));
 
+    // The digest below says how much changed; this is the activity itself —
+    // what a reader actually came to check the watchlist to see.
+    if ((data.transactions || []).length) {
+      container.appendChild(el('div', { className: 'section-title' }, 'recent activity'));
+      const tbl = el('table');
+      tbl.appendChild(el('thead', {}, el('tr', {},
+        el('th', {}, 'hash'), el('th', {}, 'signer'), el('th', {}, 'block'),
+        el('th', {}, 'type'), el('th', {}, 'detail'), el('th', {}, 'status'))));
+      const body = el('tbody');
+      for (const tx of data.transactions) {
+        body.appendChild(netRow(tx.network,
+          el('td', {}, txLink(tx.hash, tx.block_height, tx.network, { showBlock: false })),
+          el('td', {}, tx.caller ? addrLink(tx.caller, tx.network) : ''),
+          el('td', {}, blockLink(tx.block_height, tx.network)),
+          el('td', {}, typeBadge(tx.type)),
+          el('td', {}, storedTxDetail(tx)),
+          el('td', {}, statusBadge(tx.success))
+        ));
+      }
+      tbl.appendChild(body);
+      container.appendChild(tbl);
+    }
+
     if ((data.realms || []).length) {
       container.appendChild(el('div', { className: 'section-title' }, 'realms'));
       const tbl = el('table');
