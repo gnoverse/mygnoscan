@@ -126,7 +126,7 @@ labels this figure "recent" for the same reason.
 
 | endpoint | description |
 |---|---|
-| `GET /api/address/{addr}` | activity for an address, **from local storage**: calls, deploys, runs, sends (both directions), with `total` covering its whole history and `limit`/`offset` paging the rows. `balance` comes from RPC and is present only when a single network is selected. The indexer cannot serve this at chain scale — five address predicates over unindexed fields means a scan |
+| `GET /api/address/{addr}` | activity for an address, **from local storage**: calls, deploys, runs, sends (both directions), with `total` covering its whole history and `limit`/`offset` paging the rows. `balance` comes from RPC and is present only when a single network is selected **and** that RPC has been confirmed to serve the same chain as the network's indexer — an unverified or mismatched RPC yields an empty balance rather than one from another chain. The indexer cannot serve this at chain scale — five address predicates over unindexed fields means a scan |
 | `GET /api/accounts` | most active accounts. `limit` (default 100, max 500), `offset`, and `sort` = `calls`, `deploys`, `runs`, `sends` or total activity. One row per `(address, network)`: the same key on two chains is two different actors, and each row carries its `network` |
 
 ## Aggregates
@@ -152,7 +152,7 @@ All accept `days` and `granularity`.
 | `GET /api/timeseries/packages` | deployments |
 | `GET /api/timeseries/callers` | unique callers |
 | `GET /api/timeseries/gas` | gas consumption. Buckets carry `by_network` in all-networks mode, so fees can be shown per chain rather than summed |
-| `GET /api/timeseries/active-addresses` | active addresses |
+| `GET /api/timeseries/active-addresses` | active addresses. Served from a rollup of distinct `(network, hour, kind, address)` tuples rebuilt every 5 minutes, merged with a live read of everything newer than the rollup — so the newest bucket does not lag the refresh interval. Falls back to computing live before the first build. Distinct tuples rather than per-day counts, because an address active on three days of a week is one weekly active address, not three |
 | `GET /api/timeseries/health` | chain health indicators |
 | `GET /api/timeseries/storage` | storage growth. `realm=<path>` scopes it to one realm |
 | `GET /api/timeseries/storage/realms` | realms that have storage data, for populating a selector |

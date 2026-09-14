@@ -738,12 +738,12 @@ func (s *Syncer) syncCalls(ctx context.Context) error {
 		for _, tx := range txs {
 			bt := times[tx.BlockHeight]
 			s.upsertTx(tx, bt)
-			for _, msg := range tx.Messages {
+			for i, msg := range tx.Messages {
 				switch msg.Value.Typename {
 				case "MsgCall":
 					if err := s.analyzer.ProcessCall(
 						s.networkID,
-						tx.Hash, tx.BlockHeight,
+						tx.Hash, tx.BlockHeight, i,
 						bt,
 						msg.Value.Caller,
 						msg.Value.PkgPath,

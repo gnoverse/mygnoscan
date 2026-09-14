@@ -21,6 +21,7 @@ syncer.go     background sync from tx-indexer into SQLite
 api.go        REST API handlers
 ws.go         SSE live feed (polls the indexer, fans out to browsers)
 frontend/     static HTML/JS/CSS, embedded with go:embed
+e2e/          browser tests (Node, development only — never in the binary)
 docs/         project documentation
 ```
 
@@ -55,7 +56,9 @@ Break these and things go wrong in ways that are hard to see:
   a real database works everywhere including CI.
 - **Commits are conventional and single-line**: `feat:`, `fix:`, `docs:`, `ci:`,
   `refactor:`, `test:`, `chore:`. No trailing co-author lines.
-- **`make` targets** are the entry points: `test`, `run`, `install`, `dev`.
+- **`make` targets** are the entry points: `test`, `e2e`, `run`, `install`, `dev`.
+  `test` is Go only. `e2e` drives a headless browser and is the only thing in the
+  repo that needs Node; changing anything in `frontend/` should run it.
 - **Errors go up, not into logs.** The exception is the sync loop, which logs and
   continues per-item so one bad package cannot stall a whole pass. Do not copy
   that pattern into query paths — several aggregate readers currently swallow

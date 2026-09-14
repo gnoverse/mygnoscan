@@ -38,7 +38,7 @@ func seedNetwork(t *testing.T, db *DB, network string, height int) {
 	if err := db.SetDependencies(network, "gno.land/r/demo/foo", []string{"gno.land/p/demo/avl"}); err != nil {
 		t.Fatalf("set dependencies: %v", err)
 	}
-	if err := db.InsertCall(network, "TXHASH", height, "", "g1caller", "gno.land/r/demo/foo", "Bar", true); err != nil {
+	if err := db.InsertCall(network, "TXHASH", height, 0, "", "g1caller", "gno.land/r/demo/foo", "Bar", true); err != nil {
 		t.Fatalf("insert call: %v", err)
 	}
 	if err := db.InsertMsgRun(network, "TXHASH", height, "", "g1caller", "package main", true); err != nil {

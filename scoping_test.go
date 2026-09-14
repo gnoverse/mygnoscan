@@ -37,12 +37,12 @@ func seedThreeNetworks(t *testing.T, db *DB) {
 			if err := db.UpsertTransaction(net, hash, 100+i, when, 1000, 2000, 10, true); err != nil {
 				t.Fatalf("UpsertTransaction: %v", err)
 			}
-			if err := db.InsertCall(net, hash, 100+i, when, "g1shared",
+			if err := db.InsertCall(net, hash, 100+i, 0, when, "g1shared",
 				"gno.land/r/demo/boards", "Post", true); err != nil {
 				t.Fatalf("InsertCall: %v", err)
 			}
 		}
-		if err := db.InsertCall(net, net+"-solo", 200, when, "g1"+net, "gno.land/r/demo/boards", "Post", true); err != nil {
+		if err := db.InsertCall(net, net+"-solo", 200, 0, when, "g1"+net, "gno.land/r/demo/boards", "Post", true); err != nil {
 			t.Fatalf("InsertCall: %v", err)
 		}
 		if err := db.UpsertPackage(net, "gno.land/r/"+net+"/pkg", "pkg", "g1shared",

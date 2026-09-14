@@ -364,18 +364,35 @@ func TestAddressQueryIsWindowedFromTheTip(t *testing.T) {
 		t.Fatal("the address's own transaction was not found")
 	}
 
-	// Every query must carry a height bound in its *where* clause.
+	// The walk must start windowed and stay windowed until it reaches the
+	// bottom of the chain, where the last query drops its lower bound to take
+	// in genesis — FilterInt has no `gte`, so there is no inclusive bound to
+	// use instead. That final query is the full scan this test exists to
+	// ration, so exactly one of them is allowed and it may not come first.
 	//
 	// Checking the whole query text passes for the wrong reason: txFieldsLight
 	// selects `block_height` as a field, so the string appears in every query
 	// regardless of what was filtered. Only the argument says what was asked.
+	var asked []string
 	for _, q := range f.askedQueries() {
-		if !strings.Contains(q, "getTransactions") {
-			continue
+		if strings.Contains(q, "getTransactions") {
+			asked = append(asked, whereClause(q))
 		}
-		if !strings.Contains(whereClause(q), "block_height") {
-			t.Errorf("an unbounded transaction query went out, where clause: %s", whereClause(q))
+	}
+	if len(asked) == 0 {
+		t.Fatal("no transaction query went out")
+	}
+	if !strings.Contains(asked[0], "block_height") {
+		t.Errorf("the walk opened with a full-chain scan: %s", asked[0])
+	}
+	unbounded := 0
+	for _, where := range asked {
+		if !strings.Contains(where, "block_height") {
+			unbounded++
 		}
+	}
+	if unbounded > 1 {
+		t.Errorf("%d unbounded queries went out; only the bottom window may drop its bound", unbounded)
 	}
 }
 
@@ -467,4 +484,68 @@ func TestFilteredTransactionQueries(t *testing.T) {
 			t.Error("no query carried the type filter in its where clause")
 		}
 	})
+}
+
+// Genesis transactions must be reachable.
+//
+// The recent-transactions window is built from the tip downward with an
+// exclusive `gt` bound, so even a window reaching the bottom of the chain
+// stopped one short — and block 0 is where genesis transactions live.
+//
+// On a freshly launched chain that is the entire history. gno.land mainnet went
+// live with 89 curated packages deployed at genesis, all at height 0: the stats
+// row counted 96 transactions while the transactions page showed none.
+func TestGenesisTransactionsAreReachable(t *testing.T) {
+	f, c := newFakeIndexer(t)
+
+	when := "2026-09-12T15:00:00Z"
+	// A chain whose only transactions are at genesis, with later empty blocks —
+	// the shape of a chain that has launched but not yet been used.
+	f.mu.Lock()
+	for h := 0; h <= 40; h++ {
+		f.blocks = append(f.blocks, Block{
+			Hash: fmt.Sprintf("block-%d", h), Height: h, ChainID: f.chainID, Time: when,
+		})
+	}
+	f.mu.Unlock()
+	for i := 0; i < 12; i++ {
+		f.add(fakePackage(0, when, "g1genesis", fmt.Sprintf("gno.land/r/sys/pkg%d", i)))
+	}
+
+	txs, err := c.GetRecentTransactionsPage(context.Background(), 50)
+	if err != nil {
+		t.Fatalf("GetRecentTransactionsPage: %v", err)
+	}
+	if len(txs) != 12 {
+		t.Fatalf("got %d transactions, want 12 — genesis is at height 0 and an "+
+			"exclusive lower bound excludes it", len(txs))
+	}
+	for _, tx := range txs {
+		if tx.BlockHeight != 0 {
+			t.Errorf("tx %s is at height %d, want genesis", tx.Hash, tx.BlockHeight)
+		}
+	}
+}
+
+// Above the bottom the bound stays exclusive, so successive windows do not
+// re-read their own edge.
+func TestWindowBoundStaysExclusiveAboveGenesis(t *testing.T) {
+	f, c := newFakeIndexer(t)
+	f.seedChain(1, 400)
+
+	if _, err := c.GetRecentTransactionsPage(context.Background(), 5); err != nil {
+		t.Fatalf("GetRecentTransactionsPage: %v", err)
+	}
+
+	var sawExclusive bool
+	for _, q := range f.askedQueries() {
+		w := whereClause(q)
+		if strings.Contains(w, "gt:") && !strings.Contains(w, "gte:") {
+			sawExclusive = true
+		}
+	}
+	if !sawExclusive {
+		t.Error("no windowed query used an exclusive bound; every window would " +
+			"re-read the row it stopped on")
+	}
 }
