@@ -144,12 +144,23 @@ func TestNewDBMigratesDatabaseWithoutBlockTime(t *testing.T) {
 		t.Errorf("block_height = %d after migration, want 4242", height)
 	}
 
+	// calls is the one exception: this fixture predates msg_index too (it was
+	// never given a block_time build to begin with), so the msg_index
+	// migration drops and rebuilds it rather than carrying the row forward —
+	// its old UNIQUE(network, tx_hash, pkg_path, func_name) could have already
+	// silently discarded sibling multicall rows, so there is nothing safe to
+	// preserve in place. A resync repopulates it correctly.
 	var callers int
 	if err := db.db.QueryRow(`SELECT COUNT(*) FROM calls`).Scan(&callers); err != nil {
 		t.Fatalf("count calls: %v", err)
 	}
-	if callers != 1 {
-		t.Errorf("calls = %d after migration, want 1", callers)
+	if callers != 0 {
+		t.Errorf("calls = %d after migration, want 0 (rebuilt empty, not carried forward)", callers)
+	}
+	if has, err := columnExists(db.db, "calls", "msg_index"); err != nil {
+		t.Fatalf("inspect calls: %v", err)
+	} else if !has {
+		t.Errorf("calls is still missing msg_index")
 	}
 
 	// The migration must be idempotent: every start runs it again.
@@ -313,7 +324,7 @@ func TestHeightsMissingTransactions(t *testing.T) {
 		t.Fatalf("seed orphan: %v", err)
 	}
 	// And one that is properly paired.
-	if err := db.InsertCall("gnoland1", "PAIRED", 600, "", "g1c", "gno.land/r/x", "F", true); err != nil {
+	if err := db.InsertCall("gnoland1", "PAIRED", 600, 0, "", "g1c", "gno.land/r/x", "F", true); err != nil {
 		t.Fatalf("seed call: %v", err)
 	}
 	if err := db.UpsertTransaction("gnoland1", "PAIRED", 600, "", 10, 20, 1, true); err != nil {
@@ -352,13 +363,13 @@ func TestGetGasStatsUsesStoredTransactions(t *testing.T) {
 	}
 	defer db.Close()
 
-	if err := db.InsertCall("topaz", "T1", 10, "", "g1c", "gno.land/r/demo/hot", "Run", true); err != nil {
+	if err := db.InsertCall("topaz", "T1", 10, 0, "", "g1c", "gno.land/r/demo/hot", "Run", true); err != nil {
 		t.Fatalf("seed call: %v", err)
 	}
 	if err := db.UpsertTransaction("topaz", "T1", 10, "", 1000, 2000, 30, true); err != nil {
 		t.Fatalf("seed tx: %v", err)
 	}
-	if err := db.InsertCall("topaz", "T2", 11, "", "g1c", "gno.land/r/demo/hot", "Run", true); err != nil {
+	if err := db.InsertCall("topaz", "T2", 11, 0, "", "g1c", "gno.land/r/demo/hot", "Run", true); err != nil {
 		t.Fatalf("seed call: %v", err)
 	}
 	if err := db.UpsertTransaction("topaz", "T2", 11, "", 500, 900, 10, false); err != nil {
@@ -533,7 +544,7 @@ func TestStatsAreScopedToConfiguredNetworks(t *testing.T) {
 	seed := func(network string, calls, realms int) {
 		t.Helper()
 		for i := 0; i < calls; i++ {
-			if err := db.InsertCall(network, fmt.Sprintf("%s-tx-%d", network, i), 100+i,
+			if err := db.InsertCall(network, fmt.Sprintf("%s-tx-%d", network, i), 100+i, 0,
 				"2026-01-01T00:00:00Z", fmt.Sprintf("g1caller%d", i), "gno.land/r/demo/x", "Fn", true); err != nil {
 				t.Fatalf("seed call: %v", err)
 			}
@@ -687,7 +698,7 @@ func TestValoperCallsMissingRegistration(t *testing.T) {
 
 	mustCall := func(hash, pkgPath string, height int) {
 		t.Helper()
-		if err := db.InsertCall("live", hash, height, "2026-01-01T00:00:00Z",
+		if err := db.InsertCall("live", hash, height, 0, "2026-01-01T00:00:00Z",
 			"g1aaa", pkgPath, "Register", true); err != nil {
 			t.Fatalf("InsertCall: %v", err)
 		}
@@ -807,7 +818,7 @@ func TestGasByRealmJoinStaysInTheIndex(t *testing.T) {
 		if err := db.UpsertTransaction("sapphire", hash, 100+i, when, 1000+i, 2000, 10, true); err != nil {
 			t.Fatalf("UpsertTransaction: %v", err)
 		}
-		if err := db.InsertCall("sapphire", hash, 100+i, when, "g1caller",
+		if err := db.InsertCall("sapphire", hash, 100+i, 0, when, "g1caller",
 			fmt.Sprintf("gno.land/r/demo/pkg%d", i%20), "Post", true); err != nil {
 			t.Fatalf("InsertCall: %v", err)
 		}
@@ -950,7 +961,7 @@ func TestActiveAccountsAreScopedPerNetwork(t *testing.T) {
 	const shared = "g1shared"
 	call := func(network, hash string) {
 		t.Helper()
-		if err := db.InsertCall(network, hash, 1, "2026-01-01T00:00:00Z",
+		if err := db.InsertCall(network, hash, 1, 0, "2026-01-01T00:00:00Z",
 			shared, "gno.land/r/demo/x", "Fn", true); err != nil {
 			t.Fatalf("InsertCall: %v", err)
 		}

@@ -198,9 +198,10 @@ func (a *Analyzer) ReextractDependencies() error {
 	return a.db.SetSyncState(dependencyExtractorKey, dependencyExtractorVersion)
 }
 
-// ProcessCall stores a function call record.
-func (a *Analyzer) ProcessCall(network, txHash string, blockHeight int, blockTime, caller, pkgPath, funcName string, success bool) error {
-	return a.db.InsertCall(network, txHash, blockHeight, blockTime, caller, pkgPath, funcName, success)
+// ProcessCall stores a function call record. msgIndex is the message's
+// position within its transaction; see InsertCall.
+func (a *Analyzer) ProcessCall(network, txHash string, blockHeight, msgIndex int, blockTime, caller, pkgPath, funcName string, success bool) error {
+	return a.db.InsertCall(network, txHash, blockHeight, msgIndex, blockTime, caller, pkgPath, funcName, success)
 }
 
 // ProcessMsgRun stores MsgRun with full source for import analysis.

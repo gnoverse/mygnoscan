@@ -28,12 +28,12 @@ func seedSharedRealm(t *testing.T, db *DB) {
 
 	// 50 calls on busy, 2 on quiet.
 	for i := 0; i < 50; i++ {
-		if err := db.InsertCall("busy", "busy-call-"+itoa(i), 100+i, when, "g1shared", path, "Post", true); err != nil {
+		if err := db.InsertCall("busy", "busy-call-"+itoa(i), 100+i, 0, when, "g1shared", path, "Post", true); err != nil {
 			t.Fatalf("InsertCall: %v", err)
 		}
 	}
 	for i := 0; i < 2; i++ {
-		if err := db.InsertCall("quiet", "quiet-call-"+itoa(i), 100+i, when, "g1shared", path, "Post", true); err != nil {
+		if err := db.InsertCall("quiet", "quiet-call-"+itoa(i), 100+i, 0, when, "g1shared", path, "Post", true); err != nil {
 			t.Fatalf("InsertCall: %v", err)
 		}
 	}
@@ -460,7 +460,7 @@ func TestGasRollups(t *testing.T) {
 		if err := db.UpsertTransaction(net, hash, 100, when, gas, gas*2, fee, true); err != nil {
 			t.Fatalf("UpsertTransaction: %v", err)
 		}
-		if err := db.InsertCall(net, hash, 100, when, "g1caller", path, "Post", true); err != nil {
+		if err := db.InsertCall(net, hash, 100, 0, when, "g1caller", path, "Post", true); err != nil {
 			t.Fatalf("InsertCall: %v", err)
 		}
 	}
@@ -720,7 +720,7 @@ func TestDedupOnceGivesTheSameCounts(t *testing.T) {
 	// so every branch of every union produces rows that overlap the others.
 	for _, net := range []string{"a", "b"} {
 		for i := 0; i < 3; i++ {
-			if err := db.InsertCall(net, fmt.Sprintf("c-%s-%d", net, i), 100+i, when,
+			if err := db.InsertCall(net, fmt.Sprintf("c-%s-%d", net, i), 100+i, 0, when,
 				"g1everywhere", "gno.land/r/demo/boards", "Post", true); err != nil {
 				t.Fatalf("InsertCall: %v", err)
 			}
