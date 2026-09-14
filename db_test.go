@@ -132,16 +132,22 @@ func TestNewDBMigratesDatabaseWithoutBlockTime(t *testing.T) {
 		}
 	}
 
-	// Existing rows survive, and the sync cursor with them: it is derived from
-	// the highest stored block height, so losing rows would trigger a re-sync.
-	var height int
-	if err := db.db.QueryRow(
-		`SELECT block_height FROM packages WHERE path = 'gno.land/r/demo/foo'`,
-	).Scan(&height); err != nil {
-		t.Fatalf("read migrated package: %v", err)
+	// packages is also rebuilt empty here, not carried forward: this fixture
+	// has no package_submissions table either, and packages' own resume
+	// cursor (MAX(block_height) FROM packages) would otherwise already sit
+	// at the tip and never re-walk history to backfill package_submissions.
+	// See the package_submissions migration comment in NewDB.
+	var pkgCount int
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM packages`).Scan(&pkgCount); err != nil {
+		t.Fatalf("count packages: %v", err)
 	}
-	if height != 4242 {
-		t.Errorf("block_height = %d after migration, want 4242", height)
+	if pkgCount != 0 {
+		t.Errorf("packages = %d after migration, want 0 (rebuilt empty, not carried forward)", pkgCount)
+	}
+	if has, err := tableExists(db.db, "package_submissions"); err != nil {
+		t.Fatalf("inspect package_submissions: %v", err)
+	} else if !has {
+		t.Error("package_submissions was not created")
 	}
 
 	// calls is the one exception: this fixture predates msg_index too (it was
@@ -2330,5 +2336,98 @@ func TestListPackagesLastCallSort(t *testing.T) {
 	}
 	if rows[1].Path != "gno.land/r/demo/new-and-quiet" || rows[1].LastCallHeight != 0 {
 		t.Errorf("the never-called realm = %+v, want it last with no last_call_height", rows[1])
+	}
+}
+
+// TestAddressTransactionsIncludesEveryPackageResubmission is a regression
+// test for github.com/moul/gno-meta/issues/126: packages is a current-state
+// projection keyed by (network, path) — INSERT OR REPLACE, one row per path
+// — so a creator who resubmits at the same path (routine under the "inert"
+// code submission policy: a parked package is invisible to every liveness
+// probe, so anything that verifies a deploy by querying the path concludes
+// it failed and resubmits) used to have every submission but the last
+// silently vanish from their own address history. This asserts both
+// submissions survive, sourced from package_submissions instead.
+func TestAddressTransactionsIncludesEveryPackageResubmission(t *testing.T) {
+	db := newTestDB(t)
+
+	const creator = "g1manfred"
+	const path = "gno.land/r/moul/x/daily/wrapped/v0"
+
+	// Two submissions at the same path — a redeploy while the first was
+	// still parked, exactly the wrapped/v0 case that surfaced this. The
+	// second overwrites packages' current-state row for the path (proven
+	// below); package_submissions must keep both.
+	if err := db.InsertPackageSubmission("gnoland1", "TXFIRST", 0, path, "wrapped", creator, 100, "2026-01-01T00:00:00Z", true, 3, true); err != nil {
+		t.Fatalf("insert first submission: %v", err)
+	}
+	if err := db.UpsertPackage("gnoland1", path, "wrapped", creator, "TXFIRST", 100, "2026-01-01T00:00:00Z", true, 3); err != nil {
+		t.Fatalf("upsert package (first): %v", err)
+	}
+	if err := db.InsertPackageSubmission("gnoland1", "TXSECOND", 0, path, "wrapped", creator, 200, "2026-01-02T00:00:00Z", true, 3, true); err != nil {
+		t.Fatalf("insert second submission: %v", err)
+	}
+	if err := db.UpsertPackage("gnoland1", path, "wrapped", creator, "TXSECOND", 200, "2026-01-02T00:00:00Z", true, 3); err != nil {
+		t.Fatalf("upsert package (second): %v", err)
+	}
+
+	// packages itself only ever kept the latest — confirms the premise, not
+	// just the fix.
+	pkgs, err := db.ListPackages("gnoland1", true, 100, 0, "newest")
+	if err != nil {
+		t.Fatalf("ListPackages: %v", err)
+	}
+	if len(pkgs) != 1 || pkgs[0].TxHash != "TXSECOND" {
+		t.Fatalf("packages = %+v, want exactly the second (current-state) submission", pkgs)
+	}
+
+	txs, total, err := db.AddressTransactions("gnoland1", creator, 50, 0)
+	if err != nil {
+		t.Fatalf("AddressTransactions: %v", err)
+	}
+	if total != 2 {
+		t.Errorf("total = %d, want 2 (both submissions)", total)
+	}
+	seen := map[string]bool{}
+	for _, tx := range txs {
+		if tx.Type != "MsgAddPackage" {
+			t.Errorf("unexpected tx type %q", tx.Type)
+			continue
+		}
+		seen[tx.Hash] = true
+	}
+	if !seen["TXFIRST"] || !seen["TXSECOND"] {
+		t.Errorf("AddressTransactions returned %+v, want both TXFIRST and TXSECOND", txs)
+	}
+}
+
+// TestFilteredTransactionsIncludesEveryPackageResubmission is the same
+// regression against the /txs MsgAddPackage filter (FilteredTransactions),
+// which used to source from packages the same way.
+func TestFilteredTransactionsIncludesEveryPackageResubmission(t *testing.T) {
+	db := newTestDB(t)
+
+	const path = "gno.land/r/moul/x/daily/wrapped/v0"
+	if err := db.InsertPackageSubmission("gnoland1", "TXFIRST", 0, path, "wrapped", "g1manfred", 100, "2026-01-01T00:00:00Z", true, 3, true); err != nil {
+		t.Fatalf("insert first submission: %v", err)
+	}
+	if err := db.InsertPackageSubmission("gnoland1", "TXSECOND", 0, path, "wrapped", "g1manfred", 200, "2026-01-02T00:00:00Z", true, 3, true); err != nil {
+		t.Fatalf("insert second submission: %v", err)
+	}
+
+	txs, total, err := db.FilteredTransactions("gnoland1", "MsgAddPackage", nil, 50, 0)
+	if err != nil {
+		t.Fatalf("FilteredTransactions: %v", err)
+	}
+	if total != 2 {
+		t.Errorf("total = %d, want 2", total)
+	}
+	if len(txs) != 2 {
+		t.Fatalf("got %d rows, want 2: %+v", len(txs), txs)
+	}
+	for _, tx := range txs {
+		if !tx.Success {
+			t.Errorf("tx %s reported unsuccessful, want the real per-submission value (true)", tx.Hash)
+		}
 	}
 }

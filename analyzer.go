@@ -108,11 +108,22 @@ func (a *Analyzer) ExtractMsgRunImports(files []MemFile) []string {
 }
 
 // ProcessPackage analyzes a package and stores its dependency info.
-func (a *Analyzer) ProcessPackage(network string, pkg *MemPackage, creator, txHash string, blockHeight int, blockTime string, success bool) error {
+//
+// msgIndex follows blockHeight, matching InsertCall's parameter order (#152)
+// — that ordering was chosen once, deliberately, after a mechanical fix-up
+// script and this function's own signature disagreed on it and silently
+// swapped the two everywhere calls was touched.
+func (a *Analyzer) ProcessPackage(network string, pkg *MemPackage, creator, txHash string, blockHeight, msgIndex int, blockTime string, success bool) error {
 	isRealm := strings.HasPrefix(pkg.Path, "gno.land/r/")
 
-	// Store package
+	// Store package: current-state, overwritten by a later submission at the
+	// same path.
 	if err := a.db.UpsertPackage(network, pkg.Path, pkg.Name, creator, txHash, blockHeight, blockTime, isRealm, len(pkg.Files)); err != nil {
+		return err
+	}
+	// Store the submission itself, kept even once a later one replaces the
+	// row above — see InsertPackageSubmission and gno-meta#126.
+	if err := a.db.InsertPackageSubmission(network, txHash, msgIndex, pkg.Path, pkg.Name, creator, blockHeight, blockTime, isRealm, len(pkg.Files), success); err != nil {
 		return err
 	}
 
