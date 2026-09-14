@@ -616,6 +616,12 @@ func initSchema(db *sql.DB) error {
 		-- caller) counting distinct packages. Same shape, same reason, 0.69s ->
 		-- 0.26s. Both are covering, so neither touches the table.
 		CREATE INDEX IF NOT EXISTS idx_calls_net_caller_pkg ON calls(network, caller, pkg_path);
+
+		-- ListPackages' "last call" column and sort (block_height DESC LIMIT 1
+		-- per package). block_height trailing, descending, lets that read the
+		-- newest row for a (network, pkg_path) straight off the index instead of
+		-- sorting a page's worth of rows on every request.
+		CREATE INDEX IF NOT EXISTS idx_calls_net_pkg_height ON calls(network, pkg_path, block_height DESC);
 	`)
 	return err
 }
@@ -1453,6 +1459,11 @@ type PackageInfo struct {
 	Importers   int    `json:"importers"`
 	Imports     int    `json:"imports"`
 	UniqueUsers int    `json:"unique_users"`
+	// LastCallHeight/LastCallTime are the realm's most recent call, zero/empty
+	// if it has never been called. Distinct from BlockHeight/BlockTime, which
+	// are the deploy — a realm can be old and still busy, or new and dormant.
+	LastCallHeight int    `json:"last_call_height,omitempty"`
+	LastCallTime   string `json:"last_call_time,omitempty"`
 }
 
 type PackageDetail struct {
@@ -1525,6 +1536,11 @@ func packageSortClause(sortBy string) string {
 		return "imports DESC, p.block_height DESC"
 	case "users":
 		return "unique_users DESC, p.block_height DESC"
+	case "last_call":
+		// A realm never called has no last_call_height (NULL), which SQLite's
+		// default NULLS LAST already sorts after every real height on a DESC
+		// ordering — no CASE needed to push the never-called to the bottom.
+		return "last_call_height DESC, p.block_height DESC"
 	case "name":
 		return "p.path ASC"
 	case "oldest":
@@ -1541,7 +1557,7 @@ func (d *DB) ListPackages(network string, realmOnly bool, limit, offset int, sor
 	// Usage counts come from correlated subqueries rather than joins: a join on
 	// path alone would mix networks together, and grouping four tables in one
 	// query multiplies rows against each other.
-	q := `SELECT p.network, p.path, p.name, p.creator, p.block_height, p.tx_hash, p.is_realm, p.num_files,
+	q := `SELECT p.network, p.path, p.name, p.creator, p.block_height, p.block_time, p.tx_hash, p.is_realm, p.num_files,
 		(SELECT COUNT(*) FROM calls c
 		   WHERE c.network = p.network AND c.pkg_path = p.path) AS calls,
 		(SELECT COUNT(*) FROM dependencies d
@@ -1549,7 +1565,13 @@ func (d *DB) ListPackages(network string, realmOnly bool, limit, offset int, sor
 		(SELECT COUNT(*) FROM dependencies d
 		   WHERE d.network = p.network AND d.package_path = p.path) AS imports,
 		(SELECT COUNT(DISTINCT c.caller) FROM calls c
-		   WHERE c.network = p.network AND c.pkg_path = p.path) AS unique_users
+		   WHERE c.network = p.network AND c.pkg_path = p.path) AS unique_users,
+		(SELECT c.block_height FROM calls c
+		   WHERE c.network = p.network AND c.pkg_path = p.path
+		   ORDER BY c.block_height DESC LIMIT 1) AS last_call_height,
+		(SELECT c.block_time FROM calls c
+		   WHERE c.network = p.network AND c.pkg_path = p.path
+		   ORDER BY c.block_height DESC LIMIT 1) AS last_call_time
 		FROM packages p WHERE p.is_realm = ? AND ` + d.networkFilter("p.network", network)
 	args := []any{realmOnly}
 	q += ` ORDER BY ` + packageSortClause(sortBy)
@@ -1565,11 +1587,18 @@ func (d *DB) ListPackages(network string, realmOnly bool, limit, offset int, sor
 
 	var pkgs []PackageInfo
 	for rows.Next() {
+		var blockTime sql.NullString
+		var lastCallHeight sql.NullInt64
+		var lastCallTime sql.NullString
 		var p PackageInfo
-		if err := rows.Scan(&p.Network, &p.Path, &p.Name, &p.Creator, &p.BlockHeight, &p.TxHash,
-			&p.IsRealm, &p.NumFiles, &p.Calls, &p.Importers, &p.Imports, &p.UniqueUsers); err != nil {
+		if err := rows.Scan(&p.Network, &p.Path, &p.Name, &p.Creator, &p.BlockHeight, &blockTime, &p.TxHash,
+			&p.IsRealm, &p.NumFiles, &p.Calls, &p.Importers, &p.Imports, &p.UniqueUsers,
+			&lastCallHeight, &lastCallTime); err != nil {
 			return nil, err
 		}
+		p.BlockTime = blockTime.String
+		p.LastCallHeight = int(lastCallHeight.Int64)
+		p.LastCallTime = lastCallTime.String
 		pkgs = append(pkgs, p)
 	}
 	return pkgs, rows.Err()
