@@ -15,7 +15,7 @@ import (
 func seedActiveAt(t *testing.T, db *DB, network, addr string, when time.Time, id string) {
 	t.Helper()
 	ts := when.UTC().Format("2006-01-02T15:04:05Z")
-	if err := db.InsertCall(network, "call-"+id, 1, ts, addr, "gno.land/r/demo/boards", "Post", true); err != nil {
+	if err := db.InsertCall(network, "call-"+id, 1, 0, ts, addr, "gno.land/r/demo/boards", "Post", true); err != nil {
 		t.Fatalf("InsertCall: %v", err)
 	}
 	if err := db.UpsertPackage(network, "gno.land/r/"+network+"/"+id, id, addr, "pkg-"+id, 2, ts, true, 1); err != nil {
@@ -98,7 +98,7 @@ func seedMixedActivity(t *testing.T, db *DB) {
 			seedActiveAt(t, db, net, "g1"+net+fmt.Sprint(int(back.Hours())), when, id())
 
 			// A caller-only address, so the per-kind counts are not all equal.
-			if err := db.InsertCall(net, "conly-"+id(), 4, when.Format("2006-01-02T15:04:05Z"),
+			if err := db.InsertCall(net, "conly-"+id(), 4, 0, when.Format("2006-01-02T15:04:05Z"),
 				"g1calleronly", "gno.land/r/demo/boards", "Post", true); err != nil {
 				t.Fatalf("InsertCall: %v", err)
 			}
@@ -367,7 +367,7 @@ func TestWindowOpeningHourMatchesLive(t *testing.T) {
 	openingHour := time.Now().UTC().AddDate(0, 0, -days).Truncate(time.Hour)
 	for i := -60; i <= 60; i++ {
 		when := openingHour.Add(time.Duration(i) * time.Minute)
-		if err := db.InsertCall("a", fmt.Sprintf("edge%d", i), 1,
+		if err := db.InsertCall("a", fmt.Sprintf("edge%d", i), 1, 0,
 			when.Format("2006-01-02T15:04:05Z"), fmt.Sprintf("g1edge%03d", i+60),
 			"gno.land/r/demo/boards", "Post", true); err != nil {
 			t.Fatalf("InsertCall: %v", err)

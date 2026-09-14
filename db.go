@@ -81,6 +81,19 @@ func NewDB(path string) (*DB, error) {
 		db.Exec(`DROP TABLE IF EXISTS calls`)
 		db.Exec(`DROP TABLE IF EXISTS msg_runs`)
 		db.Exec(`DROP TABLE IF EXISTS bank_sends`)
+		callSQL = ""
+	}
+
+	// Migrate: the old UNIQUE(network, tx_hash, pkg_path, func_name) silently
+	// dropped every call past the first when one transaction bundled several
+	// MsgCall messages to the same function — the shape of a "multicall". calls
+	// and bank_sends share syncCalls' resume cursor (getLastRecentTransaction-
+	// BlockHeight), so both are dropped together to force a full, correct
+	// resync rather than leaving bank_sends' cursor ahead of the history calls
+	// just lost.
+	if callSQL != "" && !strings.Contains(callSQL, "msg_index") {
+		db.Exec(`DROP TABLE IF EXISTS calls`)
+		db.Exec(`DROP TABLE IF EXISTS bank_sends`)
 	}
 
 	// Migrate: add network column if missing (packages needs table rebuild for PK change)
@@ -326,6 +339,11 @@ func initSchema(db *sql.DB) error {
 		CREATE TABLE IF NOT EXISTS calls (
 			network TEXT NOT NULL DEFAULT 'gnoland1',
 			tx_hash TEXT NOT NULL,
+			-- Position of this MsgCall within its transaction's message list.
+			-- A tx can bundle several MsgCall messages to the same function (a
+			-- "multicall"); without this, all but the first collapsed into one
+			-- row and every call past the first went uncounted.
+			msg_index INTEGER NOT NULL DEFAULT 0,
 			block_height INTEGER NOT NULL,
 			block_time TEXT,
 			caller TEXT NOT NULL,
@@ -333,7 +351,7 @@ func initSchema(db *sql.DB) error {
 			func_name TEXT NOT NULL,
 			success BOOLEAN NOT NULL,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			UNIQUE(network, tx_hash, pkg_path, func_name)
+			UNIQUE(network, tx_hash, msg_index)
 		);
 
 		CREATE TABLE IF NOT EXISTS msg_runs (
@@ -692,14 +710,17 @@ func (d *DB) SetDependencies(network, pkgPath string, imports []string) error {
 	return tx.Commit()
 }
 
-// InsertCall records a MsgCall.
-func (d *DB) InsertCall(network, txHash string, blockHeight int, blockTime, caller, pkgPath, funcName string, success bool) error {
+// InsertCall records one MsgCall message. msgIndex is that message's position
+// within its transaction, which is what keeps repeat calls to the same
+// function inside one multicall transaction from collapsing into a single
+// stored row.
+func (d *DB) InsertCall(network, txHash string, blockHeight, msgIndex int, blockTime, caller, pkgPath, funcName string, success bool) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	_, err := d.db.Exec(`
-		INSERT OR IGNORE INTO calls (network, tx_hash, block_height, block_time, caller, pkg_path, func_name, success)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, network, txHash, blockHeight, blockTime, caller, pkgPath, funcName, success)
+		INSERT OR IGNORE INTO calls (network, tx_hash, msg_index, block_height, block_time, caller, pkg_path, func_name, success)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, network, txHash, msgIndex, blockHeight, blockTime, caller, pkgPath, funcName, success)
 	return err
 }
 
