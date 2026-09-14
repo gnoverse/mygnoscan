@@ -14,7 +14,9 @@ import (
 )
 
 type IndexerClient struct {
-	url    string
+	// urls are interchangeable endpoints for the same chain, in the order the
+	// operator listed them. active indexes the one in use.
+	urls   []string
 	client *http.Client
 
 	// Per-client circuit breaker. Every request path goes through query(), so
@@ -24,6 +26,11 @@ type IndexerClient struct {
 	mu        sync.Mutex
 	failures  int
 	skipUntil time.Time
+	active    int
+	lastProbe time.Time
+	// fingerprint of the chain this pool is serving, learned from the first
+	// endpoint that answers. Members that disagree are never selected.
+	fingerprint string
 }
 
 // errIndexerUnavailable is returned while the breaker is open.
@@ -98,8 +105,8 @@ const (
 
 // NewIndexerClient returns a client for request paths that have a caller
 // waiting. Callers add their own tighter deadlines on top of this backstop.
-func NewIndexerClient(url string) *IndexerClient {
-	return newIndexerClient(url, serveClientTimeout)
+func NewIndexerClient(urls ...string) *IndexerClient {
+	return newIndexerClient(urls, serveClientTimeout)
 }
 
 // NewSyncIndexerClient returns a client for the background sync loop.
@@ -107,20 +114,36 @@ func NewIndexerClient(url string) *IndexerClient {
 // Deliberately a separate client, not just a longer timeout: the breaker is
 // per-client, so a sync struggling against a slow indexer no longer opens the
 // breaker that page queries share, and vice versa.
-func NewSyncIndexerClient(url string) *IndexerClient {
-	return newIndexerClient(url, syncClientTimeout)
+func NewSyncIndexerClient(urls ...string) *IndexerClient {
+	return newIndexerClient(urls, syncClientTimeout)
 }
 
-func newIndexerClient(url string, timeout time.Duration) *IndexerClient {
-	// Normalize URL: ensure it ends with /query
-	url = strings.TrimRight(url, "/")
-	if strings.HasSuffix(url, "/graphql") {
-		url += "/query"
+func newIndexerClient(urls []string, timeout time.Duration) *IndexerClient {
+	normalized := make([]string, 0, len(urls))
+	for _, url := range urls {
+		// Normalize URL: ensure it ends with /query
+		url = strings.TrimRight(url, "/")
+		if strings.HasSuffix(url, "/graphql") {
+			url += "/query"
+		}
+		if url != "" {
+			normalized = append(normalized, url)
+		}
 	}
 	return &IndexerClient{
-		url:    url,
+		urls:   normalized,
 		client: &http.Client{Timeout: timeout},
 	}
+}
+
+// activeURL is the endpoint currently in use, or "" when none was configured.
+func (c *IndexerClient) activeURL() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.urls) == 0 {
+		return ""
+	}
+	return c.urls[c.active]
 }
 
 // gqlEscape sanitizes a string for safe use inside GraphQL string literals.
@@ -144,11 +167,176 @@ type gqlResponse struct {
 	} `json:"errors,omitempty"`
 }
 
+// endpointProbeInterval is how often a multi-endpoint pool re-picks. Short
+// enough that a stalled indexer is abandoned within minutes, long enough that
+// the probe traffic is negligible next to ordinary queries.
+const endpointProbeInterval = 2 * time.Minute
+
+// probeTimeout bounds a single endpoint probe. A probe is a health check, so a
+// slow answer is itself a reason to prefer someone else.
+const probeTimeout = 10 * time.Second
+
+// endpointState is what a probe learns about one endpoint.
+type endpointState struct {
+	index       int
+	tip         int
+	fingerprint string
+	err         error
+}
+
+// probe asks one endpoint for its tip and the identity of the chain it serves.
+//
+// Both in one request: the tip alone cannot distinguish "further along" from
+// "a different chain entirely", and picking the highest tip across two chains
+// would silently splice them together.
+func (c *IndexerClient) probe(ctx context.Context, index int, url string) endpointState {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+
+	var result struct {
+		LatestBlockHeight int `json:"latestBlockHeight"`
+		GetBlocks         []struct {
+			ChainID string `json:"chain_id"`
+			Hash    string `json:"hash"`
+		} `json:"getBlocks"`
+	}
+	q := `{
+		latestBlockHeight
+		getBlocks(where: { height: { eq: 1 } }) { chain_id hash }
+	}`
+	if err := c.doQuery(ctx, url, q, nil, &result); err != nil {
+		return endpointState{index: index, err: err}
+	}
+	st := endpointState{index: index, tip: result.LatestBlockHeight}
+	// Same identity the reset check uses: chain ID alone is not enough, because
+	// a reset network keeps its ID and comes back with a different block 1.
+	if len(result.GetBlocks) > 0 && result.GetBlocks[0].Hash != "" {
+		st.fingerprint = result.GetBlocks[0].ChainID + ":" + result.GetBlocks[0].Hash
+	}
+	return st
+}
+
+// selectEndpoint picks the endpoint furthest along the chain we are already
+// following, and is the whole reason this pool is ordered by freshness rather
+// than by "first one that answers".
+//
+// The failure that motivated it did not look like a failure: gno.land mainnet's
+// indexer sat at block 785 while the chain was at 36,000, answering every query
+// promptly and correctly for the 785 blocks it knew about. A pool that fails
+// over only on error would have stayed on it forever, and the explorer would
+// have gone on reporting a stalled chain as a healthy one.
+//
+// Endpoints whose fingerprint disagrees with the pool's are never selected. A
+// fast, healthy, wrong chain is the worst member a pool can have.
+func (c *IndexerClient) selectEndpoint(ctx context.Context) {
+	c.mu.Lock()
+	if len(c.urls) < 2 || time.Since(c.lastProbe) < endpointProbeInterval {
+		c.mu.Unlock()
+		return
+	}
+	c.lastProbe = time.Now()
+	urls := append([]string(nil), c.urls...)
+	known := c.fingerprint
+	c.mu.Unlock()
+
+	states := make([]endpointState, len(urls))
+	var wg sync.WaitGroup
+	for i, url := range urls {
+		wg.Add(1)
+		go func(i int, url string) {
+			defer wg.Done()
+			states[i] = c.probe(ctx, i, url)
+		}(i, url)
+	}
+	wg.Wait()
+
+	// Adopt an identity on the first probe from the earliest endpoint in
+	// configured order that can prove one — never from whichever endpoint is
+	// furthest along.
+	//
+	// Deriving it from the highest tip lets the wrong chain define the pool by
+	// being bigger, which is precisely backwards: a busy unrelated chain would
+	// win and the operator's own endpoint would then be excluded as the
+	// impostor. The first entry is the operator's stated intent; the rest are
+	// alternates that have to match it. Caught by
+	// TestPoolRefusesAnEndpointOnAnotherChain, which passed a 90,000-block
+	// `gnoland1` off as `gnoland-1`.
+	//
+	// Afterwards the identity is fixed: a member that comes back as a different
+	// chain is excluded rather than allowed to redefine the pool.
+	if known == "" {
+		for _, st := range states {
+			if st.err == nil && st.fingerprint != "" {
+				known = st.fingerprint
+				break
+			}
+		}
+	}
+
+	chosen, chosenTip := -1, -1
+	for _, st := range states {
+		if st.err != nil {
+			continue
+		}
+		// An endpoint that cannot prove its chain is still usable when nobody
+		// can — a chain too young to have a block 1 is a real state — but it
+		// loses to any endpoint that agrees with the pool's identity.
+		if known != "" && st.fingerprint != "" && st.fingerprint != known {
+			continue
+		}
+		if st.tip > chosenTip {
+			chosen, chosenTip = st.index, st.tip
+		}
+	}
+	if chosen < 0 {
+		return
+	}
+
+	c.mu.Lock()
+	if known != "" {
+		c.fingerprint = known
+	}
+	c.active = chosen
+	c.mu.Unlock()
+}
+
+// failOver moves to the next endpoint and reports whether there was one. It is
+// the error-driven half of the pool: selectEndpoint handles the endpoint that
+// is wrong without being broken, this handles the one that is simply down.
+func (c *IndexerClient) failOver() (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.urls) < 2 {
+		return "", false
+	}
+	c.active = (c.active + 1) % len(c.urls)
+	// The next query re-picks rather than sitting on whoever happened to be
+	// next in line.
+	c.lastProbe = time.Time{}
+	return c.urls[c.active], true
+}
+
+// answered reports whether an error came from the indexer rather than from
+// failing to reach it. A chain that says "no such transaction" has answered,
+// and asking a second endpoint the same question just wastes a round-trip.
+func answered(err error) bool {
+	return errors.Is(err, errNotFound) ||
+		errors.Is(err, errQueryTooLarge) ||
+		errors.Is(err, context.Canceled) ||
+		strings.HasPrefix(err.Error(), "graphql error:")
+}
+
 func (c *IndexerClient) query(ctx context.Context, query string, vars map[string]any, result any) error {
 	if c.breakerOpen() {
 		return errIndexerUnavailable
 	}
-	err := c.doQuery(ctx, query, vars, result)
+	c.selectEndpoint(ctx)
+	err := c.doQuery(ctx, c.activeURL(), query, vars, result)
+	if err != nil && !answered(err) {
+		if next, ok := c.failOver(); ok {
+			err = c.doQuery(ctx, next, query, vars, result)
+		}
+	}
 	// Caller-side cancellation, a capped result set and a miss all say nothing
 	// about the indexer's health, so none of them counts against the breaker.
 	// A deadline deliberately does: that is the caller reporting the indexer was
@@ -159,13 +347,13 @@ func (c *IndexerClient) query(ctx context.Context, query string, vars map[string
 	return err
 }
 
-func (c *IndexerClient) doQuery(ctx context.Context, query string, vars map[string]any, result any) error {
+func (c *IndexerClient) doQuery(ctx context.Context, url, query string, vars map[string]any, result any) error {
 	body, err := json.Marshal(gqlRequest{Query: query, Variables: vars})
 	if err != nil {
 		return err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", c.url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}

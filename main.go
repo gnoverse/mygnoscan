@@ -62,8 +62,8 @@ func run() error {
 	clients := make(map[string]*IndexerClient)
 	syncClients := make(map[string]*IndexerClient)
 	for _, n := range cfg.Networks {
-		clients[n.ID] = NewIndexerClient(n.IndexerURL)
-		syncClients[n.ID] = NewSyncIndexerClient(n.IndexerURL)
+		clients[n.ID] = NewIndexerClient(n.Indexers()...)
+		syncClients[n.ID] = NewSyncIndexerClient(n.Indexers()...)
 	}
 
 	// Initialize analyzer

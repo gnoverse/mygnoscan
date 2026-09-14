@@ -132,19 +132,31 @@ func (f *fakeIndexer) resolve(q string) (map[string]any, int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	switch {
-	case strings.Contains(q, "latestBlockHeight"):
-		return map[string]any{"latestBlockHeight": f.tip()}, 1
-
-	case strings.Contains(q, "getBlocks"):
-		blocks := filterBlocks(f.blocks, q)
-		return map[string]any{"getBlocks": blocks}, len(blocks)
-
-	case strings.Contains(q, "getTransactions"):
-		txs := filterTxs(f.txs, q)
-		return map[string]any{"getTransactions": txs}, len(txs)
+	// Every requested top-level field is resolved, not just the first match.
+	//
+	// This used to be a switch, so a query selecting `latestBlockHeight` and
+	// `getBlocks` together got only the height back and the rest silently came
+	// out empty. A real GraphQL server resolves every field a query asks for,
+	// and the endpoint pool's probe asks for two at once precisely because they
+	// have to be read from the same moment — the tip alone cannot tell "further
+	// along" from "a different chain".
+	out := map[string]any{}
+	count := 0
+	if strings.Contains(q, "latestBlockHeight") {
+		out["latestBlockHeight"] = f.tip()
+		count++
 	}
-	return map[string]any{}, 0
+	if strings.Contains(q, "getBlocks") {
+		blocks := filterBlocks(f.blocks, q)
+		out["getBlocks"] = blocks
+		count += len(blocks)
+	}
+	if strings.Contains(q, "getTransactions") {
+		txs := filterTxs(f.txs, q)
+		out["getTransactions"] = txs
+		count += len(txs)
+	}
+	return out, count
 }
 
 func truncate(data map[string]any, n int) map[string]any {
