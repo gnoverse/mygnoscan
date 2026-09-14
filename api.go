@@ -453,6 +453,17 @@ func sortMergedPackages(pkgs []PackageInfo, sortBy string) {
 		sort.SliceStable(pkgs, func(i, j int) bool { return pkgs[i].Imports > pkgs[j].Imports })
 	case "users":
 		sort.SliceStable(pkgs, func(i, j int) bool { return pkgs[i].UniqueUsers > pkgs[j].UniqueUsers })
+	case "last_call":
+		sort.SliceStable(pkgs, func(i, j int) bool {
+			ti, tj := pkgs[i].LastCallTime, pkgs[j].LastCallTime
+			if ti != "" && tj != "" {
+				return ti > tj
+			}
+			if ti != tj {
+				return ti != "" // ever-called rows sort ahead of never-called ones
+			}
+			return pkgs[i].BlockHeight > pkgs[j].BlockHeight
+		})
 	case "name":
 		sort.SliceStable(pkgs, func(i, j int) bool { return pkgs[i].Path < pkgs[j].Path })
 	default:

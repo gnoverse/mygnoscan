@@ -279,10 +279,8 @@ footer a:hover { color: var(--accent); }
   <div class="view" id="view-realms"><main><div id="realms-stats" class="stats-bar" style="display:none"></div><div class="section"><div class="section-title">all realms</div>
     <table><thead><tr><th>path</th><th>creator</th>
       <th class="rs" data-sort="calls">calls</th>
-      <th class="rs" data-sort="importers">importers</th>
-      <th class="rs" data-sort="imports">imports</th>
-      <th class="rs" data-sort="newest">block</th>
-      <th>files</th></tr></thead><tbody id="realms-list"></tbody></table></div></main></div>
+      <th class="rs" data-sort="last_call">last call</th>
+      <th class="rs" data-sort="newest">added</th></tr></thead><tbody id="realms-list"></tbody></table></div></main></div>
   <div class="view" id="view-packages"><main><div id="packages-stats" class="stats-bar" style="display:none"></div><div class="section"><div class="section-title">all packages</div>
     <table><thead><tr><th>path</th><th>creator</th>
       <th class="rs" data-sort="calls">calls</th>
@@ -804,6 +802,27 @@ function timeAgo(t) {
   if (s < 5) return 'just now';
   if (s < 60) return s + 's ago'; if (s < 3600) return Math.floor(s/60) + 'm ago';
   if (s < 86400) return Math.floor(s/3600) + 'h ago'; return Math.floor(s/86400) + 'd ago';
+}
+// shortAge is timeAgo without the "ago" and with a month/year bucket, for a
+// column tight on space (a block's "added"/"last call" age next to its
+// height) rather than a standalone sentence.
+function shortAge(t) {
+  if (!t) return '';
+  const s = Math.floor((Date.now() - new Date(t)) / 1000);
+  if (s < 60) return Math.max(s, 0) + 's';
+  if (s < 3600) return Math.floor(s / 60) + 'm';
+  if (s < 86400) return Math.floor(s / 3600) + 'h';
+  if (s < 2592000) return Math.floor(s / 86400) + 'd';
+  if (s < 31536000) return Math.floor(s / 2592000) + 'mo';
+  return Math.floor(s / 31536000) + 'y';
+}
+// A block height linked to its block, with its age in short form beside it —
+// "added" and "last call" both show this shape.
+function blockWithAge(height, time, network) {
+  const span = el('span');
+  span.appendChild(blockLink(height, network));
+  if (time) span.appendChild(el('span', { className: 'block-ctx' }, ' ' + shortAge(time)));
+  return span;
 }
 function timeEl(t) {
   const span = document.createElement('span');
@@ -2026,12 +2045,12 @@ async function loadHome() {
   }
 }
 
-let _realmsSort = 'newest';
+let _realmsSort = 'last_call';
 async function loadRealms(page) {
   page = page || 0;
   const section = document.querySelector('#view-realms .section');
   const tbody = clear('realms-list');
-  skeletonRows(tbody, 7, 10);
+  skeletonRows(tbody, 5, 10);
   section.querySelectorAll('.pager').forEach(p => p.remove());
   const statsBar = document.getElementById('realms-stats');
   // Sorting is server-side: ordering only the current page would rank 50 rows
@@ -2056,15 +2075,16 @@ async function loadRealms(page) {
         el('td', {}, realmPathEl(r.path, r.network)),
         el('td', {}, addrLink(r.creator)),
         el('td', {}, countCell(r.calls)),
-        el('td', {}, countCell(r.importers)),
-        el('td', {}, countCell(r.imports)),
-        el('td', {}, blockLink(r.block_height, r.network)), el('td', {}, String(r.num_files))
+        el('td', {}, r.last_call_height
+          ? blockWithAge(r.last_call_height, r.last_call_time, r.network)
+          : el('span', { className: 'block-ctx' }, 'never')),
+        el('td', {}, blockWithAge(r.block_height, r.block_time, r.network))
       ));
     }
     pager(section, page, data.total || 0, loadRealms);
   } catch (err) {
     console.error(err);
-    failRows(clear('realms-list'), 7, err, loadRealms);
+    failRows(clear('realms-list'), 5, err, loadRealms);
   }
 }
 

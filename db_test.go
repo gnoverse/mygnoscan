@@ -2198,3 +2198,37 @@ func TestListPackagesUniqueUsers(t *testing.T) {
 		t.Errorf("quiet users/calls = %d/%d, want 1/1", rows[1].UniqueUsers, rows[1].Calls)
 	}
 }
+
+// sort=last_call ranks a realm by its most recent call, not its deploy
+// height — an old, busy realm must outrank a freshly deployed, dormant one.
+// A never-called realm has no last_call_height at all and must sort last,
+// not first (a naive ascending-friendly NULL treatment would do the opposite).
+func TestListPackagesLastCallSort(t *testing.T) {
+	db := newTestDB(t)
+
+	// Deployed first (lowest block) but called most recently.
+	if err := db.UpsertPackage("gnoland1", "gno.land/r/demo/old-but-busy", "old", "g1c", "TX1", 10, "", true, 1); err != nil {
+		t.Fatalf("seed package: %v", err)
+	}
+	// Deployed later (higher block) but never called.
+	if err := db.UpsertPackage("gnoland1", "gno.land/r/demo/new-and-quiet", "new", "g1c", "TX2", 20, "", true, 1); err != nil {
+		t.Fatalf("seed package: %v", err)
+	}
+	if err := db.InsertCall("gnoland1", "TX3", 30, 0, "", "g1caller", "gno.land/r/demo/old-but-busy", "Post", true); err != nil {
+		t.Fatalf("seed call: %v", err)
+	}
+
+	rows, err := db.ListPackages("gnoland1", true, 100, 0, "last_call")
+	if err != nil {
+		t.Fatalf("ListPackages: %v", err)
+	}
+	if len(rows) != 2 || rows[0].Path != "gno.land/r/demo/old-but-busy" {
+		t.Fatalf("sort=last_call order = %+v, want the called realm first despite deploying earlier", rows)
+	}
+	if rows[0].LastCallHeight != 30 {
+		t.Errorf("last_call_height = %d, want 30", rows[0].LastCallHeight)
+	}
+	if rows[1].Path != "gno.land/r/demo/new-and-quiet" || rows[1].LastCallHeight != 0 {
+		t.Errorf("the never-called realm = %+v, want it last with no last_call_height", rows[1])
+	}
+}
