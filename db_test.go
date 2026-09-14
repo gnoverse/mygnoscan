@@ -1134,6 +1134,47 @@ func TestActiveAccountsAreScopedPerNetwork(t *testing.T) {
 	}
 }
 
+// CallTxCount is what lets a reader tell a multicall from ordinary activity:
+// call_count alone reads identically whether it came from many transactions
+// or from one address bundling everything into a single multicall.
+func TestGetActiveAccountsCallTxCount(t *testing.T) {
+	db := newTestDB(t)
+	db.SetConfiguredNetworks([]NetworkConfig{{ID: "gnoland1"}})
+
+	// A 5-message multicall, all under one tx_hash.
+	for i, fn := range []string{"Post", "Post", "Post", "Post", "Post"} {
+		if err := db.InsertCall("gnoland1", "MULTI", 10, i, "", "g1multicaller",
+			"gno.land/r/demo/boards", fn, true); err != nil {
+			t.Fatalf("seed call %d: %v", i, err)
+		}
+	}
+	// An address with 2 ordinary, separate calls.
+	if err := db.InsertCall("gnoland1", "T1", 11, 0, "", "g1ordinary", "gno.land/r/demo/boards", "Post", true); err != nil {
+		t.Fatalf("seed call: %v", err)
+	}
+	if err := db.InsertCall("gnoland1", "T2", 12, 0, "", "g1ordinary", "gno.land/r/demo/boards", "Post", true); err != nil {
+		t.Fatalf("seed call: %v", err)
+	}
+
+	accounts, err := db.GetActiveAccounts("gnoland1", "", 100, 0)
+	if err != nil {
+		t.Fatalf("GetActiveAccounts: %v", err)
+	}
+	byAddr := map[string]AccountInfo{}
+	for _, a := range accounts {
+		byAddr[a.Address] = a
+	}
+
+	multi := byAddr["g1multicaller"]
+	if multi.CallCount != 5 || multi.CallTxCount != 1 {
+		t.Errorf("multicaller call_count/call_tx_count = %d/%d, want 5/1", multi.CallCount, multi.CallTxCount)
+	}
+	ordinary := byAddr["g1ordinary"]
+	if ordinary.CallCount != 2 || ordinary.CallTxCount != 2 {
+		t.Errorf("ordinary call_count/call_tx_count = %d/%d, want 2/2 — one call each", ordinary.CallCount, ordinary.CallTxCount)
+	}
+}
+
 // Transfer volume is denominated per chain: one network's ugnot is not another's.
 // Summing them across networks produces a figure that describes nothing, so the
 // all-networks view carries the split and lets the frontend show it instead.

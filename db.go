@@ -1939,6 +1939,13 @@ type AccountInfo struct {
 	DeployCount int    `json:"deploy_count"`
 	MsgRunCount int    `json:"msgrun_count"`
 	SendCount   int    `json:"send_count"`
+	// CallTxCount is the number of distinct transactions CallCount's messages
+	// came from — always <= CallCount, and strictly less exactly when at
+	// least one of them was a multicall. Since the msg_index fix (#152)
+	// CallCount already counts every bundled message, so this is what lets a
+	// reader tell "225 calls across 225 transactions" from "225 calls, one of
+	// them a single 200-message multicall" — the two read identically without it.
+	CallTxCount int `json:"call_tx_count"`
 }
 
 // accountSortClause maps a sort name to an ORDER BY over the aggregated columns.
@@ -1983,17 +1990,17 @@ func (d *DB) GetActiveAccounts(network, sortBy string, limit, offset int) ([]Acc
 	// The consequence is that an address can appear once per chain it is active
 	// on. That is the honest shape; the network column says which is which.
 	q := `
-		SELECT address, network, SUM(call_count), SUM(deploy_count), SUM(run_count), SUM(send_count)
+		SELECT address, network, SUM(call_count), SUM(call_tx_count), SUM(deploy_count), SUM(run_count), SUM(send_count)
 		FROM (
-			SELECT caller as address, network, COUNT(*) as call_count, 0 as deploy_count, 0 as run_count, 0 as send_count FROM calls` + nFilter + ` GROUP BY network, caller
+			SELECT caller as address, network, COUNT(*) as call_count, COUNT(DISTINCT tx_hash) as call_tx_count, 0 as deploy_count, 0 as run_count, 0 as send_count FROM calls` + nFilter + ` GROUP BY network, caller
 			UNION ALL
-			SELECT creator as address, network, 0, COUNT(*), 0, 0 FROM packages` + nFilter + ` GROUP BY network, creator
+			SELECT creator as address, network, 0, 0, COUNT(*), 0, 0 FROM packages` + nFilter + ` GROUP BY network, creator
 			UNION ALL
-			SELECT caller as address, network, 0, 0, COUNT(*), 0 FROM msg_runs` + nFilter + ` GROUP BY network, caller
+			SELECT caller as address, network, 0, 0, 0, COUNT(*), 0 FROM msg_runs` + nFilter + ` GROUP BY network, caller
 			UNION ALL
-			SELECT from_address as address, network, 0, 0, 0, COUNT(*) FROM bank_sends` + nFilter + ` GROUP BY from_address, network
+			SELECT from_address as address, network, 0, 0, 0, 0, COUNT(*) FROM bank_sends` + nFilter + ` GROUP BY from_address, network
 			UNION ALL
-			SELECT to_address as address, network, 0, 0, 0, COUNT(*) FROM bank_sends` + nFilter + ` GROUP BY to_address, network
+			SELECT to_address as address, network, 0, 0, 0, 0, COUNT(*) FROM bank_sends` + nFilter + ` GROUP BY to_address, network
 		)
 		GROUP BY address, network
 		ORDER BY ` + accountSortClause(sortBy) + `
@@ -2007,7 +2014,7 @@ func (d *DB) GetActiveAccounts(network, sortBy string, limit, offset int) ([]Acc
 	accounts := []AccountInfo{}
 	for rows.Next() {
 		var a AccountInfo
-		if err := rows.Scan(&a.Address, &a.Network, &a.CallCount, &a.DeployCount, &a.MsgRunCount, &a.SendCount); err != nil {
+		if err := rows.Scan(&a.Address, &a.Network, &a.CallCount, &a.CallTxCount, &a.DeployCount, &a.MsgRunCount, &a.SendCount); err != nil {
 			return nil, err
 		}
 		accounts = append(accounts, a)

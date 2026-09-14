@@ -2407,6 +2407,18 @@ async function loadBlockDetail(height) {
   } catch (err) { container.textContent = ''; container.appendChild(el('p', { style: { color: 'var(--red)', padding: '20px' } }, 'Error: ' + err.message)); }
 }
 
+// call_count alone reads the same for "225 calls across 225 transactions"
+// and "225 calls, most of them one multicall" — call_tx_count is what tells
+// them apart, so surface it only when it actually differs.
+function callsCell(a) {
+  const span = el('span', {}, fmtNum(a.call_count));
+  if (a.call_tx_count && a.call_tx_count < a.call_count) {
+    const note = el('span', { className: 'block-ctx' }, ' · ' + fmtNum(a.call_tx_count) + ' tx');
+    note.title = a.call_count + ' calls in only ' + a.call_tx_count + ' transaction' + (a.call_tx_count === 1 ? '' : 's') + ' — at least one multicall';
+    span.appendChild(note);
+  }
+  return span;
+}
 async function loadAccounts() {
   skeletonRows(clear('accounts-list'), 6, 10);
   const statsBar = document.getElementById('accounts-stats');
@@ -2426,7 +2438,7 @@ async function loadAccounts() {
       const total = a.call_count + a.deploy_count + a.msgrun_count + (a.send_count || 0);
       tbody.appendChild(netRow(a.network,
         el('td', {}, addrLink(a.address, a.network)),
-        el('td', {}, String(a.call_count)),
+        el('td', {}, callsCell(a)),
         el('td', {}, String(a.deploy_count)),
         el('td', {}, String(a.msgrun_count)),
         el('td', {}, String(a.send_count || 0)),
