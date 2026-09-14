@@ -1431,6 +1431,7 @@ func (a *API) HandleGas(w http.ResponseWriter, r *http.Request) {
 		"fail_count":         stats.FailCount,
 		"total_source_bytes": a.db.TotalSourceBytes(network),
 		"top_realms":         stats.TopRealms,
+		"top_callers":        stats.TopCallers,
 		"top_txs":            stats.TopTxs,
 		// When the rollups behind these figures were built. Empty means they
 		// were computed live, which happens before the first refresh.

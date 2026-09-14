@@ -439,6 +439,23 @@ func initSchema(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_gas_rollup_gas
 			ON gas_realm_rollup(network, gas_used DESC);
 
+		-- Same idea as gas_realm_rollup, attributed to the caller instead of the
+		-- realm. Built from DISTINCT (network, tx_hash, caller) pairs rather than
+		-- one row per message: a transaction's gas is paid once, so a multicall
+		-- bundling many messages to the same caller must not multiply it by the
+		-- message count. See the caller branch of refreshRollups.
+		CREATE TABLE IF NOT EXISTS gas_caller_rollup (
+			network   TEXT NOT NULL,
+			caller    TEXT NOT NULL,
+			gas_used  INTEGER NOT NULL,
+			gas_fee   INTEGER NOT NULL,
+			tx_count  INTEGER NOT NULL,
+			PRIMARY KEY (network, caller)
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_gas_caller_rollup_gas
+			ON gas_caller_rollup(network, gas_used DESC);
+
 		CREATE TABLE IF NOT EXISTS gas_totals_rollup (
 			network       TEXT PRIMARY KEY,
 			tx_count      INTEGER NOT NULL,
@@ -1154,6 +1171,14 @@ type GasRealm struct {
 	TxCount int    `json:"tx_count"`
 }
 
+// GasCaller is per-address gas consumption.
+type GasCaller struct {
+	Address string `json:"address"`
+	Gas     int    `json:"gas"`
+	Fees    int    `json:"fees"`
+	TxCount int    `json:"tx_count"`
+}
+
 // GasTx is a single expensive transaction.
 type GasTx struct {
 	Hash        string `json:"hash"`
@@ -1179,6 +1204,7 @@ type GasStats struct {
 	SuccessCount   int
 	FailCount      int
 	TopRealms      []GasRealm
+	TopCallers     []GasCaller
 	TopTxs         []GasTx
 }
 
@@ -1270,6 +1296,54 @@ func (d *DB) GetGasStats(network string, topN int) (*GasStats, error) {
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Same attribution, grouped by caller instead of realm. Deduplicated on
+	// (network, tx_hash, caller) within each branch before summing: a
+	// transaction's gas is paid once, and since the multicall fix a single
+	// tx_hash can carry several `calls` rows (one per bundled message), which
+	// would otherwise multiply that transaction's gas by how many messages it
+	// held. bank_sends is included here but not in the realm attribution above
+	// — a send touches no realm, but it is still gas its sender paid.
+	callerQuery := `
+		SELECT caller, SUM(gas_used), SUM(gas_fee), COUNT(*) FROM (
+			SELECT DISTINCT c.caller AS caller, t.tx_hash, t.gas_used, t.gas_fee
+			  FROM calls c JOIN transactions t
+			    ON t.network = c.network AND t.tx_hash = c.tx_hash` + realmWhere + `
+			UNION
+			SELECT DISTINCT p.creator AS caller, t.tx_hash, t.gas_used, t.gas_fee
+			  FROM packages p JOIN transactions t
+			    ON t.network = p.network AND t.tx_hash = p.tx_hash` + realmWhere + `
+			UNION
+			SELECT DISTINCT m.caller AS caller, t.tx_hash, t.gas_used, t.gas_fee
+			  FROM msg_runs m JOIN transactions t
+			    ON t.network = m.network AND t.tx_hash = m.tx_hash` + realmWhere + `
+			UNION
+			SELECT DISTINCT b.from_address AS caller, t.tx_hash, t.gas_used, t.gas_fee
+			  FROM bank_sends b JOIN transactions t
+			    ON t.network = b.network AND t.tx_hash = b.tx_hash` + realmWhere + `
+		) GROUP BY caller ORDER BY SUM(gas_used) DESC LIMIT ?`
+	if rollupReady {
+		callerQuery = `
+		SELECT caller, SUM(gas_used), SUM(gas_fee), SUM(tx_count)
+		FROM gas_caller_rollup WHERE ` + d.networkFilter("network", network) + `
+		GROUP BY caller ORDER BY SUM(gas_used) DESC LIMIT ?`
+	}
+	callerRows, err := d.db.Query(callerQuery, append(realmArgs, topN)...)
+	if err != nil {
+		return nil, fmt.Errorf("gas by caller: %w", err)
+	}
+	for callerRows.Next() {
+		var c GasCaller
+		if err := callerRows.Scan(&c.Address, &c.Gas, &c.Fees, &c.TxCount); err != nil {
+			callerRows.Close()
+			return nil, err
+		}
+		out.TopCallers = append(out.TopCallers, c)
+	}
+	callerRows.Close()
+	if err := callerRows.Err(); err != nil {
 		return nil, err
 	}
 
@@ -3833,6 +3907,31 @@ func (d *DB) refreshRollups() error {
 			  FROM msg_runs m JOIN transactions t
 			    ON t.network = m.network AND t.tx_hash = m.tx_hash AND ` + scope + `
 		) GROUP BY network, path`); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(`DELETE FROM gas_caller_rollup`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO gas_caller_rollup (network, caller, gas_used, gas_fee, tx_count)
+		SELECT network, caller, SUM(gas_used), SUM(gas_fee), COUNT(*) FROM (
+			SELECT DISTINCT t.network, c.caller AS caller, t.tx_hash, t.gas_used, t.gas_fee
+			  FROM calls c JOIN transactions t
+			    ON t.network = c.network AND t.tx_hash = c.tx_hash AND ` + scope + `
+			UNION
+			SELECT DISTINCT t.network, p.creator AS caller, t.tx_hash, t.gas_used, t.gas_fee
+			  FROM packages p JOIN transactions t
+			    ON t.network = p.network AND t.tx_hash = p.tx_hash AND ` + scope + `
+			UNION
+			SELECT DISTINCT t.network, m.caller AS caller, t.tx_hash, t.gas_used, t.gas_fee
+			  FROM msg_runs m JOIN transactions t
+			    ON t.network = m.network AND t.tx_hash = m.tx_hash AND ` + scope + `
+			UNION
+			SELECT DISTINCT t.network, b.from_address AS caller, t.tx_hash, t.gas_used, t.gas_fee
+			  FROM bank_sends b JOIN transactions t
+			    ON t.network = b.network AND t.tx_hash = b.tx_hash AND ` + scope + `
+		) GROUP BY network, caller`); err != nil {
 		return err
 	}
 
