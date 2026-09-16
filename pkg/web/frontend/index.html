@@ -70,7 +70,12 @@ nav a:hover, nav a.active { color: var(--accent); text-decoration: none; }
 .stat-link:hover .label { color: var(--accent); }
 .stat-link:hover .value { text-decoration: underline; }
 main { padding: 20px 0; }
-.section { margin-bottom: 32px; }
+/* overflow-x lets a table with a wide column (events' free-text "attributes",
+   say) scroll its own table rather than pushing the whole page wider than
+   the viewport — every table on the site lives directly inside a .section,
+   so this one rule covers all of them without touching each table's own
+   markup. */
+.section { margin-bottom: 32px; overflow-x: auto; }
 .section-title { font-size: 14px; color: var(--fg2); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
 table { width: 100%; border-collapse: collapse; }
 th { text-align: left; font-size: 11px; color: var(--fg2); text-transform: uppercase; letter-spacing: 1px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
@@ -3110,22 +3115,76 @@ async function loadValidators() {
   }
 }
 
+// renderValoperRows groups registrations by validator — the address a
+// registration is *about* (store.ValoperRegistration.Address), not
+// necessarily who sent it — rather than listing every registration
+// transaction as its own unrelated-looking row. Each validator gets one
+// summary row (moniker first, then created-at/last-action from its earliest
+// and newest registration) with a click-to-expand full history, using the
+// same registrations the flat list always fetched — no new endpoint.
 function renderValoperRows(container) {
   const wrap = document.getElementById('valoper-rows');
   if (!wrap) return;
   wrap.textContent = '';
-  const tbl = el('table');
-  tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'validator'), el('th', {}, 'function'), el('th', {}, 'moniker'), el('th', {}, 'status'))));
-  const tbody = el('tbody');
+
+  const byValidator = new Map();
   for (const reg of (_valopersCache || [])) {
     if (!_valopersShowFailed && !reg.success) continue;
-    tbody.appendChild(el('tr', {},
-      el('td', {}, blockLink(reg.block_height)),
-      el('td', { className: 'truncate' }, addrLink(reg.address || reg.caller)),
-      el('td', {}, reg.func),
-      el('td', {}, reg.moniker || '-'),
-      el('td', {}, statusBadge(reg.success))
-    ));
+    const key = reg.address || reg.caller;
+    if (!byValidator.has(key)) byValidator.set(key, []);
+    byValidator.get(key).push(reg);
+  }
+
+  const tbl = el('table');
+  tbl.appendChild(el('thead', {}, el('tr', {},
+    el('th', {}, 'moniker'), el('th', {}, 'validator'), el('th', {}, 'created at'),
+    el('th', {}, 'last action'), el('th', {}, 'registrations'), el('th', {}, 'status'))));
+  const tbody = el('tbody');
+  for (const [addr, regs] of byValidator) {
+    const sorted = regs.slice().sort((a, b) => a.block_height - b.block_height);
+    const created = sorted[0];
+    const last = sorted[sorted.length - 1];
+    // The most recent registration that actually named a moniker — most
+    // valopers functions do not set one (see the store's own comment on
+    // valoper_registrations), so the latest call is not always the latest name.
+    let moniker = '–';
+    for (let i = sorted.length - 1; i >= 0; i--) {
+      if (sorted[i].moniker) { moniker = sorted[i].moniker; break; }
+    }
+    const allOk = sorted.every(r => r.success);
+    const detailId = 'valoper-hist-' + addr;
+
+    const toggleRow = el('tr', { style: { cursor: 'pointer' }, onclick: () => {
+      const d = document.getElementById(detailId);
+      if (d) d.hidden = !d.hidden;
+    } });
+    toggleRow.appendChild(el('td', {}, moniker));
+    toggleRow.appendChild(el('td', {}, addrLink(addr)));
+    toggleRow.appendChild(el('td', {}, blockWithAge(created.block_height, created.block_time)));
+    toggleRow.appendChild(el('td', {}, blockWithAge(last.block_height, last.block_time)));
+    toggleRow.appendChild(el('td', {}, fmtNum(sorted.length)));
+    toggleRow.appendChild(el('td', {}, allOk ? statusBadge(true) : badge('fail', 'has failures')));
+    tbody.appendChild(toggleRow);
+
+    const detailRow = el('tr', { id: detailId, hidden: true });
+    const detailTd = el('td', { colspan: '6', style: { padding: '0 0 12px' } });
+    const dTbl = el('table', { style: { margin: '4px 0 0' } });
+    dTbl.appendChild(el('thead', {}, el('tr', {},
+      el('th', {}, 'block'), el('th', {}, 'function'), el('th', {}, 'moniker'), el('th', {}, 'status'), el('th', {}, 'tx'))));
+    const dBody = el('tbody');
+    for (const r of sorted.slice().reverse()) {
+      dBody.appendChild(el('tr', {},
+        el('td', {}, blockWithAge(r.block_height, r.block_time)),
+        el('td', {}, r.func),
+        el('td', {}, r.moniker || '–'),
+        el('td', {}, statusBadge(r.success)),
+        el('td', {}, txLink(r.tx_hash, r.block_height, null, { showBlock: false }))
+      ));
+    }
+    dTbl.appendChild(dBody);
+    detailTd.appendChild(dTbl);
+    detailRow.appendChild(detailTd);
+    tbody.appendChild(detailRow);
   }
   tbl.appendChild(tbody); wrap.appendChild(tbl);
 }
@@ -3985,6 +4044,22 @@ function renderEventRows() {
   pager(section, _eventsPage, matches.length, p => { _eventsPage = p; renderEventRows(); });
 }
 
+// gnoUserEl renders a gov/dao "@username" identity — a proposal's author or
+// a vote's voter. gov/dao's own render never gives an address for either,
+// only a registered gno.land username (resolved server-side against
+// r/sys/users when possible; see resolveGnoUsernameCached). Linked when an
+// address came back, sharing data-hl with every other occurrence of that
+// address so hovering either form cross-highlights; otherwise a plain
+// "@username" exactly as before, rather than a broken or misleading link.
+function gnoUserEl(username, address) {
+  if (!username) return document.createTextNode('');
+  if (!address) return document.createTextNode('@' + username);
+  const a = link('@' + username, () => navigate('/address/' + address + netSuffix()));
+  a.setAttribute('data-hl', address);
+  a.title = address;
+  return a;
+}
+
 // govDAOStatusBadge labels a proposal's lifecycle state. gov/dao's own text
 // is the source of truth (ACCEPTED / REJECTED, or an in-progress status
 // while voting is still open) — this only maps it onto the badge colors the
@@ -4122,7 +4197,7 @@ async function loadGovDAO() {
       pBody.appendChild(el('tr', { style: { cursor: 'pointer' }, onclick: goToProposal },
         el('td', {}, link('#' + p.id, goToProposal)),
         el('td', {}, p.title || ''),
-        el('td', {}, p.author ? ('@' + p.author) : ''),
+        el('td', {}, gnoUserEl(p.author, p.author_address)),
         el('td', {}, govDAOStatusBadge(p.status)),
         el('td', {}, voteBar(p.yes_percent || 0, p.no_percent || 0, p.abstain_percent || 0)),
         el('td', {}, (p.tiers || []).join(', ')),
@@ -4194,7 +4269,8 @@ async function loadGovDAODetail(id) {
     container.appendChild(titleRow);
 
     const meta = el('div', { style: { color: 'var(--fg2)', margin: '8px 0 16px' } });
-    meta.append('proposed by ' + (p.author ? ('@' + p.author) : 'unknown'));
+    meta.append('proposed by ');
+    meta.appendChild(p.author ? gnoUserEl(p.author, p.author_address) : document.createTextNode('unknown'));
     if ((p.tiers || []).length) meta.append(' · eligible to vote: ' + p.tiers.join(', '));
     container.appendChild(meta);
 
@@ -4228,7 +4304,7 @@ async function loadGovDAODetail(id) {
       const vBody = el('tbody');
       for (const v of p.votes) {
         vBody.appendChild(el('tr', {},
-          el('td', {}, '@' + v.address),
+          el('td', {}, gnoUserEl(v.voter, v.voter_address)),
           el('td', {}, badge('realm', v.tier)),
           el('td', {}, v.option === 'YES' ? badge('ok', 'yes') : v.option === 'NO' ? badge('fail', 'no') : badge('', 'abstain'))
         ));
@@ -4813,10 +4889,12 @@ async function loadTxDetail(hash) {
     }
     // Split response.data per message by \n\n
     const msgData = (tx.response?.data || '').split('\n\n').map(s => s.trim()).filter(Boolean);
-    container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'messages (' + (tx.messages?.length || 0) + ')'));
-    for (const [i, msg] of (tx.messages || []).entries()) container.appendChild(renderMessageEl(msg, i, msgData[i], msgLogs[i]));
-
-    // Storage section (dedicated, separate from events)
+    // Storage section (dedicated, separate from events) — shown unconditionally
+    // above the messages/events tabs below, rather than folded into "events":
+    // it is mygnoscan's own before/delta/after-by-realm view, not a rendering
+    // of the raw StorageDepositEvent/StorageUnlockEvent rows (those still
+    // appear as ordinary events too), and it is useful often enough on a
+    // storage-heavy tx that hiding it behind a click cost more than it saved.
     const storageEvs = events.filter(ev => ev.__typename === 'StorageDepositEvent' || ev.__typename === 'StorageUnlockEvent');
     if (storageEvs.length > 0) {
       container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'storage (' + storageEvs.length + ')'));
@@ -4881,10 +4959,49 @@ async function loadTxDetail(hash) {
       ));
     }
 
-    // Events section — GnoEvents only
+    // Messages / Events, as tabs rather than two stacked sections — the
+    // layout gnoscan.io's own tx detail uses, and a real improvement once
+    // messages can run to dozens of collapsed rows: scrolling past all of
+    // them to reach events (or vice versa) is exactly the friction tabs
+    // exist to remove. Built standalone rather than reusing realm-detail's
+    // switchTab: that targets fixed global IDs (#tab-events among them),
+    // which would collide with this page's own tab content — every view's
+    // markup lives in the DOM at once in this single-page app, so a shared
+    // "#tab-events" would be two different elements answering to one id.
+    const msgCount = tx.messages?.length || 0;
     const gnoEvents = events.filter(ev => ev.__typename === 'GnoEvent');
+    const tabBar = el('div', { className: 'tabs', style: { marginTop: '24px' } });
+    const msgTabBtn = el('div', { className: 'tab active' }, 'messages (' + msgCount + ')');
+    const evTabBtn = el('div', { className: 'tab' }, 'events (' + gnoEvents.length + ')');
+    tabBar.appendChild(msgTabBtn);
+    tabBar.appendChild(evTabBtn);
+    container.appendChild(tabBar);
+
+    const msgPane = el('div', { className: 'tab-content active' });
+    const evPane = el('div', { className: 'tab-content' });
+    container.appendChild(msgPane);
+    container.appendChild(evPane);
+
+    const showPane = (activeBtn, activePane, otherBtn, otherPane) => {
+      activeBtn.classList.add('active'); otherBtn.classList.remove('active');
+      activePane.classList.add('active'); otherPane.classList.remove('active');
+    };
+    msgTabBtn.addEventListener('click', () => showPane(msgTabBtn, msgPane, evTabBtn, evPane));
+    evTabBtn.addEventListener('click', () => showPane(evTabBtn, evPane, msgTabBtn, msgPane));
+
+    // A multicall's messages used to render as N full detail cards stacked
+    // one after another — every caller/realm/function/args table, repeated
+    // in full, for however many messages the tx bundled. Fine for the
+    // overwhelmingly common single-message case, unreadable for a real
+    // multicall (the 63-message ModAddPost batch this session's very first
+    // fix was about, say). Multiple messages now show as a one-line inline
+    // summary each, click-to-expand for the full detail — a single message
+    // still renders fully expanded, unchanged.
+    const multiMsg = msgCount > 1;
+    for (const [i, msg] of (tx.messages || []).entries()) msgPane.appendChild(renderMessageEl(msg, i, msgData[i], msgLogs[i], multiMsg));
+    if (msgCount === 0) msgPane.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '13px' } }, 'no messages'));
+
     if (gnoEvents.length > 0) {
-      container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'events (' + gnoEvents.length + ')'));
       for (const ev of gnoEvents) {
         const evEl = el('div', { className: 'card' });
         const hdr = el('div', { style: { marginBottom: '4px' } });
@@ -4897,9 +5014,12 @@ async function loadTxDetail(hash) {
           ae.appendChild(linkify(a.value));
           evEl.appendChild(ae);
         }
-        container.appendChild(evEl);
+        evPane.appendChild(evEl);
       }
+    } else {
+      evPane.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '13px' } }, 'no events'));
     }
+
     container.appendChild(rawJsonToggle(tx));
   } catch (err) { container.textContent = ''; container.appendChild(el('p', { style: { color: 'var(--red)', padding: '20px' } }, 'Error: ' + err.message)); }
 }
@@ -4914,7 +5034,16 @@ async function loadAddressDetail(addr) {
     for (const b of (Array.isArray(blocksData) ? blocksData : [])) blockTime[b.height] = b.time;
     container.textContent = '';
     // Header
-    container.appendChild(el('h2', { style: { margin: '16px 0 8px' } }, 'Address'));
+    const titleRow = el('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', margin: '16px 0 8px' } },
+      el('h2', { style: { margin: 0 } }, 'Address'));
+    // gno.land's own user page for this address — the same "see on gnoweb"
+    // link realm/package pages already have, for the one identity kind that
+    // didn't have it yet.
+    titleRow.appendChild(el('a', {
+      href: 'https://gno.land/u/' + addr, target: '_blank', rel: 'noopener',
+      className: 'watch-btn', style: { textDecoration: 'none', fontSize: '12px' },
+    }, 'see on gnoweb ↗'));
+    container.appendChild(titleRow);
     const info = addrInfo(addr);
     if (info) {
       const labelRow = el('div', { style: { color: 'var(--accent)', marginBottom: '4px', fontSize: '16px' } }, info.label);
@@ -5246,6 +5375,26 @@ function addTableFilter(container, table) {
   container.insertBefore(note, table);
 }
 
+// parseDisplayedNum extracts the numeric value behind a formatted display
+// string like "601 010 GNOT" or "1,234.5" for sorting purposes.
+//
+// `fmtNum`'s `toLocaleString()` groups digits using whatever the *viewer's
+// browser* considers correct for its own locale — a plain comma in en-US,
+// but a plain space or a narrow no-break space (U+202F) in many others,
+// e.g. fr-FR's "601 010". Stripping only commas (the old behavior) left
+// every other locale's numbers looking like an ordinary space-separated
+// column to parseFloat, which reads only up to the first space — so
+// "601 010" sorted as 601, "1 234 567" as 1, wrong by orders of magnitude
+// and not visibly wrong until you actually clicked "sort by volume".
+// Stripping every grouping character first, then taking the leading numeric
+// run, handles all of them the same way regardless of the units text (" GNOT")
+// that follows.
+function parseDisplayedNum(s) {
+  const cleaned = s.replace(/[,\s  ]/g, '');
+  const m = cleaned.match(/^-?\d+(\.\d+)?/);
+  return m ? parseFloat(m[0]) : NaN;
+}
+
 // Makes table headers clickable for sorting. Sorts by text content.
 function makeSortable(table) {
   const headers = table.querySelectorAll('th');
@@ -5262,9 +5411,8 @@ function makeSortable(table) {
       rows.sort((a, b) => {
         const at = (a.children[colIdx]?.textContent || '').trim();
         const bt = (b.children[colIdx]?.textContent || '').trim();
-        // Try numeric sort
-        const an = parseFloat(at.replace(/,/g, ''));
-        const bn = parseFloat(bt.replace(/,/g, ''));
+        const an = parseDisplayedNum(at);
+        const bn = parseDisplayedNum(bt);
         if (!isNaN(an) && !isNaN(bn)) return asc ? an - bn : bn - an;
         return asc ? at.localeCompare(bt) : bt.localeCompare(at);
       });
@@ -5311,11 +5459,55 @@ function argValueEl(val) {
   return truncatedText(val);
 }
 
-function renderMessageEl(msg, index, returnData, msgLog) {
+// inlineMessageSummaryEl is the one-line "what is this message" summary
+// shown as a multicall message's collapsed row — caller/creator included,
+// unlike txDetailEl's list-row form, since a multi-message tx has no
+// separate "signer" column to fall back on and callers can in principle
+// differ message to message.
+function inlineMessageSummaryEl(v) {
+  const s = el('span', { style: { fontSize: '13px' } });
+  switch (v.__typename) {
+    case 'MsgCall':
+      s.appendChild(addrLink(v.caller));
+      s.append(' → ');
+      s.appendChild(realmPathEl(v.pkg_path));
+      s.append('::');
+      s.appendChild(funcSpan(v.func));
+      if ((v.args || []).length) s.appendChild(el('span', { className: 'block-ctx' }, ' (' + v.args.length + ' arg' + (v.args.length > 1 ? 's' : '') + ')'));
+      return s;
+    case 'MsgAddPackage':
+      s.appendChild(addrLink(v.creator));
+      s.append(' deploys ');
+      s.appendChild(realmPathEl(v.package?.path || ''));
+      return s;
+    case 'MsgRun':
+      s.append('run by ');
+      s.appendChild(addrLink(v.caller));
+      return s;
+    case 'BankMsgSend': {
+      s.appendChild(addrLink(v.from_address));
+      s.append(' → ');
+      s.appendChild(addrLink(v.to_address));
+      const amt = fmtCoins(v.amount);
+      if (amt) s.appendChild(el('span', { className: 'block-ctx' }, ' ' + amt));
+      return s;
+    }
+    default:
+      s.append(msgKind(v) || v.__typename || 'message');
+      return s;
+  }
+}
+
+// renderMessageEl renders one message of a transaction. collapsed (only
+// ever true for a multicall — see loadTxDetail) wraps the full detail in a
+// <details> behind inlineMessageSummaryEl, and shows every address in it in
+// full rather than truncated: a single always-visible message has no reason
+// to change, but a reader who explicitly expanded one of several messages
+// asked to see it, ellipsis included.
+function renderMessageEl(msg, index, returnData, msgLog, collapsed) {
   const v = msg.value;
-  const div = el('div', { className: 'card' });
+  const addr = collapsed ? addrLinkFull : addrLink;
   const typeLabel = { MsgCall: '/vm.m_call', MsgAddPackage: '/vm.m_addpkg', MsgRun: '/vm.m_run', BankMsgSend: '/bank.MsgSend' }[v.__typename] || msgKind(msg) || msg.typeUrl || v.__typename;
-  const hdr = el('div', { style: { marginBottom: '8px' } }); hdr.appendChild(typeBadge(v.__typename, msg)); hdr.append(' #' + index + '  '); hdr.appendChild(el('span', { style: { color: 'var(--fg2)', fontSize: '12px', fontFamily: 'var(--mono)' } }, typeLabel)); div.appendChild(hdr);
   const tbl = el('table', { style: { width: '100%' } });
   const addRow = (label, content) => {
     const td = el('td', { style: { wordBreak: 'break-word', maxWidth: '0', width: '100%' } });
@@ -5328,11 +5520,11 @@ function renderMessageEl(msg, index, returnData, msgLog) {
   };
   switch (v.__typename) {
     case 'MsgAddPackage':
-      addRow('creator', addrLink(v.creator));
+      addRow('creator', addr(v.creator));
       addRow('package', realmPathEl(v.package?.path || ''));
       addRow('files', (v.package?.files || []).map(f => f.name).join(', ')); break;
     case 'MsgCall': {
-      addRow('caller', addrLink(v.caller));
+      addRow('caller', addr(v.caller));
       addRow('realm', realmPathEl(v.pkg_path));
       // Function name as link to source tab (scrolls to function)
       const fnEl = el('span');
@@ -5394,7 +5586,26 @@ function renderMessageEl(msg, index, returnData, msgLog) {
   if (msgLog) {
     addRow('log', el('span', { style: { fontFamily: 'var(--mono)', fontSize: '12px', color: 'var(--fg2)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' } }, msgLog));
   }
-  div.appendChild(tbl); return div;
+  if (!collapsed) {
+    const div = el('div', { className: 'card' });
+    const hdr = el('div', { style: { marginBottom: '8px' } });
+    hdr.appendChild(typeBadge(v.__typename, msg));
+    hdr.append(' #' + index + '  ');
+    hdr.appendChild(el('span', { style: { color: 'var(--fg2)', fontSize: '12px', fontFamily: 'var(--mono)' } }, typeLabel));
+    div.appendChild(hdr);
+    div.appendChild(tbl);
+    return div;
+  }
+  const details = el('details', { className: 'card' });
+  const summary = el('summary', { style: { cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' } });
+  summary.appendChild(typeBadge(v.__typename, msg));
+  summary.append('#' + index + '  ');
+  summary.appendChild(inlineMessageSummaryEl(v));
+  details.appendChild(summary);
+  const body = el('div', { style: { marginTop: '8px' } });
+  body.appendChild(tbl);
+  details.appendChild(body);
+  return details;
 }
 
 function switchTab(name, tabEl) {

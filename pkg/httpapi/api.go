@@ -434,6 +434,7 @@ func (a *API) enrichGovDAOProposals(ctx context.Context, network, rpcURL string,
 			p.YesPercent = detail.YesPercent
 			p.NoPercent = detail.NoPercent
 			p.AbstainPercent = detail.AbstainPercent
+			p.AuthorAddress = resolveGnoUsernameCached(ctx, rpcURL, p.Author)
 		}(&proposals[i])
 	}
 
@@ -484,10 +485,15 @@ func (a *API) HandleGovDAOProposal(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "invalid proposal id", 400)
 		return
 	}
-	detail := FetchGovDAOProposal(r.Context(), network, a.rpcURLFor(network), id)
+	rpcURL := a.rpcURLFor(network)
+	detail := FetchGovDAOProposal(r.Context(), network, rpcURL, id)
 	detail.RelatedCalls = a.govDAORelatedCalls(r.Context(), network, id)
 	if runs, err := a.db.GovDAORelatedMsgRuns(network, detail.ExecutorPkgPath); err == nil {
 		detail.RelatedMsgRuns = runs
+	}
+	detail.AuthorAddress = resolveGnoUsernameCached(r.Context(), rpcURL, detail.Author)
+	for i := range detail.Votes {
+		detail.Votes[i].VoterAddress = resolveGnoUsernameCached(r.Context(), rpcURL, detail.Votes[i].Voter)
 	}
 	JSONResponse(w, detail)
 }

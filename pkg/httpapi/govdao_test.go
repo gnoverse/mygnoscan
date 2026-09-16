@@ -1,8 +1,15 @@
 package httpapi
 
 import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // These fixtures are gov/dao's actual Render() output, captured live from
@@ -208,6 +215,97 @@ func TestCleanGovDAOMarkdown(t *testing.T) {
 	}
 }
 
+// govDAOResolveNameFixture is the real vm/qeval response for
+// gno.land/r/sys/users.ResolveName("aeddi"), captured live from mainnet
+// 2026-09-16 — Gno's own debug representation of the returned
+// (*UserData, bool), not JSON.
+const govDAOResolveNameFixture = `(&(struct{("g1aeddlftlfk27ret5rf750d7w5dume3kcsm8r8m" .uverse.address),("aeddi" string),(false bool)} gno.land/r/sys/users.UserData) *gno.land/r/sys/users.UserData)
+(true bool)`
+
+func TestResolveGnoUsername(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Params struct{ Data string } `json:"params"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		decoded, _ := base64.StdEncoding.DecodeString(req.Params.Data)
+		want := `gno.land/r/sys/users.ResolveName("aeddi")`
+		if string(decoded) != want {
+			t.Errorf("qeval expression = %q, want %q", decoded, want)
+		}
+		resp := map[string]any{
+			"result": map[string]any{
+				"response": map[string]any{
+					"ResponseBase": map[string]any{
+						"Data": base64.StdEncoding.EncodeToString([]byte(govDAOResolveNameFixture)),
+					},
+				},
+			},
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	addr, err := resolveGnoUsername(context.Background(), srv.URL, "aeddi")
+	if err != nil {
+		t.Fatalf("resolveGnoUsername: %v", err)
+	}
+	if addr != "g1aeddlftlfk27ret5rf750d7w5dume3kcsm8r8m" {
+		t.Errorf("addr = %q, want g1aeddlftlfk27ret5rf750d7w5dume3kcsm8r8m", addr)
+	}
+}
+
+func TestResolveGnoUsernameCachedFallsBackOnFailure(t *testing.T) {
+	usernameCache.mu.Lock()
+	usernameCache.byName = map[string]string{}
+	usernameCache.fetched = map[string]time.Time{}
+	usernameCache.mu.Unlock()
+
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			resp := map[string]any{
+				"result": map[string]any{
+					"response": map[string]any{
+						"ResponseBase": map[string]any{
+							"Data": base64.StdEncoding.EncodeToString([]byte(govDAOResolveNameFixture)),
+						},
+					},
+				},
+			}
+			json.NewEncoder(w).Encode(resp)
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	first := resolveGnoUsernameCached(context.Background(), srv.URL, "aeddi")
+	if first != "g1aeddlftlfk27ret5rf750d7w5dume3kcsm8r8m" {
+		t.Fatalf("first resolve = %q", first)
+	}
+
+	// Force the TTL to have expired, then fail the request. The cached
+	// address should still come back rather than an empty string — a
+	// transient RPC hiccup should not un-link a name that resolved fine a
+	// moment ago.
+	usernameCache.mu.Lock()
+	usernameCache.fetched["aeddi"] = time.Now().Add(-2 * usernameCacheTTL)
+	usernameCache.mu.Unlock()
+
+	second := resolveGnoUsernameCached(context.Background(), srv.URL, "aeddi")
+	if second != first {
+		t.Errorf("second resolve = %q after a failed refresh, want the stale value %q", second, first)
+	}
+	if calls != 2 {
+		t.Errorf("calls = %d, want 2 (one per resolve attempt)", calls)
+	}
+}
+
 func TestParseGovDAOVotes(t *testing.T) {
 	votes := parseGovDAOVotes(govDAOVotesFixture)
 	if len(votes) != 2 {
@@ -218,8 +316,8 @@ func TestParseGovDAOVotes(t *testing.T) {
 			t.Errorf("unexpected vote: %+v", v)
 		}
 	}
-	addrs := map[string]bool{votes[0].Address: true, votes[1].Address: true}
-	if !addrs["aeddi"] || !addrs["moul"] {
+	voters := map[string]bool{votes[0].Voter: true, votes[1].Voter: true}
+	if !voters["aeddi"] || !voters["moul"] {
 		t.Errorf("votes = %+v, want aeddi and moul", votes)
 	}
 }
