@@ -4440,6 +4440,20 @@ async function loadTxDetail(hash) {
     if (tx.chain_id) tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'network'), el('td', {}, tx.chain_id)));
     tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'gas'), el('td', {}, fmtNum(tx.gas_used) + ' / ' + fmtNum(tx.gas_wanted) + ' (' + gasEff + '%)')));
     tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'fee'), el('td', {}, fmtUgnot(tx.gas_fee?.amount || 0, tx.gas_fee?.denom))));
+    // Storage deposit, always shown — including as a zero.
+    //
+    // The stats bar above already surfaces storage, but only when there is any,
+    // so its absence reads as "not reported" rather than "this transaction cost
+    // no storage". Beside gas and fee, where a reader is totalling up what a
+    // transaction cost, the zero is the informative case.
+    //
+    // Net of unlocks: a call that frees more than it writes is refunded, and
+    // showing the gross deposit alone would overstate what it cost.
+    const netStorageBytes = storageBytes - unlockBytes;
+    const netStorageFee = storageFee - unlockFee;
+    tbl.appendChild(el('tr', {},
+      el('td', { style: { color: 'var(--fg2)' } }, 'storage deposit'),
+      el('td', {}, fmtUgnot(netStorageFee, 'ugnot') + ' (' + fmtBytes(netStorageBytes) + ')')));
     tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'memo'), el('td', {}, tx.memo || '-')));
     const sr = el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'status'));
     sr.appendChild(el('td', {}, statusBadge(tx.success))); tbl.appendChild(sr);
