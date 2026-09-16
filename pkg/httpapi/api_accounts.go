@@ -47,6 +47,7 @@ func (a *API) HandleAddress(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err.Error(), 500)
 		return
 	}
+	a.stampInertStatus(r.Context(), pkgs)
 
 	// The oldest block on this page, not the address's first ever: paging back
 	// would otherwise make "first seen" wander. Named accordingly.

@@ -209,6 +209,13 @@ type PackageInfo struct {
 	// for storage it no longer holds.
 	StorageDeposit int `json:"storage_deposit"`
 	StorageBytes   int `json:"storage_bytes"`
+	// Status flags a row currently parked under gno.land's inert code
+	// submission policy — submitted and stored, but not yet callable — or
+	// empty for a live package. This query leaves it unset; the API layer
+	// stamps it afterward (see httpapi.stampInertStatus), the same split
+	// AccountInfo.Balance follows for the same reason: it is live RPC state,
+	// not something a SQL query over indexed history can answer.
+	Status string `json:"status,omitempty"`
 }
 
 type PackageDetail struct {
