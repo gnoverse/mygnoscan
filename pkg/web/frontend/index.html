@@ -4991,6 +4991,38 @@ async function loadTxDetail(hash) {
       ));
     }
 
+    // Plain-language action summary, one line per message — answers "what
+    // did this transaction actually do" before the reader opens any
+    // message's own detail. Shown regardless of message count: even a
+    // single-message tx benefits from a short sentence above its full
+    // detail card. Deliberately message-derived only, not event-derived:
+    // the events array below is not reliably attributable to a specific
+    // message with the data available today (response.log's per-message
+    // events are empty in practice), and a wrong swap/mint amount guessed
+    // from the wrong message would be worse than no summary line at all —
+    // see #194 for the event-derived follow-up (swap amounts, mint
+    // detection) this deliberately leaves out.
+    const deployPaths = [...new Set((tx.messages || [])
+      .filter(m => m.value?.__typename === 'MsgAddPackage' && m.value.package?.path)
+      .map(m => m.value.package.path))];
+    let inertByPath = {};
+    if (deployPaths.length && getNetwork() !== 'all') {
+      const results = await Promise.all(deployPaths.map(p =>
+        api('inert/package/' + p.replace('gno.land/', '')).then(r => [p, r.meta]).catch(() => [p, null])));
+      for (const [p, meta] of results) if (meta) inertByPath[p] = meta;
+    }
+    if ((tx.messages || []).length > 0) {
+      container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'summary'));
+      const summaryCard = el('div', { className: 'card' });
+      tx.messages.forEach((msg, i) => {
+        const row = el('div', { style: { padding: '3px 0' } });
+        if (tx.messages.length > 1) row.appendChild(el('span', { className: 'block-ctx', style: { marginRight: '6px' } }, (i + 1) + '.'));
+        row.appendChild(describeAction(msg.value || {}, inertByPath));
+        summaryCard.appendChild(row);
+      });
+      container.appendChild(summaryCard);
+    }
+
     // Messages / Events, as tabs rather than two stacked sections — the
     // layout gnoscan.io's own tx detail uses, and a real improvement once
     // messages can run to dozens of collapsed rows: scrolling past all of
@@ -5521,6 +5553,38 @@ function inlineMessageSummaryEl(v) {
       s.append(msgKind(v) || v.__typename || 'message');
       return s;
   }
+}
+
+// describeAction renders one plain-language summary line for a message,
+// for the tx-detail "summary" block. It rewords the one case where
+// inlineMessageSummaryEl's literal call description reads oddly for what
+// the call actually does — approving an allowance down to zero is a
+// revoke, not an approval of nothing — and carries the parked badge on a
+// paused deploy, since seeing that only on click-through misses exactly
+// the reader who most needed it. Everything else falls straight through
+// to inlineMessageSummaryEl, per #194's own rule that an unrecognized
+// action must degrade to the existing rendering, never disappear.
+function describeAction(v, inertByPath) {
+  if (v.__typename === 'MsgCall' && v.func === 'Approve' && (v.args || []).length >= 2 && v.args[1] === '0') {
+    const s = el('span', { style: { fontSize: '13px' } });
+    s.append('Revoke approval for ');
+    s.appendChild(addrLink(v.args[0]));
+    s.append(' on ');
+    s.appendChild(realmPathEl(v.pkg_path));
+    return s;
+  }
+  if (v.__typename === 'MsgAddPackage') {
+    const s = inlineMessageSummaryEl(v);
+    const meta = inertByPath && inertByPath[v.package?.path];
+    if (meta && meta.status === 'inert') {
+      const parked = badge('fail', 'parked — not yet callable');
+      parked.title = meta.reason || 'awaiting a package approver';
+      s.appendChild(document.createTextNode(' '));
+      s.appendChild(parked);
+    }
+    return s;
+  }
+  return inlineMessageSummaryEl(v);
 }
 
 // renderMessageEl renders one message of a transaction. collapsed (only
