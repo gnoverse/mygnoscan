@@ -104,6 +104,19 @@ func (a *API) HandleValidatorMonikers(w http.ResponseWriter, r *http.Request) {
 	JSONResponse(w, monikers)
 }
 
+// HandleValidatorsLive serves gnockpit's live consensus validator set —
+// voting power, missed-block counts, SPOF and average block time — the same
+// disjoint consensus-address identity space as HandleValidatorMonikers (see
+// its comment). Best-effort like that handler: an empty list means gnockpit
+// could not be reached, not an error.
+func (a *API) HandleValidatorsLive(w http.ResponseWriter, r *http.Request) {
+	validators := FetchGnockpitValidators(r.Context())
+	if validators == nil {
+		validators = []GnockpitValidator{}
+	}
+	JSONResponse(w, validators)
+}
+
 func (a *API) HandleTokens(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
 	// Get all packages that look like token contracts (import grc20)

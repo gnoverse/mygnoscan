@@ -20,13 +20,25 @@ import (
 // A var, not a const, so a test can point it at a fake server.
 var gnockpitURL = "https://gnockpit.gno.land/api/status"
 
-type gnockpitValidator struct {
-	Name    string `json:"name"`
-	Address string `json:"address"`
+// GnockpitValidator is one entry of gnockpit's live consensus validator set,
+// keyed by consensus address. Voting power arrives as a string in gnockpit's
+// own JSON (large chains would overflow a JS number), so it is kept as one
+// here too rather than parsed into something that could silently truncate.
+type GnockpitValidator struct {
+	Name        string `json:"name"`
+	Address     string `json:"address"`
+	VotingPower string `json:"voting_power"`
+	// SPOF marks a validator whose loss alone would drop the remaining voting
+	// power below the BFT quorum (2/3+1 of total) — consensus cannot proceed
+	// without it.
+	SPOF       bool `json:"spof"`
+	Missed100  int  `json:"missed_100"`
+	Missed24h  int  `json:"missed_24h"`
+	AvgBlockMs int  `json:"avg_block_ms"`
 }
 
 type gnockpitStatus struct {
-	Validators []gnockpitValidator `json:"validators"`
+	Validators []GnockpitValidator `json:"validators"`
 }
 
 // gnockpitCache holds the last successful fetch. gnockpit describes one
@@ -35,9 +47,9 @@ type gnockpitStatus struct {
 // which is a harmless miss rather than a wrong label, so the cache is not
 // scoped per network.
 var gnockpitCache = struct {
-	mu       sync.Mutex
-	monikers map[string]string
-	fetched  time.Time
+	mu         sync.Mutex
+	validators []GnockpitValidator
+	fetched    time.Time
 }{}
 
 // gnockpitCacheTTL trades freshness for not hammering a third party this
@@ -46,34 +58,56 @@ var gnockpitCache = struct {
 // costs nothing a reader would notice.
 const gnockpitCacheTTL = 5 * time.Minute
 
-// FetchGnockpitMonikers returns consensus-address -> moniker, best-effort.
-// Never errors outward: gnockpit is an optional enrichment from a service
-// this instance does not run, so its absence must degrade to no monikers,
-// not a broken page. Findings are cached across requests and networks.
-func FetchGnockpitMonikers(ctx context.Context) map[string]string {
+// fetchGnockpitStatus returns gnockpit's live validator set, cached. Never
+// errors outward: gnockpit is an optional enrichment from a service this
+// instance does not run, so its absence must degrade to nothing shown, not a
+// broken page.
+func fetchGnockpitStatus(ctx context.Context) []GnockpitValidator {
 	gnockpitCache.mu.Lock()
-	if gnockpitCache.monikers != nil && time.Since(gnockpitCache.fetched) < gnockpitCacheTTL {
+	if gnockpitCache.validators != nil && time.Since(gnockpitCache.fetched) < gnockpitCacheTTL {
 		defer gnockpitCache.mu.Unlock()
-		return gnockpitCache.monikers
+		return gnockpitCache.validators
 	}
 	gnockpitCache.mu.Unlock()
 
-	monikers := fetchGnockpitMonikers(ctx)
+	validators := fetchGnockpitValidators(ctx)
 
 	gnockpitCache.mu.Lock()
 	defer gnockpitCache.mu.Unlock()
-	if monikers != nil {
-		gnockpitCache.monikers = monikers
+	if validators != nil {
+		gnockpitCache.validators = validators
 		gnockpitCache.fetched = time.Now()
-		return monikers
+		return validators
 	}
-	// A failed refresh keeps serving the last good map rather than dropping
-	// every moniker because gnockpit had one bad moment — stale names beat
-	// no names, and the next request tries again since fetched is unchanged.
-	return gnockpitCache.monikers
+	// A failed refresh keeps serving the last good set rather than dropping
+	// it because gnockpit had one bad moment — stale data beats none, and the
+	// next request tries again since fetched is unchanged.
+	return gnockpitCache.validators
 }
 
-func fetchGnockpitMonikers(ctx context.Context) map[string]string {
+// FetchGnockpitMonikers returns consensus-address -> moniker, best-effort.
+func FetchGnockpitMonikers(ctx context.Context) map[string]string {
+	validators := fetchGnockpitStatus(ctx)
+	if validators == nil {
+		return nil
+	}
+	out := make(map[string]string, len(validators))
+	for _, v := range validators {
+		if v.Address != "" && v.Name != "" {
+			out[v.Address] = v.Name
+		}
+	}
+	return out
+}
+
+// FetchGnockpitValidators returns gnockpit's full live consensus validator
+// set, best-effort — voting power, missed-block counts and average block
+// time alongside the name/address FetchGnockpitMonikers also derives from it.
+func FetchGnockpitValidators(ctx context.Context) []GnockpitValidator {
+	return fetchGnockpitStatus(ctx)
+}
+
+func fetchGnockpitValidators(ctx context.Context) []GnockpitValidator {
 	client := &http.Client{Timeout: 5 * time.Second}
 	req, err := http.NewRequestWithContext(ctx, "GET", gnockpitURL, nil)
 	if err != nil {
@@ -95,11 +129,5 @@ func fetchGnockpitMonikers(ctx context.Context) map[string]string {
 	if err := json.Unmarshal(body, &status); err != nil {
 		return nil
 	}
-	out := make(map[string]string, len(status.Validators))
-	for _, v := range status.Validators {
-		if v.Address != "" && v.Name != "" {
-			out[v.Address] = v.Name
-		}
-	}
-	return out
+	return status.Validators
 }
