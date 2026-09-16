@@ -180,6 +180,33 @@ const (
 	}
 }
 
+func TestExtractSymbolsPackageDoc(t *testing.T) {
+	files := []indexer.MemFile{
+		{Name: "a.gno", Body: `// Package foo does something useful.
+package foo
+
+func Real() {}
+`},
+		{Name: "b.gno", Body: `package foo
+
+func Other() {}
+`},
+	}
+	syms := ExtractSymbols(files)
+	if syms.PackageDoc != "Package foo does something useful." {
+		t.Errorf("PackageDoc = %q", syms.PackageDoc)
+	}
+}
+
+func TestExtractSymbolsNoPackageDoc(t *testing.T) {
+	files := []indexer.MemFile{{Name: "a.gno", Body: `package foo
+func Real() {}`}}
+	syms := ExtractSymbols(files)
+	if syms.PackageDoc != "" {
+		t.Errorf("PackageDoc = %q, want empty", syms.PackageDoc)
+	}
+}
+
 func TestExtractSymbolsSkipsTestFiles(t *testing.T) {
 	files := []indexer.MemFile{
 		{Name: "a.gno", Body: `package foo

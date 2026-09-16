@@ -45,10 +45,16 @@ type TypeSymbol struct {
 // collapse unexported symbols behind one toggle without re-sorting anything
 // the toggle reveals.
 type PackageSymbols struct {
-	Consts []Symbol     `json:"consts,omitempty"`
-	Vars   []Symbol     `json:"vars,omitempty"`
-	Types  []TypeSymbol `json:"types,omitempty"`
-	Funcs  []Symbol     `json:"funcs,omitempty"`
+	// PackageDoc is the doc comment attached to the `package` clause —
+	// Go's own convention for a package's lede description, conventionally
+	// written in exactly one file. The first one found wins; a package
+	// that puts it in more than one file is describing itself twice, and
+	// showing the first is a better default than concatenating both.
+	PackageDoc string       `json:"package_doc,omitempty"`
+	Consts     []Symbol     `json:"consts,omitempty"`
+	Vars       []Symbol     `json:"vars,omitempty"`
+	Types      []TypeSymbol `json:"types,omitempty"`
+	Funcs      []Symbol     `json:"funcs,omitempty"`
 }
 
 // pendingMethod is a method whose receiver type may not have been seen yet
@@ -74,6 +80,7 @@ func ExtractSymbols(files []indexer.MemFile) PackageSymbols {
 	var types []TypeSymbol
 	typeIdx := map[string]int{}
 	var pending []pendingMethod
+	var packageDoc string
 
 	for _, f := range files {
 		if isTestFile(f.Name) {
@@ -82,6 +89,9 @@ func ExtractSymbols(files []indexer.MemFile) PackageSymbols {
 		parsed, err := parser.ParseFile(fset, f.Name, f.Body, parser.ParseComments)
 		if err != nil {
 			continue
+		}
+		if packageDoc == "" && parsed.Doc != nil {
+			packageDoc = strings.TrimSpace(parsed.Doc.Text())
 		}
 		for _, decl := range parsed.Decls {
 			switch d := decl.(type) {
@@ -165,7 +175,7 @@ func ExtractSymbols(files []indexer.MemFile) PackageSymbols {
 		sortSymbols(types[i].Methods)
 	}
 
-	return PackageSymbols{Consts: consts, Vars: vars, Types: types, Funcs: funcs}
+	return PackageSymbols{PackageDoc: packageDoc, Consts: consts, Vars: vars, Types: types, Funcs: funcs}
 }
 
 func lessSymbol(a, b Symbol) bool {

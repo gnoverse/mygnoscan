@@ -4479,6 +4479,95 @@ function renderInertTab(container, inert) {
   container.appendChild(tbl);
 }
 
+// inlineMarkdownNodes parses inline emphasis/code/links within one line or
+// paragraph of text, returning DOM nodes rather than a string of HTML —
+// realm source (including its README and doc comments) is
+// attacker-controlled content rendered directly in this page, so this never
+// touches innerHTML. Code spans are matched first so a `*` inside one is
+// never mistaken for emphasis.
+function inlineMarkdownNodes(text) {
+  const out = [];
+  let rest = text;
+  const pattern = /`([^`]+)`|\*\*([^*]+)\*\*|\*([^*]+)\*|\[([^\]]+)\]\(([^)\s]+)\)/;
+  while (rest.length) {
+    const m = rest.match(pattern);
+    if (!m) { out.push(document.createTextNode(rest)); break; }
+    if (m.index > 0) out.push(document.createTextNode(rest.slice(0, m.index)));
+    if (m[1] !== undefined) {
+      out.push(el('code', { style: { fontFamily: 'var(--mono)', fontSize: '0.9em', background: 'var(--bg3)', padding: '1px 4px', borderRadius: '3px' } }, m[1]));
+    } else if (m[2] !== undefined) {
+      out.push(el('strong', {}, m[2]));
+    } else if (m[3] !== undefined) {
+      out.push(el('em', {}, m[3]));
+    } else if (m[4] !== undefined) {
+      // Only http(s) — never javascript: or another scheme a markdown link
+      // could otherwise smuggle into an href.
+      if (/^https?:\/\//.test(m[5])) {
+        out.push(el('a', { href: m[5], target: '_blank', rel: 'noopener' }, m[4]));
+      } else {
+        out.push(document.createTextNode(m[4]));
+      }
+    }
+    rest = rest.slice(m.index + m[0].length);
+  }
+  return out;
+}
+// renderMarkdownEl parses a small, safe subset of markdown (headings,
+// paragraphs, fenced code, unordered lists, and inlineMarkdownNodes' inline
+// forms) into DOM nodes. Not a general markdown implementation — just
+// enough for a realm's README and Gno's own doc-comment conventions.
+function renderMarkdownEl(text) {
+  const container = el('div');
+  const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
+  let i = 0;
+  let listEl = null;
+  while (i < lines.length) {
+    const line = lines[i];
+    const fence = line.match(/^```(\w*)\s*$/);
+    if (fence) {
+      listEl = null;
+      const codeLines = [];
+      i++;
+      while (i < lines.length && !/^```\s*$/.test(lines[i])) { codeLines.push(lines[i]); i++; }
+      i++;
+      const pre = el('pre', { style: { background: 'var(--bg3)', padding: '10px', borderRadius: '4px', overflowX: 'auto', fontSize: '12px' } });
+      pre.appendChild(el('code', { style: { fontFamily: 'var(--mono)' } }, codeLines.join('\n')));
+      container.appendChild(pre);
+      continue;
+    }
+    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) {
+      listEl = null;
+      const tag = 'h' + Math.min(heading[1].length + 3, 6); // nests under the page's own h2/section-titles
+      const h = el(tag, { style: { marginTop: '16px' } });
+      h.append(...inlineMarkdownNodes(heading[2]));
+      container.appendChild(h);
+      i++;
+      continue;
+    }
+    const item = line.match(/^\s*[-*]\s+(.*)$/);
+    if (item) {
+      if (!listEl) { listEl = el('ul', { style: { paddingLeft: '20px' } }); container.appendChild(listEl); }
+      const li = el('li');
+      li.append(...inlineMarkdownNodes(item[1]));
+      listEl.appendChild(li);
+      i++;
+      continue;
+    }
+    listEl = null;
+    if (line.trim() === '') { i++; continue; }
+    const paraLines = [line];
+    i++;
+    while (i < lines.length && lines[i].trim() !== '' && !/^```/.test(lines[i]) && !/^#{1,6}\s/.test(lines[i]) && !/^\s*[-*]\s+/.test(lines[i])) {
+      paraLines.push(lines[i]);
+      i++;
+    }
+    const p = el('p', { style: { fontSize: '13px', lineHeight: '1.6', color: 'var(--fg)' } });
+    p.append(...inlineMarkdownNodes(paraLines.join(' ')));
+    container.appendChild(p);
+  }
+  return container;
+}
 // symbolEl renders one const/var/function symbol: its printed signature
 // (body already elided server-side for functions) and doc comment, if any.
 function symbolEl(sym) {
@@ -4507,11 +4596,30 @@ function typeSymbolEl(t, showUnexported) {
 // unexported symbols collapsed behind one toggle rather than always shown,
 // the treatment #195 calls out (its own worked example, crypto/sha256's
 // injected sum256, does the same).
-function docsTabEl(symbols) {
+// findReadme returns a package's README file, if it declared one — the
+// case-insensitive match covers the READ.me/Readme.md spelling variance
+// real packages use, the same reason gnoweb itself matches loosely.
+function findReadme(files) {
+  return (files || []).find(f => /^readme(\.md)?$/i.test(f.name));
+}
+function docsTabEl(symbols, files) {
   const container = el('div');
   const consts = symbols.consts || [], vars = symbols.vars || [], types = symbols.types || [], funcs = symbols.funcs || [];
+
+  // The page's lede: a README takes precedence over the package doc
+  // comment when both exist — a README is deliberately written for a
+  // reader landing on the package, where a doc comment is often terser and
+  // aimed at someone already reading the source.
+  const readme = findReadme(files);
+  if (readme) {
+    container.appendChild(renderMarkdownEl(readme.body));
+  } else if (symbols.package_doc) {
+    container.appendChild(renderMarkdownEl(symbols.package_doc));
+  } else {
+    container.appendChild(el('p', { style: { color: 'var(--fg2)' } }, 'This package has no package-level documentation.'));
+  }
+
   if (!consts.length && !vars.length && !types.length && !funcs.length) {
-    container.appendChild(el('p', { style: { color: 'var(--fg2)' } }, 'no symbols extracted for this package'));
     return container;
   }
   let unexportedCount = 0;
@@ -4669,7 +4777,7 @@ async function loadRealmDetail(path, initialTab) {
     // parked badge already lives in the shared header above these tabs, so a
     // docs page for an inert package carries it without any extra work here.
     const docsEl = clear('tab-docs'); if (activeTab === 'docs') docsEl.classList.add('active'); else docsEl.classList.remove('active');
-    docsEl.appendChild(docsTabEl(detail.symbols || {}));
+    docsEl.appendChild(docsTabEl(detail.symbols || {}, detail.files));
     // Source
     const src = clear('tab-source'); if (activeTab === 'source') src.classList.add('active'); else src.classList.remove('active');
     for (const f of (detail.files || [])) {
