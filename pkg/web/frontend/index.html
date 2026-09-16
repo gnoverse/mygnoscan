@@ -4570,22 +4570,48 @@ function renderMarkdownEl(text) {
 }
 // symbolEl renders one const/var/function symbol: its printed signature
 // (body already elided server-side for functions) and doc comment, if any.
-function symbolEl(sym) {
+// fileLineLinkEl renders a "file.gno:NN" anchor that deep-links into the
+// source tab at that exact line — generalizing the existing ?fn= anchor
+// (which finds a function by a substring search across every file, with no
+// way to disambiguate two files each defining something matching the same
+// text) to any symbol, using the line each already carries.
+function fileLineLinkEl(sym, pathForNav) {
+  if (!pathForNav || !sym.file || !sym.line) return null;
+  const a = link(sym.file + ':' + sym.line, () => navigate(
+    '/realm/' + pathForNav + '?tab=source&file=' + encodeURIComponent(sym.file) + '&line=' + sym.line));
+  a.style.fontSize = '11px';
+  a.style.color = 'var(--fg2)';
+  a.style.marginLeft = '10px';
+  return a;
+}
+function symbolEl(sym, pathForNav) {
   const div = el('div', { className: 'card', style: { marginBottom: '8px' } });
-  div.appendChild(el('div', { style: { fontFamily: 'var(--mono)', fontSize: '13px', whiteSpace: 'pre-wrap' } }, sym.signature));
+  const sigRow = el('div', { style: { display: 'flex', alignItems: 'baseline' } });
+  sigRow.appendChild(el('span', { style: { fontFamily: 'var(--mono)', fontSize: '13px', whiteSpace: 'pre-wrap' } }, sym.signature));
+  const fl = fileLineLinkEl(sym, pathForNav);
+  if (fl) sigRow.appendChild(fl);
+  div.appendChild(sigRow);
   if (sym.doc) div.appendChild(el('div', { style: { color: 'var(--fg2)', fontSize: '13px', marginTop: '4px' } }, sym.doc));
   return div;
 }
 // typeSymbolEl renders a type declaration with its methods nested inside —
 // a method is only reachable through its type, so showing it indented under
 // the type it belongs to reads the way calling it actually works.
-function typeSymbolEl(t, showUnexported) {
+function typeSymbolEl(t, showUnexported, pathForNav) {
   const wrap = el('div', { className: 'card', style: { marginBottom: '8px' } });
-  wrap.appendChild(el('div', { style: { fontFamily: 'var(--mono)', fontSize: '13px', whiteSpace: 'pre-wrap' } }, t.signature));
+  const sigRow = el('div', { style: { display: 'flex', alignItems: 'baseline' } });
+  sigRow.appendChild(el('span', { style: { fontFamily: 'var(--mono)', fontSize: '13px', whiteSpace: 'pre-wrap' } }, t.signature));
+  const flt = fileLineLinkEl(t, pathForNav);
+  if (flt) sigRow.appendChild(flt);
+  wrap.appendChild(sigRow);
   if (t.doc) wrap.appendChild(el('div', { style: { color: 'var(--fg2)', fontSize: '13px', marginTop: '4px' } }, t.doc));
   for (const m of (t.methods || []).filter(m => m.exported || showUnexported)) {
     const mEl = el('div', { style: { marginLeft: '16px', marginTop: '8px', paddingTop: '8px', borderTop: '1px solid var(--border)' } });
-    mEl.appendChild(el('div', { style: { fontFamily: 'var(--mono)', fontSize: '13px', whiteSpace: 'pre-wrap' } }, m.signature));
+    const mRow = el('div', { style: { display: 'flex', alignItems: 'baseline' } });
+    mRow.appendChild(el('span', { style: { fontFamily: 'var(--mono)', fontSize: '13px', whiteSpace: 'pre-wrap' } }, m.signature));
+    const flm = fileLineLinkEl(m, pathForNav);
+    if (flm) mRow.appendChild(flm);
+    mEl.appendChild(mRow);
     if (m.doc) mEl.appendChild(el('div', { style: { color: 'var(--fg2)', fontSize: '13px', marginTop: '4px' } }, m.doc));
     wrap.appendChild(mEl);
   }
@@ -4602,7 +4628,7 @@ function typeSymbolEl(t, showUnexported) {
 function findReadme(files) {
   return (files || []).find(f => /^readme(\.md)?$/i.test(f.name));
 }
-function docsTabEl(symbols, files) {
+function docsTabEl(symbols, files, pathForNav) {
   const container = el('div');
   const consts = symbols.consts || [], vars = symbols.vars || [], types = symbols.types || [], funcs = symbols.funcs || [];
 
@@ -4637,14 +4663,14 @@ function docsTabEl(symbols, files) {
       const visible = items.filter(s => s.exported || showUnexported);
       if (!visible.length) return;
       body.appendChild(el('div', { className: 'section-title', style: { marginTop: '16px' } }, label));
-      for (const sym of visible) body.appendChild(symbolEl(sym));
+      for (const sym of visible) body.appendChild(symbolEl(sym, pathForNav));
     };
     group('constants', consts);
     group('variables', vars);
     const visibleTypes = types.filter(s => s.exported || showUnexported);
     if (visibleTypes.length) {
       body.appendChild(el('div', { className: 'section-title', style: { marginTop: '16px' } }, 'types'));
-      for (const t of visibleTypes) body.appendChild(typeSymbolEl(t, showUnexported));
+      for (const t of visibleTypes) body.appendChild(typeSymbolEl(t, showUnexported, pathForNav));
     }
     group('functions', funcs);
   };
@@ -4788,7 +4814,7 @@ async function loadRealmDetail(path, initialTab) {
     // parked badge already lives in the shared header above these tabs, so a
     // docs page for an inert package carries it without any extra work here.
     const docsEl = clear('tab-docs'); if (activeTab === 'docs') docsEl.classList.add('active'); else docsEl.classList.remove('active');
-    docsEl.appendChild(docsTabEl(detail.symbols || {}, detail.files));
+    docsEl.appendChild(docsTabEl(detail.symbols || {}, detail.files, detail.path.replace('gno.land/', '')));
     // Source
     const src = clear('tab-source'); if (activeTab === 'source') src.classList.add('active'); else src.classList.remove('active');
     for (const f of (detail.files || [])) {
@@ -4797,9 +4823,28 @@ async function loadRealmDetail(path, initialTab) {
         el('div', { style: { color: 'var(--accent)', marginBottom: '4px', fontSize: '12px' } }, f.name),
         codeBlock(f.body, fileId)));
     }
-    // Scroll to function if ?fn= param present
-    const fnParam = new URLSearchParams(window.location.search).get('fn');
-    if (fnParam && activeTab === 'source') {
+    // Scroll to an anchor in the source tab, two ways:
+    //  - ?file=<name>&line=<N> — an exact line, from a docs-tab symbol's own
+    //    file/line (#195's "file.gno:NN" anchors). codeBlock gives every
+    //    line span a stable id (fileId + '-L' + lineNo), so this is a direct
+    //    lookup, no searching.
+    //  - ?fn=<name> — the older, fuzzier anchor a "exported" pill still
+    //    uses: a substring search for "func Name(" across every file, kept
+    //    for that one caller rather than migrated, since a pill only ever
+    //    has a function name, not the file/line a Symbol carries.
+    const qp = new URLSearchParams(window.location.search);
+    const fileParam = qp.get('file'), lineParam = qp.get('line');
+    const fnParam = qp.get('fn');
+    if (fileParam && lineParam && activeTab === 'source') {
+      requestAnimationFrame(() => {
+        const fileId = 'src-' + fileParam.replace(/[^a-z0-9]/gi, '-');
+        const span = document.getElementById(fileId + '-L' + lineParam);
+        if (span) {
+          span.style.background = 'rgba(78,205,196,0.15)';
+          span.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      });
+    } else if (fnParam && activeTab === 'source') {
       requestAnimationFrame(() => {
         // Search all line spans for "func FnName("
         const pattern = 'func ' + fnParam + '(';
