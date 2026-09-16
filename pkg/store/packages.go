@@ -367,12 +367,14 @@ func (d *DB) GetPackageDetail(network, path string) (*PackageDetail, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	q := `SELECT network, path, name, creator, block_height, tx_hash, is_realm, num_files
+	q := `SELECT network, path, name, creator, block_height, block_time, tx_hash, is_realm, num_files
 	      FROM packages WHERE path = ? AND ` + d.networkFilter("network", network)
 	args := []any{path}
 
 	var p PackageDetail
-	err := d.db.QueryRow(q, args...).Scan(&p.Network, &p.Path, &p.Name, &p.Creator, &p.BlockHeight, &p.TxHash, &p.IsRealm, &p.NumFiles)
+	var blockTime sql.NullString
+	err := d.db.QueryRow(q, args...).Scan(&p.Network, &p.Path, &p.Name, &p.Creator, &p.BlockHeight, &blockTime, &p.TxHash, &p.IsRealm, &p.NumFiles)
+	p.BlockTime = blockTime.String
 	if err != nil {
 		return nil, err
 	}

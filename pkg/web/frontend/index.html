@@ -4691,7 +4691,7 @@ async function loadRealmDetail(path, initialTab) {
     }, 'see on gnoweb \u2197');
     titleRow.appendChild(gnowebLink);
     header.appendChild(titleRow);
-    const meta = el('div', { style: { color: 'var(--fg2)', marginBottom: '16px' } },
+    const badgeRow = el('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' } },
       detail.is_realm ? badge('realm', 'realm') : badge('pkg', 'package'));
     // A package can succeed at MsgAddPackage and still not be callable: under
     // the "inert" code submission policy a submission is parked until an
@@ -4702,25 +4702,36 @@ async function loadRealmDetail(path, initialTab) {
     if (inert && inert.meta && inert.meta.status === 'inert') {
       const parked = badge('fail', 'parked \u2014 not yet callable');
       parked.title = inert.meta.reason || 'awaiting a package approver';
-      meta.appendChild(document.createTextNode(' '));
-      meta.appendChild(parked);
+      badgeRow.appendChild(parked);
     } else if (inert && inert.meta && inert.meta.pending) {
       // Live, but a redeploy is parked on top of it \u2014 the live code still
       // answers calls; this just says a newer submission is waiting.
       const pending = badge('', 'redeploy pending approval');
       pending.title = inert.meta.reason || 'a parked resubmission is awaiting a package approver';
-      meta.appendChild(document.createTextNode(' '));
-      meta.appendChild(pending);
+      badgeRow.appendChild(pending);
     }
-    meta.append(' deployed by ');
-    meta.appendChild(addrLink(detail.creator));
-    meta.append(' at ' + blockLabel(detail.block_height) + ' \u00b7 ' + detail.num_files + ' files \u00b7 ' + detail.call_count + ' calls');
-    meta.append(' ');
     // Baseline is the realm's most recent call, not its deploy height. Watching
     // a busy realm should not immediately report its entire history as new.
     const latestCall = (detail.recent_calls || [])[0]?.block_height || detail.block_height;
-    meta.appendChild(watchButton('realms', detail.path, latestCall));
-    header.appendChild(meta);
+    badgeRow.appendChild(watchButton('realms', detail.path, latestCall));
+    header.appendChild(badgeRow);
+    // Provenance box \u2014 four scannable columns (height / date / publisher /
+    // contents) replacing what used to be one prose sentence ("deployed by
+    // X at Y \u00b7 N files \u00b7 M calls"). Identical data, easier to scan (#195).
+    const provenance = el('div', { className: 'stats-bar', style: { marginBottom: '16px' } });
+    provenance.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'height'),
+      el('span', { className: 'value' }, blockLink(detail.block_height, detail.network))));
+    provenance.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'date'),
+      // block_time is nullable — rows written before the syncer knew a
+      // block's timestamp carry none, genesis or not — so this falls back
+      // to an explicit "—" rather than a value span that silently renders
+      // as blank and reads as a rendering bug rather than missing data.
+      el('span', { className: 'value' }, detail.block_height === 0 ? 'genesis' : (detail.block_time ? timeEl(detail.block_time) : '—'))));
+    provenance.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'publisher'),
+      el('span', { className: 'value' }, addrLink(detail.creator))));
+    provenance.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'contents'),
+      el('span', { className: 'value' }, detail.num_files + ' files \u00b7 ' + fmtNum(detail.call_count) + ' calls')));
+    header.appendChild(provenance);
     _watchTarget = { kind: 'realms', id: detail.path, height: latestCall };
     const tabs = clear('realm-tabs');
     const tabNames = ['info', 'docs', 'source', 'calls', 'events', 'storage', 'deps', 'graph', 'inert'];
