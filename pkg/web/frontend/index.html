@@ -5039,6 +5039,48 @@ async function loadTxDetail(hash) {
       container.appendChild(summaryCard);
     }
 
+    // GRC-20 + native transfer ledger, All / Net — #194 part 2. Two traps
+    // from real mainnet event data, both verified live and both easy to get
+    // wrong: pkg_path on every Transfer event is the shared grc20 library
+    // (gno.land/p/nt/grc20/v0), not the token, so grouping by it lumps every
+    // token in the chain into one bucket — the token identity is the
+    // event's own `token` attr instead; and an empty `from` is a mint, not
+    // a transfer from the zero address.
+    //
+    // Amounts render as raw integers with the token symbol, not a decimal
+    // amount: there is no one qeval expression that resolves decimals
+    // across tokens. gnoswap's own tokens export a package-level
+    // Decimals() (`gno.land/r/gnoswap/gns.Decimals()` → 6, verified live),
+    // but wugnot's realm does not (`gno.land/r/gnoland/wugnot.Decimals()`
+    // fails with "name Decimals not declared", also verified live) — one of
+    // the most common tokens on the chain. Guessing an expression that
+    // works for some tokens and silently misparses others would be worse
+    // than a correct raw integer for all of them.
+    const transfers = collectTransfers(tx, events);
+    if (transfers.length > 0) {
+      container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'transfers (' + transfers.length + ')'));
+      let transferMode = 'all';
+      const transferToggle = el('div', { className: 'tabs', style: { marginBottom: '8px' } });
+      const allBtn = el('div', { className: 'tab active' }, 'all');
+      const netBtn = el('div', { className: 'tab' }, 'net');
+      transferToggle.appendChild(allBtn);
+      transferToggle.appendChild(netBtn);
+      container.appendChild(transferToggle);
+      const transfersWrap = el('div');
+      container.appendChild(transfersWrap);
+      const renderTransfers = () => {
+        transfersWrap.textContent = '';
+        transfersWrap.appendChild(transfersTableEl(transfers, transferMode));
+      };
+      allBtn.addEventListener('click', () => {
+        transferMode = 'all'; allBtn.classList.add('active'); netBtn.classList.remove('active'); renderTransfers();
+      });
+      netBtn.addEventListener('click', () => {
+        transferMode = 'net'; netBtn.classList.add('active'); allBtn.classList.remove('active'); renderTransfers();
+      });
+      renderTransfers();
+    }
+
     // Messages / Events, as tabs rather than two stacked sections — the
     // layout gnoscan.io's own tx detail uses, and a real improvement once
     // messages can run to dozens of collapsed rows: scrolling past all of
@@ -5603,6 +5645,94 @@ function describeAction(v, inertByPath) {
     return s;
   }
   return inlineMessageSummaryEl(v);
+}
+
+// collectTransfers builds the flat transfer ledger a tx-detail's "transfers"
+// table renders — every GRC-20 Transfer event plus native GNOT movement
+// (BankMsgSend, and a MsgCall's own `send`), so a wrap/unwrap does not
+// vanish from the ledger just because it is not a GRC20 event. See the
+// comment above this section's call site for the two GRC-20 event traps
+// this deliberately gets right (token identity vs. pkg_path, mint vs.
+// transfer-from-empty).
+function collectTransfers(tx, events) {
+  const transfers = [];
+  for (const ev of (events || [])) {
+    if (ev.__typename !== 'GnoEvent' || ev.type !== 'Transfer') continue;
+    const a = {};
+    for (const at of (ev.attrs || [])) a[at.key] = at.value;
+    if (!a.token) continue;
+    transfers.push({ token: a.token, from: a.from || '', to: a.to || '', value: Number(a.value) || 0 });
+  }
+  for (const msg of (tx.messages || [])) {
+    const v = msg.value || {};
+    if (v.__typename === 'BankMsgSend') {
+      for (const part of String(v.amount || '').split(',')) {
+        const m = part.trim().match(/^(\d+)(.*)$/);
+        if (m) transfers.push({ token: m[2] || 'ugnot', from: v.from_address || '', to: v.to_address || '', value: Number(m[1]) });
+      }
+    } else if (v.__typename === 'MsgCall' && v.send) {
+      for (const part of String(v.send).split(',')) {
+        const m = part.trim().match(/^(\d+)(.*)$/);
+        if (m) transfers.push({ token: m[2] || 'ugnot', from: v.caller || '', to: '', value: Number(m[1]) });
+      }
+    }
+  }
+  return transfers;
+}
+
+// tokenSymbol reads the display symbol off a GRC20 token identity like
+// "gno.land/r/gnoswap/gns.GNS.0000000" (realm path, symbol, zero-padded
+// instance id) — everything else (a bare "ugnot") passes through unchanged.
+function tokenSymbol(token) {
+  const parts = token.split('.');
+  if (parts.length >= 2 && /^\d+$/.test(parts[parts.length - 1])) {
+    return parts[parts.length - 2];
+  }
+  return token;
+}
+
+function transfersTableEl(transfers, mode) {
+  const tbl = el('table');
+  if (mode === 'net') {
+    // Per (address, token): credits minus debits. A mint's empty `from`
+    // never debits anyone, so it only ever adds a credit.
+    const net = new Map();
+    const bump = (addr, token, delta) => {
+      if (!addr) return;
+      const k = addr + ' ' + token;
+      net.set(k, (net.get(k) || 0) + delta);
+    };
+    for (const t of transfers) {
+      bump(t.to, t.token, t.value);
+      bump(t.from, t.token, -t.value);
+    }
+    tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'address'), el('th', {}, 'token'), el('th', {}, 'net'))));
+    const body = el('tbody');
+    for (const [k, v] of net) {
+      if (v === 0) continue;
+      const [addr, token] = k.split(' ');
+      body.appendChild(el('tr', {},
+        el('td', {}, addrLink(addr)),
+        el('td', {}, tokenSymbol(token)),
+        el('td', { style: { color: v >= 0 ? 'var(--green)' : 'var(--red)', fontFamily: 'var(--mono)' } },
+          (v >= 0 ? '+' : '') + fmtNum(v))
+      ));
+    }
+    tbl.appendChild(body);
+  } else {
+    tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'token'), el('th', {}, 'from'), el('th', {}, 'to'), el('th', {}, 'amount'))));
+    const body = el('tbody');
+    for (const t of transfers) {
+      body.appendChild(el('tr', {},
+        el('td', {}, tokenSymbol(t.token)),
+        el('td', {}, t.from ? addrLink(t.from) : el('span', { className: 'block-ctx' }, 'mint')),
+        el('td', {}, t.to ? addrLink(t.to) : el('span', { className: 'block-ctx' }, '—')),
+        el('td', { style: { fontFamily: 'var(--mono)' } }, fmtNum(t.value))
+      ));
+    }
+    tbl.appendChild(body);
+  }
+  return tbl;
 }
 
 // renderMessageEl renders one message of a transaction. collapsed (only
