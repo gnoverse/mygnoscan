@@ -51,6 +51,10 @@ type Fake struct {
 	// lags behind, or one that has moved on from what the caller last saw.
 	latestHeight int
 
+	// NoInertTypes makes the fake reject any query selecting the inert-package
+	// message types, the way an older tx-indexer does. Pearl's did.
+	NoInertTypes bool
+
 	// Failure injection, each checked before any data is served.
 	Status        int    // non-200 to return instead of a response
 	GQLError      string // a GraphQL error to return instead of data
@@ -116,6 +120,27 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "<html><body>%d</body></html>", Status)
 		return
 	}
+	f.mu.Lock()
+	noInert := f.NoInertTypes
+	f.mu.Unlock()
+	if noInert {
+		// The schema probe answers honestly...
+		if strings.Contains(req.Query, `__type(name: "MsgEnablePackage")`) {
+			writeGQL(w, map[string]any{"data": map[string]any{"__type": nil}})
+			return
+		}
+		// ...and anything still selecting them is rejected the way a real
+		// indexer rejects an unknown type: a validation error, not a 200 with
+		// missing fields.
+		if strings.Contains(req.Query, "MsgEnablePackage") || strings.Contains(req.Query, "MsgRejectPackage") {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			writeGQL(w, map[string]any{"errors": []map[string]string{
+				{"message": `Unknown type "MsgEnablePackage".`},
+			}})
+			return
+		}
+	}
+
 	if gqlErr != "" {
 		writeGQL(w, map[string]any{"errors": []map[string]string{{"message": gqlErr}}})
 		return
@@ -159,6 +184,12 @@ func (f *Fake) resolve(q string) (map[string]any, int) {
 	// along" from "a different chain".
 	out := map[string]any{}
 	count := 0
+	// Schema introspection, so a client can ask what this indexer supports.
+	// NoInertTypes answers this earlier, in serve.
+	if strings.Contains(q, "__type") {
+		out["__type"] = map[string]any{"name": "MsgEnablePackage"}
+		count++
+	}
 	if strings.Contains(q, "latestBlockHeight") {
 		out["latestBlockHeight"] = f.tip()
 		count++
@@ -612,6 +643,16 @@ func (f *TruncatingServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if strings.Contains(query, "latestBlockHeight") {
 		fmt.Fprintf(w, `{"data":{"latestBlockHeight":%d}}`, f.Tip)
+		return
+	}
+
+	// The capability probe is not a transaction query; recording it would make
+	// it query zero and break every assertion that reads the first one.
+	//
+	// Answered before taking the lock: returning from inside the critical
+	// section leaves the mutex held and deadlocks every request after it.
+	if strings.Contains(query, `__type(name:`) {
+		writeGQL(w, map[string]any{"data": map[string]any{"__type": map[string]any{"name": "MsgEnablePackage"}}})
 		return
 	}
 

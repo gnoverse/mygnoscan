@@ -3,6 +3,7 @@ package indexer
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -115,4 +116,93 @@ func contains(s, sub string) bool {
 		}
 		return false
 	})()
+}
+
+// An indexer that predates the inert-package message types must still serve
+// every other query.
+//
+// Those types are selected inside the *shared* transaction field set, so an
+// indexer that does not define them rejects every transaction query, not just
+// the package one. That is how a single unsupported type took a whole chain
+// offline in production:
+//
+//	[pearl] sync error: sync packages: indexer returned 422 Unprocessable
+//	Entity: Unknown type "MsgEnablePackage"
+//
+// The rows pearl had already synced stayed put, so nothing looked wrong until a
+// schema migration dropped those tables and the resync could not refill them —
+// the chain went from 83,163 transactions to 624 with no way back.
+func TestAnOlderIndexerStillSyncs(t *testing.T) {
+	f, c := NewFake(t)
+	f.NoInertTypes = true
+	f.SeedChain(1, 40)
+
+	txs, err := c.GetRecentTransactionsPage(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("an indexer without the inert types rejected an ordinary transaction query: %v", err)
+	}
+	if len(txs) == 0 {
+		t.Fatal("no transactions returned")
+	}
+
+	// The fragments must be gone from the wire, not merely tolerated: the
+	// server rejects the query outright, so leaving them in cannot work.
+	for _, q := range f.AskedQueries() {
+		if strings.Contains(q, "MsgEnablePackage") && !isCapabilityProbe(q) {
+			t.Errorf("still asking an indexer that does not define it for MsgEnablePackage:\n%s", q)
+		}
+	}
+}
+
+// A newer indexer keeps the full selection — the trim must be conditional, not
+// a blanket removal that quietly stops recording inert-package lifecycle on the
+// chains that do support it.
+func TestANewerIndexerKeepsTheInertTypes(t *testing.T) {
+	f, c := NewFake(t)
+	f.SeedChain(1, 40)
+
+	if _, err := c.GetRecentTransactionsPage(context.Background(), 10); err != nil {
+		t.Fatalf("GetRecentTransactionsPage: %v", err)
+	}
+	var asked bool
+	for _, q := range f.AskedQueries() {
+		if strings.Contains(q, "MsgEnablePackage") && !isCapabilityProbe(q) {
+			asked = true
+		}
+	}
+	if !asked {
+		t.Error("the inert-package types were dropped from a query to an indexer that supports them")
+	}
+}
+
+// The capability is asked once, not per query: a probe on every call would
+// double the request count of every sync pass.
+func TestInertSupportIsProbedOnce(t *testing.T) {
+	f, c := NewFake(t)
+	f.SeedChain(1, 40)
+
+	for i := 0; i < 5; i++ {
+		if _, err := c.GetRecentTransactionsPage(context.Background(), 5); err != nil {
+			t.Fatalf("GetRecentTransactionsPage: %v", err)
+		}
+	}
+	probes := 0
+	for _, q := range f.AskedQueries() {
+		if isCapabilityProbe(q) {
+			probes++
+		}
+	}
+	if probes != 1 {
+		t.Errorf("sent %d capability probes across 5 queries, want 1", probes)
+	}
+}
+
+// isCapabilityProbe identifies the schema probe specifically.
+//
+// Matching on "__type" alone does not work: every transaction query selects
+// `__typename` on its message values, which contains it. The first version of
+// these tests did exactly that and reported six probes for one, while claiming
+// the fragments had been dropped from queries that were carrying them.
+func isCapabilityProbe(q string) bool {
+	return strings.Contains(q, `__type(name:`)
 }
