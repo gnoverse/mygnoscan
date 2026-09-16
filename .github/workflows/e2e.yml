@@ -68,7 +68,7 @@ jobs:
         id: shots
         continue-on-error: true
         run: |
-          if git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -q '^frontend/'; then
+          if git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -q '^pkg/web/frontend/'; then
             npm run screenshots
           else
             echo "no frontend changes; skipping"

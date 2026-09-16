@@ -2,20 +2,23 @@ package main
 
 import (
 	"context"
-	"embed"
 	"flag"
 	"fmt"
-	"io/fs"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
-)
 
-//go:embed frontend
-var frontendFS embed.FS
+	"github.com/moul/mygnoscan/pkg/analyzer"
+	"github.com/moul/mygnoscan/pkg/config"
+	"github.com/moul/mygnoscan/pkg/httpapi"
+	"github.com/moul/mygnoscan/pkg/indexer"
+	"github.com/moul/mygnoscan/pkg/store"
+	"github.com/moul/mygnoscan/pkg/syncer"
+	"github.com/moul/mygnoscan/pkg/web"
+)
 
 var gitHash = "dev"       // set via -ldflags at build time
 var buildTime = "unknown" // set via -ldflags at build time
@@ -47,14 +50,14 @@ func run() error {
 	flag.Parse()
 
 	// Initialize database
-	db, err := NewDB(*dbPath)
+	db, err := store.NewDB(*dbPath)
 	if err != nil {
 		return fmt.Errorf("init db: %w", err)
 	}
 	defer db.Close()
 
 	// Load config
-	cfg, cfgSource, err := ResolveConfig(*configPath, *networkFlag, *indexerFlag, *rpcFlag)
+	cfg, cfgSource, err := config.ResolveConfig(*configPath, *networkFlag, *indexerFlag, *rpcFlag)
 	if err != nil {
 		return err
 	}
@@ -74,15 +77,15 @@ func run() error {
 
 	// Create per-network clients. The sync loop gets its own, on a budget sized
 	// for catching up on history rather than for answering a page.
-	clients := make(map[string]*IndexerClient)
-	syncClients := make(map[string]*IndexerClient)
+	clients := make(map[string]*indexer.Client)
+	syncClients := make(map[string]*indexer.Client)
 	for _, n := range cfg.Networks {
-		clients[n.ID] = NewIndexerClient(n.Indexers()...)
-		syncClients[n.ID] = NewSyncIndexerClient(n.Indexers()...)
+		clients[n.ID] = indexer.NewClient(n.Indexers()...)
+		syncClients[n.ID] = indexer.NewSyncClient(n.Indexers()...)
 	}
 
 	// Initialize analyzer
-	analyzer := NewAnalyzer(db)
+	analyzer := analyzer.NewAnalyzer(db)
 
 	// Recompute dependency edges when the extractor has changed. Reads only
 	// stored source, so it costs nothing on the network and is a no-op once the
@@ -100,11 +103,11 @@ func run() error {
 	// Sync data from indexer (one goroutine per network)
 	if *syncOnStart {
 		for _, n := range cfg.Networks {
-			go func(net NetworkConfig) {
-				syncer := NewSyncer(syncClients[net.ID], db, analyzer, net.ID)
-				syncer.blockHistoryDays = *blockHistoryDays
+			go func(net config.NetworkConfig) {
+				sy := syncer.NewSyncer(syncClients[net.ID], db, analyzer, net.ID)
+				sy.SetBlockHistoryDays(*blockHistoryDays)
 				log.Printf("[%s] starting initial sync...", net.ID)
-				if err := syncer.SyncAll(ctx); err != nil {
+				if err := sy.SyncAll(ctx); err != nil {
 					log.Printf("[%s] sync error: %v", net.ID, err)
 				}
 				log.Printf("[%s] initial sync complete", net.ID)
@@ -116,7 +119,7 @@ func run() error {
 					case <-ctx.Done():
 						return
 					case <-ticker.C:
-						if err := syncer.SyncAll(ctx); err != nil {
+						if err := sy.SyncAll(ctx); err != nil {
 							log.Printf("[%s] sync error: %v", net.ID, err)
 						}
 					}
@@ -156,7 +159,7 @@ func run() error {
 		db.WaitBackground()
 		refresh() // once at startup, so the first visitor is not the one who pays
 
-		ticker := time.NewTicker(rollupInterval)
+		ticker := time.NewTicker(store.RollupInterval)
 		defer ticker.Stop()
 		for {
 			select {
@@ -169,7 +172,7 @@ func run() error {
 	}()
 
 	// Set up API routes
-	api := NewAPI(db, clients, cfg.Networks, analyzer)
+	api := httpapi.NewAPI(db, clients, cfg.Networks, analyzer)
 
 	// A network pairs an indexer with an RPC, and nothing checked they serve the
 	// same chain. Verify before serving rather than after someone reads a
@@ -182,11 +185,11 @@ func run() error {
 		check := func() {
 			ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
-			api.verifyRPCChains(ctx)
+			api.VerifyRPCChains(ctx)
 		}
 		check()
 
-		ticker := time.NewTicker(rpcChainRecheckInterval)
+		ticker := time.NewTicker(httpapi.RPCChainRecheckInterval)
 		defer ticker.Stop()
 		for {
 			select {
@@ -214,42 +217,24 @@ func run() error {
 		for _, n := range cfg.Networks {
 			nets = append(nets, netInfo{ID: n.ID, Indexer: n.IndexerURL, RPC: n.RPCURL})
 		}
-		jsonResponse(w, nets)
+		httpapi.JSONResponse(w, nets)
 	})
 	api.RegisterRoutes(mux)
 
 	// SSE live feed
-	initLiveFeeds(cfg.Networks, clients)
-	mux.HandleFunc("GET /api/live", liveFeedHandler())
+	httpapi.InitLiveFeeds(cfg.Networks, clients)
+	mux.HandleFunc("GET /api/live", httpapi.LiveFeedHandler())
 
 	// Frontend: SPA handler serves index.html for all non-API routes
-	frontendSub, err := fs.Sub(frontendFS, "frontend")
+	frontend, err := web.Handler()
 	if err != nil {
-		return fmt.Errorf("frontend fs: %w", err)
+		return err
 	}
-	staticFS := http.FileServer(http.FS(frontendSub))
-	indexHTML, err := fs.ReadFile(frontendFS, "frontend/index.html")
-	if err != nil {
-		return fmt.Errorf("read index.html: %w", err)
-	}
-	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-		// Try serving static file first (css, js, images)
-		if r.URL.Path != "/" {
-			f, err := frontendSub.Open(r.URL.Path[1:]) // strip leading /
-			if err == nil {
-				f.Close()
-				staticFS.ServeHTTP(w, r)
-				return
-			}
-		}
-		// Serve index.html for all other routes (SPA)
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write(indexHTML)
-	})
+	mux.HandleFunc("GET /", frontend)
 
 	// Cache first, so a hit costs nothing beyond the network-name check.
-	cache := newResponseCache(cacheTTL)
-	handler := withResponseCache(cache, rejectUnknownNetwork(cfg.Networks, mux))
+	cache := httpapi.NewResponseCache(httpapi.CacheTTL)
+	handler := httpapi.WithResponseCache(cache, httpapi.RejectUnknownNetwork(cfg.Networks, mux))
 
 	srv := &http.Server{
 		Addr:         *listenAddr,

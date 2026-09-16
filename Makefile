@@ -19,7 +19,7 @@ e2e:
 
 # Reproducible screenshots of every page, rendered against the e2e fixture into
 # docs/images/review/. For reviewing a frontend change without checking the
-# branch out — CI uploads them as artifacts on any PR touching frontend/.
+# branch out — CI uploads them as artifacts on any PR touching pkg/web/frontend/.
 #
 # Not the README images: those come from scripts/screenshots.sh against a real
 # database snapshot, because a README wants a chain with enough history to look
