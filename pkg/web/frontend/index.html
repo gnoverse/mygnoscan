@@ -412,6 +412,7 @@ html.embed .container { padding-top: 0; padding-bottom: 0; max-width: none; }
     <div id="realm-header"></div>
     <div class="tabs" id="realm-tabs"></div>
     <div class="tab-content active" id="tab-info"></div>
+    <div class="tab-content" id="tab-docs"></div>
     <div class="tab-content" id="tab-source"></div>
     <div class="tab-content" id="tab-calls"></div>
     <div class="tab-content" id="tab-events"></div>
@@ -4478,6 +4479,81 @@ function renderInertTab(container, inert) {
   container.appendChild(tbl);
 }
 
+// symbolEl renders one const/var/function symbol: its printed signature
+// (body already elided server-side for functions) and doc comment, if any.
+function symbolEl(sym) {
+  const div = el('div', { className: 'card', style: { marginBottom: '8px' } });
+  div.appendChild(el('div', { style: { fontFamily: 'var(--mono)', fontSize: '13px', whiteSpace: 'pre-wrap' } }, sym.signature));
+  if (sym.doc) div.appendChild(el('div', { style: { color: 'var(--fg2)', fontSize: '13px', marginTop: '4px' } }, sym.doc));
+  return div;
+}
+// typeSymbolEl renders a type declaration with its methods nested inside —
+// a method is only reachable through its type, so showing it indented under
+// the type it belongs to reads the way calling it actually works.
+function typeSymbolEl(t, showUnexported) {
+  const wrap = el('div', { className: 'card', style: { marginBottom: '8px' } });
+  wrap.appendChild(el('div', { style: { fontFamily: 'var(--mono)', fontSize: '13px', whiteSpace: 'pre-wrap' } }, t.signature));
+  if (t.doc) wrap.appendChild(el('div', { style: { color: 'var(--fg2)', fontSize: '13px', marginTop: '4px' } }, t.doc));
+  for (const m of (t.methods || []).filter(m => m.exported || showUnexported)) {
+    const mEl = el('div', { style: { marginLeft: '16px', marginTop: '8px', paddingTop: '8px', borderTop: '1px solid var(--border)' } });
+    mEl.appendChild(el('div', { style: { fontFamily: 'var(--mono)', fontSize: '13px', whiteSpace: 'pre-wrap' } }, m.signature));
+    if (m.doc) mEl.appendChild(el('div', { style: { color: 'var(--fg2)', fontSize: '13px', marginTop: '4px' } }, m.doc));
+    wrap.appendChild(mEl);
+  }
+  return wrap;
+}
+// docsTabEl renders a realm's full symbol table — godoc's own ordering
+// (constants, variables, types-with-their-methods, functions) — with
+// unexported symbols collapsed behind one toggle rather than always shown,
+// the treatment #195 calls out (its own worked example, crypto/sha256's
+// injected sum256, does the same).
+function docsTabEl(symbols) {
+  const container = el('div');
+  const consts = symbols.consts || [], vars = symbols.vars || [], types = symbols.types || [], funcs = symbols.funcs || [];
+  if (!consts.length && !vars.length && !types.length && !funcs.length) {
+    container.appendChild(el('p', { style: { color: 'var(--fg2)' } }, 'no symbols extracted for this package'));
+    return container;
+  }
+  let unexportedCount = 0;
+  for (const s of [...consts, ...vars, ...funcs]) if (!s.exported) unexportedCount++;
+  for (const t of types) {
+    if (!t.exported) unexportedCount++;
+    for (const m of (t.methods || [])) if (!m.exported) unexportedCount++;
+  }
+  let showUnexported = false;
+  const body = el('div');
+  container.appendChild(body);
+  const render = () => {
+    body.textContent = '';
+    const group = (label, items) => {
+      const visible = items.filter(s => s.exported || showUnexported);
+      if (!visible.length) return;
+      body.appendChild(el('div', { className: 'section-title', style: { marginTop: '16px' } }, label));
+      for (const sym of visible) body.appendChild(symbolEl(sym));
+    };
+    group('constants', consts);
+    group('variables', vars);
+    const visibleTypes = types.filter(s => s.exported || showUnexported);
+    if (visibleTypes.length) {
+      body.appendChild(el('div', { className: 'section-title', style: { marginTop: '16px' } }, 'types'));
+      for (const t of visibleTypes) body.appendChild(typeSymbolEl(t, showUnexported));
+    }
+    group('functions', funcs);
+  };
+  render();
+  if (unexportedCount > 0) {
+    const toggleWrap = el('div', { style: { marginTop: '12px' } });
+    container.appendChild(toggleWrap);
+    const updateToggle = () => {
+      toggleWrap.textContent = '';
+      toggleWrap.appendChild(link(showUnexported ? 'hide unexported symbols' : 'show ' + unexportedCount + ' unexported symbols', () => {
+        showUnexported = !showUnexported; render(); updateToggle();
+      }));
+    };
+    updateToggle();
+  }
+  return container;
+}
 async function loadRealmDetail(path, initialTab) {
   const header = clear('realm-header');
   skeletonBlock(header);
@@ -4539,7 +4615,7 @@ async function loadRealmDetail(path, initialTab) {
     header.appendChild(meta);
     _watchTarget = { kind: 'realms', id: detail.path, height: latestCall };
     const tabs = clear('realm-tabs');
-    const tabNames = ['info', 'source', 'calls', 'events', 'storage', 'deps', 'graph', 'inert'];
+    const tabNames = ['info', 'docs', 'source', 'calls', 'events', 'storage', 'deps', 'graph', 'inert'];
     const activeTab = initialTab && tabNames.includes(initialTab) ? initialTab : 'info';
     tabNames.forEach((name) => {
       const tab = el('div', { className: 'tab' + (name === activeTab ? ' active' : ''), onclick: () => switchTab(name, tab) }, name);
@@ -4587,6 +4663,13 @@ async function loadRealmDetail(path, initialTab) {
     tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'msgrun refs'), el('td', {}, fmtNum((detail.msgrun_refs || []).length) + ' references')));
     info.appendChild(tbl);
     info.appendChild(rawJsonToggle(detail));
+    // Docs — a real symbol table (signatures, doc comments, consts/vars/types
+    // with their methods, functions), grown out of the same source the
+    // "exported" pills above summarize as bare names. See #195 part 1. The
+    // parked badge already lives in the shared header above these tabs, so a
+    // docs page for an inert package carries it without any extra work here.
+    const docsEl = clear('tab-docs'); if (activeTab === 'docs') docsEl.classList.add('active'); else docsEl.classList.remove('active');
+    docsEl.appendChild(docsTabEl(detail.symbols || {}));
     // Source
     const src = clear('tab-source'); if (activeTab === 'source') src.classList.add('active'); else src.classList.remove('active');
     for (const f of (detail.files || [])) {

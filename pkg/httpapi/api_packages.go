@@ -216,7 +216,22 @@ func (a *API) HandleRealm(w http.ResponseWriter, r *http.Request) {
 		files = append(files, indexer.MemFile(f))
 	}
 	detail.ExportedFuncs = analyzer.ExportedFunctions(files)
-	JSONResponse(w, detail)
+	// Symbols lives on a wrapper rather than store.PackageDetail: the store
+	// package cannot import analyzer's richer type without a cycle (analyzer
+	// already imports store for DB access), the same reason ExportedFuncs
+	// stayed a plain []string instead of something structured.
+	JSONResponse(w, &realmDetailResponse{
+		PackageDetail: detail,
+		Symbols:       analyzer.ExtractSymbols(files),
+	})
+}
+
+// realmDetailResponse adds the package's parsed symbol table to
+// store.PackageDetail's JSON shape without either package needing to know
+// about the other's types.
+type realmDetailResponse struct {
+	*store.PackageDetail
+	Symbols analyzer.PackageSymbols `json:"symbols"`
 }
 
 // normalizeTxHash accepts a transaction hash in either encoding in circulation
