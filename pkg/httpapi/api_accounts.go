@@ -1,9 +1,11 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/moul/mygnoscan/pkg/store"
 )
@@ -212,7 +214,28 @@ func (a *API) HandleAccounts(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err.Error(), 500)
 		return
 	}
+	a.fillAccountBalances(r.Context(), accounts)
 	JSONResponse(w, accounts)
+}
+
+// fillAccountBalances fetches each row's balance over RPC, one call per
+// address since there is no batch endpoint for it. Bounded concurrency
+// keeps a page of maxAccounts rows from firing that many requests at once
+// against a single RPC node.
+func (a *API) fillAccountBalances(ctx context.Context, accounts []store.AccountInfo) {
+	const maxConcurrent = 20
+	sem := make(chan struct{}, maxConcurrent)
+	var wg sync.WaitGroup
+	for i := range accounts {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(acc *store.AccountInfo) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			acc.Balance = fetchBalance(ctx, acc.Address, a.rpcURLFor(acc.Network))
+		}(&accounts[i])
+	}
+	wg.Wait()
 }
 
 func (a *API) HandleBankStats(w http.ResponseWriter, r *http.Request) {

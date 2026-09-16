@@ -387,7 +387,7 @@ html.embed .container { padding-top: 0; padding-bottom: 0; max-width: none; }
   <div class="view" id="view-accounts"><main>
     <div id="accounts-stats" class="stats-bar" style="display:none"></div>
     <div class="section"><div class="section-title">active accounts</div>
-    <table><thead><tr><th>address</th><th>calls</th><th>deploys</th><th>msg_runs</th><th>sends</th><th>total</th></tr></thead><tbody id="accounts-list"></tbody></table></div></main></div>
+    <table><thead><tr><th>address</th><th>calls</th><th>deploys</th><th>msg_runs</th><th>sends</th><th>total</th><th>spent</th><th>received</th><th>balance</th></tr></thead><tbody id="accounts-list"></tbody></table></div></main></div>
   <div class="view" id="view-tokens"><main>
     <div id="tokens-stats" class="stats-bar" style="display:none"></div>
     <div id="tokens-bank-content"></div>
@@ -802,6 +802,16 @@ function storageCell(r) {
 function fmtNum(n) { return typeof n === 'number' ? n.toLocaleString() : String(n); }
 function fmtUgnot(amount, denom) {
   return fmtNum(amount) + ' ' + (denom || 'ugnot');
+}
+function fmtGnotAmount(ugnot) {
+  return fmtNum(Math.floor(ugnot / 1000000 * 100) / 100) + ' GNOT';
+}
+// Balance arrives packed like "754954090ugnot".
+function fmtBalanceStr(balance) {
+  if (!balance) return '';
+  const m = String(balance).match(/^(\d+)(\w+)$/);
+  if (m && m[2] === 'ugnot') return fmtGnotAmount(parseInt(m[1], 10));
+  return balance;
 }
 // Coin strings arrive packed, e.g. "1000000ugnot" or "100ugnot,5foo".
 function fmtCoins(s) {
@@ -2855,7 +2865,10 @@ async function loadAccounts() {
         el('td', {}, String(a.deploy_count)),
         el('td', {}, String(a.msgrun_count)),
         el('td', {}, String(a.send_count || 0)),
-        el('td', {}, String(total))
+        el('td', {}, String(total)),
+        el('td', {}, a.sent_amount ? fmtGnotAmount(a.sent_amount) : '—'),
+        el('td', {}, a.received_amount ? fmtGnotAmount(a.received_amount) : '—'),
+        el('td', {}, fmtBalanceStr(a.balance) || '—')
       ));
     }
   } catch (err) {
@@ -5079,14 +5092,7 @@ async function loadAddressDetail(addr) {
       statsBar.appendChild(fbEl);
     }
     if (data.balance) {
-      // Parse "754954090ugnot" -> "754.95 GNOT"
-      const bm = data.balance.match(/^(\d+)(\w+)$/);
-      let balDisplay = data.balance;
-      if (bm && bm[2] === 'ugnot') {
-        const gnot = parseInt(bm[1]) / 1000000;
-        balDisplay = fmtNum(Math.floor(gnot * 100) / 100) + ' GNOT';
-      }
-      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'balance'), el('span', { className: 'value' }, balDisplay)));
+      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'balance'), el('span', { className: 'value' }, fmtBalanceStr(data.balance))));
     }
     container.appendChild(statsBar);
     // Analyse the page's rows.
