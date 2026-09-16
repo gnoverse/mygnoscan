@@ -104,11 +104,15 @@ func fetchABCIQuery(ctx context.Context, rpcURL, queryPath, data string) (string
 // GovDAOProposalSummary is one row of the proposal list. YesPercent through
 // LastActivityTime are not on gov/dao's own list render — the caller (see
 // HandleGovDAOOverview) fills them in from the per-proposal detail render
-// and, for the two activity fields, live indexer data.
+// and, for the two activity fields, live indexer data. AuthorAddress is
+// filled in the same way, by resolving Author (a gno.land username, all
+// gov/dao's render ever gives) against r/sys/users — see
+// resolveGnoUsernameCached.
 type GovDAOProposalSummary struct {
 	ID                 int      `json:"id"`
 	Title              string   `json:"title"`
 	Author             string   `json:"author"`
+	AuthorAddress      string   `json:"author_address,omitempty"`
 	Status             string   `json:"status"`
 	Tiers              []string `json:"tiers"`
 	YesPercent         float64  `json:"yes_percent,omitempty"`
@@ -149,6 +153,7 @@ type GovDAOProposalDetail struct {
 	ID              int                 `json:"id"`
 	Title           string              `json:"title"`
 	Author          string              `json:"author"`
+	AuthorAddress   string              `json:"author_address,omitempty"`
 	Description     string              `json:"description"`
 	ExecutorPkgPath string              `json:"executor_pkg_path"`
 	Status          string              `json:"status"`
@@ -162,11 +167,17 @@ type GovDAOProposalDetail struct {
 	Errors          []string            `json:"errors,omitempty"`
 }
 
-// GovDAOVote is one address's recorded vote.
+// GovDAOVote is one recorded vote. gov/dao's own render never gives a
+// voter's address, only their gno.land username (Voter) — VoterAddress is
+// filled in afterward by resolving it, same as GovDAOProposalDetail.Author /
+// AuthorAddress. Named Voter, not Address: the field held a username under
+// that name for one release, which silently broke "is this a clickable
+// address" for every reader of the JSON, not just the frontend.
 type GovDAOVote struct {
-	Tier    string `json:"tier"`
-	Option  string `json:"option"`
-	Address string `json:"address"`
+	Tier         string `json:"tier"`
+	Option       string `json:"option"`
+	Voter        string `json:"voter"`
+	VoterAddress string `json:"voter_address,omitempty"`
 }
 
 // GovDAORelatedCall is a MsgCall this proposal ID can be traced through —
@@ -363,7 +374,7 @@ func parseGovDAOVotes(md string) []GovDAOVote {
 			continue
 		}
 		if m := voteAddrRe.FindStringSubmatch(trimmed); m != nil && option != "" {
-			out = append(out, GovDAOVote{Tier: tier, Option: option, Address: m[2]})
+			out = append(out, GovDAOVote{Tier: tier, Option: option, Voter: m[2]})
 		}
 	}
 	return out
@@ -503,4 +514,86 @@ func FetchGovDAOProposal(ctx context.Context, network, rpcURL string, id int) Go
 		return cached
 	}
 	return detail
+}
+
+// gnoAddressRe pulls a bech32 address out of Gno's own debug-repr text (see
+// resolveGnoUsername) — the one part of that blob with a fixed, recognizable
+// shape regardless of which fields UserData happens to carry.
+var gnoAddressRe = regexp.MustCompile(`"(g1[a-z0-9]+)"`)
+
+// resolveGnoUsername resolves a registered gno.land username (e.g. "aeddi")
+// to its bech32 address via gno.land/r/sys/users.ResolveName — the same
+// registry gov/dao's own render draws "@username" authorship and voter
+// names from. gov/dao's markdown never carries the address itself, only the
+// username, so without this a proposal's author or a vote's voter can never
+// be linked the way the memberstore's member list already is (that one
+// comes with real addresses baked in, from a different render entirely).
+//
+// vm/qeval, not vm/qrender: this calls a real function
+// (ResolveName(name) (*UserData, bool)) rather than rendering markdown.
+// Confirmed live against mainnet — vm/qeval's `data` is
+// "<pkgpath>.<expression>", not a bare call (the ABCI layer says so
+// verbatim on anything else: "expected <pkgpath>.<expression> syntax"), and
+// the response is Gno's own debug representation of the result, not JSON:
+//
+//	(&(struct{("g1aeddlftlfk27ret5rf750d7w5dume3kcsm8r8m" .uverse.address),("aeddi" string),(false bool)} ...) *...UserData)
+//	(true bool)
+//
+// The address is simply the first quoted g1... string in that text.
+func resolveGnoUsername(ctx context.Context, rpcURL, username string) (string, error) {
+	if username == "" {
+		return "", fmt.Errorf("empty username")
+	}
+	expr := fmt.Sprintf("gno.land/r/sys/users.ResolveName(%q)", username)
+	out, err := fetchABCIQuery(ctx, rpcURL, "vm/qeval", expr)
+	if err != nil {
+		return "", err
+	}
+	m := gnoAddressRe.FindStringSubmatch(out)
+	if m == nil {
+		return "", fmt.Errorf("no address in qeval response for %q", username)
+	}
+	return m[1], nil
+}
+
+// usernameCacheTTL is longer than govDAOCacheTTL: a username's bound address
+// changes only on an explicit re-registration (ProposeUpdateName), not on
+// every new vote or proposal, so there is no reason to re-resolve it as
+// often as gov/dao's own render.
+const usernameCacheTTL = 10 * time.Minute
+
+var usernameCache = struct {
+	mu      sync.Mutex
+	byName  map[string]string
+	fetched map[string]time.Time
+}{byName: map[string]string{}, fetched: map[string]time.Time{}}
+
+// resolveGnoUsernameCached is the best-effort, cached front for
+// resolveGnoUsername: an empty string on failure (unregistered name, RPC
+// hiccup) rather than an error, so a caller can fall back to showing the
+// plain "@username" text exactly as it did before this existed, and a
+// failed refresh serves the last good address rather than dropping a link
+// that was working a moment ago — the same pattern as every other cache in
+// this file.
+func resolveGnoUsernameCached(ctx context.Context, rpcURL, username string) string {
+	if username == "" {
+		return ""
+	}
+	usernameCache.mu.Lock()
+	if addr, ok := usernameCache.byName[username]; ok && time.Since(usernameCache.fetched[username]) < usernameCacheTTL {
+		usernameCache.mu.Unlock()
+		return addr
+	}
+	usernameCache.mu.Unlock()
+
+	addr, err := resolveGnoUsername(ctx, rpcURL, username)
+
+	usernameCache.mu.Lock()
+	defer usernameCache.mu.Unlock()
+	if err == nil && addr != "" {
+		usernameCache.byName[username] = addr
+		usernameCache.fetched[username] = time.Now()
+		return addr
+	}
+	return usernameCache.byName[username]
 }
