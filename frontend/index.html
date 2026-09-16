@@ -220,6 +220,11 @@ footer a:hover { color: var(--accent); }
 @keyframes livepulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 .live-new { animation: livefade 0.5s ease-out; }
 @keyframes livefade { from { background: rgba(78, 205, 196, 0.2); } to { background: transparent; } }
+/* Per-validator recent-liveness sparkline: one bar per recent block, filled
+   where that validator proposed it. */
+.spark { display: inline-flex; gap: 2px; align-items: flex-end; height: 14px; }
+.spark i { width: 3px; height: 14px; border-radius: 1px; background: var(--bg3); display: block; }
+.spark i.hit { background: var(--green); }
 /* Copy-to-clipboard affordance next to a full hash, address or path. Sized to
    sit inline without changing the line height of the row it lives in. */
 .copy-btn {
@@ -2982,6 +2987,31 @@ function renderValidatorShareChart(container, sorted, total) {
     },
   }));
 }
+// How many recent blocks the liveness sparkline covers.
+const SPARK_BLOCKS = 20;
+
+// livenessSpark draws one bar per recent block, filled where `addr` proposed it.
+//
+// Oldest on the left, newest on the right, so the right-hand edge is "now" —
+// the reading every other sparkline in the world assumes. `blocks` arrives
+// newest-first from the API, hence the reversal.
+//
+// A validator that has gone quiet shows an empty right-hand side while its
+// peers keep filling theirs, which is the whole signal: an offline validator is
+// invisible in the share column, because its historical share does not move.
+function livenessSpark(blocks, addr) {
+  const spark = el('span', { className: 'spark' });
+  const ordered = blocks.slice().reverse();
+  let hits = 0;
+  for (const b of ordered) {
+    const mine = b.proposer_address_raw === addr;
+    if (mine) hits++;
+    spark.appendChild(el('i', mine ? { className: 'hit' } : {}));
+  }
+  spark.title = hits + ' of the last ' + ordered.length + ' blocks proposed by this validator';
+  return spark;
+}
+
 async function loadValidators() {
   const container = clear('validators-content');
   skeletonRows(container, 3, 5);
@@ -3012,13 +3042,20 @@ async function loadValidators() {
     const total = (blocks || []).length;
     renderValidatorShareChart(shareDiv, sorted, total);
     const vsTbl = el('table');
-    vsTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'proposer'), el('th', {}, 'blocks'), el('th', {}, 'share'))));
+    vsTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'proposer'), el('th', {}, 'blocks'),
+      el('th', {}, 'share'), el('th', {}, 'last ' + SPARK_BLOCKS + ' blocks'))));
     const vsBody = el('tbody');
+    // The share column answers "whose blocks are these historically". It cannot
+    // answer "is this validator up": one that stopped proposing an hour ago
+    // still carries the same share it always did. The sparkline is the other
+    // question — recent blocks, marked where this validator proposed.
+    const recent = (blocks || []).slice(0, SPARK_BLOCKS);
     for (const [addr, count] of sorted) {
       vsBody.appendChild(el('tr', {},
         el('td', {}, proposerEl(addr)),
         el('td', {}, fmtNum(count)),
-        el('td', {}, (count / total * 100).toFixed(1) + '%')
+        el('td', {}, (count / total * 100).toFixed(1) + '%'),
+        el('td', {}, livenessSpark(recent, addr))
       ));
     }
     vsTbl.appendChild(vsBody); container.appendChild(vsTbl);
