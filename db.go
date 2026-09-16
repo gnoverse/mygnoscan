@@ -16,7 +16,27 @@ import (
 
 type DB struct {
 	db *sql.DB
+
+	// mu guards `configured` below. It is deliberately *not* a general database
+	// lock any more.
+	//
+	// It used to be one: every write took mu.Lock, every read took mu.RLock,
+	// and the rollup refresh held the exclusive lock for its whole rebuild —
+	// ~32 seconds out of every 300 on production, during which every read path
+	// queued. Roughly one page load in nine was multi-second for no reason the
+	// reader could see, and measurably so: 8.14s against 0.06–0.16s for the
+	// identical endpoint outside the window.
+	//
+	// The database opens in WAL mode, which exists precisely so readers proceed
+	// alongside a writer. The serialization was imposed above SQLite and undid
+	// what WAL provides. See #143.
 	mu sync.RWMutex
+
+	// writeMu serializes writers against each other, which is the part that was
+	// worth keeping. SQLite allows one writer at a time; without this, a long
+	// rollup transaction and the syncer's inserts race for that slot and the
+	// loser waits out busy_timeout or fails. Readers do not take it.
+	writeMu sync.Mutex
 
 	// background tracks work started by NewDB that outlives it. Close waits on
 	// it: the ANALYZE below is still writing WAL files when a caller finishes,
@@ -727,8 +747,8 @@ func (d *DB) Close() error {
 
 // UpsertPackage inserts or updates a package.
 func (d *DB) UpsertPackage(network, path, name, creator, txHash string, blockHeight int, blockTime string, isRealm bool, numFiles int) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
 	_, err := d.db.Exec(`
 		INSERT OR REPLACE INTO packages (network, path, name, creator, tx_hash, block_height, block_time, is_realm, num_files)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -743,8 +763,8 @@ func (d *DB) UpsertPackage(network, path, name, creator, txHash string, blockHei
 // without it two submissions in the same tx would collide on (network,
 // tx_hash) and INSERT OR IGNORE would silently drop the second.
 func (d *DB) InsertPackageSubmission(network, txHash string, msgIndex int, path, name, creator string, blockHeight int, blockTime string, isRealm bool, numFiles int, success bool) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
 	_, err := d.db.Exec(`
 		INSERT OR IGNORE INTO package_submissions
 			(network, tx_hash, msg_index, path, name, creator, block_height, block_time, is_realm, num_files, success)
@@ -776,8 +796,8 @@ func (d *DB) InsertStorageEvent(network, txHash string, eventIndex int, pkgPath 
 
 // UpsertPackageFile inserts or updates a package file.
 func (d *DB) UpsertPackageFile(network, pkgPath, fileName, body string) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
 	_, err := d.db.Exec(`
 		INSERT OR REPLACE INTO package_files (network, package_path, file_name, body)
 		VALUES (?, ?, ?, ?)
@@ -851,8 +871,8 @@ func (d *DB) StoredPackageFiles(network, pkgPath string) ([]MemFile, error) {
 
 // SetDependencies replaces all dependencies for a package.
 func (d *DB) SetDependencies(network, pkgPath string, imports []string) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
 
 	tx, err := d.db.Begin()
 	if err != nil {
@@ -884,8 +904,8 @@ func (d *DB) SetDependencies(network, pkgPath string, imports []string) error {
 // function inside one multicall transaction from collapsing into a single
 // stored row.
 func (d *DB) InsertCall(network, txHash string, blockHeight, msgIndex int, blockTime, caller, pkgPath, funcName string, success bool) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
 	_, err := d.db.Exec(`
 		INSERT OR IGNORE INTO calls (network, tx_hash, msg_index, block_height, block_time, caller, pkg_path, func_name, success)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -909,8 +929,8 @@ type ValoperRegistration struct {
 
 // InsertValoperRegistration records a call to a valopers realm.
 func (d *DB) InsertValoperRegistration(network, txHash string, blockHeight int, blockTime, caller, funcName, address, moniker string, success bool) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
 	_, err := d.db.Exec(`
 		INSERT OR REPLACE INTO valoper_registrations
 			(network, tx_hash, block_height, block_time, caller, func_name, address, moniker, success)
@@ -992,8 +1012,8 @@ func (d *DB) ValoperCallsMissingRegistration(network string, limit int) ([]strin
 
 // InsertMsgRun records a MsgRun transaction with its source.
 func (d *DB) InsertMsgRun(network, txHash string, blockHeight int, blockTime, caller, source string, success bool) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
 	_, err := d.db.Exec(`
 		INSERT OR IGNORE INTO msg_runs (network, tx_hash, block_height, block_time, caller, source, success)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -1002,8 +1022,8 @@ func (d *DB) InsertMsgRun(network, txHash string, blockHeight int, blockTime, ca
 }
 
 func (d *DB) InsertBankSend(network, txHash string, blockHeight int, blockTime, from, to, amount string, success bool) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
 	_, err := d.db.Exec(`INSERT OR IGNORE INTO bank_sends (network, tx_hash, block_height, block_time, from_address, to_address, amount, success) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		network, txHash, blockHeight, blockTime, from, to, amount, success)
 	return err
@@ -1023,8 +1043,8 @@ func (d *DB) GetSyncState(key string) (string, error) {
 
 // SetSyncState writes a sync state value.
 func (d *DB) SetSyncState(key, value string) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
 	_, err := d.db.Exec(`
 		INSERT OR REPLACE INTO sync_state (key, value) VALUES (?, ?)
 	`, key, value)
@@ -1054,8 +1074,8 @@ var networkScopedTables = []string{
 // never run again to fix it. It is bookkeeping rather than data, so it is not
 // counted in the returned row total.
 func (d *DB) DeleteNetworkData(network string) (int64, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
 
 	tx, err := d.db.Begin()
 	if err != nil {
@@ -1210,8 +1230,8 @@ func (d *DB) UpsertTransactions(network string, rows []TxRow) error {
 	if len(rows) == 0 {
 		return nil
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
 
 	tx, err := d.db.Begin()
 	if err != nil {
@@ -1291,8 +1311,8 @@ func (d *DB) SetBlockTimes(network string, times map[int]string) (int64, error) 
 	if len(times) == 0 {
 		return 0, nil
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
 
 	tx, err := d.db.Begin()
 	if err != nil {
@@ -2994,8 +3014,8 @@ func (d *DB) GetStorageTimeSeries(network, realmPath, granularity string, days i
 }
 
 func (d *DB) UpsertTransaction(network, txHash string, blockHeight int, blockTime string, gasUsed, gasWanted, gasFee int, success bool) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
 	_, err := d.db.Exec(`
 		INSERT OR IGNORE INTO transactions (network, tx_hash, block_height, block_time, gas_used, gas_wanted, gas_fee, success)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -4293,12 +4313,14 @@ const bankTopRollupLimit = 400
 // Whole-table replacement inside one transaction: readers see either the old
 // rollup or the new one, never a half-written mixture.
 func (d *DB) RefreshRollups() error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
 	// A busy write lock loses the whole refresh, and the failure is quiet: the
 	// read path falls back to computing live, so the page merely stays slow.
 	// Retry rather than wait for the next tick.
+	//
+	// The backoff sleeps outside every lock, and the write lock is taken per
+	// attempt rather than across the loop. It used to be held for the whole
+	// thing, so a contended refresh blocked writers for the rebuild *plus* six
+	// seconds of waiting — the retry made the stall longer than the work.
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
@@ -4312,6 +4334,11 @@ func (d *DB) RefreshRollups() error {
 }
 
 func (d *DB) refreshRollups() error {
+	// Held for the rebuild so the syncer's inserts do not race this transaction
+	// for SQLite's single writer slot. Readers are unaffected: since #143 they
+	// no longer share a lock with writers at all.
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
 
 	tx, err := d.db.Begin()
 	if err != nil {
@@ -4319,7 +4346,11 @@ func (d *DB) refreshRollups() error {
 	}
 	defer tx.Rollback()
 
+	// configured is read under the read lock and released immediately. The
+	// scope is a plain string, so nothing below depends on still holding it.
+	d.mu.RLock()
 	scope := d.networkFilter("t.network", "")
+	d.mu.RUnlock()
 
 	if _, err := tx.Exec(`DELETE FROM gas_realm_rollup`); err != nil {
 		return err
@@ -4559,8 +4590,8 @@ func (d *DB) NetworkDataStart(network string) (time.Time, bool, error) {
 // The unique key is (network, address), so the same validator address on two
 // chains gets two ids and an id can never span networks.
 func (d *DB) InternProposer(network, address string) (int64, error) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
 
 	if _, err := d.db.Exec(
 		`INSERT INTO proposers (network, address) VALUES (?, ?) ON CONFLICT DO NOTHING`,
@@ -4595,8 +4626,8 @@ func (d *DB) UpsertBlocks(network string, rows []BlockRow) error {
 	if len(rows) == 0 {
 		return nil
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
 
 	tx, err := d.db.Begin()
 	if err != nil {
