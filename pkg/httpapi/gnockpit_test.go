@@ -13,7 +13,7 @@ import (
 func resetGnockpitCache(t *testing.T) {
 	t.Helper()
 	gnockpitCache.mu.Lock()
-	gnockpitCache.monikers = nil
+	gnockpitCache.validators = nil
 	gnockpitCache.fetched = time.Time{}
 	gnockpitCache.mu.Unlock()
 }
@@ -92,6 +92,24 @@ func TestFetchGnockpitMonikersServesStaleOnFailedRefresh(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Errorf("server got %d requests, want exactly 2 (one per fetch attempt)", calls)
+	}
+}
+
+func TestFetchGnockpitValidators(t *testing.T) {
+	resetGnockpitCache(t)
+	useGnockpitFake(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"validators":[
+			{"name":"berty-val-01","address":"g1l983yy3kpmapyzcfy53y5charfxupa5czjalea","voting_power":"60","spof":false,"missed_100":0,"missed_24h":2,"avg_block_ms":3351}
+		]}`))
+	})
+
+	got := FetchGnockpitValidators(context.Background())
+	if len(got) != 1 {
+		t.Fatalf("got %d validators, want 1", len(got))
+	}
+	v := got[0]
+	if v.VotingPower != "60" || v.Missed24h != 2 || v.AvgBlockMs != 3351 || v.SPOF {
+		t.Errorf("validator = %+v, want voting_power=60 missed_24h=2 avg_block_ms=3351 spof=false", v)
 	}
 }
 

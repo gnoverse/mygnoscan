@@ -3064,7 +3064,8 @@ async function loadValidators() {
   const container = clear('validators-content');
   skeletonRows(container, 3, 5);
   try {
-    const [blocks, valopers] = await Promise.all([api('blocks?limit=100'), api('validators')]);
+    const [blocks, valopers, liveSet] = await Promise.all([api('blocks?limit=100'), api('validators'), api('validators/live')]);
+    const liveByAddr = new Map((liveSet || []).map(v => [v.address, v]));
     _valopersCache = valopers;
     _valopersShowFailed = false;
     container.textContent = '';
@@ -3090,23 +3091,41 @@ async function loadValidators() {
     const total = (blocks || []).length;
     renderValidatorShareChart(shareDiv, sorted, total);
     const vsTbl = el('table');
+    const vpTh = el('th', {}, 'voting power'); vpTh.title = 'stake weight in the validator set, from gnockpit.gno.land';
+    const missedTh = el('th', {}, 'missed (100)'); missedTh.title = 'blocks missed in the last 100 this validator was in the set for';
+    const missed24Th = el('th', {}, 'missed (24h)'); missed24Th.title = 'blocks missed in the last 24h';
+    const speedTh = el('th', {}, 'avg block'); speedTh.title = 'average block time when this validator proposes, over its last 100 blocks';
+    const spofTh = el('th', {}, 'spof'); spofTh.title = 'losing this validator alone would drop the network below BFT quorum (2/3+1 of voting power)';
     vsTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'proposer'), el('th', {}, 'blocks'),
-      el('th', {}, 'share'), el('th', {}, 'last ' + SPARK_BLOCKS + ' blocks'))));
+      el('th', {}, 'share'), el('th', {}, 'last ' + SPARK_BLOCKS + ' blocks'), vpTh, missedTh, missed24Th, speedTh, spofTh)));
     const vsBody = el('tbody');
     // The share column answers "whose blocks are these historically". It cannot
     // answer "is this validator up": one that stopped proposing an hour ago
     // still carries the same share it always did. The sparkline is the other
-    // question — recent blocks, marked where this validator proposed.
+    // question — recent blocks, marked where this validator proposed. Voting
+    // power / missed / spof come from gnockpit's live consensus view (see
+    // gnockpit.go) and answer a third question this chain's own data cannot:
+    // whether the validator set can currently tolerate losing this one.
     const recent = (blocks || []).slice(0, SPARK_BLOCKS);
     for (const [addr, count] of sorted) {
+      const live = liveByAddr.get(addr);
       vsBody.appendChild(el('tr', {},
         el('td', {}, proposerEl(addr)),
         el('td', {}, fmtNum(count)),
         el('td', {}, (count / total * 100).toFixed(1) + '%'),
-        el('td', {}, livenessSpark(recent, addr))
+        el('td', {}, livenessSpark(recent, addr)),
+        el('td', {}, live ? fmtNum(Number(live.voting_power)) : '–'),
+        el('td', {}, live ? String(live.missed_100) : '–'),
+        el('td', {}, live ? String(live.missed_24h) : '–'),
+        el('td', {}, live && live.avg_block_ms ? (live.avg_block_ms / 1000).toFixed(1) + 's' : '–'),
+        el('td', {}, live ? (live.spof ? badge('fail', 'single point of failure') : statusBadge(true)) : '–')
       ));
     }
     vsTbl.appendChild(vsBody); container.appendChild(vsTbl);
+    if (!liveSet || !liveSet.length) {
+      container.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '12px', marginTop: '4px' } },
+        'live voting power / uptime data from gnockpit.gno.land is unavailable right now.'));
+    }
 
     // Valoper registrations with filter
     if ((valopers || []).length) {
