@@ -7,7 +7,7 @@ Two sets, for two different jobs.
 | `docs/images/*.png` | a real database snapshot | yes | the README — a chain with enough history to look like something |
 | `docs/images/review/*.png` | the e2e fixture | no | reviewing a frontend change, identical run to run |
 
-The second is what CI uploads on any pull request touching `frontend/`, so a
+The second is what CI uploads on any pull request touching `pkg/web/frontend/`, so a
 reviewer can see what a change did to every page without checking the branch
 out. A frontend diff is unreadable as text, and checking out a branch to look at
 five pages is enough friction that nobody does it.
@@ -83,5 +83,5 @@ something; an empty chain produces empty screenshots.
 
 CI does not regenerate or verify these — see
 [#17](https://github.com/gnoverse/mygnoscan/issues/17). The intent is to upload
-freshly generated images as artifacts on PRs touching `frontend/`, so a reviewer
+freshly generated images as artifacts on PRs touching `pkg/web/frontend/`, so a reviewer
 can see the visual effect of a change without checking the branch out.
