@@ -891,6 +891,14 @@ func (d *DB) SetDependencies(network, pkgPath string, imports []string) error {
 	defer stmt.Close()
 
 	for _, imp := range imports {
+		// A package cannot import itself, so an edge saying it does is wrong
+		// wherever it came from. The analyzer already excludes the package's own
+		// path during extraction, but this is the boundary the table is written
+		// through and the cheapest place to make the invariant hold for every
+		// caller — including a backfill replaying older, looser extraction.
+		if imp == pkgPath {
+			continue
+		}
 		if _, err := stmt.Exec(network, pkgPath, imp); err != nil {
 			return err
 		}
@@ -1824,7 +1832,16 @@ func (d *DB) GetPackageDetail(network, path string) (*PackageDetail, error) {
 	}
 
 	// Imports (dependencies)
-	impRows, err := d.db.Query(`SELECT import_path FROM dependencies WHERE package_path = ? AND network = ?`, path, p.Network)
+	// `import_path != package_path` guards the read as well as the write.
+	//
+	// Self-edges are already rejected on the way in, but rows written before
+	// that guard existed are still in the table — six of them reached the live
+	// graph from the old regex-based extraction, and r/gnoswap/router showed up
+	// as both its own import and its own dependent. Filtering here fixes those
+	// without a migration, and the graph tab has always excluded them, so this
+	// is what makes the two views agree.
+	impRows, err := d.db.Query(`SELECT import_path FROM dependencies
+		WHERE package_path = ? AND network = ? AND import_path != package_path`, path, p.Network)
 	if err != nil {
 		return nil, err
 	}
@@ -1846,7 +1863,7 @@ func (d *DB) GetPackageDetail(network, path string) (*PackageDetail, error) {
 		SELECT dep.package_path, COALESCE(pkg.creator, '')
 		FROM dependencies dep
 		LEFT JOIN packages pkg ON pkg.network = dep.network AND pkg.path = dep.package_path
-		WHERE dep.import_path = ? AND dep.network = ?
+		WHERE dep.import_path = ? AND dep.network = ? AND dep.package_path != dep.import_path
 		ORDER BY dep.package_path ASC`, path, p.Network)
 	if err != nil {
 		return nil, err

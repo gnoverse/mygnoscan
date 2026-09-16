@@ -169,3 +169,74 @@ func TestGraphOnAnUnknownPackage(t *testing.T) {
 		})
 	}
 }
+
+// A package cannot import itself, so an edge saying it does is wrong wherever
+// it came from.
+//
+// r/gnoswap/router appeared on its own deps tab as both its own import and its
+// own dependent — a self-loop that cannot exist in gno. The graph tab already
+// omitted it, so the two views disagreed about the same realm. The edges came
+// from the old regex extraction, which matched any quoted gno.land path
+// including the package's own; six of them reached the live graph.
+//
+// Guarded on both sides: SetDependencies refuses to store one, and the detail
+// query filters them, which fixes rows written before the guard existed without
+// needing a migration.
+func TestSelfReferencesNeverReachTheDepsView(t *testing.T) {
+	db := newGraphDB(t)
+
+	const self = "gno.land/r/demo/app"
+
+	// Offered a self-import alongside a real one, the store must keep only the
+	// real one.
+	if err := db.SetDependencies("alpha", self, []string{self, "gno.land/p/demo/lib"}); err != nil {
+		t.Fatalf("SetDependencies: %v", err)
+	}
+
+	detail, err := db.GetPackageDetail("alpha", self)
+	if err != nil {
+		t.Fatalf("GetPackageDetail: %v", err)
+	}
+	for _, imp := range detail.Imports {
+		if imp == self {
+			t.Errorf("the realm is listed as its own import: %v", detail.Imports)
+		}
+	}
+	if len(detail.Imports) != 1 || detail.Imports[0] != "gno.land/p/demo/lib" {
+		t.Errorf("imports = %v, want just the real one; dropping the self-edge must not drop the rest", detail.Imports)
+	}
+	for _, dep := range detail.Dependents {
+		if dep.Path == self {
+			t.Errorf("the realm is listed as its own dependent: %v", dep)
+		}
+	}
+}
+
+// The read-side filter has to work on rows already in the table, because that
+// is the case it exists for: the write-side guard cannot reach history.
+func TestExistingSelfEdgesAreFilteredOnRead(t *testing.T) {
+	db := newGraphDB(t)
+
+	const self = "gno.land/r/demo/app"
+	// Written straight to the table, the way the old extraction did.
+	if _, err := db.db.Exec(
+		`INSERT OR IGNORE INTO dependencies (network, package_path, import_path) VALUES (?, ?, ?)`,
+		"alpha", self, self); err != nil {
+		t.Fatalf("seed self-edge: %v", err)
+	}
+
+	detail, err := db.GetPackageDetail("alpha", self)
+	if err != nil {
+		t.Fatalf("GetPackageDetail: %v", err)
+	}
+	for _, imp := range detail.Imports {
+		if imp == self {
+			t.Error("a self-edge already in the table still reached the imports list")
+		}
+	}
+	for _, dep := range detail.Dependents {
+		if dep.Path == self {
+			t.Error("a self-edge already in the table still reached the dependents list")
+		}
+	}
+}
