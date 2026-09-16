@@ -795,3 +795,125 @@ func TestDedupOnceGivesTheSameCounts(t *testing.T) {
 		}
 	})
 }
+
+// Where activity is concentrating, and whether that is changing.
+//
+// Every existing rollup is an all-time snapshot — "who has spent the most
+// ever" — so a realm that dominated months ago and has since gone quiet still
+// tops every table on the site. This is the series that can tell them apart.
+func TestRealmShareTimeSeries(t *testing.T) {
+	db := newTestDB(t)
+	db.SetConfiguredNetworks([]NetworkConfig{{ID: "alpha"}})
+
+	now := time.Now().UTC()
+	day := func(n int) string { return now.AddDate(0, 0, -n).Format(time.RFC3339) }
+
+	// "faded" was busy three days ago and has stopped; "rising" is busy today.
+	// An all-time total cannot distinguish them; a bucketed series must.
+	seed := func(hash string, height int, when, realm string, fee int) {
+		t.Helper()
+		if err := db.UpsertTransaction("alpha", hash, height, when, 100, 200, fee, true); err != nil {
+			t.Fatalf("UpsertTransaction: %v", err)
+		}
+		if err := db.InsertCall("alpha", hash, height, 0, when, "g1caller", realm, "Post", true); err != nil {
+			t.Fatalf("InsertCall: %v", err)
+		}
+	}
+	seed("tx1", 101, day(3), "gno.land/r/a/faded", 500)
+	seed("tx2", 102, day(3), "gno.land/r/a/faded", 500)
+	seed("tx3", 103, day(1), "gno.land/r/a/rising", 300)
+
+	pts, err := db.GetRealmShareTimeSeries("alpha", "fee", "daily", 7)
+	if err != nil {
+		t.Fatalf("GetRealmShareTimeSeries: %v", err)
+	}
+	if len(pts) == 0 {
+		t.Fatal("empty series")
+	}
+
+	byRealm := map[string]int{}
+	buckets := map[string]bool{}
+	for _, p := range pts {
+		byRealm[p.Path] += p.Value
+		buckets[p.Bucket] = true
+	}
+	if byRealm["gno.land/r/a/faded"] != 1000 {
+		t.Errorf("faded total = %d, want 1000", byRealm["gno.land/r/a/faded"])
+	}
+	if byRealm["gno.land/r/a/rising"] != 300 {
+		t.Errorf("rising total = %d, want 300", byRealm["gno.land/r/a/rising"])
+	}
+	// The point of the series: the two realms are in different buckets. A
+	// single-bucket result would be a snapshot wearing a chart's clothes.
+	if len(buckets) < 2 {
+		t.Errorf("series has %d bucket(s); the two realms were active on different days", len(buckets))
+	}
+}
+
+// A transaction touching one realm several times is charged its fee once.
+//
+// Same reason gas_realm_rollup uses DISTINCT: a multicall carries one fee, and
+// counting it per message would inflate exactly the busiest realms.
+func TestRealmShareChargesAMulticallFeeOnce(t *testing.T) {
+	db := newTestDB(t)
+	db.SetConfiguredNetworks([]NetworkConfig{{ID: "alpha"}})
+
+	when := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
+	if err := db.UpsertTransaction("alpha", "multi", 100, when, 100, 200, 900, true); err != nil {
+		t.Fatalf("UpsertTransaction: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := db.InsertCall("alpha", "multi", 100, i, when, "g1caller", "gno.land/r/a/busy", "Post", true); err != nil {
+			t.Fatalf("InsertCall: %v", err)
+		}
+	}
+
+	pts, err := db.GetRealmShareTimeSeries("alpha", "fee", "daily", 7)
+	if err != nil {
+		t.Fatalf("GetRealmShareTimeSeries: %v", err)
+	}
+	total := 0
+	for _, p := range pts {
+		total += p.Value
+	}
+	if total != 900 {
+		t.Errorf("total fee = %d, want 900; a three-message multicall still carries one fee", total)
+	}
+}
+
+// Storage share is signed: a bucket in which a realm freed more than it wrote
+// is negative, and clamping that to zero would quietly overstate what storage
+// costs.
+func TestRealmShareStorageIsSigned(t *testing.T) {
+	db := newTestDB(t)
+	db.SetConfiguredNetworks([]NetworkConfig{{ID: "alpha"}})
+
+	when := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
+	if err := db.InsertStorageEvent("alpha", "txA", 0, "gno.land/r/a/x", 100, when, "deposit", 100, 400); err != nil {
+		t.Fatalf("InsertStorageEvent: %v", err)
+	}
+	if err := db.InsertStorageEvent("alpha", "txB", 0, "gno.land/r/a/x", 101, when, "unlock", -300, -900); err != nil {
+		t.Fatalf("InsertStorageEvent: %v", err)
+	}
+
+	pts, err := db.GetRealmShareTimeSeries("alpha", "storage", "daily", 7)
+	if err != nil {
+		t.Fatalf("GetRealmShareTimeSeries: %v", err)
+	}
+	total := 0
+	for _, p := range pts {
+		total += p.Value
+	}
+	if total != -500 {
+		t.Errorf("storage total = %d, want -500: the realm was refunded more than it paid", total)
+	}
+}
+
+func TestRealmShareRejectsAnUnknownMetric(t *testing.T) {
+	db := newTestDB(t)
+	db.SetConfiguredNetworks([]NetworkConfig{{ID: "alpha"}})
+
+	if _, err := db.GetRealmShareTimeSeries("alpha", "bananas", "daily", 7); err == nil {
+		t.Error("an unknown metric was accepted; it would silently return an empty chart")
+	}
+}

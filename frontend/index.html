@@ -3109,6 +3109,97 @@ function renderValoperRows(container) {
   tbl.appendChild(tbody); wrap.appendChild(tbl);
 }
 
+// How many realms get their own band before the rest are folded together.
+// Beyond this the legend costs more than the detail buys.
+const SHARE_TOP_N = 6;
+
+let _shareChartInstances = [];
+
+// renderShareCharts draws fee and storage share by realm as stacked areas.
+//
+// The series arrives long-form — one row per (bucket, realm) — because which
+// realms appear varies between buckets. Choosing whose band to name is a
+// presentation decision, so it happens here rather than in SQL: rank by total
+// over the whole window, name the top few, fold the rest into one band.
+//
+// Ranking per bucket instead would let a realm drift in and out of the legend
+// between adjacent columns, which reads as noise rather than as a trend.
+async function renderShareCharts(container) {
+  for (const c of _shareChartInstances) c.destroy();
+  _shareChartInstances = [];
+  container.textContent = '';
+
+  const q = 'days=' + _tsDays + '&granularity=' + _tsGranularity;
+  for (const metric of ['fee', 'storage']) {
+    let rows;
+    try {
+      rows = await api('timeseries/realm-share?metric=' + metric + '&' + q);
+    } catch (err) {
+      container.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '12px' } },
+        'no ' + metric + ' data yet'));
+      continue;
+    }
+    if (!rows || !rows.length) {
+      container.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '12px' } },
+        'no ' + metric + ' activity in this window'));
+      continue;
+    }
+
+    const buckets = [...new Set(rows.map(r => r.bucket))].sort();
+    const totals = {};
+    for (const r of rows) totals[r.path] = (totals[r.path] || 0) + r.value;
+    // Ranked by magnitude: a realm with a large net refund is as interesting as
+    // one with a large spend, and sorting by signed value would bury it.
+    const ranked = Object.keys(totals).sort((a, b) => Math.abs(totals[b]) - Math.abs(totals[a]));
+    const named = new Set(ranked.slice(0, SHARE_TOP_N));
+
+    const series = {};
+    for (const name of [...named, 'rest']) series[name] = Object.fromEntries(buckets.map(b => [b, 0]));
+    for (const r of rows) {
+      const key = named.has(r.path) ? r.path : 'rest';
+      series[key][r.bucket] += r.value;
+    }
+    // "rest" only earns a band if something actually landed in it.
+    if (ranked.length <= SHARE_TOP_N) delete series.rest;
+
+    const palette = ['#4ecdc4', '#ff6b6b', '#ffd93d', '#6bcB77', '#a78bfa', '#ff8787', '#888'];
+    const datasets = Object.keys(series).map((name, i) => ({
+      label: name === 'rest' ? 'rest' : name.replace('gno.land/', ''),
+      data: buckets.map(b => series[name][b]),
+      backgroundColor: palette[i % palette.length] + 'cc',
+      borderColor: palette[i % palette.length],
+      borderWidth: 1,
+      fill: true,
+      tension: 0.2,
+      pointRadius: 0,
+    }));
+
+    const wrap = el('div', { style: { position: 'relative', height: '220px' } });
+    const canvas = document.createElement('canvas');
+    wrap.appendChild(canvas);
+    container.appendChild(wrap);
+
+    _shareChartInstances.push(new Chart(canvas, {
+      type: 'line',
+      data: { labels: buckets, datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: { labels: { color: '#888', boxWidth: 12, padding: 8, font: { size: 10 } } },
+          title: { display: true, text: metric + ' share by realm', color: '#888' },
+        },
+        scales: {
+          x: { stacked: true, ticks: { color: '#888', maxTicksLimit: 8, maxRotation: 0 }, grid: { color: '#2a2a2a' } },
+          // Not beginAtZero: storage is signed, and a realm that freed more
+          // than it wrote belongs below the axis rather than clamped onto it.
+          y: { stacked: true, ticks: { color: '#888' }, grid: { color: '#2a2a2a' } },
+        },
+      },
+    }));
+  }
+}
+
 async function loadAnalytics() {
   const container = clear('analytics-content');
   skeletonBlock(container);
@@ -3165,6 +3256,18 @@ async function loadAnalytics() {
     tsSection.appendChild(tsChartsDiv);
     container.appendChild(tsSection);
     renderTsCharts(tsChartsDiv);
+
+    // Where activity is concentrating, and whether that is changing. Every
+    // other ranking on this page is an all-time total, which cannot tell a
+    // realm that is busy now from one that was busy a year ago.
+    const shareSection = el('div', { className: 'section' });
+    shareSection.appendChild(el('div', { className: 'section-title' }, 'share by realm over time'));
+    shareSection.appendChild(el('div', { className: 'section-sub' },
+      'fee and storage spend per realm, bucketed. the top realms are named; everything else is folded into "rest".'));
+    const shareCharts = el('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' } });
+    shareSection.appendChild(shareCharts);
+    container.appendChild(shareSection);
+    renderShareCharts(shareCharts);
 
     // Grid layout for rankings
     const grid = el('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', marginTop: '16px' } });
