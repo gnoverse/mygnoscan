@@ -31,6 +31,10 @@ type Client struct {
 	// fingerprint of the chain this pool is serving, learned from the first
 	// endpoint that answers. Members that disagree are never selected.
 	fingerprint string
+
+	// inertSupport caches whether this chain's indexer defines the inert-package
+	// message types. Unknown until the first query asks.
+	inertSupport int8
 }
 
 // ErrUnavailable is returned while the breaker is open.
@@ -144,6 +148,95 @@ func (c *Client) activeURL() string {
 		return ""
 	}
 	return c.urls[c.active]
+}
+
+// The inert-package message types, which only newer tx-indexers define.
+//
+// They are selected inside the shared transaction field set, so an indexer that
+// does not know them rejects *every* transaction query with a
+// GRAPHQL_VALIDATION_FAILED rather than just the package one — which is how a
+// single unsupported type took a whole chain's sync offline:
+//
+//	sync packages: indexer returned 422: Unknown type "MsgEnablePackage"
+//
+// pearl's indexer predates them. The rows it had already synced stayed, so the
+// breakage was invisible until a schema migration dropped those tables and the
+// resync could not refill them.
+const inertFragments = `
+			... on MsgEnablePackage {
+				approver
+				pkg_path
+				pkg_hash
+				pkg_height
+			}
+			... on MsgRejectPackage {
+				sender
+				pkg_path
+			}`
+
+const (
+	inertUnknown int8 = iota
+	inertYes
+	inertNo
+)
+
+// supportsInert reports whether this chain's indexer defines the inert-package
+// types, asking it once and remembering the answer.
+//
+// Asked rather than inferred from an error, so the first query of a sync pass
+// does not have to fail to find out. A probe that cannot reach the indexer
+// returns true: assuming support keeps behaviour identical to before this
+// existed, and the query that follows will fail for the real reason rather than
+// being silently trimmed because a health check blipped.
+func (c *Client) supportsInert(ctx context.Context) bool {
+	c.mu.Lock()
+	known := c.inertSupport
+	c.mu.Unlock()
+	if known != inertUnknown {
+		return known == inertYes
+	}
+
+	// Never probe through an open breaker. The probe bypasses query() to avoid
+	// recursing into field selection, which also means it bypasses the breaker
+	// — so without this it is the one request that still goes out on a chain
+	// already declared unreachable.
+	if c.breakerOpen() {
+		return true
+	}
+
+	var result struct {
+		Type *struct {
+			Name string `json:"name"`
+		} `json:"__type"`
+	}
+	err := c.doQuery(ctx, c.activeURL(), `{ __type(name: "MsgEnablePackage") { name } }`, nil, &result)
+	supported := err != nil || result.Type != nil
+
+	c.mu.Lock()
+	if err == nil {
+		c.inertSupport = inertNo
+		if supported {
+			c.inertSupport = inertYes
+		}
+	}
+	c.mu.Unlock()
+	return supported
+}
+
+// lightFields and fullFields are the transaction selection sets, trimmed to
+// what this indexer actually understands.
+func (c *Client) lightFields(ctx context.Context) string {
+	if c.supportsInert(ctx) {
+		return txFieldsLight
+	}
+	return strings.ReplaceAll(txFieldsLight, inertFragments, "")
+}
+
+func (c *Client) fullFields(ctx context.Context) string {
+	if c.supportsInert(ctx) {
+		return txFields
+	}
+	return strings.ReplaceAll(txFields, inertFragments, "")
 }
 
 // gqlEscape sanitizes a string for safe use inside GraphQL string literals.
@@ -734,7 +827,7 @@ func dropTrailingHeight(txs []Transaction) []Transaction {
 // See transactionsFromHeight for the paging contract.
 func (c *Client) GetAllPackages(ctx context.Context, lastHeight *int) ([]Transaction, bool, error) {
 	return c.transactionsFromHeight(ctx, lastHeight,
-		`messages: { value: { MsgAddPackage: {} } }`, txFields)
+		`messages: { value: { MsgAddPackage: {} } }`, c.fullFields(ctx))
 }
 
 // GetRecentTransactions fetches the most recent transactions, limited to maxResults.
@@ -747,7 +840,7 @@ func (c *Client) GetRecentTransactions(ctx context.Context, maxResults int) ([]T
 			where: {}
 			order: { heightAndIndex: DESC }
 		) { %s }
-	}`, txFieldsLight)
+	}`, c.lightFields(ctx))
 	err := c.query(ctx, q, nil, &result)
 	if err != nil {
 		return nil, err
@@ -869,7 +962,7 @@ func (c *Client) recentTransactionsWindowed(
 			where: { %s %s }
 			order: { heightAndIndex: DESC }
 		) { %s }
-	}`, heightFilter, extraWhere, txFieldsLight)
+	}`, heightFilter, extraWhere, c.lightFields(ctx))
 		if err := c.query(ctx, q, nil, &result); err != nil {
 			// A capped result set is not a failure here, it is the answer.
 			//
@@ -897,7 +990,7 @@ func (c *Client) recentTransactionsWindowed(
 // GetTransactionsFromHeight fetches a page of transactions above lastHeight.
 // See transactionsFromHeight for the paging contract.
 func (c *Client) GetTransactionsFromHeight(ctx context.Context, lastHeight *int) ([]Transaction, bool, error) {
-	return c.transactionsFromHeight(ctx, lastHeight, "", txFieldsLight)
+	return c.transactionsFromHeight(ctx, lastHeight, "", c.lightFields(ctx))
 }
 
 // GetTransactionByHash fetches a single transaction by hash.
@@ -909,7 +1002,7 @@ func (c *Client) GetTransactionByHash(ctx context.Context, hash string) (*Transa
 		getTransactions(
 			where: { hash: { eq: "%s" } }
 		) { %s }
-	}`, gqlEscape(hash), txFields)
+	}`, gqlEscape(hash), c.fullFields(ctx))
 	err := c.query(ctx, q, nil, &result)
 	if err != nil {
 		return nil, err
@@ -952,7 +1045,7 @@ func (c *Client) GetTransactionsByAddress(ctx context.Context, addr string) ([]T
 			where: { %s }
 			order: { heightAndIndex: DESC }
 		) { %s }
-	}`, involves, txFieldsLight)
+	}`, involves, c.lightFields(ctx))
 			err := c.query(ctx, q, nil, &result)
 			return result.GetTransactions, err
 		})
@@ -969,7 +1062,7 @@ func (c *Client) GetTransactionsByAddress(ctx context.Context, addr string) ([]T
 // See transactionsFromHeight for the paging contract.
 func (c *Client) GetMsgRunTransactions(ctx context.Context, lastHeight *int) ([]Transaction, bool, error) {
 	return c.transactionsFromHeight(ctx, lastHeight,
-		`messages: { value: { MsgRun: {} } }`, txFields)
+		`messages: { value: { MsgRun: {} } }`, c.fullFields(ctx))
 }
 
 type Block struct {
@@ -1139,7 +1232,7 @@ func (c *Client) GetTransactionsByBlock(ctx context.Context, height int) ([]Tran
 			where: { block_height: { eq: %d } }
 			order: { heightAndIndex: ASC }
 		) { %s }
-	}`, height, txFieldsLight)
+	}`, height, c.lightFields(ctx))
 	err := c.query(ctx, q, nil, &result)
 	return result.GetTransactions, err
 }
@@ -1213,7 +1306,7 @@ func (c *Client) GetRecentTransactionsWithEvents(ctx context.Context, need int) 
 			where: { response: { events: { GnoEvent: {} } } }
 			order: { heightAndIndex: DESC }
 		) { %s }
-	}`, txFieldsLight)
+	}`, c.lightFields(ctx))
 			err := c.query(ctx, q, nil, &result)
 			return result.GetTransactions, err
 		})
@@ -1231,7 +1324,7 @@ func (c *Client) GetEventsByPkgPath(ctx context.Context, pkgPath string, need in
 			where: { %s }
 			order: { heightAndIndex: DESC }
 		) { %s }
-	}`, where, txFieldsLight)
+	}`, where, c.lightFields(ctx))
 		err := c.query(ctx, q, nil, &result)
 		return result.GetTransactions, err
 	})
@@ -1266,7 +1359,7 @@ func (c *Client) GetGovDAOTransactions(ctx context.Context, need int) ([]Transac
 			where: { %s }
 			order: { heightAndIndex: DESC }
 		) { %s }
-	}`, where, txFieldsLight)
+	}`, where, c.lightFields(ctx))
 		err := c.query(ctx, q, nil, &result)
 		return result.GetTransactions, err
 	})
@@ -1288,7 +1381,7 @@ func (c *Client) GetPackageEnableTransactions(ctx context.Context, need int) ([]
 			where: { %s }
 			order: { heightAndIndex: DESC }
 		) { %s }
-	}`, where, txFieldsLight)
+	}`, where, c.lightFields(ctx))
 		err := c.query(ctx, q, nil, &result)
 		return result.GetTransactions, err
 	})
@@ -1308,7 +1401,7 @@ func (c *Client) GetPackageRejectTransactions(ctx context.Context, need int) ([]
 			where: { %s }
 			order: { heightAndIndex: DESC }
 		) { %s }
-	}`, where, txFieldsLight)
+	}`, where, c.lightFields(ctx))
 		err := c.query(ctx, q, nil, &result)
 		return result.GetTransactions, err
 	})
@@ -1334,7 +1427,7 @@ func (c *Client) GetPackageLifecycleTransactions(ctx context.Context, pkgPath st
 			where: { %s }
 			order: { heightAndIndex: DESC }
 		) { %s }
-	}`, where, txFieldsLight)
+	}`, where, c.lightFields(ctx))
 		err := c.query(ctx, q, nil, &result)
 		return result.GetTransactions, err
 	})

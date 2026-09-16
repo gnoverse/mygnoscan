@@ -372,6 +372,13 @@ func (f *sparseTxIndexer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The capability probe is not a window; recording it would break the
+	// strictly-widening assertion below.
+	if strings.Contains(query, `__type(name:`) {
+		fmt.Fprint(w, `{"data":{"__type":{"name":"MsgEnablePackage"}}}`)
+		return
+	}
+
 	from := 0
 	if gt := strings.Index(query, "gt:"); gt >= 0 {
 		fmt.Sscanf(strings.TrimSpace(query[gt+3:]), "%d", &from)
@@ -519,6 +526,16 @@ func (f *recordingIndexer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if strings.Contains(query, "latestBlockHeight") {
 		fmt.Fprintf(w, `{"data":{"latestBlockHeight":%d}}`, f.tip)
+		return
+	}
+
+	// The capability probe is not a transaction query; recording it would make
+	// it query zero and break every assertion that reads the first one.
+	//
+	// Answered before taking the lock: returning from inside the critical
+	// section leaves the mutex held and deadlocks every request after it.
+	if strings.Contains(query, `__type(name:`) {
+		writeGQL(w, map[string]any{"data": map[string]any{"__type": map[string]any{"name": "MsgEnablePackage"}}})
 		return
 	}
 
