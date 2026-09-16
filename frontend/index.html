@@ -232,6 +232,15 @@ footer a:hover { color: var(--accent); }
 /* The confirmation replaces the icon, so reserve the width both states need and
    stop the row from reflowing on every click. */
 .copy-btn { min-width: 20px; display: inline-block; text-align: center; }
+/* Exported-function pills on a realm's info tab. */
+.fnpill {
+  display: inline-block; padding: 2px 8px; margin: 0 4px 4px 0;
+  border: 1px solid var(--border); border-radius: 10px;
+  font-family: var(--mono); font-size: 12px; color: var(--accent);
+  cursor: pointer; background: var(--bg2);
+}
+.fnpill:hover { border-color: var(--accent); background: var(--bg3); }
+.fnpill.uncalled { color: var(--fg2); }
 /* Highlight on hover (addresses, tx hashes, event types, etc) */
 [data-hl].hl-active { outline: 2px solid #4ecdc4; outline-offset: 1px; background: rgba(78, 205, 196, 0.15); border-radius: 2px; }
 @media (max-width: 768px) { .stats-bar { gap: 12px; } .stat .value { font-size: 16px; } .search-box input { width: 160px; } nav { gap: 8px; } }
@@ -4270,6 +4279,26 @@ async function loadRealmDetail(path, initialTab) {
     const depRow = el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'dependents'));
     depRow.appendChild(dependentsCell(detail));
     tbl.appendChild(depRow);
+    // What the realm makes callable, as opposed to what has been called.
+    //
+    // The calls tab below can only list functions somebody has already invoked,
+    // so a realm nobody has used yet advertised nothing at all. Dimmed pills are
+    // exported but never called — the useful distinction, and the reason this is
+    // not folded into the calls tab.
+    const calledFns = new Set((detail.calls || []).map(c => c.func_name));
+    const fnRow = el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'exported'));
+    const fnTd = el('td');
+    for (const fn of (detail.exported_funcs || [])) {
+      const called = calledFns.has(fn);
+      const pill = el('span', { className: called ? 'fnpill' : 'fnpill uncalled' }, fn);
+      pill.title = called ? 'called on this chain — click to find it in the source' : 'exported but never called';
+      pill.onclick = () => navigate('/realm/' + detail.path.replace('gno.land/', '') + '?tab=source&fn=' + encodeURIComponent(fn));
+      fnTd.appendChild(pill);
+    }
+    if (!(detail.exported_funcs || []).length) {
+      fnTd.appendChild(el('span', { style: { color: 'var(--fg2)' } }, 'none'));
+    }
+    fnRow.appendChild(fnTd); tbl.appendChild(fnRow);
     tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'msgrun refs'), el('td', {}, fmtNum((detail.msgrun_refs || []).length) + ' references')));
     info.appendChild(tbl);
     info.appendChild(rawJsonToggle(detail));

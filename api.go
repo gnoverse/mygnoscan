@@ -510,6 +510,14 @@ func (a *API) HandleRealm(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "package not found: "+path, 404)
 		return
 	}
+	// Derived here rather than stored: it is a pure function of the source the
+	// detail already carries, so persisting it would add a column that can go
+	// stale against the files beside it.
+	files := make([]MemFile, 0, len(detail.Files))
+	for _, f := range detail.Files {
+		files = append(files, MemFile(f))
+	}
+	detail.ExportedFuncs = ExportedFunctions(files)
 	jsonResponse(w, detail)
 }
 

@@ -2,10 +2,12 @@ package main
 
 import (
 	"fmt"
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"log"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -96,6 +98,63 @@ func fileImports(f MemFile) []string {
 		}
 		out = append(out, path)
 	}
+	return out
+}
+
+// exportedFuncRegex is the fallback for source go/parser will not read.
+var exportedFuncRegex = regexp.MustCompile(`(?m)^func\s+([A-Z]\w*)\s*\(`)
+
+// ExportedFunctions returns the exported top-level functions a package declares.
+//
+// This is what a realm makes callable. The calls tab and the function heatmap
+// only ever showed functions that have *been* called, so a realm nobody had
+// used yet advertised nothing at all, and the only way to find out what it
+// exports was to read its source and spot the capitals by eye.
+//
+// Methods are excluded deliberately: a MsgCall names a package path and a
+// function, so a method on a type is not reachable that way and listing it
+// would advertise something the reader cannot invoke.
+//
+// Unlike fileImports this needs the whole file parsed, not just the import
+// block — declarations are the body. A file whose body does not compile
+// therefore falls back to the regex, which over-reports (it cannot tell a
+// commented-out declaration from a live one) but never loses a real function.
+// For a list whose purpose is "what can I call here", a spurious name the user
+// can try and get an error from beats a missing one they never learn about.
+func ExportedFunctions(files []MemFile) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(name string) {
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+
+	for _, f := range files {
+		if isTestFile(f.Name) {
+			continue
+		}
+		parsed, err := parser.ParseFile(token.NewFileSet(), f.Name, f.Body, parser.SkipObjectResolution)
+		if err != nil {
+			for _, m := range exportedFuncRegex.FindAllStringSubmatch(f.Body, -1) {
+				add(m[1])
+			}
+			continue
+		}
+		for _, decl := range parsed.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Recv != nil || fn.Name == nil {
+				continue
+			}
+			if !fn.Name.IsExported() {
+				continue
+			}
+			add(fn.Name.Name)
+		}
+	}
+	sort.Strings(out)
 	return out
 }
 
