@@ -302,6 +302,7 @@ footer a:hover { color: var(--accent); }
   <div class="view" id="view-realms"><main><div id="realms-stats" class="stats-bar" style="display:none"></div><div class="section"><div class="section-title">all realms</div>
     <table><thead><tr><th>path</th><th>creator</th>
       <th class="rs" data-sort="calls">calls</th>
+      <th class="rs" data-sort="gas">gas used</th>
       <th class="rs" data-sort="last_call">last call</th>
       <th class="rs" data-sort="newest">added</th></tr></thead><tbody id="realms-list"></tbody></table></div></main></div>
   <div class="view" id="view-packages"><main>
@@ -317,6 +318,7 @@ footer a:hover { color: var(--accent); }
           <th class="rs" data-sort="importers">dependents</th>
           <th class="rs" data-sort="imports">dependencies</th>
           <th class="rs" data-sort="users">unique users</th>
+          <th class="rs" data-sort="gas">gas used</th>
           <th class="rs" data-sort="newest">block</th>
           <th>files</th></tr></thead><tbody id="packages-list"></tbody></table></div>
     </div>
@@ -2246,7 +2248,7 @@ async function loadRealms(page) {
   page = page || 0;
   const section = document.querySelector('#view-realms .section');
   const tbody = clear('realms-list');
-  skeletonRows(tbody, 5, 10);
+  skeletonRows(tbody, 6, 10);
   section.querySelectorAll('.pager').forEach(p => p.remove());
   const statsBar = document.getElementById('realms-stats');
   // Sorting is server-side: ordering only the current page would rank 50 rows
@@ -2271,6 +2273,7 @@ async function loadRealms(page) {
         el('td', {}, realmPathEl(r.path, r.network)),
         el('td', {}, addrLink(r.creator)),
         el('td', {}, countCell(r.calls)),
+        el('td', {}, countCell(r.gas_used)),
         el('td', {}, r.last_call_height
           ? blockWithAge(r.last_call_height, r.last_call_time, r.network)
           : el('span', { className: 'block-ctx' }, 'never')),
@@ -2280,7 +2283,7 @@ async function loadRealms(page) {
     pager(section, page, data.total || 0, loadRealms);
   } catch (err) {
     console.error(err);
-    failRows(clear('realms-list'), 5, err, loadRealms);
+    failRows(clear('realms-list'), 6, err, loadRealms);
   }
 }
 
@@ -2289,7 +2292,7 @@ async function loadPackages(page) {
   page = page || 0;
   const section = document.querySelector('#view-packages .section');
   const tbody = clear('packages-list');
-  skeletonRows(tbody, 8, 10);
+  skeletonRows(tbody, 9, 10);
   section.querySelectorAll('.pager').forEach(p => p.remove());
   const statsBar = document.getElementById('packages-stats');
   // Sorting is server-side: ordering only the current page would rank 50 rows
@@ -2315,13 +2318,14 @@ async function loadPackages(page) {
         el('td', {}, countCell(p.importers)),
         el('td', {}, countCell(p.imports)),
         el('td', {}, countCell(p.unique_users)),
+        el('td', {}, countCell(p.gas_used)),
         el('td', {}, blockLink(p.block_height, p.network)), el('td', {}, String(p.num_files))
       ));
     }
     pager(section, page, data.total || 0, loadPackages);
   } catch (err) {
     console.error(err);
-    failRows(clear('packages-list'), 8, err, loadPackages);
+    failRows(clear('packages-list'), 9, err, loadPackages);
   }
 }
 

@@ -1536,6 +1536,11 @@ type PackageInfo struct {
 	// are the deploy — a realm can be old and still busy, or new and dormant.
 	LastCallHeight int    `json:"last_call_height,omitempty"`
 	LastCallTime   string `json:"last_call_time,omitempty"`
+	// GasUsed is the realm's all-time gas, from gas_realm_rollup. Zero for a
+	// realm the rollup has not seen, which is not the same as a realm that
+	// burned no gas — the rollup is rebuilt periodically, so a freshly deployed
+	// realm reads zero until the next pass.
+	GasUsed int `json:"gas_used"`
 }
 
 type PackageDetail struct {
@@ -1608,6 +1613,8 @@ func packageSortClause(sortBy string) string {
 		return "imports DESC, p.block_height DESC"
 	case "users":
 		return "unique_users DESC, p.block_height DESC"
+	case "gas":
+		return "gas_used DESC, p.block_height DESC"
 	case "last_call":
 		// A realm never called has no last_call_height (NULL), which SQLite's
 		// default NULLS LAST already sorts after every real height on a DESC
@@ -1643,7 +1650,14 @@ func (d *DB) ListPackages(network string, realmOnly bool, limit, offset int, sor
 		   ORDER BY c.block_height DESC LIMIT 1) AS last_call_height,
 		(SELECT c.block_time FROM calls c
 		   WHERE c.network = p.network AND c.pkg_path = p.path
-		   ORDER BY c.block_height DESC LIMIT 1) AS last_call_time
+		   ORDER BY c.block_height DESC LIMIT 1) AS last_call_time,
+		-- The rollup is already keyed by (network, path), so this is a primary-key
+		-- lookup rather than the scan the other subqueries here do. COALESCE
+		-- because a realm absent from the rollup must read 0, not NULL — a NULL
+		-- would sort ahead of every real value on the DESC ordering and put the
+		-- realms with no gas data at the top of a "most gas" sort.
+		(SELECT COALESCE(g.gas_used, 0) FROM gas_realm_rollup g
+		   WHERE g.network = p.network AND g.path = p.path) AS gas_used
 		FROM packages p WHERE p.is_realm = ? AND ` + d.networkFilter("p.network", network)
 	args := []any{realmOnly}
 	q += ` ORDER BY ` + packageSortClause(sortBy)
@@ -1662,12 +1676,14 @@ func (d *DB) ListPackages(network string, realmOnly bool, limit, offset int, sor
 		var blockTime sql.NullString
 		var lastCallHeight sql.NullInt64
 		var lastCallTime sql.NullString
+		var gasUsed sql.NullInt64
 		var p PackageInfo
 		if err := rows.Scan(&p.Network, &p.Path, &p.Name, &p.Creator, &p.BlockHeight, &blockTime, &p.TxHash,
 			&p.IsRealm, &p.NumFiles, &p.Calls, &p.Importers, &p.Imports, &p.UniqueUsers,
-			&lastCallHeight, &lastCallTime); err != nil {
+			&lastCallHeight, &lastCallTime, &gasUsed); err != nil {
 			return nil, err
 		}
+		p.GasUsed = int(gasUsed.Int64)
 		p.BlockTime = blockTime.String
 		p.LastCallHeight = int(lastCallHeight.Int64)
 		p.LastCallTime = lastCallTime.String

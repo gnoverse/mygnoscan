@@ -2596,3 +2596,46 @@ func TestNewPackagesCountsFirstSubmissionNotLatest(t *testing.T) {
 		t.Errorf("new packages in 7d = %d, want 1: the month-old path was resubmitted, not created", ov.NewPackages7d)
 	}
 }
+
+// The gas column on /realms and /packages, sourced from the rollup.
+//
+// The subquery COALESCEs to 0 deliberately: a realm the rollup has not seen
+// yet must read zero, and a NULL would sort ahead of every real value on the
+// DESC ordering — putting the realms with no gas data at the top of a "most
+// gas" sort, which is the exact opposite of what was asked for.
+func TestRealmListCarriesGasAndSortsByIt(t *testing.T) {
+	db := newTestDB(t)
+	db.SetConfiguredNetworks([]NetworkConfig{{ID: "alpha"}})
+
+	const when = "2026-08-01T00:00:00Z"
+	for i, path := range []string{"gno.land/r/a/one", "gno.land/r/a/two", "gno.land/r/a/three"} {
+		if err := db.UpsertPackage("alpha", path, "pkg", "g1creator", "tx"+path, 100+i, when, true, 1); err != nil {
+			t.Fatalf("UpsertPackage: %v", err)
+		}
+	}
+	// two burns the most, three burns some, one is absent from the rollup.
+	for path, gas := range map[string]int{"gno.land/r/a/two": 5000, "gno.land/r/a/three": 900} {
+		if _, err := db.db.Exec(
+			`INSERT INTO gas_realm_rollup (network, path, gas_used, gas_fee, tx_count) VALUES (?, ?, ?, ?, ?)`,
+			"alpha", path, gas, gas/10, 3); err != nil {
+			t.Fatalf("seed rollup: %v", err)
+		}
+	}
+
+	rows, err := db.ListPackages("alpha", true, 100, 0, "gas")
+	if err != nil {
+		t.Fatalf("ListPackages: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("got %d realms, want 3", len(rows))
+	}
+	if rows[0].Path != "gno.land/r/a/two" || rows[0].GasUsed != 5000 {
+		t.Errorf("top row is %s with %d gas, want gno.land/r/a/two with 5000", rows[0].Path, rows[0].GasUsed)
+	}
+	// The realm with no rollup row must land last reading zero, not first
+	// reading NULL.
+	last := rows[len(rows)-1]
+	if last.Path != "gno.land/r/a/one" || last.GasUsed != 0 {
+		t.Errorf("last row is %s with %d gas, want the un-rolled-up realm reading 0", last.Path, last.GasUsed)
+	}
+}
