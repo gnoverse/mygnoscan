@@ -5574,3 +5574,91 @@ func (d *DB) activeAddrRollupBoundary() (time.Time, bool) {
 	}
 	return built.UTC().Truncate(time.Hour), true
 }
+
+// RealmSharePoint is one realm's value in one time bucket.
+//
+// Deliberately long-form — one row per (bucket, realm) rather than a bucket
+// carrying a map — because the set of realms is not known until the query runs
+// and varies between buckets. Choosing which realms to name and which to fold
+// into "rest" is a presentation decision, so it is left to the caller.
+type RealmSharePoint struct {
+	Bucket  string `json:"bucket"`
+	Network string `json:"network,omitempty"`
+	Path    string `json:"path"`
+	Value   int    `json:"value"`
+}
+
+// GetRealmShareTimeSeries buckets fee or storage spend per realm over time.
+//
+// The existing gas and storage rollups are all-time snapshots — "who has spent
+// the most ever" — which cannot answer "where is activity concentrating now".
+// A realm that dominated six months ago and has since gone quiet still tops
+// every snapshot table on the site.
+//
+// metric is "fee" or "storage":
+//
+//   - fee attributes a transaction's gas fee to the realm it touched, the same
+//     attribution gas_realm_rollup uses, so the two agree when summed over all
+//     time. The DISTINCT matters for the same reason it does there: a multicall
+//     hitting one realm several times must be charged its fee once.
+//   - storage sums the signed storage events, so a bucket in which a realm
+//     freed more than it wrote is negative. That is the honest reading and the
+//     caller should render it as such rather than clamping to zero.
+func (d *DB) GetRealmShareTimeSeries(network, metric, granularity string, days int) ([]RealmSharePoint, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	sqlFmt, _, _ := timeseriesFormat(granularity)
+	startTime := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
+
+	var q string
+	var args []any
+	switch metric {
+	case "storage":
+		netFilter := " AND " + d.networkFilter("t.network", network)
+		q = fmt.Sprintf(
+			"SELECT strftime('%s', t.block_time) as bucket, t.network, t.pkg_path, SUM(t.fee)"+
+				" FROM storage_events t"+
+				" WHERE t.block_time >= ?%s AND t.pkg_path != ''"+
+				" GROUP BY bucket, t.network, t.pkg_path"+
+				" ORDER BY bucket ASC",
+			sqlFmt, netFilter)
+		args = []any{startTime}
+	case "fee":
+		netFilter := " AND " + d.networkFilter("t.network", network)
+		// One row per (realm, transaction) before summing, so a transaction
+		// touching a realm twice contributes its fee once.
+		q = fmt.Sprintf(
+			"SELECT bucket, network, path, SUM(gas_fee) FROM ("+
+				" SELECT DISTINCT strftime('%s', t.block_time) as bucket, t.network, c.pkg_path as path, t.tx_hash, t.gas_fee"+
+				"  FROM calls c JOIN transactions t"+
+				"    ON t.network = c.network AND t.tx_hash = c.tx_hash"+
+				" WHERE t.block_time >= ?%s"+
+				" UNION"+
+				" SELECT DISTINCT strftime('%s', t.block_time) as bucket, t.network, p.path, t.tx_hash, t.gas_fee"+
+				"  FROM packages p JOIN transactions t"+
+				"    ON t.network = p.network AND t.tx_hash = p.tx_hash"+
+				" WHERE t.block_time >= ?%s"+
+				") GROUP BY bucket, network, path ORDER BY bucket ASC",
+			sqlFmt, netFilter, sqlFmt, netFilter)
+		args = []any{startTime, startTime}
+	default:
+		return nil, fmt.Errorf("unknown metric %q: want fee or storage", metric)
+	}
+
+	rows, err := d.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []RealmSharePoint
+	for rows.Next() {
+		var p RealmSharePoint
+		if err := rows.Scan(&p.Bucket, &p.Network, &p.Path, &p.Value); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}

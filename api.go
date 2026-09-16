@@ -2117,6 +2117,33 @@ func (a *API) HandleStorageRealms(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, paths)
 }
 
+// HandleTimeSeriesRealmShare answers "where is chain activity concentrating,
+// and is that changing" — the question every existing rollup cannot, because
+// they are all-time snapshots.
+func (a *API) HandleTimeSeriesRealmShare(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	days, granularity := a.resolveTimeseriesParams(r, network)
+
+	metric := r.URL.Query().Get("metric")
+	if metric == "" {
+		metric = "fee"
+	}
+	if metric != "fee" && metric != "storage" {
+		jsonError(w, "metric must be fee or storage", 400)
+		return
+	}
+
+	pts, err := a.db.GetRealmShareTimeSeries(network, metric, granularity, days)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	if pts == nil {
+		pts = []RealmSharePoint{}
+	}
+	jsonResponse(w, pts)
+}
+
 func (a *API) HandleTimeSeriesGas(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
 	days, granularity := a.resolveTimeseriesParams(r, network)
@@ -2440,6 +2467,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/calls/function-heatmap", a.HandleFunctionCallHeatmap)
 	mux.HandleFunc("GET /api/gas", a.HandleGas)
 	mux.HandleFunc("GET /api/bankstats", a.HandleBankStats)
+	mux.HandleFunc("GET /api/timeseries/realm-share", a.HandleTimeSeriesRealmShare)
 	mux.HandleFunc("GET /api/storage/{path...}", a.HandleStorage)
 	mux.HandleFunc("GET /api/allevents", a.HandleAllEvents)
 	mux.HandleFunc("GET /api/events/{path...}", a.HandleEvents)
