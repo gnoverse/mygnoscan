@@ -220,6 +220,18 @@ footer a:hover { color: var(--accent); }
 @keyframes livepulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 .live-new { animation: livefade 0.5s ease-out; }
 @keyframes livefade { from { background: rgba(78, 205, 196, 0.2); } to { background: transparent; } }
+/* Copy-to-clipboard affordance next to a full hash, address or path. Sized to
+   sit inline without changing the line height of the row it lives in. */
+.copy-btn {
+  background: none; border: none; color: var(--fg2); cursor: pointer;
+  font-family: var(--mono); font-size: 12px; line-height: 1;
+  padding: 2px 4px; margin-left: 6px; border-radius: 3px; vertical-align: baseline;
+}
+.copy-btn:hover { color: var(--accent); background: var(--bg3); }
+.copy-btn.copied { color: var(--green); }
+/* The confirmation replaces the icon, so reserve the width both states need and
+   stop the row from reflowing on every click. */
+.copy-btn { min-width: 20px; display: inline-block; text-align: center; }
 /* Highlight on hover (addresses, tx hashes, event types, etc) */
 [data-hl].hl-active { outline: 2px solid #4ecdc4; outline-offset: 1px; background: rgba(78, 205, 196, 0.15); border-radius: 2px; }
 @media (max-width: 768px) { .stats-bar { gap: 12px; } .stat .value { font-size: 16px; } .search-box input { width: 160px; } nav { gap: 8px; } }
@@ -585,6 +597,76 @@ function addrLinkImpl(addr, network, fallback) {
   }
   return span;
 }
+// copyButton returns a small button that puts `text` on the clipboard.
+//
+// There was no copy affordance anywhere before this: every 40-character bech32
+// address and every base64 tx hash had to be selected by hand, and a base64
+// hash contains `/` and `+`, which a double-click selection splits on.
+//
+// navigator.clipboard is the modern path but it needs a secure context and an
+// explicit permission in some browsers, so a failure falls back to the old
+// hidden-textarea trick rather than silently doing nothing — a copy button that
+// does nothing is worse than no copy button.
+function copyButton(text, title) {
+  const btn = el('button', { className: 'copy-btn', title: title || 'copy to clipboard' }, '\u29c9');
+  btn.setAttribute('aria-label', title || 'copy to clipboard');
+  btn.onclick = (ev) => {
+    ev.stopPropagation();
+    ev.preventDefault();
+    const done = (ok) => {
+      btn.textContent = ok ? '\u2713' : '\u2717';
+      btn.classList.toggle('copied', ok);
+      setTimeout(() => { btn.textContent = '\u29c9'; btn.classList.remove('copied'); }, 1200);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(() => done(true), () => done(legacyCopy(text)));
+    } else {
+      done(legacyCopy(text));
+    }
+  };
+  return btn;
+}
+
+function legacyCopy(text) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    // Off-screen rather than hidden: a display:none element cannot be selected.
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch (e) {
+    return false;
+  }
+}
+
+// copyable wraps a value with its copy button, for table cells showing a full
+// hash, address or path.
+function copyable(text, displayEl) {
+  const wrap = el('span');
+  wrap.appendChild(displayEl || document.createTextNode(text));
+  wrap.appendChild(copyButton(text));
+  return wrap;
+}
+
+// hexHash renders gno's base64 tx hash as the 64-character hex form other
+// explorers and RPC tooling print. Same 32 bytes, different spelling; the
+// base64 form stays canonical in URLs and routing.
+function hexHash(b64) {
+  try {
+    const bin = atob(b64);
+    let out = '';
+    for (let i = 0; i < bin.length; i++) out += bin.charCodeAt(i).toString(16).padStart(2, '0');
+    return out.toUpperCase();
+  } catch (e) {
+    return '';
+  }
+}
+
 // network is optional: pass it when the row belongs to a specific chain, so the
 // link lands on that chain rather than on whatever is selected. Without it an
 // address row from a merged view navigated to the current selection, which in
@@ -598,8 +680,12 @@ function addrLink(addr, network) {
 // addrLinkFull is addrLink but never truncates — for tables with only one or
 // two other columns (top senders/receivers on an address page, say) where
 // abbreviating buys back no room worth losing readability for.
+//
+// Shown in full is precisely where a copy button earns its place: the value is
+// complete, so copying it is useful, and 40 characters is exactly what nobody
+// wants to select by hand.
 function addrLinkFull(addr, network) {
-  return addrLinkImpl(addr, network, addr);
+  return copyable(addr, addrLinkImpl(addr, network, addr));
 }
 // Pretty realm path: /r/namespace/name or /p/namespace/name
 // Colors: type dim, namespace blue, name bold white
@@ -2606,8 +2692,11 @@ async function loadBlockDetail(height) {
     const b = data.block;
     container.appendChild(el('h2', { style: { margin: '16px 0 8px' } }, 'Block ' + fmtNum(b.height)));
     const tbl = el('table');
+    // hash is the only long opaque value here, so it is the only one that earns
+    // a copy button; the rest are short enough to read and retype.
     for (const [l, v] of [['height', fmtNum(b.height)], ['hash', b.hash], ['chain', b.chain_id], ['time', b.time], ['txs', String(b.num_txs)], ['total txs', fmtNum(b.total_txs)]]) {
-      tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, l), el('td', {}, v)));
+      const cell = l === 'hash' ? el('td', { style: { wordBreak: 'break-all' } }, copyable(v)) : el('td', {}, v);
+      tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, l), cell));
     }
     const propRow = el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'proposer'));
     propRow.appendChild(el('td', {}, addrLink(b.proposer_address_raw)));
@@ -4059,6 +4148,7 @@ async function loadRealmDetail(path, initialTab) {
     header.textContent = '';
     const titleRow = el('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', margin: '16px 0 8px' } },
       el('h2', { style: { margin: 0 } }, detail.path));
+    titleRow.appendChild(copyButton(detail.path, 'copy package path'));
     // gnoweb serves the package at the same path under its own domain \u2014 only
     // exact for mainnet (path is always a "gno.land/..." string regardless of
     // which chain deployed it), which is what this points at.
@@ -4430,7 +4520,16 @@ async function loadTxDetail(hash) {
     container.appendChild(txStats);
     // Info table
     const tbl = el('table');
-    tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'hash'), el('td', {}, tx.hash)));
+    tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'hash'), el('td', {}, copyable(tx.hash))));
+    // The same 32 bytes in hex. Base64 stays canonical in URLs and routing, but
+    // it is awkward to share — `/` and `+` need URL-encoding, and other
+    // explorers and RPC tooling print hex — so both forms are offered here.
+    const hex = hexHash(tx.hash);
+    if (hex) {
+      tbl.appendChild(el('tr', {},
+        el('td', { style: { color: 'var(--fg2)' } }, 'hash (hex)'),
+        el('td', { style: { wordBreak: 'break-all' } }, copyable(hex))));
+    }
     const blockTd = el('td'); blockTd.appendChild(blockLink(tx.block_height));
     tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'block'), blockTd));
     if (tx.block_time) {
@@ -4565,7 +4664,9 @@ async function loadAddressDetail(addr) {
       container.appendChild(labelRow);
     }
     const addrRow = el('div', { style: { color: 'var(--fg2)', marginBottom: '16px', wordBreak: 'break-all' } });
-    addrRow.append(addr + ' ');
+    addrRow.append(addr);
+    addrRow.appendChild(copyButton(addr, 'copy address'));
+    addrRow.append(' ');
     const lastHeight = (data.transactions || [])[0]?.block_height || 0;
     addrRow.appendChild(watchButton('addresses', addr, lastHeight));
     container.appendChild(addrRow);
