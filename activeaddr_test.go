@@ -11,12 +11,18 @@ import (
 //
 // The three tables are what "active address" means: a caller, a deployer, a
 // sender. Seeding through the public inserters rather than raw SQL keeps the
-// test honest about the shape the syncer actually writes.
+// test honest about the shape the syncer actually writes — which for a package
+// is two rows, the append-only submission and the current-state upsert. Seeding
+// only the upsert would leave the deployer invisible to every read that counts
+// submissions.
 func seedActiveAt(t *testing.T, db *DB, network, addr string, when time.Time, id string) {
 	t.Helper()
 	ts := when.UTC().Format("2006-01-02T15:04:05Z")
 	if err := db.InsertCall(network, "call-"+id, 1, 0, ts, addr, "gno.land/r/demo/boards", "Post", true); err != nil {
 		t.Fatalf("InsertCall: %v", err)
+	}
+	if err := db.InsertPackageSubmission(network, "pkg-"+id, 0, "gno.land/r/"+network+"/"+id, id, addr, 2, ts, true, 1, true); err != nil {
+		t.Fatalf("InsertPackageSubmission: %v", err)
 	}
 	if err := db.UpsertPackage(network, "gno.land/r/"+network+"/"+id, id, addr, "pkg-"+id, 2, ts, true, 1); err != nil {
 		t.Fatalf("UpsertPackage: %v", err)

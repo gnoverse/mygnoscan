@@ -2431,3 +2431,168 @@ func TestFilteredTransactionsIncludesEveryPackageResubmission(t *testing.T) {
 		}
 	}
 }
+
+// seedResubmission records one package submitted twice at the same path, the
+// way the syncer does: an append-only submission row per attempt, plus the
+// current-state upsert that collapses them.
+func seedResubmission(t *testing.T, db *DB, network, path, creator string, first, second string) {
+	t.Helper()
+
+	for i, at := range []struct {
+		hash   string
+		height int
+		when   string
+	}{
+		{"TXONE", 100, first},
+		{"TXTWO", 200, second},
+	} {
+		if err := db.InsertPackageSubmission(network, at.hash, 0, path, "pkg", creator,
+			at.height, at.when, true, 3, true); err != nil {
+			t.Fatalf("submission %d: %v", i, err)
+		}
+		if err := db.UpsertPackage(network, path, "pkg", creator, at.hash,
+			at.height, at.when, true, 3); err != nil {
+			t.Fatalf("upsert %d: %v", i, err)
+		}
+	}
+}
+
+// Every deploy-count surface must count submissions, not surviving rows.
+//
+// #166 fixed the history-shaped reads (an address's own transaction list, the
+// MsgAddPackage filter, watch) but deliberately left the aggregate family
+// alone. Those share the identical root assumption — count by `creator` from
+// `packages` — and `packages` is a current-state projection keyed by
+// (network, path), so a resubmission at the same path replaces its own earlier
+// row. Every count below read one deploy where the chain saw two.
+//
+// Resubmitting is routine rather than exotic: under the inert code submission
+// policy a parked package is invisible to every liveness probe, so anything
+// verifying a deploy by querying the path concludes it failed and resubmits.
+func TestDeployCountsSurviveAResubmission(t *testing.T) {
+	db := newTestDB(t)
+	db.SetConfiguredNetworks([]NetworkConfig{{ID: "gnoland1"}})
+
+	const creator = "g1manfred"
+	const path = "gno.land/r/moul/x/daily/wrapped/v0"
+	// Both submissions recent, so the windowed surfaces see them too.
+	recent := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
+	older := time.Now().UTC().Add(-3 * time.Hour).Format(time.RFC3339)
+	seedResubmission(t, db, "gnoland1", path, creator, older, recent)
+
+	// The premise: packages kept one row for two on-chain submissions.
+	var live int
+	if err := db.db.QueryRow(`SELECT COUNT(*) FROM packages`).Scan(&live); err != nil {
+		t.Fatalf("count packages: %v", err)
+	}
+	if live != 1 {
+		t.Fatalf("packages holds %d rows; the premise of this test is that it collapses to 1", live)
+	}
+
+	t.Run("headline total deploys", func(t *testing.T) {
+		s, err := db.GetStats("")
+		if err != nil {
+			t.Fatalf("GetStats: %v", err)
+		}
+		if s.TotalDeploys != 2 {
+			t.Errorf("total deploys = %d, want 2: both submissions happened on-chain", s.TotalDeploys)
+		}
+		// The realm itself still exists once. Deploys are events, realms are things.
+		if s.TotalRealms != 1 {
+			t.Errorf("total realms = %d, want 1: a resubmitted realm is still one realm", s.TotalRealms)
+		}
+		// TotalPackages used to be derived as TotalDeploys - TotalRealms, which
+		// turns every resubmission of a realm into a package nobody deployed.
+		if s.TotalPackages != 0 {
+			t.Errorf("total non-realm packages = %d, want 0; only one realm was ever deployed", s.TotalPackages)
+		}
+	})
+
+	t.Run("analytics total deploys", func(t *testing.T) {
+		a, err := db.GetAnalytics("")
+		if err != nil {
+			t.Fatalf("GetAnalytics: %v", err)
+		}
+		if a.TotalDeploys != 2 {
+			t.Errorf("analytics deploys = %d, want 2", a.TotalDeploys)
+		}
+	})
+
+	t.Run("accounts page deploy column", func(t *testing.T) {
+		accts, err := db.GetActiveAccounts("", "", 50, 0)
+		if err != nil {
+			t.Fatalf("GetActiveAccounts: %v", err)
+		}
+		var found bool
+		for _, a := range accts {
+			if a.Address != creator {
+				continue
+			}
+			found = true
+			if a.DeployCount != 2 {
+				t.Errorf("deploys for %s = %d, want 2", creator, a.DeployCount)
+			}
+		}
+		if !found {
+			t.Errorf("%s is missing from the accounts list entirely", creator)
+		}
+	})
+
+	t.Run("top deployers leaderboard", func(t *testing.T) {
+		a, err := db.GetAnalytics("")
+		if err != nil {
+			t.Fatalf("GetAnalytics: %v", err)
+		}
+		var found bool
+		for _, d := range a.TopDeployers {
+			if d.Address != creator {
+				continue
+			}
+			found = true
+			if d.Calls != 2 {
+				t.Errorf("leaderboard count for %s = %d, want 2", creator, d.Calls)
+			}
+		}
+		if !found {
+			t.Errorf("%s is missing from the top-deployers leaderboard", creator)
+		}
+	})
+}
+
+// NewPackages7d is the one surface in this family that was over-counting
+// rather than under-counting, so it does not take the same fix.
+//
+// packages.block_time is whichever submission is currently live, so a package
+// first deployed long ago and resubmitted this week counted as new this week.
+// Swapping the table blindly would have been just as wrong the other way, with
+// each resubmission counting as another new package. "New" is the earliest
+// submission per path, which is neither table's default reading.
+func TestNewPackagesCountsFirstSubmissionNotLatest(t *testing.T) {
+	db := newTestDB(t)
+	db.SetConfiguredNetworks([]NetworkConfig{{ID: "gnoland1"}})
+
+	now := time.Now().UTC()
+	old := now.Add(-30 * 24 * time.Hour).Format(time.RFC3339)
+	recent := now.Add(-2 * 24 * time.Hour).Format(time.RFC3339)
+
+	// Deployed a month ago, resubmitted two days ago: not new.
+	seedResubmission(t, db, "gnoland1", "gno.land/r/moul/old", "g1moul", old, recent)
+
+	// Genuinely new this week, submitted once.
+	if err := db.InsertPackageSubmission("gnoland1", "TXNEW", 0, "gno.land/r/moul/new", "pkg",
+		"g1moul", 300, recent, true, 1, true); err != nil {
+		t.Fatalf("insert new submission: %v", err)
+	}
+	if err := db.UpsertPackage("gnoland1", "gno.land/r/moul/new", "pkg", "g1moul", "TXNEW",
+		300, recent, true, 1); err != nil {
+		t.Fatalf("upsert new: %v", err)
+	}
+
+	ov, err := db.GetSanityOverview("")
+	if err != nil {
+		t.Fatalf("GetSanityOverview: %v", err)
+	}
+	if ov.NewPackages7d != 1 {
+		t.Errorf("new packages in 7d = %d, want 1: the month-old path was resubmitted, not created", ov.NewPackages7d)
+	}
+}

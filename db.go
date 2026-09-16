@@ -1949,9 +1949,15 @@ func (d *DB) GetStats(network string) (*Stats, error) {
 	// totals and not others.
 	nf := " WHERE " + d.networkFilter("network", network)
 	d.db.QueryRow(`SELECT COUNT(*) FROM calls` + nf).Scan(&s.TotalCalls)
-	d.db.QueryRow(`SELECT COUNT(*) FROM packages` + nf).Scan(&s.TotalDeploys)
+	d.db.QueryRow(`SELECT COUNT(*) FROM package_submissions` + nf).Scan(&s.TotalDeploys)
 	d.db.QueryRow(`SELECT COUNT(*) FROM packages` + nf + ` AND is_realm = 1`).Scan(&s.TotalRealms)
-	s.TotalPackages = s.TotalDeploys - s.TotalRealms
+	// Counted, not derived as TotalDeploys - TotalRealms.
+	//
+	// That subtraction held only while TotalDeploys was a row count over the
+	// same collapsed table. Now that it counts submissions, a realm resubmitted
+	// once would have appeared as a phantom non-realm package — the home page's
+	// "packages" tile inventing an entry nobody deployed.
+	d.db.QueryRow(`SELECT COUNT(*) FROM packages` + nf + ` AND is_realm = 0`).Scan(&s.TotalPackages)
 	d.db.QueryRow(`SELECT COUNT(*) FROM msg_runs` + nf).Scan(&s.TotalMsgRuns)
 	d.db.QueryRow(`SELECT COUNT(*) FROM bank_sends` + nf).Scan(&s.TotalSends)
 	s.TotalTxs = s.TotalCalls + s.TotalDeploys + s.TotalMsgRuns + s.TotalSends
@@ -2103,7 +2109,7 @@ func (d *DB) GetActiveAccounts(network, sortBy string, limit, offset int) ([]Acc
 		FROM (
 			SELECT caller as address, network, COUNT(*) as call_count, COUNT(DISTINCT tx_hash) as call_tx_count, 0 as deploy_count, 0 as run_count, 0 as send_count FROM calls` + nFilter + ` GROUP BY network, caller
 			UNION ALL
-			SELECT creator as address, network, 0, 0, COUNT(*), 0, 0 FROM packages` + nFilter + ` GROUP BY network, creator
+			SELECT creator as address, network, 0, 0, COUNT(*), 0, 0 FROM package_submissions` + nFilter + ` GROUP BY network, creator
 			UNION ALL
 			SELECT caller as address, network, 0, 0, 0, COUNT(*), 0 FROM msg_runs` + nFilter + ` GROUP BY network, caller
 			UNION ALL
@@ -2334,7 +2340,7 @@ func (d *DB) GetAnalytics(network string) (*Analytics, error) {
 	d.db.QueryRow(`SELECT COUNT(*) FROM packages WHERE is_realm = 1 AND ` + pkgFilter).Scan(&a.TotalRealms)
 	d.db.QueryRow(`SELECT COUNT(*) FROM packages WHERE is_realm = 0 AND ` + pkgFilter).Scan(&a.TotalPackages)
 	d.db.QueryRow(`SELECT COUNT(*) FROM calls` + nFilter).Scan(&a.TotalCalls)
-	d.db.QueryRow(`SELECT COUNT(*) FROM packages` + nFilter).Scan(&a.TotalDeploys)
+	d.db.QueryRow(`SELECT COUNT(*) FROM package_submissions` + nFilter).Scan(&a.TotalDeploys)
 	d.db.QueryRow(`SELECT COUNT(*) FROM msg_runs` + nFilter).Scan(&a.TotalMsgRuns)
 	d.db.QueryRow(`SELECT COUNT(*) FROM bank_sends` + nFilter).Scan(&a.TotalSends)
 
@@ -2448,7 +2454,7 @@ func (d *DB) GetAnalytics(network string) (*Analytics, error) {
 	}
 
 	// Top deployers
-	deployQ := `SELECT network, creator, COUNT(*) as c, 0 FROM packages` + nFilter + ` GROUP BY network, creator ORDER BY c DESC LIMIT 15`
+	deployQ := `SELECT network, creator, COUNT(*) as c, 0 FROM package_submissions` + nFilter + ` GROUP BY network, creator ORDER BY c DESC LIMIT 15`
 	rows5, _ := d.db.Query(deployQ)
 	if rows5 != nil {
 		defer rows5.Close()
@@ -2764,7 +2770,7 @@ func (d *DB) GetCallerTimeSeries(network, granularity string, days int) ([]Calle
 		// consistent with total_active in the active-addresses series, which
 		// would otherwise be computed one way and its components another.
 		perChainBucketCount(sqlFmt, "callers", "t.caller", "calls t", netFilter),
-		perChainBucketCount(sqlFmt, "deployers", "t.creator", "packages t", netFilter),
+		perChainBucketCount(sqlFmt, "deployers", "t.creator", "package_submissions t", netFilter),
 		perChainBucketCount(sqlFmt, "senders", "t.from_address", "bank_sends t", netFilter),
 	}
 	q := strings.Join(subqs, " UNION ALL ") + " ORDER BY bucket ASC"
@@ -3134,12 +3140,25 @@ func (d *DB) GetSanityOverview(network string) (*SanityOverview, error) {
 	// identical results.
 	addrQuery := `SELECT COUNT(*) FROM (SELECT DISTINCT addr, network FROM (
 		SELECT caller as addr, network FROM calls WHERE block_time >= ?` + addrFilter + `
-		UNION ALL SELECT creator, network FROM packages WHERE block_time >= ?` + addrFilter + `
+		UNION ALL SELECT creator, network FROM package_submissions WHERE block_time >= ?` + addrFilter + `
 		UNION ALL SELECT from_address, network FROM bank_sends WHERE block_time >= ?` + addrFilter + `
 	))`
 	d.db.QueryRow(addrQuery, since24h, since24h, since24h).Scan(&ov.ActiveAddresses24h)
 
-	d.db.QueryRow(`SELECT COUNT(*) FROM packages WHERE block_time >= ?`+netFilter, since7d).Scan(&ov.NewPackages7d)
+	// "New" means first submitted in the window, which is not what either table
+	// says on its own.
+	//
+	// packages.block_time is whichever submission is currently live, so a
+	// package first deployed ten days ago and resubmitted two days ago counted
+	// as new — the opposite failure to the undercounts elsewhere in this pass.
+	// package_submissions keeps every attempt, so a blind table swap would
+	// count each resubmission as another new package. Both are wrong; the
+	// question is answered by the earliest submission per path.
+	d.db.QueryRow(`SELECT COUNT(*) FROM (
+		SELECT MIN(block_time) AS first_time
+		FROM package_submissions WHERE `+d.networkFilter("network", network)+`
+		GROUP BY network, path
+	) WHERE first_time >= ?`, since7d).Scan(&ov.NewPackages7d)
 
 	return ov, nil
 }
@@ -3281,7 +3300,7 @@ func (d *DB) activeAddrSeriesLive(network, granularity string, days int) ([]Acti
 	// the union total below, so the parts agree with the whole.
 	subqs := []string{
 		perChainBucketCount(sqlFmt, "callers", "t.caller", "calls t", netFilter),
-		perChainBucketCount(sqlFmt, "deployers", "t.creator", "packages t", netFilter),
+		perChainBucketCount(sqlFmt, "deployers", "t.creator", "package_submissions t", netFilter),
 		perChainBucketCount(sqlFmt, "senders", "t.from_address", "bank_sends t", netFilter),
 	}
 	q := strings.Join(subqs, " UNION ALL ") + " ORDER BY bucket ASC"
@@ -3335,7 +3354,7 @@ func (d *DB) activeAddrSeriesLive(network, granularity string, days int) ([]Acti
 		"SELECT bucket, COUNT(*) as cnt FROM ("+
 			" SELECT DISTINCT strftime('%s', block_time) as bucket, addr, network FROM ("+
 			"  SELECT caller as addr, block_time, network FROM calls WHERE block_time >= ?%s"+
-			"  UNION ALL SELECT creator, block_time, network FROM packages WHERE block_time >= ?%s"+
+			"  UNION ALL SELECT creator, block_time, network FROM package_submissions WHERE block_time >= ?%s"+
 			"  UNION ALL SELECT caller, block_time, network FROM msg_runs WHERE block_time >= ?%s"+
 			"  UNION ALL SELECT from_address, block_time, network FROM bank_sends WHERE block_time >= ?%s"+
 			" )) GROUP BY bucket ORDER BY bucket ASC",
@@ -4761,9 +4780,15 @@ func (d *DB) GetBlockCoverage(network string) (BlockCoverage, error) {
 // activityMsgTables are the per-message tables, with the column naming the
 // address that authored the message. Used by the activity heatmap and by
 // first-seen derivation, so both cover exactly the same notion of "activity".
+//
+// package_submissions rather than packages, because both readings are about
+// when something happened. packages keeps one row per path and stamps it with
+// the latest submission, which moved a message out of the heatmap cell it
+// actually occurred in, and — worse for first-seen — reported an address's
+// debut as the time of a resubmission years later.
 var activityMsgTables = []struct{ table, addrCol string }{
 	{"calls", "caller"},
-	{"packages", "creator"},
+	{"package_submissions", "creator"},
 	{"msg_runs", "caller"},
 	{"bank_sends", "from_address"},
 }
@@ -5321,9 +5346,13 @@ func (d *DB) GetFunctionCallHeatmap(network, pkgPath string, days int) ([]FuncCa
 // scans `kind` straight into the field it already had a case for. msg_runs is
 // deliberately absent: the series has never counted it, and adding it here would
 // change the numbers under cover of a performance change.
+//
+// deployers reads package_submissions: the rollup buckets by hour, and an
+// address whose only activity in some hour was a submission later overwritten
+// was absent from that hour entirely.
 var activeAddrKinds = []struct{ kind, table, column string }{
 	{"callers", "calls", "caller"},
-	{"deployers", "packages", "creator"},
+	{"deployers", "package_submissions", "creator"},
 	{"senders", "bank_sends", "from_address"},
 }
 
