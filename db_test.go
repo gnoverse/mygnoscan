@@ -2639,3 +2639,88 @@ func TestRealmListCarriesGasAndSortsByIt(t *testing.T) {
 		t.Errorf("last row is %s with %d gas, want the un-rolled-up realm reading 0", last.Path, last.GasUsed)
 	}
 }
+
+// Storage events, from the sync walk through to the list column.
+//
+// They were never persisted: txFieldsLight has always selected them, the sync
+// walk has always received them, and they were dropped on the floor. Reading
+// storage back therefore meant a live per-realm indexer query, which is why a
+// list column, a chain-wide total and a share-by-realm trend were all blocked
+// on the same missing table.
+func TestStorageEventsRollUpPerRealmNetOfUnlocks(t *testing.T) {
+	db := newTestDB(t)
+	db.SetConfiguredNetworks([]NetworkConfig{{ID: "alpha"}})
+
+	const when = "2026-08-01T00:00:00Z"
+	for _, path := range []string{"gno.land/r/a/heavy", "gno.land/r/a/refunded"} {
+		if err := db.UpsertPackage("alpha", path, "pkg", "g1creator", "tx"+path, 100, when, true, 1); err != nil {
+			t.Fatalf("UpsertPackage: %v", err)
+		}
+	}
+
+	// heavy deposits twice and keeps it all.
+	mustStore(t, db, "alpha", "txA", 0, "gno.land/r/a/heavy", 101, when, "deposit", 1000, 500)
+	mustStore(t, db, "alpha", "txB", 0, "gno.land/r/a/heavy", 102, when, "deposit", 500, 250)
+	// refunded deposits then frees the same amount: net zero, not net 800.
+	mustStore(t, db, "alpha", "txC", 0, "gno.land/r/a/refunded", 103, when, "deposit", 800, 400)
+	mustStore(t, db, "alpha", "txC", 1, "gno.land/r/a/refunded", 103, when, "unlock", -800, -400)
+
+	if err := db.RefreshRollups(); err != nil {
+		t.Fatalf("RefreshRollups: %v", err)
+	}
+
+	rows, err := db.ListPackages("alpha", true, 100, 0, "storage")
+	if err != nil {
+		t.Fatalf("ListPackages: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("got %d realms, want 2", len(rows))
+	}
+	if rows[0].Path != "gno.land/r/a/heavy" || rows[0].StorageDeposit != 750 || rows[0].StorageBytes != 1500 {
+		t.Errorf("top row = %s, %d ugnot, %d bytes; want heavy with 750 and 1500",
+			rows[0].Path, rows[0].StorageDeposit, rows[0].StorageBytes)
+	}
+	// A realm refunded in full reads zero, not its gross deposit.
+	if rows[1].StorageDeposit != 0 || rows[1].StorageBytes != 0 {
+		t.Errorf("fully refunded realm reads %d ugnot / %d bytes, want 0 / 0 — it is not still paying for storage it freed",
+			rows[1].StorageDeposit, rows[1].StorageBytes)
+	}
+
+	// The chain-wide headline is the same sum, and comes straight from the
+	// events so it does not lag the realm pages by a rollup interval.
+	s, err := db.GetStats("")
+	if err != nil {
+		t.Fatalf("GetStats: %v", err)
+	}
+	if s.StorageDeposit != 750 || s.StorageBytes != 1500 {
+		t.Errorf("chain storage = %d ugnot / %d bytes, want 750 / 1500", s.StorageDeposit, s.StorageBytes)
+	}
+}
+
+// Re-reading an event the syncer already stored must be a no-op. The walk
+// overlaps its own window on every pass, so a non-idempotent insert would
+// double a realm's storage total a little more each time.
+func TestStorageEventsAreIdempotent(t *testing.T) {
+	db := newTestDB(t)
+	db.SetConfiguredNetworks([]NetworkConfig{{ID: "alpha"}})
+
+	const when = "2026-08-01T00:00:00Z"
+	for i := 0; i < 3; i++ {
+		mustStore(t, db, "alpha", "txA", 0, "gno.land/r/a/x", 101, when, "deposit", 1000, 500)
+	}
+	s, err := db.GetStats("")
+	if err != nil {
+		t.Fatalf("GetStats: %v", err)
+	}
+	if s.StorageDeposit != 500 {
+		t.Errorf("storage deposit = %d after storing the same event three times, want 500", s.StorageDeposit)
+	}
+}
+
+func mustStore(t *testing.T, db *DB, network, hash string, idx int, path string,
+	height int, when, kind string, bytesDelta, fee int) {
+	t.Helper()
+	if err := db.InsertStorageEvent(network, hash, idx, path, height, when, kind, bytesDelta, fee); err != nil {
+		t.Fatalf("InsertStorageEvent: %v", err)
+	}
+}

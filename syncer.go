@@ -835,18 +835,71 @@ func (s *Syncer) backfillValopers(ctx context.Context) {
 	}
 }
 
+// recordStorageEvents persists a transaction's storage deposits and unlocks,
+// returning how many it stored.
+//
+// Piggybacked on the call walk rather than given its own pass: txFieldsLight
+// already selects these events, so they arrive with every transaction the
+// syncer fetches and were simply being dropped. A separate pass would re-fetch
+// the same transactions to read a field already in hand.
+//
+// Failures are logged and skipped rather than aborting the walk. A storage row
+// is derived detail — losing one costs a number on a page, where abandoning the
+// pass costs every call and send behind it.
+func (s *Syncer) recordStorageEvents(tx Transaction, blockTime string) int {
+	if tx.Response == nil {
+		return 0
+	}
+	stored := 0
+	for i, ev := range tx.Response.Events {
+		var kind string
+		var fee int
+		switch ev.Typename {
+		case "StorageDepositEvent":
+			kind = "deposit"
+			if ev.FeeDelta != nil {
+				fee = ev.FeeDelta.Amount
+			}
+		case "StorageUnlockEvent":
+			kind = "unlock"
+			// Signed, so that summing the column answers "what did storage
+			// cost" without every reader having to know which kinds subtract.
+			if ev.FeeRefund != nil {
+				fee = -ev.FeeRefund.Amount
+			}
+		default:
+			continue
+		}
+		bytesDelta := ev.BytesDelta
+		if kind == "unlock" {
+			bytesDelta = -bytesDelta
+		}
+		// The event index is over all events, not over storage events only:
+		// it has to stay stable across passes, and filtering first would
+		// renumber rows whenever the event list changed shape.
+		if err := s.db.InsertStorageEvent(s.networkID, tx.Hash, i, ev.PkgPath,
+			tx.BlockHeight, blockTime, kind, bytesDelta, fee); err != nil {
+			log.Printf("[%s] store storage event: %v", s.networkID, err)
+			continue
+		}
+		stored++
+	}
+	return stored
+}
+
 func (s *Syncer) syncCalls(ctx context.Context) error {
 	lastHeight, err := s.getLastRecentTransactionBlockHeight(ctx)
 	if err != nil {
 		return fmt.Errorf("last synced call height: %w", err)
 	}
 
-	callCount, sendCount := 0, 0
+	callCount, sendCount, storageCount := 0, 0, 0
 	err = walkTransactions(ctx, lastHeight, s.client.GetTransactionsFromHeight, func(txs []Transaction) {
 		times := s.fetchBlockTimes(ctx, txs)
 		for _, tx := range txs {
 			bt := times[tx.BlockHeight]
 			s.upsertTx(tx, bt)
+			storageCount += s.recordStorageEvents(tx, bt)
 			for i, msg := range tx.Messages {
 				switch msg.Value.Typename {
 				case "MsgCall":
@@ -884,7 +937,7 @@ func (s *Syncer) syncCalls(ctx context.Context) error {
 			}
 		}
 	})
-	log.Printf("[%s] synced %d calls, %d sends", s.networkID, callCount, sendCount)
+	log.Printf("[%s] synced %d calls, %d sends, %d storage events", s.networkID, callCount, sendCount, storageCount)
 	if err != nil {
 		return fmt.Errorf("walk transactions: %w", err)
 	}

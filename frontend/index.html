@@ -283,6 +283,8 @@ footer a:hover { color: var(--accent); }
       <div class="stat stat-link" data-goto="/txs" data-type="BankMsgSend"><span class="label">sends</span><span class="value" id="stat-sends">-</span></div>
       <div class="stat stat-link" data-goto="/realms"><span class="label">realms</span><span class="value" id="stat-realms">-</span></div>
       <div class="stat stat-link" data-goto="/packages"><span class="label">packages</span><span class="value" id="stat-packages">-</span></div>
+      <div class="stat"><span class="label">storage</span><span class="value" id="stat-storage">-</span></div>
+      <div class="stat"><span class="label">data in use</span><span class="value" id="stat-storage-bytes">-</span></div>
       <div class="stat stat-link" data-goto="/blocks"><span class="label">block</span><span class="value" id="stat-block">-</span></div>
     </div>
     <main>
@@ -743,6 +745,19 @@ function statusBadge(s) { return s ? badge('ok', 'ok') : badge('fail', 'fail'); 
 function countCell(n) {
   const v = n || 0;
   return el('span', v ? {} : { style: { color: 'var(--fg2)', opacity: '0.5' } }, fmtNum(v));
+}
+// storageCell shows a realm's net storage cost with its byte footprint beneath.
+//
+// Both are net of unlocks: a realm that frees what it wrote has been refunded,
+// and the gross figure would bill it for storage it no longer holds. Zero is
+// dimmed like any other empty count — it means "cost nothing", not "unknown".
+function storageCell(r) {
+  const fee = r.storage_deposit || 0;
+  const bytes = r.storage_bytes || 0;
+  if (!fee && !bytes) return el('span', { style: { color: 'var(--fg2)', opacity: '0.5' } }, '0');
+  const wrap = el('span', {}, fmtNum(fee));
+  wrap.appendChild(el('span', { className: 'block-ctx', style: { marginLeft: '6px' } }, fmtBytes(bytes)));
+  return wrap;
 }
 function fmtNum(n) { return typeof n === 'number' ? n.toLocaleString() : String(n); }
 function fmtUgnot(amount, denom) {
@@ -2192,6 +2207,11 @@ async function loadHome() {
     document.getElementById('stat-sends').textContent = fmtNum(stats.total_sends);
     document.getElementById('stat-realms').textContent = fmtNum(stats.total_realms);
     document.getElementById('stat-packages').textContent = fmtNum(stats.total_packages);
+    // Storage economics, which the chain has always charged for and this page
+    // has never shown. Net of unlocks, so it reads as "what storage currently
+    // costs this chain" rather than as a gross figure nobody is paying.
+    document.getElementById('stat-storage').textContent = fmtUgnot(stats.storage_deposit || 0, 'ugnot');
+    document.getElementById('stat-storage-bytes').textContent = fmtBytes(stats.storage_bytes || 0);
     document.getElementById('stat-block').textContent = fmtNum(stats.latest_block);
     // Block height → time lookup
     const blockTime = {};
