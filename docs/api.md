@@ -266,3 +266,22 @@ one disconnects.
 A network configured without an indexer client gets no feed rather than a broken
 one, and a subscription naming a network with no feed is accepted but silent —
 the connection stays open and delivers nothing.
+
+## Embed mode
+
+Any page accepts `?embed=1`, which strips the header, footer and sub-bar so a
+host application can iframe one piece of content rather than a whole
+page-in-a-page:
+
+```html
+<iframe src="https://mygnoscan.example/realm/r/demo/boards?tab=graph&embed=1"
+        width="800" height="600" style="border:0"></iframe>
+```
+
+The flag is read by an inline script in `<head>`, before the body exists, so the
+chrome never paints. Applying it from the SPA's own routing would let the header
+render and then vanish, which inside an iframe reads as a layout glitch on every
+navigation.
+
+Everything else is unchanged: the same routes, the same query parameters, the
+same data. `?network=` composes with it as usual.
