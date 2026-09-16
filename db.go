@@ -367,6 +367,31 @@ func initSchema(db *sql.DB) error {
 			PRIMARY KEY (network, tx_hash, msg_index)
 		);
 
+		-- Storage deposits and unlocks, one row per event.
+		--
+		-- These arrive on every transaction the sync walk already fetches
+		-- (txFieldsLight selects them), and were being discarded. Reading them
+		-- back needed a live per-realm indexer query, so anything wanting
+		-- storage across many realms at once — a list column, a chain-wide
+		-- total, a share-by-realm trend — was one indexer round-trip per realm.
+		--
+		-- fee is stored signed: positive for a deposit, negative for a refund,
+		-- so summing the column answers "what did storage cost" without the
+		-- reader having to know which kinds subtract. bytes_delta follows the
+		-- same convention.
+		CREATE TABLE IF NOT EXISTS storage_events (
+			network      TEXT NOT NULL DEFAULT 'gnoland1',
+			tx_hash      TEXT NOT NULL,
+			event_index  INTEGER NOT NULL,
+			pkg_path     TEXT NOT NULL,
+			block_height INTEGER NOT NULL,
+			block_time   TEXT,
+			kind         TEXT NOT NULL,
+			bytes_delta  INTEGER NOT NULL,
+			fee          INTEGER NOT NULL,
+			PRIMARY KEY (network, tx_hash, event_index)
+		);
+
 		CREATE TABLE IF NOT EXISTS package_files (
 			network TEXT NOT NULL DEFAULT 'gnoland1',
 			package_path TEXT NOT NULL,
@@ -484,6 +509,21 @@ func initSchema(db *sql.DB) error {
 
 		CREATE INDEX IF NOT EXISTS idx_gas_rollup_gas
 			ON gas_realm_rollup(network, gas_used DESC);
+
+		-- Per-realm storage totals, the same shape and lifecycle as
+		-- gas_realm_rollup: rebuilt wholesale on the rollup tick, keyed so a
+		-- list page can look a realm up rather than scan its events.
+		CREATE TABLE IF NOT EXISTS storage_realm_rollup (
+			network      TEXT NOT NULL,
+			path         TEXT NOT NULL,
+			bytes_net    INTEGER NOT NULL,
+			fee_net      INTEGER NOT NULL,
+			event_count  INTEGER NOT NULL,
+			PRIMARY KEY (network, path)
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_storage_rollup_fee
+			ON storage_realm_rollup(network, fee_net DESC);
 
 		-- Same idea as gas_realm_rollup, attributed to the caller instead of the
 		-- realm. Built from DISTINCT (network, tx_hash, caller) pairs rather than
@@ -639,6 +679,8 @@ func initSchema(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_runs_net_caller   ON msg_runs(network, caller);
 		CREATE INDEX IF NOT EXISTS idx_sends_net_from    ON bank_sends(network, from_address);
 		CREATE INDEX IF NOT EXISTS idx_sends_net_to      ON bank_sends(network, to_address);
+		CREATE INDEX IF NOT EXISTS idx_storage_net_path  ON storage_events(network, pkg_path);
+		CREATE INDEX IF NOT EXISTS idx_storage_net_time  ON storage_events(network, block_time);
 		CREATE INDEX IF NOT EXISTS idx_pkgsub_net_creator ON package_submissions(network, creator);
 		CREATE INDEX IF NOT EXISTS idx_pkgsub_net_path    ON package_submissions(network, path);
 		CREATE INDEX IF NOT EXISTS idx_pkgsub_block_time  ON package_submissions(network, block_time);
@@ -708,6 +750,27 @@ func (d *DB) InsertPackageSubmission(network, txHash string, msgIndex int, path,
 			(network, tx_hash, msg_index, path, name, creator, block_height, block_time, is_realm, num_files, success)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, network, txHash, msgIndex, path, name, creator, blockHeight, blockTime, isRealm, numFiles, success)
+	return err
+}
+
+// InsertStorageEvent records one storage deposit or unlock.
+//
+// eventIndex is the event's position within the transaction's event list, which
+// is what makes the key unique: one transaction routinely emits several storage
+// events, and a transaction that touches two realms emits one per realm.
+//
+// INSERT OR IGNORE because the sync walk overlaps its own window on every pass —
+// re-reading an event already stored must be a no-op, not a duplicate that
+// doubles a realm's storage total.
+func (d *DB) InsertStorageEvent(network, txHash string, eventIndex int, pkgPath string,
+	blockHeight int, blockTime, kind string, bytesDelta, fee int) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, err := d.db.Exec(`
+		INSERT OR IGNORE INTO storage_events
+			(network, tx_hash, event_index, pkg_path, block_height, block_time, kind, bytes_delta, fee)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, network, txHash, eventIndex, pkgPath, blockHeight, blockTime, kind, bytesDelta, fee)
 	return err
 }
 
@@ -1541,6 +1604,12 @@ type PackageInfo struct {
 	// burned no gas — the rollup is rebuilt periodically, so a freshly deployed
 	// realm reads zero until the next pass.
 	GasUsed int `json:"gas_used"`
+	// StorageDeposit is the realm's net storage cost in ugnot — deposits less
+	// refunds — from storage_realm_rollup. Net rather than gross: a realm that
+	// frees what it wrote has been refunded, and the gross figure would bill it
+	// for storage it no longer holds.
+	StorageDeposit int `json:"storage_deposit"`
+	StorageBytes   int `json:"storage_bytes"`
 }
 
 type PackageDetail struct {
@@ -1615,6 +1684,8 @@ func packageSortClause(sortBy string) string {
 		return "unique_users DESC, p.block_height DESC"
 	case "gas":
 		return "gas_used DESC, p.block_height DESC"
+	case "storage":
+		return "storage_deposit DESC, p.block_height DESC"
 	case "last_call":
 		// A realm never called has no last_call_height (NULL), which SQLite's
 		// default NULLS LAST already sorts after every real height on a DESC
@@ -1657,7 +1728,11 @@ func (d *DB) ListPackages(network string, realmOnly bool, limit, offset int, sor
 		-- would sort ahead of every real value on the DESC ordering and put the
 		-- realms with no gas data at the top of a "most gas" sort.
 		(SELECT COALESCE(g.gas_used, 0) FROM gas_realm_rollup g
-		   WHERE g.network = p.network AND g.path = p.path) AS gas_used
+		   WHERE g.network = p.network AND g.path = p.path) AS gas_used,
+		(SELECT COALESCE(sr.fee_net, 0) FROM storage_realm_rollup sr
+		   WHERE sr.network = p.network AND sr.path = p.path) AS storage_deposit,
+		(SELECT COALESCE(sr.bytes_net, 0) FROM storage_realm_rollup sr
+		   WHERE sr.network = p.network AND sr.path = p.path) AS storage_bytes
 		FROM packages p WHERE p.is_realm = ? AND ` + d.networkFilter("p.network", network)
 	args := []any{realmOnly}
 	q += ` ORDER BY ` + packageSortClause(sortBy)
@@ -1676,14 +1751,16 @@ func (d *DB) ListPackages(network string, realmOnly bool, limit, offset int, sor
 		var blockTime sql.NullString
 		var lastCallHeight sql.NullInt64
 		var lastCallTime sql.NullString
-		var gasUsed sql.NullInt64
+		var gasUsed, storageDeposit, storageBytes sql.NullInt64
 		var p PackageInfo
 		if err := rows.Scan(&p.Network, &p.Path, &p.Name, &p.Creator, &p.BlockHeight, &blockTime, &p.TxHash,
 			&p.IsRealm, &p.NumFiles, &p.Calls, &p.Importers, &p.Imports, &p.UniqueUsers,
-			&lastCallHeight, &lastCallTime, &gasUsed); err != nil {
+			&lastCallHeight, &lastCallTime, &gasUsed, &storageDeposit, &storageBytes); err != nil {
 			return nil, err
 		}
 		p.GasUsed = int(gasUsed.Int64)
+		p.StorageDeposit = int(storageDeposit.Int64)
+		p.StorageBytes = int(storageBytes.Int64)
 		p.BlockTime = blockTime.String
 		p.LastCallHeight = int(lastCallHeight.Int64)
 		p.LastCallTime = lastCallTime.String
@@ -1944,15 +2021,20 @@ func (d *DB) GetReverseGraph(network, path string) (map[string][]string, error) 
 }
 
 type Stats struct {
-	TotalTxs      int `json:"total_txs"`
-	TotalCalls    int `json:"total_calls"`
-	TotalDeploys  int `json:"total_deploys"`
-	TotalMsgRuns  int `json:"total_msg_runs"`
-	TotalSends    int `json:"total_sends"`
-	TotalRealms   int `json:"total_realms"`
-	TotalPackages int `json:"total_packages"`
-	UniqueCallers int `json:"unique_callers"`
-	LatestBlock   int `json:"latest_block"`
+	TotalTxs     int `json:"total_txs"`
+	TotalCalls   int `json:"total_calls"`
+	TotalDeploys int `json:"total_deploys"`
+	// StorageDeposit is the chain's net storage cost in ugnot and StorageBytes
+	// the data currently held, both net of unlocks. Zero is a real answer on a
+	// chain whose realms have all been refunded; it is not "unknown".
+	StorageDeposit int `json:"storage_deposit"`
+	StorageBytes   int `json:"storage_bytes"`
+	TotalMsgRuns   int `json:"total_msg_runs"`
+	TotalSends     int `json:"total_sends"`
+	TotalRealms    int `json:"total_realms"`
+	TotalPackages  int `json:"total_packages"`
+	UniqueCallers  int `json:"unique_callers"`
+	LatestBlock    int `json:"latest_block"`
 }
 
 // GetStats returns aggregate statistics.
@@ -1981,6 +2063,11 @@ func (d *DB) GetStats(network string) (*Stats, error) {
 	// collapsing them undercounts. 19,054 blended against 19,117 on production.
 	d.db.QueryRow(`SELECT COUNT(*) FROM (SELECT DISTINCT caller, network FROM calls` + nf + `)`).Scan(&s.UniqueCallers)
 	d.db.QueryRow(`SELECT COALESCE(MAX(block_height), 0) FROM packages` + nf).Scan(&s.LatestBlock)
+	// Summed from the events rather than the rollup: the rollup is rebuilt on a
+	// timer, and the headline figure should not lag the realm pages by a
+	// refresh interval. One SUM over an indexed table is cheap enough here.
+	d.db.QueryRow(`SELECT COALESCE(SUM(fee), 0), COALESCE(SUM(bytes_delta), 0) FROM storage_events`+nf).
+		Scan(&s.StorageDeposit, &s.StorageBytes)
 	return &s, nil
 }
 
@@ -4252,6 +4339,21 @@ func (d *DB) refreshRollups() error {
 			  FROM msg_runs m JOIN transactions t
 			    ON t.network = m.network AND t.tx_hash = m.tx_hash AND ` + scope + `
 		) GROUP BY network, path`); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(`DELETE FROM storage_realm_rollup`); err != nil {
+		return err
+	}
+	// bytes_delta and fee are already signed at insert time, so an unlock
+	// subtracts by summing. A realm whose deposits and refunds cancel out ends
+	// at zero, which is the truthful answer rather than an absence.
+	if _, err := tx.Exec(`
+		INSERT INTO storage_realm_rollup (network, path, bytes_net, fee_net, event_count)
+		SELECT network, pkg_path, SUM(bytes_delta), SUM(fee), COUNT(*)
+		  FROM storage_events t
+		 WHERE ` + scope + `
+		 GROUP BY network, pkg_path`); err != nil {
 		return err
 	}
 
