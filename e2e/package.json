@@ -2,10 +2,11 @@
   "name": "mygnoscan-e2e",
   "private": true,
   "type": "module",
-  "description": "Browser end-to-end tests. Development only — nothing here is built into the binary.",
+  "description": "Browser end-to-end tests. Development only \u2014 nothing here is built into the binary.",
   "scripts": {
     "test": "playwright test",
-    "install-browsers": "playwright install --with-deps chromium"
+    "install-browsers": "playwright install --with-deps chromium",
+    "screenshots": "SCREENSHOTS=1 playwright test screenshots.spec.js"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.0"

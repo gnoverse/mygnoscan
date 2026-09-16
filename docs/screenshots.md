@@ -1,5 +1,29 @@
 # Screenshots
 
+Two sets, for two different jobs.
+
+| | source | committed | for |
+|---|---|---|---|
+| `docs/images/*.png` | a real database snapshot | yes | the README — a chain with enough history to look like something |
+| `docs/images/review/*.png` | the e2e fixture | no | reviewing a frontend change, identical run to run |
+
+The second is what CI uploads on any pull request touching `frontend/`, so a
+reviewer can see what a change did to every page without checking the branch
+out. A frontend diff is unreadable as text, and checking out a branch to look at
+five pages is enough friction that nobody does it.
+
+```bash
+make screenshots    # the review set, into docs/images/review/
+```
+
+It renders against the same seeded fixture the browser suite uses, so two runs
+produce the same images. Nothing about it depends on a live chain.
+
+There is no light-theme variant because there is no light theme: the frontend
+defines one dark palette and no `prefers-color-scheme` or `data-theme` handling.
+
+## The README images
+
 The images in `README.md` and elsewhere in `docs/` are generated, not pasted, so
 they cannot silently drift from the UI.
 

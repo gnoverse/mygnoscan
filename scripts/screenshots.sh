@@ -13,7 +13,10 @@ set -e
 DB="${DB:-mygnoscan.db}"
 OUT="${OUT:-docs/images}"
 PORT="${PORT:-8899}"
-NETWORK="${NETWORK:-topaz}"
+# pearl, not topaz: topaz was retired months ago and its endpoints are NXDOMAIN,
+# so the default selected a network the config no longer lists and the UI
+# rendered an empty selector.
+NETWORK="${NETWORK:-pearl}"
 CONFIG="${CONFIG:-testdata/screenshots-networks.json}"
 WIDTH="${WIDTH:-1400}"
 HEIGHT="${HEIGHT:-900}"

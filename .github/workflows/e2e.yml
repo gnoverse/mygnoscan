@@ -20,6 +20,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The screenshot step diffs against the base branch to decide whether
+          # the frontend changed, which a shallow clone cannot do.
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -47,6 +51,39 @@ jobs:
       - name: Run
         run: npx playwright test
         working-directory: e2e
+
+      # A capture of every page, for PRs that touch the frontend.
+      #
+      # The reviewer's problem this solves: a frontend diff is unreadable as
+      # text, and checking the branch out to look at five pages is enough
+      # friction that nobody does it. These render against the same seeded
+      # fixture the suite uses, so they are identical run to run and a real
+      # visual diff rather than noise.
+      #
+      # Only on frontend changes, and never blocking: a screenshot that differs
+      # is information, not a failure. Pixel-exact diffing across browser
+      # versions is a known source of false red.
+      - name: Capture page screenshots
+        if: github.event_name == 'pull_request'
+        id: shots
+        continue-on-error: true
+        run: |
+          if git diff --name-only origin/${{ github.base_ref }}...HEAD | grep -q '^frontend/'; then
+            npm run screenshots
+          else
+            echo "no frontend changes; skipping"
+          fi
+        working-directory: e2e
+
+      - name: Upload page screenshots
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: page-screenshots
+          path: docs/images/review/
+          if-no-files-found: ignore
+          retention-days: 14
 
       # Screenshot, video and trace for anything that failed. Without these a
       # red run in CI is a mystery, which is most of why this suite exists.
