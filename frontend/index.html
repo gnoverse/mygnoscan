@@ -4,6 +4,20 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>mygnoscan</title>
+<script>
+// Embed mode, applied before the body exists so the chrome never paints.
+//
+// Deferring this to the SPA's own routing would let the header render and then
+// vanish, which inside an iframe reads as a layout glitch on every navigation.
+// Reading the flag here costs nothing and removes the flash entirely.
+(function () {
+  try {
+    if (new URLSearchParams(window.location.search).get('embed') === '1') {
+      document.documentElement.classList.add('embed');
+    }
+  } catch (e) { /* a malformed query string is not a reason to fail to render */ }
+})();
+</script>
 <!-- Inlined as a data URI so the tab icon costs no extra request and the
      frontend stays the single self-contained file it has always been.
      A blocky monospace "m" in the accent teal on the app's own dark
@@ -246,6 +260,13 @@ footer a:hover { color: var(--accent); }
 }
 .fnpill:hover { border-color: var(--accent); background: var(--bg3); }
 .fnpill.uncalled { color: var(--fg2); }
+/* Embed mode: ?embed=1 strips the chrome so a host app can iframe one piece of
+   content instead of a whole page-in-a-page.
+   Class on <html> rather than <body> so it applies before first paint and the
+   header never flashes in an iframe. */
+html.embed header, html.embed footer, html.embed #sanity-subbar { display: none !important; }
+html.embed body { background: transparent; }
+html.embed .container { padding-top: 0; padding-bottom: 0; max-width: none; }
 /* Highlight on hover (addresses, tx hashes, event types, etc) */
 [data-hl].hl-active { outline: 2px solid #4ecdc4; outline-offset: 1px; background: rgba(78, 205, 196, 0.15); border-radius: 2px; }
 @media (max-width: 768px) { .stats-bar { gap: 12px; } .stat .value { font-size: 16px; } .search-box input { width: 160px; } nav { gap: 8px; } }
