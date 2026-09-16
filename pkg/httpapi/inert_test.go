@@ -101,10 +101,10 @@ func TestStampInertStatus(t *testing.T) {
 			t.Fatalf("decode request: %v", err)
 		}
 		var respData string
-		switch {
-		case req.Params.Path == "vm/qinertpaths?limit=2000":
+		switch req.Params.Path {
+		case "vm/qinertpaths?limit=2000":
 			respData = "gno.land/r/parked/pkg\n"
-		case req.Params.Path == "vm/qpkgmeta_json":
+		case "vm/qpkgmeta_json":
 			respData = `{"path":"gno.land/r/parked/pkg","status":"inert"}`
 		default:
 			t.Fatalf("unexpected query path %q", req.Params.Path)
