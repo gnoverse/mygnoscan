@@ -292,6 +292,12 @@ footer a:hover { color: var(--accent); }
           full import graph and the list of realms that use it.</div>
         <table><thead><tr><th>realm</th><th>used by</th><th>imports</th><th>calls</th></tr></thead><tbody id="top-depended"></tbody></table>
       </div>
+      <div class="section">
+        <div class="section-title">most active accounts</div>
+        <div class="section-sub">who is actually using the chain right now. the full list, with
+          every message type broken out, is on <a href="/accounts" onclick="navigate('/accounts'); return false;">accounts</a>.</div>
+        <table><thead><tr><th>address</th><th>calls</th><th>deploys</th><th>total</th></tr></thead><tbody id="top-accounts"></tbody></table>
+      </div>
       <div class="section"><div class="section-title">recent activity</div>
         <table><thead><tr><th>block</th><th>type</th><th>detail</th><th>status</th><th>when</th></tr></thead><tbody id="recent-txs"></tbody></table></div>
       <div class="section"><div class="section-title">latest realms</div>
@@ -2170,10 +2176,12 @@ async function loadHome() {
   skeletonRows(clear('recent-txs'), 5, 8);
   skeletonRows(clear('latest-realms'), 6, 5);
   skeletonRows(clear('top-depended'), 4, 5);
+  skeletonRows(clear('top-accounts'), 4, 5);
   try {
-    const [stats, realmsData, txsData, blocksData, dependedData] = await Promise.all([
+    const [stats, realmsData, txsData, blocksData, dependedData, accountsData] = await Promise.all([
       api('stats'), api('realms?limit=10'), api('txs?limit=20'), api('blocks?limit=50'),
-      api('realms?limit=8&sort=importers')
+      api('realms?limit=8&sort=importers'),
+      api('accounts?limit=8')
     ]);
     document.getElementById('stat-txs').textContent = fmtNum(stats.total_txs);
     document.getElementById('stat-calls').textContent = fmtNum(stats.total_calls);
@@ -2201,6 +2209,28 @@ async function loadHome() {
     if (!(dependedData?.items || []).length) {
       topBody.appendChild(el('tr', {}, el('td', { colSpan: 4, style: { color: 'var(--fg2)' } },
         'no dependency data yet')));
+    }
+
+    // Accounts had no path from the home page at all — not even a buried one:
+    // you had to already know /accounts existed. Same "the differentiator is
+    // two clicks deep" shape as the depended-upon realms above it.
+    //
+    // callsCell is reused rather than printing call_count, so the multicall
+    // distinction the accounts page makes ("225 calls across 225 transactions"
+    // versus "225 calls, one of them a 200-message multicall") survives here.
+    const acctBody = clear('top-accounts');
+    for (const a of (accountsData || [])) {
+      const total = a.call_count + a.deploy_count + a.msgrun_count + (a.send_count || 0);
+      acctBody.appendChild(netRow(a.network,
+        el('td', {}, addrLink(a.address, a.network)),
+        el('td', {}, callsCell(a)),
+        el('td', {}, fmtNum(a.deploy_count)),
+        el('td', {}, fmtNum(total))
+      ));
+    }
+    if (!(accountsData || []).length) {
+      acctBody.appendChild(el('tr', {}, el('td', { colSpan: 4, style: { color: 'var(--fg2)' } },
+        'no account activity yet')));
     }
 
     const tbody = clear('latest-realms');
@@ -2236,6 +2266,7 @@ async function loadHome() {
       if (cell) { cell.textContent = '\u2014'; cell.style.color = 'var(--fg2)'; }
     }
     failRows(clear('top-depended'), 4, err, loadHome);
+    failRows(clear('top-accounts'), 4, err, loadHome);
     failRows(clear('recent-txs'), 5, err, loadHome);
     failRows(clear('latest-realms'), 6, err, loadHome);
   }
