@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -60,6 +59,7 @@ func jsonResponse(w http.ResponseWriter, data any) {
 // Doing it where the response is written covers the ones nobody has hit yet:
 // most list endpoints only look safe because the chain they were tried against
 // happened to have data.
+
 func emptyNotNull(data any) any {
 	v := reflect.ValueOf(data)
 	switch v.Kind() {
@@ -82,133 +82,14 @@ func jsonError(w http.ResponseWriter, msg string, code int) {
 }
 
 // stampPackageTimes fetches block times for each unique block height in parallel.
-func stampPackageTimes(ctx context.Context, client *IndexerClient, pkgs []PackageInfo) {
-	if len(pkgs) == 0 {
-		return
-	}
-	// Collect unique heights
-	seen := make(map[int]bool)
-	var heights []int
-	for _, p := range pkgs {
-		if !seen[p.BlockHeight] {
-			seen[p.BlockHeight] = true
-			heights = append(heights, p.BlockHeight)
-		}
-	}
-	// Fetch block times in parallel (max 5 concurrent)
-	bt := make(map[int]string, len(heights))
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 5)
-	for _, h := range heights {
-		wg.Add(1)
-		go func(height int) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			block, err := client.GetBlock(ctx, height)
-			if err == nil && block != nil {
-				mu.Lock()
-				bt[height] = block.Time
-				mu.Unlock()
-			}
-		}(h)
-	}
-	wg.Wait()
-	for i := range pkgs {
-		pkgs[i].BlockTime = bt[pkgs[i].BlockHeight]
-	}
-}
 
-// stampBlockTimes sets BlockTime on each transaction, preferring stored times.
-//
-// Asking the indexer for each block is the dominant cost of list endpoints — a
-// public indexer answers in roughly a quarter second, so a page spanning 50
-// distinct blocks spends over a second on timestamps alone. The syncer already
-// stores block_time, so the indexer is only consulted for whatever is not
-// already known locally.
-func (a *API) stampBlockTimes(ctx context.Context, network string, client *IndexerClient, txs []Transaction) {
-	if len(txs) == 0 {
-		return
-	}
-	// Deduplicate: many transactions share a block, and a naive min..max range
-	// over a sparse set would pull every block in between.
-	seen := make(map[int]bool, len(txs))
-	heights := make([]int, 0, len(txs))
-	for _, tx := range txs {
-		if !seen[tx.BlockHeight] {
-			seen[tx.BlockHeight] = true
-			heights = append(heights, tx.BlockHeight)
-		}
-	}
-
-	bt := a.blockTimesForHeights(ctx, network, client, heights)
-	for i := range txs {
-		txs[i].BlockTime = bt[txs[i].BlockHeight]
-	}
-}
-
-// blockTimesForHeights resolves height -> block_time for an arbitrary set of
-// heights, preferring stored times over asking the indexer — the same
-// lookup stampBlockTimes does for a transaction list, factored out for
-// callers that need times for heights that are not necessarily any
-// transaction's own block_height (e.g. an inert package's submission
-// height, which is a value carried *inside* a later MsgEnablePackage, not
-// the height of that message's own transaction).
-func (a *API) blockTimesForHeights(ctx context.Context, network string, client *IndexerClient, heights []int) map[int]string {
-	bt, err := a.db.BlockTimesForHeights(network, heights)
-	if err != nil || bt == nil {
-		bt = make(map[int]string, len(heights))
-	}
-
-	missing := make([]int, 0, len(heights))
-	for _, h := range heights {
-		if bt[h] == "" {
-			missing = append(missing, h)
-		}
-	}
-	if len(missing) > 0 && client != nil {
-		if fetched, err := client.GetBlockTimesForHeights(ctx, missing); err == nil {
-			for h, t := range fetched {
-				bt[h] = t
-			}
-		}
-	}
-	return bt
-}
-
-// perNetworkDeadline bounds how long a single network may hold up a merged
-// response. A configured-but-unreachable network — one that is down, or a
-// testnet configured ahead of its launch — must degrade to missing data rather
-// than to a hung page. The HTTP client's own timeout is far too long to serve
-// as this bound.
-const perNetworkDeadline = 8 * time.Second
-
-// Circuit breaker settings. Without one, a configured network that is down costs
-// every merged request the full perNetworkDeadline, forever. With one it costs
-// that once, then nothing until the cooldown expires and it is retried — so a
-// network can be configured before it launches and starts working on its own.
 const (
 	breakerThreshold = 2
 	breakerCooldown  = 60 * time.Second
 )
 
 // healthTracker trips a per-network breaker after repeated failures.
-type healthTracker struct {
-	mu    sync.Mutex
-	state map[string]*netHealth
-}
 
-type netHealth struct {
-	failures  int
-	skipUntil time.Time
-}
-
-func newHealthTracker() *healthTracker {
-	return &healthTracker{state: map[string]*netHealth{}}
-}
-
-// shouldSkip reports whether the breaker for this network is currently open.
 func (h *healthTracker) shouldSkip(id string) bool {
 	if h == nil {
 		return false
@@ -220,6 +101,7 @@ func (h *healthTracker) shouldSkip(id string) bool {
 }
 
 // record updates the breaker after an attempt.
+
 func (h *healthTracker) record(id string, err error) {
 	if h == nil {
 		return
@@ -255,6 +137,7 @@ func (h *healthTracker) record(id string, err error) {
 // Sequential fan-out made an all-networks response cost the sum of every
 // network's latency, which is also what made adding an unreachable network
 // dangerous.
+
 func fanOut[T any](
 	ctx context.Context,
 	networks []NetworkConfig,
@@ -310,6 +193,7 @@ func fanOut[T any](
 }
 
 // networkParam reads ?network from request. Returns "" for "all" (no filter), or specific network ID.
+
 func (a *API) networkParam(r *http.Request) string {
 	n := r.URL.Query().Get("network")
 	if n == "" || n == "all" {
@@ -330,6 +214,7 @@ func (a *API) networkParam(r *http.Request) string {
 //
 // Non-API routes are left alone so the SPA still loads on a stale bookmark and
 // can say so itself, rather than the browser being handed a JSON error.
+
 func rejectUnknownNetwork(networks []NetworkConfig, next http.Handler) http.Handler {
 	known := make(map[string]bool, len(networks))
 	for _, n := range networks {
@@ -357,6 +242,7 @@ func rejectUnknownNetwork(networks []NetworkConfig, next http.Handler) http.Hand
 // everyone's.
 //
 // Callers that need a live chain must either have a network or fan out.
+
 func (a *API) clientFor(network string) *IndexerClient {
 	if network == "" {
 		return nil
@@ -371,6 +257,7 @@ func (a *API) clientFor(network string) *IndexerClient {
 // withholding a balance is a missing figure, and the cost of trusting a
 // mismatched one is a number from a different chain shown beside this chain's
 // history. See verifyRPCChains.
+
 func (a *API) rpcURLFor(network string) string {
 	for _, n := range a.networks {
 		if network == "" || n.ID == network {
@@ -382,230 +269,6 @@ func (a *API) rpcURLFor(network string) string {
 	return ""
 }
 
-func (a *API) HandleStats(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	stats, err := a.db.GetStats(network)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-
-	// The live tip belongs to one chain. Asking for it without naming a network
-	// used to return whichever chain clientFor happened to pick, so the home
-	// page's block counter showed staging's height — a chain with seven
-	// transactions — as if it were global. With several networks in play the
-	// stored maximum stands instead: still a single number, but a deterministic
-	// one derived from every configured chain rather than a coin flip.
-	if client := a.clientFor(network); client != nil {
-		height, err := client.LatestBlockHeight(r.Context())
-		if err == nil {
-			stats.LatestBlock = height
-		}
-	}
-
-	jsonResponse(w, stats)
-}
-
-func (a *API) handleListPackages(w http.ResponseWriter, r *http.Request, realmOnly bool) {
-	network := a.networkParam(r)
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-	if limit == 0 {
-		limit = 50
-	}
-	sortBy := r.URL.Query().Get("sort")
-	total, _ := a.db.CountPackages(network, realmOnly)
-
-	if network != "" {
-		items, err := a.db.ListPackages(network, realmOnly, limit, offset, sortBy)
-		if err != nil {
-			jsonError(w, err.Error(), 500)
-			return
-		}
-		jsonResponse(w, map[string]any{"items": items, "total": total})
-		return
-	}
-
-	// All networks: fetch per-network, stamp block times, merge, sort by time
-	var merged []PackageInfo
-	for _, items := range fanOut(r.Context(), a.networks, a.clients, a.health,
-		func(ctx context.Context, n NetworkConfig, c *IndexerClient) ([]PackageInfo, error) {
-			items, err := a.db.ListPackages(n.ID, realmOnly, limit+offset, 0, sortBy)
-			if err != nil {
-				return nil, err
-			}
-			stampPackageTimes(ctx, c, items)
-			return items, nil
-		}) {
-		merged = append(merged, items...)
-	}
-	sortMergedPackages(merged, sortBy)
-	if offset >= len(merged) {
-		jsonResponse(w, map[string]any{"items": []PackageInfo{}, "total": total})
-		return
-	}
-	end := offset + limit
-	if end > len(merged) {
-		end = len(merged)
-	}
-	jsonResponse(w, map[string]any{"items": merged[offset:end], "total": total})
-}
-
-// sortMergedPackages orders a cross-network list. Block heights from different
-// chains are not comparable, so the default ordering is by timestamp with height
-// only as a tiebreaker within rows that have none.
-func sortMergedPackages(pkgs []PackageInfo, sortBy string) {
-	switch sortBy {
-	case "calls":
-		sort.SliceStable(pkgs, func(i, j int) bool { return pkgs[i].Calls > pkgs[j].Calls })
-	case "importers":
-		sort.SliceStable(pkgs, func(i, j int) bool { return pkgs[i].Importers > pkgs[j].Importers })
-	case "imports":
-		sort.SliceStable(pkgs, func(i, j int) bool { return pkgs[i].Imports > pkgs[j].Imports })
-	case "users":
-		sort.SliceStable(pkgs, func(i, j int) bool { return pkgs[i].UniqueUsers > pkgs[j].UniqueUsers })
-	case "last_call":
-		sort.SliceStable(pkgs, func(i, j int) bool {
-			ti, tj := pkgs[i].LastCallTime, pkgs[j].LastCallTime
-			if ti != "" && tj != "" {
-				return ti > tj
-			}
-			if ti != tj {
-				return ti != "" // ever-called rows sort ahead of never-called ones
-			}
-			return pkgs[i].BlockHeight > pkgs[j].BlockHeight
-		})
-	case "name":
-		sort.SliceStable(pkgs, func(i, j int) bool { return pkgs[i].Path < pkgs[j].Path })
-	default:
-		sort.SliceStable(pkgs, func(i, j int) bool {
-			ti, tj := pkgs[i].BlockTime, pkgs[j].BlockTime
-			if ti != "" && tj != "" {
-				return ti > tj
-			}
-			if ti != tj {
-				return ti != "" // rows with a timestamp sort ahead of rows without
-			}
-			return pkgs[i].BlockHeight > pkgs[j].BlockHeight
-		})
-	}
-}
-
-func (a *API) HandleRealms(w http.ResponseWriter, r *http.Request) {
-	a.handleListPackages(w, r, true)
-}
-
-func (a *API) HandlePackages(w http.ResponseWriter, r *http.Request) {
-	a.handleListPackages(w, r, false)
-}
-
-func (a *API) HandleRealm(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	path := "gno.land/" + r.PathValue("path")
-	// Remove trailing slash
-	path = strings.TrimRight(path, "/")
-
-	detail, err := a.db.GetPackageDetail(network, path)
-	if err != nil {
-		jsonError(w, "package not found: "+path, 404)
-		return
-	}
-	// Derived here rather than stored: it is a pure function of the source the
-	// detail already carries, so persisting it would add a column that can go
-	// stale against the files beside it.
-	files := make([]MemFile, 0, len(detail.Files))
-	for _, f := range detail.Files {
-		files = append(files, MemFile(f))
-	}
-	detail.ExportedFuncs = ExportedFunctions(files)
-	jsonResponse(w, detail)
-}
-
-// normalizeTxHash accepts a transaction hash in either encoding in circulation
-// and returns the base64 form the indexer stores.
-//
-// The same 32 bytes are printed two ways: gno tooling and this explorer use
-// base64 ("e6ChL6Trihr1GABwAWTvGOAkCGtNtvfhr4ZkoixrBAg="), while gnoscan.io and
-// Tendermint-style RPC use 64 hex characters
-// ("7BA0A12FA4EB8A1AF51800700164EF18E024086B4DB6F7E1AF8664A22C6B0408"). They
-// are the same transaction, so pasting either one must resolve — the hex form
-// used to 404 on a transaction we were holding all along.
-//
-// The two forms cannot be confused: base64 of 32 bytes is always 43 characters
-// and a pad, never 64, so a 64-character string that decodes as hex is
-// unambiguous. Anything else is handed through untouched for the indexer to
-// reject, rather than guessed at.
-func normalizeTxHash(s string) string {
-	s = strings.TrimSpace(s)
-	if len(s) == 66 && (strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X")) {
-		s = s[2:]
-	}
-	if len(s) != 64 {
-		return s
-	}
-	raw, err := hex.DecodeString(s)
-	if err != nil {
-		return s
-	}
-	return base64.StdEncoding.EncodeToString(raw)
-}
-
-func (a *API) HandleTx(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	hash := normalizeTxHash(r.PathValue("hash"))
-
-	type txDetail struct {
-		*Transaction
-		BlockTime string `json:"block_time,omitempty"`
-		ChainID   string `json:"chain_id,omitempty"`
-		Network   string `json:"network,omitempty"`
-	}
-
-	tryClient := func(ctx context.Context, netID string, client *IndexerClient) (*txDetail, error) {
-		tx, err := client.GetTransactionByHash(ctx, hash)
-		if err != nil {
-			return nil, err
-		}
-		resp := &txDetail{Transaction: tx, Network: netID}
-		if block, berr := client.GetBlock(ctx, tx.BlockHeight); berr == nil && block != nil {
-			resp.BlockTime = block.Time
-			resp.ChainID = block.ChainID
-		}
-		return resp, nil
-	}
-
-	if network != "" {
-		client := a.clientFor(network)
-		if client == nil {
-			jsonError(w, "network not found", 404)
-			return
-		}
-		resp, err := tryClient(r.Context(), network, client)
-		if err != nil {
-			jsonError(w, err.Error(), 404)
-			return
-		}
-		jsonResponse(w, resp)
-		return
-	}
-
-	// Ask every network at once; a hash lives on at most one, and the others
-	// answering "not found" should not be paid for serially.
-	found := fanOut(r.Context(), a.networks, a.clients, a.health,
-		func(ctx context.Context, n NetworkConfig, c *IndexerClient) (*txDetail, error) {
-			return tryClient(ctx, n.ID, c)
-		})
-	if len(found) > 0 {
-		jsonResponse(w, found[0])
-		return
-	}
-	jsonError(w, "transaction not found", 404)
-}
-
-// Bounds for the transaction list. "No limit" used to mean `where: {}` — every
-// transaction the chain has ever had — which returned 500 after ten seconds on a
-// busy chain because it could not finish inside the client timeout. The indexer
-// exposes no way to make that query cheap, so the endpoint bounds it instead.
 const (
 	defaultTxs = 500
 	// 5000 was still eight seconds against a busy chain — close enough to the
@@ -614,221 +277,6 @@ const (
 	maxTxs = 2000
 )
 
-func (a *API) HandleTxs(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-
-	// An absent or non-positive limit is a request for "recent transactions",
-	// not for the whole chain. Callers that genuinely want more say so, up to
-	// the cap; beyond it the indexer's own element cap takes over anyway.
-	windowed := limit
-	if windowed <= 0 {
-		windowed = defaultTxs
-	}
-	if windowed > maxTxs {
-		windowed = maxTxs
-	}
-	need := offset + windowed
-
-	// A type filter is served from storage, not the indexer.
-	//
-	// The indexer has no index for message type, so asking it for deploys walks
-	// the chain until it finds enough — 12s for a 50-row page on sapphire,
-	// against 0.5s unfiltered. The syncer already writes one row per message
-	// into a per-type table indexed by (network, block_height), which answers
-	// the same question with a real offset.
-	//
-	// A status filter alone still goes to the indexer: `success` is a column on
-	// every transaction there, so it costs nothing extra.
-	msgType := r.URL.Query().Get("type")
-	if _, known := txSources[msgType]; known {
-		var success *bool
-		switch r.URL.Query().Get("success") {
-		case "true":
-			t := true
-			success = &t
-		case "false":
-			f := false
-			success = &f
-		}
-		rows, total, err := a.db.FilteredTransactions(network, msgType, success, windowed, offset)
-		if err != nil {
-			jsonError(w, err.Error(), 500)
-			return
-		}
-		jsonResponse(w, map[string]any{"items": rows, "total": total, "from_storage": true})
-		return
-	}
-
-	success := r.URL.Query().Get("success")
-	fetch := func(ctx context.Context, c *IndexerClient) ([]Transaction, error) {
-		return c.GetRecentTransactionsFiltered(ctx, need, "", success)
-	}
-
-	if network != "" {
-		client := a.clientFor(network)
-		if client == nil {
-			jsonError(w, "network not found", 404)
-			return
-		}
-		txs, err := fetch(r.Context(), client)
-		if err != nil {
-			jsonError(w, err.Error(), 500)
-			return
-		}
-		// total is what was fetched, not what the chain holds. It never could
-		// be: the indexer caps a result set and exposes no count, so this is
-		// the size of the recent window and the frontend labels it as such.
-		total := len(txs)
-		if offset > total {
-			offset = total
-		}
-		end := offset + windowed
-		if end > total {
-			end = total
-		}
-		page := txs[offset:end]
-		// Stamp only what is being returned, not everything that was fetched.
-		a.stampBlockTimes(r.Context(), network, client, page)
-		jsonResponse(w, map[string]any{"items": page, "total": total})
-		return
-	}
-
-	// Fan-out to all clients, merge and sort
-	type netTx struct {
-		Transaction
-		Network string `json:"network,omitempty"`
-	}
-	var merged []netTx
-	seen := make(map[string]bool)
-	perNetwork := fanOut(r.Context(), a.networks, a.clients, a.health,
-		func(ctx context.Context, n NetworkConfig, c *IndexerClient) ([]netTx, error) {
-			txs, err := fetch(ctx, c)
-			if err != nil {
-				return nil, err
-			}
-			// Block times are needed before sorting: across networks, heights
-			// from different chains are not comparable and only the timestamp
-			// orders them.
-			a.stampBlockTimes(ctx, n.ID, c, txs)
-			out := make([]netTx, 0, len(txs))
-			for _, tx := range txs {
-				tx.Network = n.ID
-				out = append(out, netTx{Transaction: tx, Network: n.ID})
-			}
-			return out, nil
-		})
-	for _, txs := range perNetwork {
-		for _, tx := range txs {
-			if seen[tx.Hash] {
-				continue
-			}
-			seen[tx.Hash] = true
-			merged = append(merged, tx)
-		}
-	}
-	sort.SliceStable(merged, func(i, j int) bool {
-		return newerFirst(merged[i].BlockTime, merged[j].BlockTime,
-			merged[i].BlockHeight, merged[j].BlockHeight)
-	})
-	total := len(merged)
-	if offset > total {
-		offset = total
-	}
-	end := offset + windowed
-	if end > total {
-		end = total
-	}
-	jsonResponse(w, map[string]any{"items": merged[offset:end], "total": total})
-}
-
-// addressTxPage bounds an address page. Its history can be enormous — the
-// busiest account on sapphire has half a million calls — and the view shows
-// recent activity, not an archive.
-const addressTxPage = 200
-
-// HandleAddress serves an address's activity from storage.
-//
-// It used to ask the indexer, which cannot answer at chain scale: the query is
-// five address predicates over fields it has no index for, so it scans.
-// Windowing it from the tip (#121) bought time and the chain outgrew it — the
-// busiest account went back to a 500 at 13.9s.
-//
-// Every message the syncer decodes is already written to a per-type table keyed
-// by the address involved, all indexed. Balance still comes from RPC, which is
-// the only place it exists.
-func (a *API) HandleAddress(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	addr := r.PathValue("addr")
-
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit <= 0 || limit > addressTxPage {
-		limit = addressTxPage
-	}
-	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-	if offset < 0 {
-		offset = 0
-	}
-
-	txs, total, err := a.db.AddressTransactions(network, addr, limit, offset)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-
-	pkgs, err := a.db.Search(network, addr)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-
-	// The oldest block on this page, not the address's first ever: paging back
-	// would otherwise make "first seen" wander. Named accordingly.
-	oldestOnPage := -1
-	for _, tx := range txs {
-		if oldestOnPage < 0 || tx.BlockHeight < oldestOnPage {
-			oldestOnPage = tx.BlockHeight
-		}
-	}
-
-	// Balance is per chain and lives only at the RPC, so it is reported only
-	// when one chain is selected. Summing balances across chains would repeat
-	// the category error of adding ugnot from different networks.
-	balance := ""
-	if network != "" {
-		balance = fetchBalance(r.Context(), addr, a.rpcURLFor(network))
-	}
-
-	jsonResponse(w, map[string]any{
-		"address":        addr,
-		"transactions":   txs,
-		"total":          total,
-		"packages":       pkgs,
-		"oldest_on_page": oldestOnPage,
-		"balance":        balance,
-	})
-}
-
-func (a *API) HandleSearch(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	q := r.URL.Query().Get("q")
-	if q == "" {
-		jsonError(w, "missing q parameter", 400)
-		return
-	}
-
-	results, err := a.db.Search(network, q)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-	jsonResponse(w, results)
-}
-
-// Event listing bounds. `limit=-1` still means "everything" for callers that
-// genuinely want it; the default keeps the events page from pulling the whole
-// chain's event history on load.
 const (
 	defaultEventTxs = 200
 	maxEventTxs     = 2000
@@ -837,27 +285,7 @@ const (
 // eventTxLimit reads the caller's `limit`, falling back to a default and capped
 // at a maximum. Every event view goes through it so none of them can ask the
 // indexer for a chain's entire history.
-func eventTxLimit(r *http.Request) int {
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit <= 0 {
-		limit = defaultEventTxs
-	}
-	if limit > maxEventTxs {
-		limit = maxEventTxs
-	}
-	return limit
-}
 
-// newerFirst is the ordering every cross-network list uses.
-//
-// Timestamp wins. A row that has one sorts ahead of a row that does not, so
-// undated rows collect at the end rather than being interleaved by a number that
-// means nothing. Height is the last resort, and by then both rows are undated.
-//
-// Heights are per-chain: gnoland1 sits near 3.1M while sapphire is near 400k.
-// Comparing them across networks lets the chain with the largest numbers win
-// every comparison — and in a list that is then truncated to a page, that does
-// not mis-order, it deletes a chain. It did exactly that to sapphire's events.
 func newerFirst(timeA, timeB string, heightA, heightB int) bool {
 	if timeA != "" && timeB != "" {
 		return timeA > timeB
@@ -880,322 +308,7 @@ func newerFirst(timeA, timeB string, heightA, heightB int) bool {
 // So: timestamp first, then rows that have one ahead of rows that do not, and
 // only then height — by which point both rows are undated and any order is a
 // guess, but at least a stable one.
-func sortTransactionsByTime(txs []Transaction) {
-	sort.SliceStable(txs, func(i, j int) bool {
-		return newerFirst(txs[i].BlockTime, txs[j].BlockTime, txs[i].BlockHeight, txs[j].BlockHeight)
-	})
-}
 
-// sortEventResultsByTime orders newest first, on the same rules as
-// sortTransactionsByTime.
-func sortEventResultsByTime(rows []EventResult) {
-	sort.SliceStable(rows, func(i, j int) bool {
-		return newerFirst(rows[i].BlockTime, rows[j].BlockTime, rows[i].BlockHeight, rows[j].BlockHeight)
-	})
-}
-
-// EventResult is one transaction's GnoEvents, tagged with the chain it came from.
-type EventResult struct {
-	TxHash      string    `json:"tx_hash"`
-	BlockHeight int       `json:"block_height"`
-	BlockTime   string    `json:"block_time,omitempty"`
-	Success     bool      `json:"success"`
-	Network     string    `json:"network,omitempty"`
-	Events      []TxEvent `json:"events"`
-}
-
-// gnoEvents keeps the GnoEvents of each transaction, dropping transactions that
-// emitted none.
-func gnoEvents(txs []Transaction, network string) []EventResult {
-	out := make([]EventResult, 0, len(txs))
-	for _, tx := range txs {
-		if tx.Response == nil {
-			continue
-		}
-		var matched []TxEvent
-		for _, ev := range tx.Response.Events {
-			if ev.Typename == "GnoEvent" {
-				matched = append(matched, ev)
-			}
-		}
-		if len(matched) == 0 {
-			continue
-		}
-		out = append(out, EventResult{
-			TxHash:      tx.Hash,
-			BlockHeight: tx.BlockHeight,
-			BlockTime:   tx.BlockTime,
-			Success:     tx.Success,
-			Network:     network,
-			Events:      matched,
-		})
-	}
-	return out
-}
-
-// gnoEventsForPath keeps only the events a given realm emitted. The transaction
-// may carry events from several realms; the realm view wants one realm's.
-func gnoEventsForPath(txs []Transaction, network, path string) []EventResult {
-	out := make([]EventResult, 0, len(txs))
-	for _, tx := range txs {
-		if tx.Response == nil {
-			continue
-		}
-		var matched []TxEvent
-		for _, ev := range tx.Response.Events {
-			if ev.PkgPath == path {
-				matched = append(matched, ev)
-			}
-		}
-		if len(matched) == 0 {
-			continue
-		}
-		out = append(out, EventResult{
-			TxHash:      tx.Hash,
-			BlockHeight: tx.BlockHeight,
-			BlockTime:   tx.BlockTime,
-			Success:     tx.Success,
-			Network:     network,
-			Events:      matched,
-		})
-	}
-	return out
-}
-
-func (a *API) HandleAllEvents(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	// Bounded by default: unbounded, this returns every event-emitting
-	// transaction the chain ever had.
-	limit := eventTxLimit(r)
-
-	if network != "" {
-		client := a.clientFor(network)
-		if client == nil {
-			jsonError(w, "network not found", 404)
-			return
-		}
-		txs, err := client.GetRecentTransactionsWithEvents(r.Context(), limit)
-		if err != nil {
-			jsonError(w, err.Error(), 500)
-			return
-		}
-		// Same stamping as the merged path, so a row carries a timestamp
-		// whichever way it was fetched.
-		a.stampBlockTimes(r.Context(), network, client, txs)
-		results := gnoEvents(txs, network)
-		if len(results) > limit {
-			results = results[:limit]
-		}
-		jsonResponse(w, results)
-		return
-	}
-
-	// All networks means every network, not whichever one clientFor happened to
-	// return. It used to call clientFor("") — which hands back an arbitrary entry
-	// of a Go map — so this endpoint silently served a single chain's events
-	// under an "all networks" heading, and the busiest chain was often the one
-	// left out.
-	merged := []EventResult{}
-	for _, batch := range fanOut(r.Context(), a.networks, a.clients, a.health,
-		func(ctx context.Context, n NetworkConfig, c *IndexerClient) ([]EventResult, error) {
-			txs, err := c.GetRecentTransactionsWithEvents(ctx, limit)
-			if err != nil {
-				return nil, err
-			}
-			// Timestamps are load-bearing here, not decoration. txFieldsLight
-			// carries no block_time, so without this every row sorts on raw
-			// height — and heights are not comparable across chains. gnoland1
-			// sits near 3.1M while sapphire is near 400k, so gnoland1 would win
-			// every comparison and the truncation below would drop sapphire
-			// entirely. Measured: 100 rows returned, 100 of them gnoland1.
-			a.stampBlockTimes(ctx, n.ID, c, txs)
-			return gnoEvents(txs, n.ID), nil
-		}) {
-		merged = append(merged, batch...)
-	}
-
-	// Interleave by time. Heights are not comparable across chains, so they are
-	// only a fallback for rows the block-time backfill has not reached.
-	sortEventResultsByTime(merged)
-	if len(merged) > limit {
-		merged = merged[:limit]
-	}
-	jsonResponse(w, merged)
-}
-
-func (a *API) HandleEvents(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	path := "gno.land/" + r.PathValue("path")
-	path = strings.TrimRight(path, "/")
-
-	// Same treatment as /api/allevents: query every chain rather than whichever
-	// one clientFor used to return.
-	if network == "" {
-		limit := eventTxLimit(r)
-		merged := []EventResult{}
-		for _, batch := range fanOut(r.Context(), a.networks, a.clients, a.health,
-			func(ctx context.Context, nc NetworkConfig, c *IndexerClient) ([]EventResult, error) {
-				txs, err := c.GetEventsByPkgPath(ctx, path, limit)
-				if err != nil {
-					return nil, err
-				}
-				a.stampBlockTimes(ctx, nc.ID, c, txs)
-				return gnoEventsForPath(txs, nc.ID, path), nil
-			}) {
-			merged = append(merged, batch...)
-		}
-		sortEventResultsByTime(merged)
-		if len(merged) > limit {
-			merged = merged[:limit]
-		}
-		jsonResponse(w, merged)
-		return
-	}
-
-	client := a.clientFor(network)
-	if client == nil {
-		jsonError(w, "network not found", 404)
-		return
-	}
-	// Bounded like /api/allevents, and for the same reason: unbounded, this
-	// filter scans the chain's whole history and takes ~34s on a busy one.
-	txs, err := client.GetEventsByPkgPath(r.Context(), path, eventTxLimit(r))
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-	a.stampBlockTimes(r.Context(), network, client, txs)
-	jsonResponse(w, gnoEventsForPath(txs, network, path))
-}
-
-func (a *API) HandleBlocks(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit == 0 {
-		limit = 50
-	}
-
-	if network != "" {
-		client := a.clientFor(network)
-		if client == nil {
-			jsonError(w, "network not found", 404)
-			return
-		}
-		blocks, err := client.GetRecentBlocks(r.Context(), limit)
-		if err != nil {
-			jsonError(w, err.Error(), 500)
-			return
-		}
-		jsonResponse(w, blocks)
-		return
-	}
-
-	// Fan-out: merge blocks from all networks, sort by time
-	type netBlock struct {
-		Block
-		Network string `json:"network,omitempty"`
-	}
-	var merged []netBlock
-	for _, blocks := range fanOut(r.Context(), a.networks, a.clients, a.health,
-		func(ctx context.Context, n NetworkConfig, c *IndexerClient) ([]netBlock, error) {
-			blocks, err := c.GetRecentBlocks(ctx, limit)
-			if err != nil {
-				return nil, err
-			}
-			out := make([]netBlock, 0, len(blocks))
-			for _, b := range blocks {
-				out = append(out, netBlock{Block: b, Network: n.ID})
-			}
-			return out, nil
-		}) {
-		merged = append(merged, blocks...)
-	}
-	sort.SliceStable(merged, func(i, j int) bool {
-		return newerFirst(merged[i].Time, merged[j].Time, merged[i].Height, merged[j].Height)
-	})
-	if len(merged) > limit {
-		merged = merged[:limit]
-	}
-	jsonResponse(w, merged)
-}
-
-func (a *API) HandleBlock(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	// A height does not identify a block on its own: every chain has one. This
-	// used to answer from an arbitrary chain, so the same URL could return a
-	// different block on consecutive requests.
-	if network == "" {
-		jsonError(w, "a block height needs a network: add ?network=", 400)
-		return
-	}
-	client := a.clientFor(network)
-	if client == nil {
-		jsonError(w, "network not found", 404)
-		return
-	}
-	height, err := strconv.Atoi(r.PathValue("height"))
-	if err != nil {
-		jsonError(w, "invalid block height", 400)
-		return
-	}
-	block, err := client.GetBlock(r.Context(), height)
-	if err != nil {
-		jsonError(w, err.Error(), 404)
-		return
-	}
-	if block == nil {
-		jsonError(w, fmt.Sprintf("block not found: %d", height), 404)
-		return
-	}
-	// Also get transactions in this block
-	txs, _ := client.GetTransactionsByBlock(r.Context(), height)
-	jsonResponse(w, map[string]any{
-		"block":        block,
-		"transactions": txs,
-	})
-}
-
-func (a *API) HandleValidators(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	// Served entirely from storage since #83, so no indexer client is needed —
-	// and requiring one would have made this 500 in all-networks mode.
-	regs, err := a.db.ValoperRegistrations(network)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-	jsonResponse(w, regs)
-}
-
-// HandleValidatorMonikers serves consensus-address -> name, sourced from
-// gnockpit (see gnockpit.go) rather than this chain's own data: a block
-// proposer is identified by its consensus key, which the valopers realm
-// never records (it registers the *operator* key instead — see the comment
-// on proposerEl in frontend/index.html), so nothing indexed here can answer
-// this. Best-effort: an empty map means gnockpit could not be reached, not
-// an error, since a page that can label proposers most of the time is
-// better than one that breaks whenever a third party is briefly down.
-func (a *API) HandleValidatorMonikers(w http.ResponseWriter, r *http.Request) {
-	monikers := FetchGnockpitMonikers(r.Context())
-	if monikers == nil {
-		monikers = map[string]string{}
-	}
-	jsonResponse(w, monikers)
-}
-
-func (a *API) HandleTokens(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	// Get all packages that look like token contracts (import grc20)
-	tokens, err := a.db.GetTokenPackages(network)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-	jsonResponse(w, tokens)
-}
-
-// Account listing bounds. The default matches the previous fixed top 100, so an
-// existing caller passing nothing sees no change.
 const (
 	defaultAccounts = 100
 	maxAccounts     = 500
@@ -1206,6 +319,7 @@ const (
 // Kept separate from the rows that mention an address so it can be fetched once
 // and applied everywhere, rather than repeating a label on every transaction in
 // a list.
+
 func (a *API) HandleLabels(w http.ResponseWriter, r *http.Request) {
 	labels, err := a.db.DerivedAddressLabels(a.networkParam(r))
 	if err != nil {
@@ -1218,125 +332,7 @@ func (a *API) HandleLabels(w http.ResponseWriter, r *http.Request) {
 // maxWatchItems bounds a watchlist request. Each item is a handful of indexed
 // counts, so the cost is linear — but the parameters come from a URL and this is
 // the one endpoint whose size a caller controls directly.
-const maxWatchItems = 100
 
-// watchTimelineLimit bounds the merged recent-activity timeline HandleWatch
-// returns alongside the digest. A fixed cap, not a query parameter: the
-// timeline is a "what just happened" glance, not a paged history browser.
-const watchTimelineLimit = 50
-
-// HandleWatch summarises activity for the realms and addresses a caller watches.
-//
-// Items arrive as repeated `realm=` and `address=` parameters, each optionally
-// carrying the height the caller last saw as `path@height`. That height is what
-// turns a list into a digest: it is what "12 new calls since you last looked"
-// counts against.
-//
-// Height rather than a timestamp because it is exact and monotonic per chain,
-// where comparing wall-clock time against block time drifts.
-func (a *API) HandleWatch(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	q := r.URL.Query()
-
-	parse := func(values []string) []WatchRequest {
-		out := make([]WatchRequest, 0, len(values))
-		for _, v := range values {
-			if len(out) >= maxWatchItems {
-				break
-			}
-			id, since := v, 0
-			if at := strings.LastIndex(v, "@"); at > 0 {
-				if n, err := strconv.Atoi(v[at+1:]); err == nil {
-					id, since = v[:at], n
-				}
-			}
-			if id == "" {
-				continue
-			}
-			out = append(out, WatchRequest{ID: id, Since: since})
-		}
-		return out
-	}
-
-	realmReqs := parse(q["realm"])
-	addressReqs := parse(q["address"])
-
-	realms, err := a.db.WatchRealms(network, realmReqs)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-	addresses, err := a.db.WatchAddresses(network, addressReqs)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-
-	ids := func(reqs []WatchRequest) []string {
-		out := make([]string, len(reqs))
-		for i, r := range reqs {
-			out[i] = r.ID
-		}
-		return out
-	}
-	// A timeline alongside the digest: the digest says how much changed,
-	// this is the actual activity behind that count. Capped independently of
-	// maxWatchItems — that bounds how many realms/addresses can be watched,
-	// this bounds how many rows their combined history returns.
-	txs, err := a.db.WatchTransactions(network, ids(realmReqs), ids(addressReqs), watchTimelineLimit)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-
-	jsonResponse(w, map[string]any{"realms": realms, "addresses": addresses, "transactions": txs})
-}
-
-func (a *API) HandleAccounts(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	if limit <= 0 {
-		limit = defaultAccounts
-	}
-	if limit > maxAccounts {
-		limit = maxAccounts
-	}
-	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-	if offset < 0 {
-		offset = 0
-	}
-
-	accounts, err := a.db.GetActiveAccounts(network, r.URL.Query().Get("sort"), limit, offset)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-	jsonResponse(w, accounts)
-}
-
-func (a *API) HandleBankStats(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	stats, err := a.db.GetBankStats(network)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-	jsonResponse(w, stats)
-}
-
-// HandleGovDAO lists governance calls, from storage.
-//
-// This used to ask the indexer, which cannot answer it: the filter is a
-// substring match over a field it has no index for, so on a chain with no
-// governance activity it widened its window until the deadline and returned a
-// 500 — 12 seconds on sapphire. On pearl it returned a row that was not a
-// governance call at all, because the predicate matched a message carrying no
-// pkg_path.
-//
-// The syncer already records every MsgCall with its path, indexed by
-// (network, pkg_path), so this is a prefix scan that answers instantly and
-// cannot match a non-call.
 func (a *API) HandleGovDAO(w http.ResponseWriter, r *http.Request) {
 	calls, err := a.db.GovDAOCalls(a.networkParam(r), eventTxLimit(r))
 	if err != nil {
@@ -1355,151 +351,7 @@ func (a *API) HandleGovDAO(w http.ResponseWriter, r *http.Request) {
 // HandleInertQueue serves the current parked-package queue: every path
 // vm/qinertpaths reports, enriched with each one's own vm/qpkgmeta_json
 // metadata (creator, submission height, why it is stuck). See inert.go.
-func (a *API) HandleInertQueue(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	cached, err := FetchInertQueue(r.Context(), network, a.rpcURLFor(network))
-	if err != nil && len(cached) == 0 {
-		jsonError(w, err.Error(), 502)
-		return
-	}
 
-	// Copied, not enriched in place: FetchInertQueue's return shares its
-	// cache's backing array, and this handler's own block-time lookups are
-	// a per-request concern (they need a.db/the indexer client, which
-	// inert.go's cache does not have), not something to mutate into a
-	// value other concurrent requests may be reading.
-	queue := make([]InertPackage, len(cached))
-	copy(queue, cached)
-	heights := make([]int, 0, len(queue))
-	for _, p := range queue {
-		if p.Height > 0 {
-			heights = append(heights, p.Height)
-		}
-	}
-	bt := a.blockTimesForHeights(r.Context(), network, a.clientFor(network), heights)
-	for i := range queue {
-		queue[i].SubmittedTime = bt[queue[i].Height]
-	}
-
-	jsonResponse(w, map[string]any{"queue": queue})
-}
-
-// HandleInertHistory serves recent package-approval activity (every
-// MsgEnablePackage and MsgRejectPackage the indexer has) plus queue-depth
-// and approval-speed stats. "Speed" is measured from a resolved
-// MsgEnablePackage: BlockHeight (when the enable landed) minus PkgHeight
-// (the submission it approved, which MsgEnablePackage itself pins) — the
-// only place that pairing exists, since a parked submission is otherwise
-// silent between AddPackage and whatever eventually resolves it.
-func (a *API) HandleInertHistory(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	limit := eventTxLimit(r)
-	enabled, rejected := a.inertLifecycleEvents(r.Context(), network, limit)
-
-	queue, _ := FetchInertQueue(r.Context(), network, a.rpcURLFor(network))
-	stats := ComputeInertStats(len(queue), enabled, rejected)
-
-	jsonResponse(w, map[string]any{
-		"enabled":  enabled,
-		"rejected": rejected,
-		"stats":    stats,
-	})
-}
-
-// HandleInertPackage serves one path's inert-lifecycle detail: its current
-// vm/qpkgmeta_json status plus every AddPackage/EnablePackage/RejectPackage
-// transaction naming it, chronological — a redeploy parked while an earlier
-// submission at the same path was still pending shows as two distinct
-// "submitted" entries, exactly as the chain recorded it.
-func (a *API) HandleInertPackage(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	path := "gno.land/" + r.PathValue("path")
-
-	meta, metaErr := fetchPackageMeta(r.Context(), a.rpcURLFor(network), path)
-	if metaErr != nil {
-		meta = InertPackage{Path: path, Status: PackageStatusAbsent}
-	}
-
-	var history []InertLifecycleEvent
-	client := a.clientFor(network)
-	if client != nil {
-		if txs, err := client.GetPackageLifecycleTransactions(r.Context(), path, 200); err == nil {
-			a.stampBlockTimes(r.Context(), network, client, txs)
-			history = buildLifecycleHistory(txs)
-		}
-	}
-
-	jsonResponse(w, map[string]any{"meta": meta, "history": history})
-}
-
-// inertLifecycleEvents fetches every MsgEnablePackage/MsgRejectPackage,
-// normalizes them, and — for enables — resolves each one's wait time by
-// looking up the block_time at both the enable's own height and the
-// submission height it names.
-func (a *API) inertLifecycleEvents(ctx context.Context, network string, limit int) (enabled, rejected []InertLifecycleEvent) {
-	client := a.clientFor(network)
-	if client == nil {
-		return nil, nil
-	}
-
-	enableTxs, _ := client.GetPackageEnableTransactions(ctx, limit)
-	rejectTxs, _ := client.GetPackageRejectTransactions(ctx, limit)
-	a.stampBlockTimes(ctx, network, client, enableTxs)
-	a.stampBlockTimes(ctx, network, client, rejectTxs)
-
-	// Submission heights (MsgEnablePackage.PkgHeight) are not any of these
-	// transactions' own block_height, so stampBlockTimes cannot resolve
-	// them — a second, explicit lookup over that separate set of heights.
-	var subHeights []int
-	for _, tx := range enableTxs {
-		for _, m := range tx.Messages {
-			if m.Value.Typename == "MsgEnablePackage" && m.Value.PkgHeight > 0 {
-				subHeights = append(subHeights, m.Value.PkgHeight)
-			}
-		}
-	}
-	subTimes := a.blockTimesForHeights(ctx, network, client, subHeights)
-
-	for _, tx := range enableTxs {
-		for _, m := range tx.Messages {
-			if m.Value.Typename != "MsgEnablePackage" {
-				continue
-			}
-			ev := InertLifecycleEvent{
-				Kind: "enabled", TxHash: tx.Hash, BlockHeight: tx.BlockHeight, BlockTime: tx.BlockTime,
-				PkgPath: m.Value.PkgPath, Actor: m.Value.Approver, SubmittedHeight: m.Value.PkgHeight,
-			}
-			if t := subTimes[m.Value.PkgHeight]; t != "" {
-				ev.SubmittedTime = t
-			}
-			if ev.SubmittedHeight > 0 {
-				ev.WaitBlocks = tx.BlockHeight - ev.SubmittedHeight
-			}
-			if tx.BlockTime != "" && ev.SubmittedTime != "" {
-				if d, ok := secondsBetween(ev.SubmittedTime, tx.BlockTime); ok {
-					ev.WaitSeconds = d
-				}
-			}
-			enabled = append(enabled, ev)
-		}
-	}
-	for _, tx := range rejectTxs {
-		for _, m := range tx.Messages {
-			if m.Value.Typename != "MsgRejectPackage" {
-				continue
-			}
-			rejected = append(rejected, InertLifecycleEvent{
-				Kind: "rejected", TxHash: tx.Hash, BlockHeight: tx.BlockHeight, BlockTime: tx.BlockTime,
-				PkgPath: m.Value.PkgPath, Actor: m.Value.Sender,
-			})
-		}
-	}
-	return enabled, rejected
-}
-
-// buildLifecycleHistory turns a mixed AddPackage/EnablePackage/RejectPackage
-// transaction list (oldest-relevant-first is not assumed — the caller
-// windows by height DESC) into a chronological set of normalized events.
 func buildLifecycleHistory(txs []Transaction) []InertLifecycleEvent {
 	var out []InertLifecycleEvent
 	for _, tx := range txs {
@@ -1537,6 +389,7 @@ func pkgPathOf(v MessageValue) string {
 // secondsBetween parses two RFC3339 timestamps and returns b-a in seconds.
 // The bool is false when either fails to parse, so a caller can leave the
 // wait time unset rather than report a nonsense duration.
+
 func secondsBetween(a, b string) (float64, bool) {
 	ta, err1 := time.Parse(time.RFC3339, a)
 	tb, err2 := time.Parse(time.RFC3339, b)
@@ -1562,6 +415,7 @@ func (a *API) HandleGovDAOOverview(w http.ResponseWriter, r *http.Request) {
 // see govDAORelatedCalls for why this cannot come from the local calls
 // table). Mutates in place; best-effort, so a failure here just leaves a
 // row's extra fields blank rather than failing the whole overview.
+
 func (a *API) enrichGovDAOProposals(ctx context.Context, network, rpcURL string, proposals []GovDAOProposalSummary) {
 	if len(proposals) == 0 {
 		return
@@ -1617,6 +471,7 @@ func (a *API) enrichGovDAOProposals(ctx context.Context, network, rpcURL string,
 // indexer since the locally synced calls table does not keep arguments) and
 // related MsgRuns (maketx-run scripts that plausibly created it, found by
 // searching locally synced script source).
+
 func (a *API) HandleGovDAOProposal(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
 	id, err := strconv.Atoi(r.PathValue("id"))
@@ -1643,6 +498,7 @@ func (a *API) HandleGovDAOProposal(w http.ResponseWriter, r *http.Request) {
 // this file should have to keep in sync with the realm's own source, and a
 // false positive here is just an unrelated call briefly listed for a
 // human to judge, not a wrong balance or a broken page.
+
 func (a *API) govDAORelatedCalls(ctx context.Context, network string, id int) []GovDAORelatedCall {
 	txs, ok := a.fetchGovDAOTransactions(ctx, network)
 	if !ok {
@@ -1675,18 +531,6 @@ func (a *API) govDAORelatedCalls(ctx context.Context, network string, id int) []
 // the network at all, distinct from a zero-length result — a network with a
 // client but genuinely no gov/dao activity should not look identical to one
 // this instance cannot reach.
-func (a *API) fetchGovDAOTransactions(ctx context.Context, network string) ([]Transaction, bool) {
-	client := a.clientFor(network)
-	if client == nil {
-		return nil, false
-	}
-	txs, err := client.GetGovDAOTransactions(ctx, 500)
-	if err != nil {
-		return nil, true
-	}
-	a.stampBlockTimes(ctx, network, client, txs)
-	return txs, true
-}
 
 func (a *API) HandleDeps(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
@@ -1711,165 +555,6 @@ func (a *API) HandleDeps(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, graph)
 }
 
-func (a *API) HandleStorage(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	// This totals storage deposits and refunds. Those are denominated amounts,
-	// and adding one chain's to another's gives a figure that describes nothing
-	// — the same category error as the summed fee totals in #86. Rather than
-	// blend them, or answer from whichever chain clientFor used to pick, ask for
-	// a network. A realm path lives on one chain in practice, so the caller
-	// always has one to give.
-	if network == "" {
-		jsonError(w, "storage figures are per-chain: add ?network=", 400)
-		return
-	}
-	client := a.clientFor(network)
-	if client == nil {
-		jsonError(w, "network not found", 404)
-		return
-	}
-	path := "gno.land/" + r.PathValue("path")
-	path = strings.TrimRight(path, "/")
-
-	storageTxs, _ := client.GetStorageEvents(r.Context(), path)
-	gasTxs, _ := client.GetGasUsageForRealm(r.Context(), path)
-
-	// Aggregate storage
-	var totalBytesDeposit, totalBytesUnlock int
-	var totalFeeDeposit, totalFeeRefund int
-	type StorageEntry struct {
-		TxHash      string `json:"tx_hash"`
-		BlockHeight int    `json:"block_height"`
-		Type        string `json:"type"`
-		BytesDelta  int    `json:"bytes_delta"`
-		FeeAmount   int    `json:"fee_amount"`
-		FeeDenom    string `json:"fee_denom"`
-	}
-	var entries []StorageEntry
-	for _, tx := range storageTxs {
-		if tx.Response == nil {
-			continue
-		}
-		for _, ev := range tx.Response.Events {
-			if ev.Typename == "StorageDepositEvent" && ev.PkgPath == path {
-				totalBytesDeposit += ev.BytesDelta
-				fee := 0
-				denom := ""
-				if ev.FeeDelta != nil {
-					fee = ev.FeeDelta.Amount
-					denom = ev.FeeDelta.Denom
-					totalFeeDeposit += fee
-				}
-				entries = append(entries, StorageEntry{tx.Hash, tx.BlockHeight, "deposit", ev.BytesDelta, fee, denom})
-			} else if ev.Typename == "StorageUnlockEvent" && ev.PkgPath == path {
-				totalBytesUnlock += ev.BytesDelta
-				fee := 0
-				denom := ""
-				if ev.FeeRefund != nil {
-					fee = ev.FeeRefund.Amount
-					denom = ev.FeeRefund.Denom
-					totalFeeRefund += fee
-				}
-				entries = append(entries, StorageEntry{tx.Hash, tx.BlockHeight, "unlock", ev.BytesDelta, fee, denom})
-			}
-		}
-	}
-
-	// Aggregate gas
-	var totalGasUsed, totalGasWanted, totalGasFee int
-	type GasEntry struct {
-		TxHash      string `json:"tx_hash"`
-		BlockHeight int    `json:"block_height"`
-		GasUsed     int    `json:"gas_used"`
-		GasWanted   int    `json:"gas_wanted"`
-		GasFee      int    `json:"gas_fee"`
-		Func        string `json:"func"`
-		Success     bool   `json:"success"`
-	}
-	var gasEntries []GasEntry
-	for _, tx := range gasTxs {
-		totalGasUsed += tx.GasUsed
-		totalGasWanted += tx.GasWanted
-		fee := 0
-		if tx.GasFee != nil {
-			fee = tx.GasFee.Amount
-			totalGasFee += fee
-		}
-		fn := ""
-		if len(tx.Messages) > 0 {
-			fn = tx.Messages[0].Value.Func
-			if fn == "" {
-				fn = tx.Messages[0].Value.Typename
-			}
-		}
-		gasEntries = append(gasEntries, GasEntry{tx.Hash, tx.BlockHeight, tx.GasUsed, tx.GasWanted, fee, fn, tx.Success})
-	}
-
-	jsonResponse(w, map[string]any{
-		"storage": map[string]any{
-			"total_bytes_deposited": totalBytesDeposit,
-			"total_bytes_unlocked":  totalBytesUnlock,
-			"net_bytes":             totalBytesDeposit - totalBytesUnlock,
-			"total_fee_deposited":   totalFeeDeposit,
-			"total_fee_refunded":    totalFeeRefund,
-			"entries":               entries,
-		},
-		"gas": map[string]any{
-			"total_gas_used":   totalGasUsed,
-			"total_gas_wanted": totalGasWanted,
-			"total_gas_fee":    totalGasFee,
-			"tx_count":         len(gasEntries),
-			"entries":          gasEntries,
-		},
-	})
-}
-
-func (a *API) HandleGas(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-
-	// Computed from stored transactions rather than by downloading the chain:
-	// the numbers here are presented as all-time totals, so they cannot be
-	// approximated from a recent window.
-	stats, err := a.db.GetGasStats(network, 20)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-
-	avgGasPerTx := 0
-	if stats.TotalTxs > 0 {
-		avgGasPerTx = stats.TotalGasUsed / stats.TotalTxs
-	}
-
-	jsonResponse(w, map[string]any{
-		"total_txs":          stats.TotalTxs,
-		"total_gas_used":     stats.TotalGasUsed,
-		"total_gas_wanted":   stats.TotalGasWanted,
-		"total_fees":         stats.TotalFees,
-		"avg_gas_per_tx":     avgGasPerTx,
-		"success_count":      stats.SuccessCount,
-		"fail_count":         stats.FailCount,
-		"total_source_bytes": a.db.TotalSourceBytes(network),
-		"top_realms":         stats.TopRealms,
-		"top_callers":        stats.TopCallers,
-		"top_txs":            stats.TopTxs,
-		// When the rollups behind these figures were built. Empty means they
-		// were computed live, which happens before the first refresh.
-		"computed_at": stats.ComputedAt,
-	})
-}
-
-func (a *API) HandleAnalytics(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	analytics, err := a.db.GetAnalytics(network)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-	jsonResponse(w, analytics)
-}
-
-// fetchBalance queries the gno.land RPC for bank balance.
 func fetchBalance(ctx context.Context, addr, rpcURL string) string {
 	if rpcURL == "" {
 		return ""
@@ -1915,10 +600,12 @@ func fetchBalance(ctx context.Context, addr, rpcURL string) string {
 
 // allWindowDays bounds the "all" window. gno.land's genesis is comfortably
 // inside this, and a finite bound keeps the monthly bucket loop terminating.
+
 const allWindowDays = 3650
 
 // windowSpecs maps a spec §8 window name onto the (days, granularity) pair the
 // time-series queries already take. See the design doc's window table.
+
 var windowSpecs = map[string]struct {
 	days        int
 	granularity string
@@ -1934,56 +621,7 @@ var windowSpecs = map[string]struct {
 // parseTimeseriesParams resolves the time range for a time-series request.
 // ?window= is the current contract; ?days= and ?granularity= predate it and
 // still work, and win when both are supplied.
-func parseTimeseriesParams(r *http.Request) (days int, granularity string) {
-	q := r.URL.Query()
-	days, _ = strconv.Atoi(q.Get("days"))
-	granularity = q.Get("granularity")
 
-	if spec, ok := windowSpecs[strings.ToLower(q.Get("window"))]; ok {
-		if days <= 0 {
-			days = spec.days
-		}
-		if granularity == "" {
-			granularity = spec.granularity
-		}
-	}
-
-	if days <= 0 {
-		days = 30
-	}
-	// The 365-day cap keeps hourly/daily/weekly bucket counts sane. The monthly
-	// bucket exists precisely to span longer ranges, so it is exempt — but is
-	// still bounded by allWindowDays.
-	if days > 365 && granularity != "monthly" {
-		days = 365
-	}
-	if days > allWindowDays {
-		days = allWindowDays
-	}
-
-	switch granularity {
-	case "hourly", "daily", "weekly", "monthly":
-	default:
-		granularity = "daily"
-	}
-	return
-}
-
-// Target point counts for granularityForSpan's bands, chosen so the bands
-// are explainable without reference to any chain's current age (see that
-// function's comment for why hardcoded day counts don't work here).
-//
-//   - targetHourlyMaxPoints: sized so an 8-day chain — the original bug
-//     report — lands on hourly. resolveTimeseriesParams rounds a span up by
-//     one day, so an 8-day history arrives here as 9 days (216 hourly
-//     points); 250 clears that with room to spare while staying the same
-//     order of magnitude as 7d's fixed 168 hourly points.
-//   - targetDailyMaxPoints: sized in days directly (one point per day), set
-//     to ~18 months so gno.land mainnet (~165 days as of 2026-08-14) has
-//     roughly a year of headroom before this boundary, rather than the two
-//     weeks a fixed 180-day ceiling gave it.
-//   - targetWeeklyMaxPoints: sized in weeks, set to ~5 years so multi-year
-//     spans still read as a weekly curve before falling back to monthly.
 const (
 	targetHourlyMaxPoints = 250 // ~10.4 days of hourly points
 	targetDailyMaxPoints  = 550 // ~18 months of daily points
@@ -1997,6 +635,7 @@ const (
 // naming the point count directly means the boundary doesn't need re-tuning
 // as a specific chain (e.g. gno.land mainnet) ages past whatever day count
 // happened to work when it was chosen.
+
 func granularityForSpan(days int) string {
 	switch {
 	case days*24 <= targetHourlyMaxPoints:
@@ -2020,207 +659,7 @@ func granularityForSpan(days int) string {
 // exactly one, which draws as a lone dot instead of a curve. Measuring the
 // network's real span fixes both the bucket and the range, the latter also
 // sparing fillBuckets ~120 dead leading buckets on every "all" request.
-func (a *API) resolveTimeseriesParams(r *http.Request, network string) (int, string) {
-	days, granularity := parseTimeseriesParams(r)
 
-	q := r.URL.Query()
-	if strings.ToLower(q.Get("window")) != "all" {
-		return days, granularity
-	}
-	// Explicit values win, exactly as they do in parseTimeseriesParams. Compare
-	// against the parsed value, not the raw query string: parseTimeseriesParams
-	// treats unparseable days (e.g. "notanumber") as "not supplied" and falls
-	// through to its own default, so garbage input here should fall through to
-	// the sizing below too, rather than opting out of it into the old fixed
-	// (allWindowDays, monthly) mapping.
-	if explicitDays, err := strconv.Atoi(q.Get("days")); err == nil && explicitDays > 0 {
-		return days, granularity
-	}
-	if q.Get("granularity") != "" {
-		return days, granularity
-	}
-
-	start, ok, err := a.db.NetworkDataStart(network)
-	if err != nil || !ok {
-		// Nothing indexed, or the lookup failed: the fixed mapping is as good an
-		// answer as any, since every window returns empty anyway.
-		return days, granularity
-	}
-
-	spanDays := int(time.Since(start).Hours()/24) + 1
-	if spanDays < 1 {
-		spanDays = 1 // a start in the future means clock skew, not a negative range
-	}
-	if spanDays > allWindowDays {
-		// A corrupt row (e.g. a year-1 timestamp) can otherwise produce a span of
-		// tens of thousands of days, which fillBuckets would then iterate one
-		// bucket at a time.
-		spanDays = allWindowDays
-	}
-	return spanDays, granularityForSpan(spanDays)
-}
-
-func (a *API) HandleTimeSeriesTransactions(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	days, granularity := a.resolveTimeseriesParams(r, network)
-	pts, err := a.db.GetTransactionTimeSeries(network, granularity, days)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-	if pts == nil {
-		pts = []TxTimePoint{}
-	}
-	jsonResponse(w, pts)
-}
-
-func (a *API) HandleTimeSeriesPackages(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	days, granularity := a.resolveTimeseriesParams(r, network)
-	pts, err := a.db.GetPackageTimeSeries(network, granularity, days)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-	if pts == nil {
-		pts = []PkgTimePoint{}
-	}
-	jsonResponse(w, pts)
-}
-
-func (a *API) HandleTimeSeriesStorage(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	days, granularity := a.resolveTimeseriesParams(r, network)
-	realmPath := r.URL.Query().Get("realm")
-	pts, err := a.db.GetStorageTimeSeries(network, realmPath, granularity, days)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-	if pts == nil {
-		pts = []StorageTimePoint{}
-	}
-	jsonResponse(w, pts)
-}
-
-func (a *API) HandleStorageRealms(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	days, _ := a.resolveTimeseriesParams(r, network)
-	paths, err := a.db.GetRealmsWithStorage(network, days)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-	if paths == nil {
-		paths = []string{}
-	}
-	jsonResponse(w, paths)
-}
-
-// HandleTimeSeriesRealmShare answers "where is chain activity concentrating,
-// and is that changing" — the question every existing rollup cannot, because
-// they are all-time snapshots.
-func (a *API) HandleTimeSeriesRealmShare(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	days, granularity := a.resolveTimeseriesParams(r, network)
-
-	metric := r.URL.Query().Get("metric")
-	if metric == "" {
-		metric = "fee"
-	}
-	if metric != "fee" && metric != "storage" {
-		jsonError(w, "metric must be fee or storage", 400)
-		return
-	}
-
-	pts, err := a.db.GetRealmShareTimeSeries(network, metric, granularity, days)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-	if pts == nil {
-		pts = []RealmSharePoint{}
-	}
-	jsonResponse(w, pts)
-}
-
-func (a *API) HandleTimeSeriesGas(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	days, granularity := a.resolveTimeseriesParams(r, network)
-	pts, err := a.db.GetGasTimeSeries(network, granularity, days)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-	if pts == nil {
-		pts = []GasTimePoint{}
-	}
-	jsonResponse(w, pts)
-}
-
-func (a *API) HandleTimeSeriesCallers(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	days, granularity := a.resolveTimeseriesParams(r, network)
-	pts, err := a.db.GetCallerTimeSeries(network, granularity, days)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-	if pts == nil {
-		pts = []CallerTimePoint{}
-	}
-	jsonResponse(w, pts)
-}
-
-func (a *API) HandleSanityOverview(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	ov, err := a.db.GetSanityOverview(network)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-	// Chain height, last block time and liveness always come from the live
-	// indexer. They are also the figures that cannot be merged: there is no
-	// such thing as the height of four chains at once.
-	if network != "" {
-		if client := a.clientFor(network); client != nil {
-			live := livenessOf(r.Context(), client)
-			ov.ChainHeight, ov.LastBlockTime = live.ChainHeight, live.LastBlockTime
-			ov.SecondsSinceBlock, ov.IsAlive = live.SecondsSinceBlock, live.IsAlive
-		}
-		jsonResponse(w, ov)
-		return
-	}
-
-	// All networks: report each chain rather than picking one. The top-level
-	// liveness fields stay zero, because no single value could be right.
-	type netLive struct {
-		id   string
-		live SanityLiveness
-	}
-	results := fanOut(r.Context(), a.networks, a.clients, a.health,
-		func(ctx context.Context, n NetworkConfig, c *IndexerClient) (netLive, error) {
-			return netLive{id: n.ID, live: livenessOf(ctx, c)}, nil
-		})
-	ov.ByNetwork = make(map[string]SanityLiveness, len(a.networks))
-	for _, r := range results {
-		ov.ByNetwork[r.id] = r.live
-	}
-	// fanOut drops networks it skipped — no client, or an open breaker — but
-	// this is the page whose job is to report liveness, and a chain silently
-	// missing from it is the one case a reader most needs to see. Fill the gaps
-	// in as unreachable rather than letting them vanish.
-	for _, n := range a.networks {
-		if _, ok := ov.ByNetwork[n.ID]; !ok {
-			ov.ByNetwork[n.ID] = SanityLiveness{}
-		}
-	}
-	jsonResponse(w, ov)
-}
-
-// livenessOf reads one chain's tip. An unreachable indexer reports Reachable
-// false rather than a zero height, which would otherwise be indistinguishable
-// from a chain sitting at genesis.
 func livenessOf(ctx context.Context, client *IndexerClient) SanityLiveness {
 	blocks, err := client.GetRecentBlocks(ctx, 1)
 	if err != nil || len(blocks) == 0 {
@@ -2236,92 +675,6 @@ func livenessOf(ctx context.Context, client *IndexerClient) SanityLiveness {
 	return live
 }
 
-func (a *API) HandleTimeSeriesHealth(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	days, granularity := a.resolveTimeseriesParams(r, network)
-	pts, err := a.db.GetHealthTimeSeries(network, granularity, days)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-	if pts == nil {
-		pts = []HealthTimePoint{}
-	}
-	jsonResponse(w, pts)
-}
-
-func (a *API) HandleTimeSeriesActiveAddresses(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	days, granularity := a.resolveTimeseriesParams(r, network)
-	pts, err := a.db.GetActiveAddressTimeSeries(network, granularity, days)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-	if pts == nil {
-		pts = []ActiveAddressTimePoint{}
-	}
-	jsonResponse(w, pts)
-}
-
-func (a *API) HandleTimeSeriesBlocks(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	days, granularity := a.resolveTimeseriesParams(r, network)
-	pts, err := a.db.GetBlockTimeSeries(network, granularity, days)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-	if pts == nil {
-		pts = []BlockTimePoint{}
-	}
-	jsonResponse(w, pts)
-}
-
-func (a *API) HandleBlockTimeHistogram(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	days, _ := a.resolveTimeseriesParams(r, network)
-	bins, err := a.db.GetBlockTimeHistogram(network, days)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-	if bins == nil {
-		bins = []BlockTimeBin{}
-	}
-	jsonResponse(w, bins)
-}
-
-func (a *API) HandleBlockProposers(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	days, _ := a.resolveTimeseriesParams(r, network)
-	topN, _ := strconv.Atoi(r.URL.Query().Get("topN"))
-	props, err := a.db.GetBlockProposers(network, days, topN)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-	if props == nil {
-		props = []ProposerCount{}
-	}
-	jsonResponse(w, props)
-}
-
-func (a *API) HandleBlockCoverage(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	cov, err := a.db.GetBlockCoverage(network)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-	jsonResponse(w, cov)
-}
-
-// --- batch 2b handlers ---
-
-// funcHeatmapDays pins the function-call heatmap's range. Daily columns past
-// about a fortnight stop being legible, and the chart is about the shape of a
-// realm's recent function mix, not its history.
 const funcHeatmapDays = 14
 
 func (a *API) HandleActivityHeatmap(w http.ResponseWriter, r *http.Request) {
@@ -2338,76 +691,6 @@ func (a *API) HandleActivityHeatmap(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, cells)
 }
 
-func (a *API) HandleTimeSeriesNewAddresses(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	days, granularity := a.resolveTimeseriesParams(r, network)
-	pts, err := a.db.GetNewAddressTimeSeries(network, granularity, days)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-	if pts == nil {
-		pts = []NewAddressPoint{}
-	}
-	jsonResponse(w, pts)
-}
-
-// HandleTimeSeriesActiveRolling ignores ?granularity= on purpose: DAU/WAU/MAU
-// are trailing *day* windows, so the series is daily whatever the caller asks.
-func (a *API) HandleTimeSeriesActiveRolling(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	days, _ := a.resolveTimeseriesParams(r, network)
-	// resolveTimeseriesParams' cap is 365 only when granularity != "monthly", and
-	// this handler discards granularity entirely, so a request such as
-	// ?days=3650&granularity=monthly (or window=all on an empty database, which
-	// falls back to the fixed (allWindowDays, monthly) mapping) would otherwise
-	// reach GetRollingActiveTimeSeries uncapped. The series is always daily, so
-	// its own cap is independent of the granularity-aware one above.
-	if days > rollingMaxDays {
-		days = rollingMaxDays
-	}
-	pts, err := a.db.GetRollingActiveTimeSeries(network, days)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-	if pts == nil {
-		pts = []RollingActivePoint{}
-	}
-	jsonResponse(w, pts)
-}
-
-func (a *API) HandleGasPerTxHistogram(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	days, _ := a.resolveTimeseriesParams(r, network)
-	bins, err := a.db.GetGasPerTxHistogram(network, days)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-	if bins == nil {
-		bins = []GasBin{}
-	}
-	jsonResponse(w, bins)
-}
-
-func (a *API) HandleCallRealms(w http.ResponseWriter, r *http.Request) {
-	network := a.networkParam(r)
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	paths, err := a.db.GetRealmsWithCalls(network, funcHeatmapDays, limit)
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-	if paths == nil {
-		paths = []string{}
-	}
-	jsonResponse(w, paths)
-}
-
-// HandleFunctionCallHeatmap serves one realm's function x day call grid. The
-// range is fixed at funcHeatmapDays; ?window= and ?days= are not honoured,
-// because the y-axis is functions and the x-axis is days either way.
 func (a *API) HandleFunctionCallHeatmap(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
 	realm := r.URL.Query().Get("realm")
@@ -2435,6 +718,7 @@ func (a *API) HandleFunctionCallHeatmap(w http.ResponseWriter, r *http.Request) 
 //
 // Endpoints that close over build-time values (/api/version) or over process
 // state (/api/live, the SPA) stay in run().
+
 func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/stats", a.HandleStats)
 	mux.HandleFunc("GET /api/realms", a.HandleRealms)
@@ -2493,6 +777,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 //
 // An endpoint can be repointed under a running process, so checking only at
 // startup would make the guard depend on when the process happened to restart.
+
 const rpcChainRecheckInterval = 10 * time.Minute
 
 // rpcStatus reports the chain an RPC serves and how far along it is.
@@ -2501,6 +786,7 @@ const rpcChainRecheckInterval = 10 * time.Minute
 // height matters as much as the identity. rpc.gno.land kept answering
 // /status with the right chain ID while frozen 500 blocks behind the network,
 // so "does it respond and is it the right chain" is not enough to choose by.
+
 func rpcStatus(ctx context.Context, rpcURL string) (string, int, error) {
 	if rpcURL == "" {
 		return "", 0, errors.New("no rpc url")
@@ -2558,6 +844,7 @@ func rpcStatus(ctx context.Context, rpcURL string) (string, int, error) {
 // The verdict is kept beside the config rather than by editing it: a refusal has
 // to be reversible, or an RPC that was merely down at startup stays disabled for
 // the life of the process.
+
 func (a *API) verifyRPCChains(ctx context.Context) {
 	for _, n := range a.networks {
 		rpcs := n.RPCs()
