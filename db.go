@@ -1634,8 +1634,12 @@ type PackageInfo struct {
 
 type PackageDetail struct {
 	PackageInfo
-	Files   []FileInfo `json:"files"`
-	Imports []string   `json:"imports"`
+	// ExportedFuncs is what the realm makes callable, derived from its source
+	// rather than from what has been called. Distinct from the calls tab, which
+	// can only show functions someone has already invoked.
+	ExportedFuncs []string   `json:"exported_funcs,omitempty"`
+	Files         []FileInfo `json:"files"`
+	Imports       []string   `json:"imports"`
 	// Dependents carries each importer's creator, not just its path.
 	//
 	// A flat list of paths reads as adoption when it may be one project's
