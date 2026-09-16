@@ -45,6 +45,12 @@ func seedThreeNetworks(t *testing.T, db *DB) {
 		if err := db.InsertCall(net, net+"-solo", 200, 0, when, "g1"+net, "gno.land/r/demo/boards", "Post", true); err != nil {
 			t.Fatalf("InsertCall: %v", err)
 		}
+		// Both halves of what the syncer writes for a deploy: the append-only
+		// submission and the current-state row.
+		if err := db.InsertPackageSubmission(net, net+"-deploy", 0, "gno.land/r/"+net+"/pkg", "pkg",
+			"g1shared", 300, when, true, 1, true); err != nil {
+			t.Fatalf("InsertPackageSubmission: %v", err)
+		}
 		if err := db.UpsertPackage(net, "gno.land/r/"+net+"/pkg", "pkg", "g1shared",
 			net+"-deploy", 300, when, true, 1); err != nil {
 			t.Fatalf("UpsertPackage: %v", err)
