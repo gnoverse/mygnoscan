@@ -315,6 +315,7 @@ func (a *API) HandleSearch(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err.Error(), 500)
 		return
 	}
+	a.stampInertStatus(r.Context(), results)
 	JSONResponse(w, results)
 }
 

@@ -76,6 +76,7 @@ func (a *API) handleListPackages(w http.ResponseWriter, r *http.Request, realmOn
 			jsonError(w, err.Error(), 500)
 			return
 		}
+		a.stampInertStatus(r.Context(), items)
 		JSONResponse(w, map[string]any{"items": items, "total": total})
 		return
 	}
@@ -102,7 +103,9 @@ func (a *API) handleListPackages(w http.ResponseWriter, r *http.Request, realmOn
 	if end > len(merged) {
 		end = len(merged)
 	}
-	JSONResponse(w, map[string]any{"items": merged[offset:end], "total": total})
+	page := merged[offset:end]
+	a.stampInertStatus(r.Context(), page)
+	JSONResponse(w, map[string]any{"items": page, "total": total})
 }
 
 // sortMergedPackages orders a cross-network list. Block heights from different
@@ -143,6 +146,46 @@ func sortMergedPackages(pkgs []store.PackageInfo, sortBy string) {
 			}
 			return pkgs[i].BlockHeight > pkgs[j].BlockHeight
 		})
+	}
+}
+
+// stampInertStatus flags each row currently in its own network's parked
+// queue, so a reader sees "parked" in a list itself rather than only after
+// clicking through to the realm's own detail page — see #194's own
+// complaint that a parked package "is indistinguishable from a live one
+// everywhere except its own detail page".
+//
+// Grouped by each row's own Network rather than one network picked for the
+// whole call: a caller can mix networks (search, the merged all-networks
+// package list), and each row must be checked against its own chain's
+// queue, not whichever one happens to be selected.
+//
+// Best-effort like the queue endpoint it reads: a network whose queue
+// cannot be fetched right now just leaves that network's rows unstamped,
+// not an error for the whole list.
+func (a *API) stampInertStatus(ctx context.Context, items []store.PackageInfo) {
+	byNetwork := map[string][]int{}
+	for i, item := range items {
+		byNetwork[item.Network] = append(byNetwork[item.Network], i)
+	}
+	for network, idxs := range byNetwork {
+		rpcURL := a.rpcURLFor(network)
+		if rpcURL == "" {
+			continue
+		}
+		queue, err := FetchInertQueue(ctx, network, rpcURL)
+		if err != nil || len(queue) == 0 {
+			continue
+		}
+		parked := make(map[string]bool, len(queue))
+		for _, q := range queue {
+			parked[q.Path] = true
+		}
+		for _, i := range idxs {
+			if parked[items[i].Path] {
+				items[i].Status = PackageStatusInert
+			}
+		}
 	}
 }
 

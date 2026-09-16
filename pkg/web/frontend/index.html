@@ -454,6 +454,16 @@ function badge(type, text) {
   return b;
 }
 function link(text, onclick) { const a = el('a', { href: '#' }, text); a.addEventListener('click', (e) => { e.preventDefault(); onclick(); }); return a; }
+// parkedBadgeEl flags a package row's own status inline in a list —
+// realms/packages/search/an address's deploys — so a parked package reads
+// as parked wherever it is listed, not only after clicking through to its
+// own detail page (see #194's own complaint about exactly this gap).
+function parkedBadgeEl(status) {
+  if (status !== 'inert') return null;
+  const b = badge('fail', 'parked');
+  b.title = 'submitted but not yet callable — awaiting a package approver';
+  return b;
+}
 // Curated address labels, global rather than per network: an address is the same
 // key everywhere, and a faucet on one testnet is the same operator on the next.
 //
@@ -2370,8 +2380,11 @@ async function loadRealms(page) {
     }
     const list = clear('realms-list');
     for (const r of (data.items || [])) {
+      const pathTd = el('td', {}, realmPathEl(r.path, r.network));
+      const rParked = parkedBadgeEl(r.status);
+      if (rParked) { pathTd.appendChild(document.createTextNode(' ')); pathTd.appendChild(rParked); }
       list.appendChild(netRow(r.network,
-        el('td', {}, realmPathEl(r.path, r.network)),
+        pathTd,
         el('td', {}, addrLink(r.creator)),
         el('td', {}, countCell(r.calls)),
         el('td', {}, countCell(r.gas_used)),
@@ -2412,8 +2425,11 @@ async function loadPackages(page) {
     }
     const list = clear('packages-list');
     for (const p of (data.items || [])) {
+      const pathTd = el('td', {}, realmPathEl(p.path, p.network));
+      const pParked = parkedBadgeEl(p.status);
+      if (pParked) { pathTd.appendChild(document.createTextNode(' ')); pathTd.appendChild(pParked); }
       list.appendChild(netRow(p.network,
-        el('td', {}, realmPathEl(p.path, p.network)),
+        pathTd,
         el('td', {}, addrLink(p.creator)),
         el('td', {}, countCell(p.calls)),
         el('td', {}, countCell(p.importers)),
@@ -5253,6 +5269,8 @@ async function loadAddressDetail(addr) {
       for (const p of pkgs) {
         const pathTd = el('td', {}, realmPathEl(p.path, p.network));
         if (p.network) pathTd.appendChild(netBadgeEl(p.network));
+        const dParked = parkedBadgeEl(p.status);
+        if (dParked) { pathTd.appendChild(document.createTextNode(' ')); pathTd.appendChild(dParked); }
         ptbl.appendChild(el('tr', {}, pathTd, el('td', {}, p.is_realm ? 'realm' : 'package')));
       }
       container.appendChild(ptbl);
@@ -6012,7 +6030,7 @@ document.getElementById('search-input').addEventListener('input', function() {
       results.appendChild(el('div', { className: 'search-section-label' }, 'packages'));
       for (const r of data) {
         results.appendChild(searchResultRow(r.is_realm ? 'realm' : 'pkg', r.is_realm ? 'realm' : 'package',
-          r.path, 'by ' + shortAddr(r.creator),
+          r.path, 'by ' + shortAddr(r.creator) + (r.status === 'inert' ? ' · parked' : ''),
           () => { results.classList.remove('open'); navigate('/realm/' + r.path.replace('gno.land/', '')); }));
       }
     } catch (err) {
