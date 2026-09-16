@@ -7,11 +7,41 @@
 // "the indexer is down", which would otherwise show up as failed requests in
 // every page assertion and drown out the ones that mean something.
 //
-// It deliberately serves no rows. Everything the suite asserts on is stored
-// data, seeded directly into SQLite; anything that can only come from an
-// indexer is out of scope here and stays that way until this grows a real
-// fixture chain.
+// It serves no transactions: everything the suite asserts on there is stored
+// data, seeded directly into SQLite.
+//
+// Blocks are the exception. They exist only at the indexer — nothing persists a
+// proposer — so a page built on them (/validators, and the liveness sparkline
+// in particular) could not be asserted on at all while this answered with an
+// empty list. So it now serves a small deterministic chain with a rotating
+// proposer set.
 import { createServer } from 'node:http';
+
+// A deterministic chain. The proposers rotate unevenly on purpose: an even
+// round-robin makes every validator's sparkline identical, which would hide a
+// bug that keyed the bars to the wrong address.
+export const PROPOSERS = ['g1val0000000000000000000000000000000', 'g1val1111111111111111111111111111111', 'g1val2222222222222222222222222222222'];
+const CHAIN_LENGTH = 40;
+const TIP = 1000 + CHAIN_LENGTH - 1;
+
+function blocks() {
+  // Newest first, the order the real indexer returns for this query and the
+  // order the frontend's sparkline relies on when it reverses for display.
+  const out = [];
+  for (let i = CHAIN_LENGTH - 1; i >= 0; i--) {
+    out.push({
+      height: 1000 + i,
+      hash: `block-${1000 + i}`,
+      chain_id: 'alpha-1',
+      time: new Date(Date.UTC(2026, 7, 1, 0, i)).toISOString(),
+      num_txs: 1,
+      total_txs: i + 1,
+      // 0,0,1,2 repeating: validator 0 proposes twice as often as the others.
+      proposer_address_raw: PROPOSERS[[0, 0, 1, 2][i % 4]],
+    });
+  }
+  return out;
+}
 
 export function startFakeIndexer() {
   const server = createServer((req, res) => {
@@ -29,9 +59,9 @@ export function startFakeIndexer() {
 
       let data = {};
       if (query.includes('latestBlockHeight')) {
-        data = { latestBlockHeight: 0 };
+        data = { latestBlockHeight: TIP };
       } else if (query.includes('getBlocks')) {
-        data = { getBlocks: [] };
+        data = { getBlocks: blocks() };
       } else if (query.includes('getTransactions')) {
         data = { getTransactions: [] };
       }
