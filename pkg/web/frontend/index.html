@@ -273,6 +273,14 @@ footer a:hover { color: var(--accent); }
 /* The confirmation replaces the icon, so reserve the width both states need and
    stop the row from reflowing on every click. */
 .copy-btn { min-width: 20px; display: inline-block; text-align: center; }
+/* Identicon: a deterministic image per address, generated in-page.
+   Baseline-aligned and sized to the text so a row's height does not change,
+   and slightly rounded so it reads as a mark rather than a stray pixel block. */
+.identicon {
+  display: inline-block; vertical-align: -2px; margin-right: 5px;
+  line-height: 0; border-radius: 2px; overflow: hidden;
+}
+.identicon svg { display: block; }
 /* Exported-function pills on a realm's info tab. */
 .fnpill {
   display: inline-block; padding: 2px 8px; margin: 0 4px 4px 0;
@@ -648,10 +656,123 @@ function shortAddr(addr) {
 // appended after the label when there is one. Both share data-hl set to the
 // raw address, so hovering either form still cross-highlights every other
 // occurrence of the same address on the page, abbreviated or not.
+// --- Identicons ------------------------------------------------------------
+//
+// A deterministic little image per address, so an account is recognisable at a
+// glance before anyone reads forty bech32 characters.
+//
+// Generated here, not fetched. An avatar service would mean telling a third
+// party every address anyone looks at — on a block explorer that is the whole
+// browsing history — plus a CSP exception, a network round-trip per row, and a
+// dependency that can go down. Etherscan's are data: URIs for the same reason.
+//
+// The algorithm is ethereum/blockies, kept faithful rather than reinvented:
+// it is what people already recognise from Etherscan and MetaMask, and its
+// output is stable across implementations, so the same account looks the same
+// here as it does there.
+//
+// Worth being honest about what this is: a *recognition* aid, not verification.
+// It helps you notice an address is not the one you expected; it cannot prove
+// one is. The text stays beside it for that.
+const _identiconSeed = new Int32Array(4);
+
+function identiconSeedrand(seed) {
+  for (let i = 0; i < 4; i++) _identiconSeed[i] = 0;
+  for (let i = 0; i < seed.length; i++) {
+    _identiconSeed[i % 4] = ((_identiconSeed[i % 4] << 5) - _identiconSeed[i % 4]) + seed.charCodeAt(i);
+  }
+}
+
+// xorshift128. The >>> 0 casts matter: blockies' output depends on unsigned
+// arithmetic, and dropping them yields a different (still deterministic, but
+// non-matching) image.
+function identiconRand() {
+  const t = _identiconSeed[0] ^ (_identiconSeed[0] << 11);
+  _identiconSeed[0] = _identiconSeed[1];
+  _identiconSeed[1] = _identiconSeed[2];
+  _identiconSeed[2] = _identiconSeed[3];
+  _identiconSeed[3] = _identiconSeed[3] ^ (_identiconSeed[3] >> 19) ^ t ^ (t >> 8);
+  return (_identiconSeed[3] >>> 0) / ((1 << 31) >>> 0);
+}
+
+function identiconColor() {
+  const h = Math.floor(identiconRand() * 360);
+  const s = (identiconRand() * 60) + 40;
+  // Four samples summed, so lightness clusters mid-range rather than spreading
+  // flat — blockies' own trick for avoiding icons that are nearly all black or
+  // all white, which are the ones that stop being distinguishable.
+  const l = (identiconRand() + identiconRand() + identiconRand() + identiconRand()) * 25;
+  return 'hsl(' + h + ',' + s.toFixed(0) + '%,' + l.toFixed(0) + '%)';
+}
+
+// The draw order is load-bearing: three colours, then the grid. Swapping them
+// consumes the PRNG differently and produces a different icon for the same
+// address, which would silently disagree with every other blockies renderer.
+function identiconData(size) {
+  const dataWidth = Math.ceil(size / 2);
+  const mirrorWidth = size - dataWidth;
+  const out = [];
+  for (let y = 0; y < size; y++) {
+    let row = [];
+    for (let x = 0; x < dataWidth; x++) row[x] = Math.floor(identiconRand() * 2.3);
+    row = row.concat(row.slice(0, mirrorWidth).reverse());
+    for (const cell of row) out.push(cell);
+  }
+  return out;
+}
+
+const _identiconCache = new Map();
+
+// identiconSVG returns the markup for one address. SVG rather than a PNG data
+// URI: a tenth the bytes, and crisp at any size instead of blurred when a
+// detail page wants it larger than a table row does.
+function identiconSVG(addr, px) {
+  const size = 8;
+  const key = addr + '@' + px;
+  let markup = _identiconCache.get(key);
+  if (markup === undefined) {
+    identiconSeedrand(String(addr).toLowerCase());
+    const color = identiconColor();
+    const bgcolor = identiconColor();
+    const spotcolor = identiconColor();
+    const data = identiconData(size);
+    const rects = [];
+    for (let i = 0; i < data.length; i++) {
+      if (!data[i]) continue;
+      const x = i % size;
+      const y = Math.floor(i / size);
+      rects.push('<rect x="' + x + '" y="' + y + '" width="1" height="1" fill="' +
+        (data[i] === 1 ? color : spotcolor) + '"/>');
+    }
+    markup = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8" width="' + px +
+      '" height="' + px + '" shape-rendering="crispEdges">' +
+      '<rect width="8" height="8" fill="' + bgcolor + '"/>' + rects.join('') + '</svg>';
+    _identiconCache.set(key, markup);
+  }
+  return markup;
+}
+
+// identicon returns an inline element for an address, or nothing for a value
+// that is not one — a moniker, a realm path, an empty cell.
+function identicon(addr, px) {
+  // Deliberately looser than the exact 40-character bech32 form. A real gno
+  // address is always 40, but pinning that means anything slightly off — a
+  // synthetic fixture, a future prefix, a truncation bug upstream — silently
+  // loses its icon, and a missing icon is invisible. The prefix plus a length
+  // floor is enough to keep realm paths and monikers out.
+  if (!addr || !/^g1[0-9a-z]{6,}$/.test(addr)) return null;
+  const span = el('span', { className: 'identicon' });
+  span.innerHTML = identiconSVG(addr, px || 14);
+  span.setAttribute('aria-hidden', 'true');
+  return span;
+}
+
 function addrLinkImpl(addr, network, fallback) {
   const info = addrInfo(addr);
   const span = el('span');
   span.setAttribute('data-hl', addr);
+  const icon = identicon(addr);
+  if (icon) span.appendChild(icon);
   const a = link(info ? info.label : fallback, () => navigate('/address/' + addr + netSuffix(network)));
   a.setAttribute('data-hl', addr);
   a.title = addr;
