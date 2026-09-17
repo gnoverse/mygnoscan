@@ -1784,6 +1784,7 @@ function route() {
   else if (path.startsWith('/tx/')) { view = 'tx-detail'; data = decodeURIComponent(path.slice(4)); }
   else if (path.startsWith('/address/')) { view = 'address-detail'; data = path.slice(9); }
   const urlTab = new URLSearchParams(window.location.search).get('tab');
+  const urlPv = new URLSearchParams(window.location.search).get('pv');
 
   const ve = document.getElementById('view-' + view);
   if (ve) ve.classList.add('active');
@@ -1805,7 +1806,7 @@ function route() {
     case 'home': loadHome(); break;
     case 'watch': loadWatchlist(); break;
     case 'realms': loadRealms(); break;
-    case 'packages': loadPackages(); break;
+    case 'packages': enterPackages(urlPv); break;
     case 'txs': loadTxs(); break;
     case 'blocks': loadBlocks(); break;
     case 'accounts': loadAccounts(); break;
@@ -2460,14 +2461,40 @@ function fmtDuration(seconds) {
 }
 
 let _inertQueueLoaded = false;
+let _packagesAllLoaded = false;
+
+// Entry point from route(): a fresh navigation to /packages, honoring
+// ?pv=inert from a deep link or a reload of a URL switchPackagesView wrote.
+// Resets both lazy-load flags so each fresh visit gets current data rather
+// than whatever was last rendered before the user navigated away.
+function enterPackages(pv) {
+  _packagesAllLoaded = false;
+  _inertQueueLoaded = false;
+  switchPackagesView(pv === 'inert' ? 'inert' : 'all');
+}
+
 function switchPackagesView(view, tabEl) {
   document.querySelectorAll('#packages-subnav .tab').forEach(t => t.classList.remove('active'));
+  if (!tabEl) tabEl = document.querySelector('#packages-subnav .tab[data-pv="' + view + '"]');
   if (tabEl) tabEl.classList.add('active');
   document.getElementById('packages-view-all').style.display = view === 'all' ? '' : 'none';
   document.getElementById('packages-view-inert').style.display = view === 'inert' ? '' : 'none';
-  // Loaded on first switch, not with the main package list: the queue view
-  // costs the server a vm/qpkgmeta_json round trip per parked path (dozens
-  // of them), and most /packages visits never look at it.
+
+  // Persist the choice in the URL so a reload or a shared link lands back
+  // on the same tab, mirroring dashSubnav's ?section= pattern.
+  const params = new URLSearchParams(window.location.search);
+  if (view === 'inert') params.set('pv', 'inert'); else params.delete('pv');
+  const qs = params.toString();
+  history.replaceState(null, '', window.location.pathname + (qs ? '?' + qs : ''));
+
+  // Both views are loaded lazily, on first switch, rather than both at once
+  // on page load: the inert queue costs the server a vm/qpkgmeta_json round
+  // trip per parked path (dozens of them), and a deep link straight to
+  // ?pv=inert has no reason to also pay for the main package list.
+  if (view === 'all' && !_packagesAllLoaded) {
+    _packagesAllLoaded = true;
+    loadPackages(0);
+  }
   if (view === 'inert' && !_inertQueueLoaded) {
     _inertQueueLoaded = true;
     loadInertQueue();

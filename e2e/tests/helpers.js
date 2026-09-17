@@ -32,6 +32,9 @@ export const EXPECTED_FAILURES = [
   // The account balance comes from RPC, and no RPC is configured here. The
   // fake indexer speaks GraphQL only.
   { pattern: /\/api\/address\/[^/]+\?.*balance/, why: 'balance needs RPC' },
+  // The inert-package queue/history also read live over RPC (vm/qinertpaths,
+  // vm/qpkgmeta_json), same as the balance above.
+  { pattern: /\/api\/inert\/(queue|history)/, why: 'inert queue needs RPC' },
 ];
 
 export function unexpected(failures) {
