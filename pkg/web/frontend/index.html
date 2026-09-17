@@ -793,6 +793,25 @@ function realmPathEl(fullPath, network) {
 }
 function statusBadge(s) { return s ? badge('ok', 'ok') : badge('fail', 'fail'); }
 // Dim zeroes so the counts that carry information stand out in a dense table.
+// signerCell renders the signer, or says why there isn't one.
+//
+// An empty cell reads as a bug. Some messages genuinely carry no signer in the
+// indexer's payload: a type it does not model comes back as
+// `{"__typename": "UnexpectedMessage"}` with no fields whatsoever — auth/
+// create_session on mainnet is one — so there is nothing to resolve and no
+// amount of field-guessing will produce it.
+//
+// Saying that is better than a blank, because it distinguishes "the explorer
+// failed to read this" from "the upstream data does not contain it", and only
+// the first is worth reporting.
+function signerCell(tx, network) {
+  const signer = txSigner(tx);
+  if (signer) return addrLink(signer, network);
+  const cell = el('span', { style: { color: 'var(--fg2)', opacity: '0.6' } }, '\u2014');
+  cell.title = 'the indexer returns no fields for this message type, so it exposes no signer';
+  return cell;
+}
+
 // Which field names the signer, per message type.
 //
 // Every type spells it differently, and the list is not stable: the inert
@@ -2800,10 +2819,9 @@ function renderTxRows(data) {
     const msg = tx.messages?.[0];
     const type = msg ? typeBadge(msg?.value?.__typename, msg) : typeBadge(tx.type);
     const detail = msg ? txDetailEl(msg) : storedTxDetail(tx);
-    const signer = txSigner(tx);
     list.appendChild(netRow(tx.network,
       el('td', {}, txLink(tx.hash, tx.block_height, tx.network, { showBlock: false })),
-      el('td', {}, signer ? addrLink(signer, tx.network) : ''),
+      el('td', {}, signerCell(tx, tx.network)),
       el('td', {}, blockLink(tx.block_height, tx.network)),
       el('td', {}, type),
       el('td', {}, detail),
@@ -6779,10 +6797,9 @@ function onLiveTx(tx) {
   const txsList = document.getElementById('txs-list');
   if (txsList && document.getElementById('view-txs')?.classList.contains('active')) {
     const msg = tx.messages?.[0];
-    const signer = txSigner(tx);
     const tr = el('tr', { className: 'live-new' },
       el('td', {}, txLink(tx.hash, tx.block_height, tx.network, { showBlock: false })),
-      el('td', {}, signer ? addrLink(signer, tx.network) : ''),
+      el('td', {}, signerCell(tx, tx.network)),
       el('td', {}, blockLink(tx.block_height, tx.network)),
       el('td', {}, typeBadge(msg?.value?.__typename, msg)),
       el('td', {}, txDetailEl(msg)),

@@ -64,3 +64,22 @@ test('a stored row falls back to its resolved caller', async ({ page }) => {
   const got = await page.evaluate(() => txSigner({ caller: 'g1stored' }));
   expect(got).toBe('g1stored');
 });
+
+// A message the indexer does not model comes back as
+// `{"__typename": "UnexpectedMessage"}` with no fields at all, so there is
+// genuinely no signer to resolve — auth/create_session on mainnet is one.
+//
+// That must not render as an empty cell. A blank is indistinguishable from the
+// explorer failing to read data that is present, and only that case is worth
+// anyone reporting.
+test('a message with no signer in the payload says so', async ({ page }) => {
+  await page.goto('/');
+  await settle(page);
+
+  const cell = await page.evaluate(() => {
+    const el = signerCell({ messages: [{ value: { __typename: 'UnexpectedMessage' } }] }, 'alpha');
+    return { text: el.textContent, title: el.title || '' };
+  });
+  expect(cell.text, 'an unresolvable signer should not be blank').not.toBe('');
+  expect(cell.title, 'and should explain why').toMatch(/indexer/i);
+});
