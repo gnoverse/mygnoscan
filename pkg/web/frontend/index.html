@@ -975,6 +975,16 @@ function signerCell(tx, network) {
   return cell;
 }
 
+// fmtExpiry renders a unix expiry as a date, marking one already past.
+//
+// A session's expiry is the thing that decides whether it still matters, so an
+// expired one should not read the same as a live one.
+function fmtExpiry(unix) {
+  const d = new Date(unix * 1000);
+  const iso = d.toISOString().slice(0, 16).replace('T', ' ');
+  return d.getTime() < Date.now() ? iso + ' (expired)' : iso;
+}
+
 // Which field names the signer, per message type.
 //
 // Every type spells it differently, and the list is not stable: the inert
@@ -988,6 +998,9 @@ const MSG_SIGNER_FIELD = {
   BankMsgSend: 'from_address',
   MsgEnablePackage: 'approver',
   MsgRejectPackage: 'sender',
+  MsgCreateSession: 'creator',
+  MsgRevokeSession: 'creator',
+  MsgRevokeAllSessions: 'creator',
 };
 
 // Every signer-shaped field, for a message type this build has not been taught.
@@ -1232,6 +1245,9 @@ const TYPE_BADGE = {
   MsgRejectPackage: ['reject', 'reject'],
   MsgRun: ['run', 'run'],
   BankMsgSend: ['send', 'send'],
+  MsgCreateSession: ['session', 'session'],
+  MsgRevokeSession: ['reject', 'revoke'],
+  MsgRevokeAllSessions: ['reject', 'revoke all'],
 };
 
 // Types the indexer does not model arrive as UnexpectedMessage and are named by
@@ -1309,6 +1325,28 @@ function txDetailEl(msg) {
     }
     case 'MsgRejectPackage':
       s.appendChild(realmPathEl(v.pkg_path));
+      return s;
+    case 'MsgCreateSession': {
+      // What the session is allowed to do matters more than that it exists: a
+      // key scoped to one realm is a different thing from one that can spend.
+      s.append('key ');
+      s.appendChild(addrLink(v.session_key));
+      const scope = (v.allow_paths || []).length
+        ? (v.allow_paths.length === 1 ? ' for ' + v.allow_paths[0].replace(/^vm\/exec:/, '') : ' for ' + v.allow_paths.length + ' paths')
+        : ' unrestricted';
+      s.appendChild(el('span', { className: 'block-ctx' }, scope));
+      if (v.expires_at) {
+        s.appendChild(el('span', { className: 'block-ctx' }, ' \u00b7 expires ' + fmtExpiry(v.expires_at)));
+      }
+      return s;
+    }
+    case 'MsgRevokeSession':
+      s.append('key ');
+      s.appendChild(addrLink(v.session_key));
+      return s;
+    case 'MsgRevokeAllSessions':
+      s.append('every session for ');
+      s.appendChild(addrLink(v.creator));
       return s;
     default: {
       // Not a type the indexer models: it returns __typename alone, with no
@@ -5447,6 +5485,26 @@ async function loadTxDetail(hash) {
       tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'timestamp'), el('td', {}, ts.toISOString().replace('T', ' ').replace('Z', '') + ' UTC  (' + timeAgo(tx.block_time) + ')')));
     }
     if (tx.chain_id) tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'network'), el('td', {}, tx.chain_id)));
+    // Who actually signed, when that is not the account being acted for.
+    //
+    // Every message names its caller — the account on whose behalf the call was
+    // made — and that is identical whether the account signed for itself or a
+    // session key signed for it. The signature is the only place the difference
+    // is recorded, so without this a session-signed transaction is
+    // indistinguishable from a normal one.
+    const acting = txSigner(tx);
+    if (tx.signer && acting && tx.signer !== acting) {
+      const row = el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'signed by'));
+      const td = el('td');
+      td.appendChild(addrLink(tx.signer, tx.network));
+      td.appendChild(el('span', { className: 'badge badge-session', style: { marginLeft: '8px' } }, 'session key'));
+      const note = el('div', { className: 'block-ctx', style: { marginTop: '2px' } },
+        'a session key signed on behalf of ');
+      note.appendChild(addrLink(acting, tx.network));
+      td.appendChild(note);
+      row.appendChild(td);
+      tbl.appendChild(row);
+    }
     tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'gas'), el('td', {}, fmtNum(tx.gas_used) + ' / ' + fmtNum(tx.gas_wanted) + ' (' + gasEff + '%)')));
     tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'fee'), el('td', {}, fmtUgnot(tx.gas_fee?.amount || 0, tx.gas_fee?.denom))));
     // Storage deposit, always shown — including as a zero.

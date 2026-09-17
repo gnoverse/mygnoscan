@@ -121,6 +121,13 @@ func (a *API) HandleTx(w http.ResponseWriter, r *http.Request) {
 		BlockTime string `json:"block_time,omitempty"`
 		ChainID   string `json:"chain_id,omitempty"`
 		Network   string `json:"network,omitempty"`
+		// Signer is the account whose key actually signed, derived from the
+		// signature rather than read off a message.
+		//
+		// It differs from the caller exactly when a session key signed on the
+		// account's behalf, which is the only place that fact is recorded —
+		// every message still names the account being acted for.
+		Signer string `json:"signer,omitempty"`
 	}
 
 	tryClient := func(ctx context.Context, netID string, client *indexer.Client) (*txDetail, error) {
@@ -128,7 +135,7 @@ func (a *API) HandleTx(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, err
 		}
-		resp := &txDetail{Transaction: tx, Network: netID}
+		resp := &txDetail{Transaction: tx, Network: netID, Signer: indexer.SignerAddress(tx.ContentRaw)}
 		if block, berr := client.GetBlock(ctx, tx.BlockHeight); berr == nil && block != nil {
 			resp.BlockTime = block.Time
 			resp.ChainID = block.ChainID

@@ -67,3 +67,47 @@ test('a fieldless message shows nothing rather than its own type', async ({ page
   expect(text).not.toContain('create_session');
   expect(text).toBe('—');
 });
+
+// A session-signed transaction must be distinguishable from a normal one.
+//
+// Every message names its caller — the account being acted for — and that is
+// identical whether the account signed for itself or a session key signed for
+// it. The signature is the only place the difference is recorded, so without
+// this the two look the same.
+test('the session types render their grant, not just their name', async ({ page }) => {
+  await page.goto('/');
+  await settle(page);
+
+  const create = await page.evaluate(() => txDetailEl({
+    value: {
+      __typename: 'MsgCreateSession',
+      creator: 'g1manfred47kzduec920z88wfr64ylksmdcedlf5',
+      session_key: 'g10w4vv8km5t0w382vl5qgnma5dety3fnscf7538',
+      expires_at: 1792252018,
+      allow_paths: ['vm/exec:gno.land/r/moul/x/daily/counter/v0'],
+    },
+  }).textContent);
+
+  expect(create, 'should name the delegated key').toContain('g10w4vv8');
+  // What a session may do matters more than that it exists: a key scoped to one
+  // realm is a different thing from one that can spend.
+  expect(create, 'should say what the key is scoped to').toContain('gno.land/r/moul/x/daily/counter/v0');
+  expect(create, 'should not just repeat the type').not.toContain('create_session');
+
+  // The signer of a session message is its creator, not a blank cell.
+  const signer = await page.evaluate(() => txSigner({
+    messages: [{ value: { __typename: 'MsgCreateSession', creator: 'g1manfred47kzduec920z88wfr64ylksmdcedlf5' } }],
+  }));
+  expect(signer).toBe('g1manfred47kzduec920z88wfr64ylksmdcedlf5');
+});
+
+// An expired session must not read like a live one.
+test('an expired session says so', async ({ page }) => {
+  await page.goto('/');
+  await settle(page);
+
+  const past = await page.evaluate(() => fmtExpiry(1000000000));
+  const future = await page.evaluate(() => fmtExpiry(Math.floor(Date.now() / 1000) + 86400));
+  expect(past).toContain('(expired)');
+  expect(future).not.toContain('(expired)');
+});

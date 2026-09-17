@@ -150,7 +150,8 @@ func (c *Client) activeURL() string {
 	return c.urls[c.active]
 }
 
-// The inert-package message types, which only newer tx-indexers define.
+// The message types only newer tx-indexers define: the inert-package lifecycle
+// and account sessions.
 //
 // They are selected inside the shared transaction field set, so an indexer that
 // does not know them rejects *every* transaction query with a
@@ -172,6 +173,21 @@ const inertFragments = `
 			... on MsgRejectPackage {
 				sender
 				pkg_path
+			}
+			... on MsgCreateSession {
+				creator
+				session_key
+				expires_at
+				allow_paths
+				spend_limit
+				spend_period
+			}
+			... on MsgRevokeSession {
+				creator
+				session_key
+			}
+			... on MsgRevokeAllSessions {
+				creator
 			}`
 
 const (
@@ -563,6 +579,17 @@ type MessageValue struct {
 	// MsgRejectPackage
 	Sender string `json:"sender,omitempty"`
 
+	// MsgCreateSession / MsgRevokeSession / MsgRevokeAllSessions.
+	//
+	// SessionKey is the account a session delegates signing to: transactions it
+	// signs still name the creator as their caller, so this is what links a
+	// session-signed transaction back to the grant that authorised it.
+	SessionKey  string   `json:"session_key,omitempty"`
+	ExpiresAt   int64    `json:"expires_at,omitempty"`
+	AllowPaths  []string `json:"allow_paths,omitempty"`
+	SpendLimit  string   `json:"spend_limit,omitempty"`
+	SpendPeriod int      `json:"spend_period,omitempty"`
+
 	// Common
 	Send       string `json:"send,omitempty"`
 	MaxDeposit string `json:"max_deposit,omitempty"`
@@ -648,6 +675,21 @@ const txFieldsLight = `
 				sender
 				pkg_path
 			}
+			... on MsgCreateSession {
+				creator
+				session_key
+				expires_at
+				allow_paths
+				spend_limit
+				spend_period
+			}
+			... on MsgRevokeSession {
+				creator
+				session_key
+			}
+			... on MsgRevokeAllSessions {
+				creator
+			}
 		}
 	}
 	response {
@@ -724,6 +766,21 @@ const txFields = `
 			... on MsgRejectPackage {
 				sender
 				pkg_path
+			}
+			... on MsgCreateSession {
+				creator
+				session_key
+				expires_at
+				allow_paths
+				spend_limit
+				spend_period
+			}
+			... on MsgRevokeSession {
+				creator
+				session_key
+			}
+			... on MsgRevokeAllSessions {
+				creator
 			}
 		}
 	}
