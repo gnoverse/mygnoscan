@@ -165,7 +165,12 @@ func FetchInertQueue(ctx context.Context, network, rpcURL string) ([]InertPackag
 	}
 
 	out := make([]InertPackage, len(paths))
-	const maxConcurrent = 20
+	// 20 measured ~1.3s cold against gnoland-1's live queue (92 paths, 5
+	// sequential rounds at the RPC's own per-call latency) — the dominant
+	// cost switching to the "inert queue" tab pays. Each round trip is one
+	// lightweight abci_query the node answers from local state, not a write,
+	// so a wider fan-out is safe; this cuts the same queue to ~2 rounds.
+	const maxConcurrent = 60
 	sem := make(chan struct{}, maxConcurrent)
 	var wg sync.WaitGroup
 	for i, p := range paths {
