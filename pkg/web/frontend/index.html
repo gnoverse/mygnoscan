@@ -656,6 +656,22 @@ function shortAddr(addr) {
 // appended after the label when there is one. Both share data-hl set to the
 // raw address, so hovering either form still cross-highlights every other
 // occurrence of the same address on the page, abbreviated or not.
+// looksLikeAddress is the one place that decides whether a string is a gno
+// account address, for rendering purposes.
+//
+// There were four slightly different regexes for this — {38}, {38,}, {38,42},
+// and a bare g1+ — and they disagreed, which is how an address could get an
+// identicon in a table but not in a realm path. Display code should not each
+// hold its own opinion about what an address looks like.
+//
+// The length floor is deliberately below the real 40, because the cost of being
+// strict is silent: an address that does not match simply renders plainer, with
+// nothing to indicate a rule was applied. Routing still uses the exact form
+// where getting it wrong would mean a broken link rather than a missing icon.
+function looksLikeAddress(s) {
+  return typeof s === 'string' && /^g1[0-9a-z]{6,}$/.test(s);
+}
+
 // --- Identicons ------------------------------------------------------------
 //
 // A deterministic little image per address, so an account is recognisable at a
@@ -760,7 +776,7 @@ function identicon(addr, px) {
   // synthetic fixture, a future prefix, a truncation bug upstream — silently
   // loses its icon, and a missing icon is invisible. The prefix plus a length
   // floor is enough to keep realm paths and monikers out.
-  if (!addr || !/^g1[0-9a-z]{6,}$/.test(addr)) return null;
+  if (!looksLikeAddress(addr)) return null;
   const span = el('span', { className: 'identicon' });
   span.innerHTML = identiconSVG(addr, px || 14);
   span.setAttribute('aria-hidden', 'true');
@@ -916,7 +932,16 @@ function realmPathEl(fullPath, network) {
   // Type prefix
   span.appendChild(el('span', { className: 'rp-type' }, '/' + type + '/'));
   // Namespace: shorten if g1 address
-  if (nsName.match(/^g1[a-z0-9]{38,}/)) {
+  if (looksLikeAddress(nsName)) {
+    // An address-namespaced path is the hardest kind to tell apart — every one
+    // reads as /r/g1…/something — so the icon earns its place more here than
+    // anywhere else. Smaller than a row's, because it sits mid-path.
+    const nsIcon = identicon(nsName, 11);
+    if (nsIcon) {
+      nsIcon.style.marginRight = '3px';
+      nsIcon.style.verticalAlign = '-1px';
+      span.appendChild(nsIcon);
+    }
     const nsEl = el('span', { className: 'rp-ns' }, truncAddr(nsName));
     nsEl.setAttribute('data-hl', nsName);
     span.appendChild(nsEl);
@@ -5690,6 +5715,15 @@ async function loadAddressDetail(addr) {
       container.appendChild(labelRow);
     }
     const addrRow = el('div', { style: { color: 'var(--fg2)', marginBottom: '16px', wordBreak: 'break-all' } });
+    // Larger here than in a table row: this page is *about* this account, so
+    // the icon is the thing to recognise at a glance rather than a marker
+    // beside a link. Same image as everywhere else it appears.
+    const pageIcon = identicon(addr, 28);
+    if (pageIcon) {
+      pageIcon.style.verticalAlign = '-8px';
+      pageIcon.style.marginRight = '8px';
+      addrRow.appendChild(pageIcon);
+    }
     addrRow.append(addr);
     addrRow.appendChild(copyButton(addr, 'copy address'));
     addrRow.append(' ');
@@ -6087,7 +6121,7 @@ if (document.body) {
 }
 
 function argValueEl(val) {
-  if (/^g1[a-z0-9]{38,}$/.test(val)) return addrLink(val);
+  if (looksLikeAddress(val)) return addrLink(val);
   if (val.includes('g1') || val.includes('gno.land/')) return linkify(val);
   return truncatedText(val);
 }

@@ -101,3 +101,55 @@ test('output matches the reference blockies implementation', async ({ page }) =>
   expect(norm(got.bg)).toBe(norm('hsl(48,73.65404821932316%,48.55413617333397%)'));
   expect(norm(got.sp)).toBe(norm('hsl(339,69.52172773890197%,62.8553383750841%)'));
 });
+
+// Every page that shows an address shows its identicon.
+//
+// The first pass only wired this into addrLink, which missed the address page's
+// own header — the one page that is *about* an account had no icon for it. This
+// walks the routes rather than trusting that one call site covers everything.
+const ADDRESS_PAGES = [
+  ['home', '/'],
+  ['accounts', '/accounts'],
+  ['blocks', '/blocks'],
+  ['realms', '/realms'],
+  ['validators', '/validators'],
+];
+
+for (const [name, path] of ADDRESS_PAGES) {
+  test(`${name} shows identicons beside its addresses`, async ({ page }) => {
+    await page.goto(path);
+    await settle(page);
+    const icons = await page.locator('.identicon svg').count();
+    expect(icons, `${path} renders addresses, so it should render their icons`).toBeGreaterThan(0);
+  });
+}
+
+// The address page is about one account, so its header carries a larger icon —
+// the same image as the small ones, not a second scheme.
+test('the address page header carries its own identicon', async ({ page }) => {
+  await page.goto(`/address/${BUSY_CALLER}`);
+  await settle(page);
+
+  const header = page.locator('#address-detail-content > div').filter({ hasText: BUSY_CALLER.slice(0, 12) }).first();
+  await expect(header.locator('.identicon svg')).toBeVisible();
+
+  const size = await header.locator('.identicon svg').getAttribute('width');
+  expect(Number(size), 'the page subject deserves a bigger mark than a table row').toBeGreaterThan(14);
+});
+
+// One predicate decides what an address looks like. There used to be four
+// slightly different regexes, which is how the same account could get an icon
+// in a table and not in a realm path.
+test('the address test is shared, not re-invented per call site', async ({ page }) => {
+  await page.goto('/');
+  await settle(page);
+
+  const r = await page.evaluate(() => ({
+    addr: looksLikeAddress('g1manfred47kzduec920z88wfr64ylksmdcedlf5'),
+    short: looksLikeAddress('g1busycaller0000000000000000000000000'),
+    path: looksLikeAddress('gno.land/r/demo/boards'),
+    empty: looksLikeAddress(''),
+    nonString: looksLikeAddress(null),
+  }));
+  expect(r).toEqual({ addr: true, short: true, path: false, empty: false, nonString: false });
+});
