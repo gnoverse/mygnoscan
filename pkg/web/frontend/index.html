@@ -87,8 +87,25 @@ tr { white-space: nowrap; }
 .badge { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: bold; }
 .badge-realm { background: rgba(78,205,196,0.15); color: var(--accent); }
 .badge-pkg { background: rgba(255,107,107,0.15); color: var(--accent2); }
+/* Status. Green and red mean "did it succeed", and nothing else does — see the
+   message-type palette below. */
 .badge-ok { background: rgba(81,207,102,0.15); color: var(--green); }
 .badge-fail { background: rgba(255,107,107,0.15); color: var(--red); }
+/* Message types, one hue each.
+   Deliberately avoiding green and red: those are the status colours, and the
+   type and status badges sit two columns apart on the same row. A successful
+   BankMsgSend used to render in badge-fail red beside a green "ok", and MsgRun
+   in badge-ok green whether it succeeded or not, so the colour that carried the
+   most weight on the row was the one that meant nothing. */
+.badge-call    { background: rgba(78,205,196,0.15);  color: #4ecdc4; }
+.badge-deploy  { background: rgba(167,139,250,0.18); color: #a78bfa; }
+.badge-enable  { background: rgba(100,181,246,0.18); color: #64b5f6; }
+.badge-reject  { background: rgba(255,159,67,0.18);  color: #ff9f43; }
+.badge-run     { background: rgba(255,217,61,0.15);  color: #ffd93d; }
+.badge-send    { background: rgba(244,143,177,0.18); color: #f48fb1; }
+/* Infrastructural traffic the reader is rarely looking for: present, legible,
+   and not competing with the rows that carry meaning. */
+.badge-session { background: rgba(136,136,136,0.15); color: var(--fg2); }
 .tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
 .tab { padding: 8px 16px; cursor: pointer; color: var(--fg2); font-size: 13px; border-bottom: 2px solid transparent; margin-bottom: -1px; }
 .tab:hover { color: var(--fg); }
@@ -1060,10 +1077,29 @@ function rawJsonToggle(data) {
 // typeUrl are carried on every message regardless, and say what it actually is
 // — pearl's unmodelled message is `auth/create_session`, which is informative
 // where "UnexpectedMessage" is not.
+// One colour per message type, keyed by what the message is rather than by a
+// status class that happens to be the right colour.
+const TYPE_BADGE = {
+  MsgCall: ['call', 'call'],
+  MsgAddPackage: ['deploy', 'deploy'],
+  MsgEnablePackage: ['enable', 'enable'],
+  MsgRejectPackage: ['reject', 'reject'],
+  MsgRun: ['run', 'run'],
+  BankMsgSend: ['send', 'send'],
+};
+
+// Types the indexer does not model arrive as UnexpectedMessage and are named by
+// their route instead. They still deserve a stable colour: auth/create_session
+// is 2% of mainnet traffic and reading it as "unknown" every time is noise.
+const ROUTE_BADGE = {
+  'auth/create_session': ['session', 'session'],
+};
+
 function typeBadge(t, msg) {
-  const m = { MsgAddPackage: ['pkg', 'deploy'], MsgCall: ['realm', 'call'], MsgRun: ['ok', 'run'], BankMsgSend: ['fail', 'send'] };
-  if (m[t]) { const [c, x] = m[t]; return badge(c, x); }
-  return badge('', msgKind(msg) || 'message');
+  if (TYPE_BADGE[t]) { const [c, x] = TYPE_BADGE[t]; return badge(c, x); }
+  const kind = msgKind(msg);
+  if (ROUTE_BADGE[kind]) { const [c, x] = ROUTE_BADGE[kind]; return badge(c, x); }
+  return badge('', kind || 'message');
 }
 // msgKind names a message from the fields the indexer always provides.
 function msgKind(msg) {
@@ -1112,10 +1148,34 @@ function txDetailEl(msg) {
       if (amt) s.appendChild(el('span', { className: 'block-ctx' }, ' ' + amt));
       return s;
     }
-    default:
-      // Not a type the indexer models. Show what it does tell us rather than
-      // its internal placeholder name.
-      return el('span', {}, msgKind(msg) || v.__typename || 'unknown message');
+    case 'MsgEnablePackage': {
+      // The package that was approved, which is the only thing anyone reads
+      // this row for. It used to fall through to the default below and print
+      // "vm/enable_package" — the type badge two columns to its left, again.
+      s.appendChild(realmPathEl(v.pkg_path));
+      // The submission being approved, not the block this approval landed in:
+      // under the inert policy those are different heights, often days apart,
+      // and which submission got blessed is the question.
+      if (v.pkg_height) {
+        s.appendChild(el('span', { className: 'block-ctx' }, ' submitted at ' + fmtNum(v.pkg_height)));
+      }
+      return s;
+    }
+    case 'MsgRejectPackage':
+      s.appendChild(realmPathEl(v.pkg_path));
+      return s;
+    default: {
+      // Not a type the indexer models: it returns __typename alone, with no
+      // fields, so there is nothing to show. Repeating the type badge is not
+      // detail — an em dash at least says "nothing here", which is true.
+      const kind = msgKind(msg);
+      if (kind && ROUTE_BADGE[kind]) {
+        const none = el('span', { style: { color: 'var(--fg2)', opacity: '0.6' } }, '\u2014');
+        none.title = 'the indexer exposes no fields for this message type';
+        return none;
+      }
+      return el('span', {}, kind || v.__typename || 'unknown message');
+    }
   }
 }
 function timeAgo(t) {
