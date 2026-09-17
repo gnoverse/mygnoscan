@@ -793,6 +793,54 @@ function realmPathEl(fullPath, network) {
 }
 function statusBadge(s) { return s ? badge('ok', 'ok') : badge('fail', 'fail'); }
 // Dim zeroes so the counts that carry information stand out in a dense table.
+// Which field names the signer, per message type.
+//
+// Every type spells it differently, and the list is not stable: the inert
+// lifecycle types arrived later than the rest and nothing updated the readers,
+// so /txs rendered a blank signer for every MsgEnablePackage on the page —
+// which on a chain running the inert policy is most of them.
+const MSG_SIGNER_FIELD = {
+  MsgCall: 'caller',
+  MsgRun: 'caller',
+  MsgAddPackage: 'creator',
+  BankMsgSend: 'from_address',
+  MsgEnablePackage: 'approver',
+  MsgRejectPackage: 'sender',
+};
+
+// Every signer-shaped field, for a message type this build has not been taught.
+//
+// A blank cell is indistinguishable from "this transaction had no signer",
+// which is never true, so an unrecognised type falls back to whichever of these
+// it carries. That is how this bug stays fixed the next time gno adds a message
+// type rather than silently returning the moment it does.
+const SIGNER_FIELDS = ['caller', 'creator', 'from_address', 'approver', 'sender'];
+
+function msgSigner(msg) {
+  const v = msg?.value;
+  if (!v) return '';
+  const named = MSG_SIGNER_FIELD[v.__typename];
+  if (named && v[named]) return v[named];
+  for (const f of SIGNER_FIELDS) {
+    if (v[f]) return v[f];
+  }
+  return '';
+}
+
+// txSigner scans every message rather than only the first.
+//
+// A multicall can lead with a message whose type carries no signer field this
+// build knows, while a later one names the account plainly — and they are all
+// signed by the same account anyway, since one transaction has one signer.
+function txSigner(tx) {
+  for (const m of (tx?.messages || [])) {
+    const s = msgSigner(m);
+    if (s) return s;
+  }
+  // Storage rows resolve this server-side into tx.caller (see StoredTx).
+  return tx?.caller || '';
+}
+
 function countCell(n) {
   const v = n || 0;
   return el('span', v ? {} : { style: { color: 'var(--fg2)', opacity: '0.5' } }, fmtNum(v));
@@ -2752,12 +2800,7 @@ function renderTxRows(data) {
     const msg = tx.messages?.[0];
     const type = msg ? typeBadge(msg?.value?.__typename, msg) : typeBadge(tx.type);
     const detail = msg ? txDetailEl(msg) : storedTxDetail(tx);
-    // The signer is whichever field carries it for this message type: caller
-    // for MsgCall/MsgRun, creator for MsgAddPackage, from_address for a send.
-    // Storage rows already resolve this into tx.caller (see StoredTx).
-    const signer = msg
-      ? (msg.value?.caller || msg.value?.creator || msg.value?.from_address || '')
-      : (tx.caller || '');
+    const signer = txSigner(tx);
     list.appendChild(netRow(tx.network,
       el('td', {}, txLink(tx.hash, tx.block_height, tx.network, { showBlock: false })),
       el('td', {}, signer ? addrLink(signer, tx.network) : ''),
@@ -6736,7 +6779,7 @@ function onLiveTx(tx) {
   const txsList = document.getElementById('txs-list');
   if (txsList && document.getElementById('view-txs')?.classList.contains('active')) {
     const msg = tx.messages?.[0];
-    const signer = msg?.value?.caller || msg?.value?.creator || msg?.value?.from_address || '';
+    const signer = txSigner(tx);
     const tr = el('tr', { className: 'live-new' },
       el('td', {}, txLink(tx.hash, tx.block_height, tx.network, { showBlock: false })),
       el('td', {}, signer ? addrLink(signer, tx.network) : ''),
