@@ -119,6 +119,33 @@ fact.
 | `GET /api/storage/{path...}` | storage events for a package. **Requires `network`**: the figures are denominated amounts and blending chains would be meaningless |
 | `GET /api/events/{path...}` | events emitted by a package. Bounded: `limit` defaults to 200, capped at 2000. In all-networks mode it queries every chain and tags each row with its `network` |
 
+## Contracts map
+
+Powers `/contracts`: one bubble per deployed package, clustered by namespace,
+with two different meanings available for the lines between them.
+
+| endpoint | description |
+|---|---|
+| `GET /api/contracts/map` | every deployed package on one network, with `calls`, `unique_callers`, `gas_used`, `storage_bytes`, `namespace`, `creator`, `deployed_at` and `parked` on each node. `window` = `all` (default), `30d`, `7d`, `24h` narrows the call-derived metrics only, never the node set. Unknown windows are a 400 rather than a silent fall back to all time |
+| `GET /api/contracts/edges` | lines between contracts. `kind=callers` (default) links two contracts when the same addresses called both, weighted by how many overlap; `kind=imports` is the directed import graph, and ignores `window`. `min` (default 2) is the smallest overlap that counts, `limit` (default 1500, max 20000) keeps the heaviest, `maxFanout` (default 30, max 500) drops addresses that touched more contracts than that from edge generation |
+
+**Both require a single network, and resolve one rather than refusing.** An
+absent or `all` network resolves to the first configured one, and the response
+says which under `network`. Every other endpoint treats an absent network as
+"all of them"; this one cannot, because a bubble is identified by its path and
+193 package paths exist on more than one chain. Blending them would draw one
+bubble carrying two chains' traffic.
+
+`kind=callers` has no realm-to-realm equivalent to offer instead: `calls.caller`
+is the transaction signer, an externally-owned account, and a realm calling
+another realm inside the VM leaves no message for the indexer to record. Shared
+population is the honest substitute, not a stand-in for a call graph.
+
+The three bounds on `kind=callers` exist because the pair count is quadratic in
+how many contracts one address touched: a bot that called fifty of them
+contributes 1,225 pairs by itself and links everything to everything. Its calls
+still count toward every node's metrics either way.
+
 ## Transactions and blocks
 
 | endpoint | description |
