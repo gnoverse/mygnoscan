@@ -55,6 +55,11 @@ type Fake struct {
 	// message types, the way an older tx-indexer does. Pearl's did.
 	NoInertTypes bool
 
+	// NoSessionTypes is the same for the account-session message types, and is
+	// the shape every live gno.land indexer actually has: MsgEnablePackage
+	// defined, MsgCreateSession not. Checked on mainnet 2026-09-18.
+	NoSessionTypes bool
+
 	// Failure injection, each checked before any data is served.
 	Status        int    // non-200 to return instead of a response
 	GQLError      string // a GraphQL error to return instead of data
@@ -122,7 +127,21 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	f.mu.Lock()
 	noInert := f.NoInertTypes
+	noSessions := f.NoSessionTypes
 	f.mu.Unlock()
+	if noSessions {
+		if strings.Contains(req.Query, `__type(name: "MsgCreateSession")`) {
+			writeGQL(w, map[string]any{"data": map[string]any{"__type": nil}})
+			return
+		}
+		if strings.Contains(req.Query, "MsgCreateSession") || strings.Contains(req.Query, "MsgRevokeSession") {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			writeGQL(w, map[string]any{"errors": []map[string]string{
+				{"message": `Unknown type "MsgCreateSession".`},
+			}})
+			return
+		}
+	}
 	if noInert {
 		// The schema probe answers honestly...
 		if strings.Contains(req.Query, `__type(name: "MsgEnablePackage")`) {
