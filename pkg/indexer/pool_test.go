@@ -175,9 +175,53 @@ func TestANewerIndexerKeepsTheInertTypes(t *testing.T) {
 	}
 }
 
-// The capability is asked once, not per query: a probe on every call would
+// The shape every live gno.land indexer has today, and the one a single probe
+// standing for both groups gets wrong: MsgEnablePackage defined,
+// MsgCreateSession not.
+//
+// Before the groups were probed separately this failed every transaction query
+// with a 422, which on a running instance means package sync stops and the
+// explorer quietly keeps serving the contracts it already knew about.
+func TestAnIndexerWithInertTypesButNoSessionTypes(t *testing.T) {
+	f, c := NewFake(t)
+	f.NoSessionTypes = true
+	f.SeedChain(1, 40)
+
+	txs, err := c.GetRecentTransactionsPage(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("GetRecentTransactionsPage: %v", err)
+	}
+	if len(txs) == 0 {
+		t.Fatal("no transactions: the query this indexer can answer returned nothing")
+	}
+
+	var keptInert, keptSessions bool
+	for _, q := range f.AskedQueries() {
+		if isCapabilityProbe(q) {
+			continue
+		}
+		if strings.Contains(q, "MsgEnablePackage") {
+			keptInert = true
+		}
+		if strings.Contains(q, "MsgCreateSession") {
+			keptSessions = true
+		}
+	}
+	if !keptInert {
+		t.Error("dropped the inert-package types from an indexer that defines them")
+	}
+	if keptSessions {
+		t.Error("kept the session types for an indexer that does not define them")
+	}
+}
+
+// Each capability is asked once, not per query: a probe on every call would
 // double the request count of every sync pass.
-func TestInertSupportIsProbedOnce(t *testing.T) {
+//
+// Two probes, not one, because there are two independently shipped fragment
+// groups to ask about. What matters is that the number does not grow with the
+// number of queries.
+func TestCapabilitiesAreProbedOncePerType(t *testing.T) {
 	f, c := NewFake(t)
 	f.SeedChain(1, 40)
 
@@ -186,14 +230,19 @@ func TestInertSupportIsProbedOnce(t *testing.T) {
 			t.Fatalf("GetRecentTransactionsPage: %v", err)
 		}
 	}
-	probes := 0
+	probes := map[string]int{}
 	for _, q := range f.AskedQueries() {
 		if isCapabilityProbe(q) {
-			probes++
+			probes[q]++
 		}
 	}
-	if probes != 1 {
-		t.Errorf("sent %d capability probes across 5 queries, want 1", probes)
+	if len(probes) != 2 {
+		t.Errorf("probed %d distinct types, want 2 (inert lifecycle and sessions): %v", len(probes), probes)
+	}
+	for q, n := range probes {
+		if n != 1 {
+			t.Errorf("sent %d probes for %q across 5 queries, want 1", n, q)
+		}
 	}
 }
 

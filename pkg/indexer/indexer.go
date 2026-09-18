@@ -32,9 +32,9 @@ type Client struct {
 	// endpoint that answers. Members that disagree are never selected.
 	fingerprint string
 
-	// inertSupport caches whether this chain's indexer defines the inert-package
-	// message types. Unknown until the first query asks.
-	inertSupport int8
+	// typeSupport caches, per GraphQL type name, whether this chain's indexer
+	// defines it. A type is absent from the map until the first query asks.
+	typeSupport map[string]bool
 }
 
 // ErrUnavailable is returned while the breaker is open.
@@ -150,8 +150,7 @@ func (c *Client) activeURL() string {
 	return c.urls[c.active]
 }
 
-// The message types only newer tx-indexers define: the inert-package lifecycle
-// and account sessions.
+// The message types only newer tx-indexers define.
 //
 // They are selected inside the shared transaction field set, so an indexer that
 // does not know them rejects *every* transaction query with a
@@ -163,6 +162,13 @@ func (c *Client) activeURL() string {
 // pearl's indexer predates them. The rows it had already synced stayed, so the
 // breakage was invisible until a schema migration dropped those tables and the
 // resync could not refill them.
+//
+// They are two groups, not one, because they shipped to the indexer separately
+// and a chain can have either without the other. gno.land's own mainnet
+// indexer defines MsgEnablePackage and does not define MsgCreateSession, so
+// one probe standing for both is not a simplification, it is a wrong answer:
+// asking about the type the chain has and then selecting the type it does not
+// fails every query while the probe reports support.
 const inertFragments = `
 			... on MsgEnablePackage {
 				approver
@@ -173,7 +179,9 @@ const inertFragments = `
 			... on MsgRejectPackage {
 				sender
 				pkg_path
-			}
+			}`
+
+const sessionFragments = `
 			... on MsgCreateSession {
 				creator
 				session_key
@@ -190,26 +198,27 @@ const inertFragments = `
 				creator
 			}`
 
+// The type each fragment group is gated on: one representative per group, and
+// the rest of the group shipped to the indexer in the same release as it.
 const (
-	inertUnknown int8 = iota
-	inertYes
-	inertNo
+	inertProbeType   = "MsgEnablePackage"
+	sessionProbeType = "MsgCreateSession"
 )
 
-// supportsInert reports whether this chain's indexer defines the inert-package
-// types, asking it once and remembering the answer.
+// supportsType reports whether this chain's indexer defines a GraphQL type,
+// asking it once per type and remembering the answer.
 //
 // Asked rather than inferred from an error, so the first query of a sync pass
 // does not have to fail to find out. A probe that cannot reach the indexer
 // returns true: assuming support keeps behaviour identical to before this
 // existed, and the query that follows will fail for the real reason rather than
 // being silently trimmed because a health check blipped.
-func (c *Client) supportsInert(ctx context.Context) bool {
+func (c *Client) supportsType(ctx context.Context, typeName string) bool {
 	c.mu.Lock()
-	known := c.inertSupport
+	known, seen := c.typeSupport[typeName]
 	c.mu.Unlock()
-	if known != inertUnknown {
-		return known == inertYes
+	if seen {
+		return known
 	}
 
 	// Never probe through an open breaker. The probe bypasses query() to avoid
@@ -225,15 +234,15 @@ func (c *Client) supportsInert(ctx context.Context) bool {
 			Name string `json:"name"`
 		} `json:"__type"`
 	}
-	err := c.doQuery(ctx, c.activeURL(), `{ __type(name: "MsgEnablePackage") { name } }`, nil, &result)
+	err := c.doQuery(ctx, c.activeURL(), `{ __type(name: "`+typeName+`") { name } }`, nil, &result)
 	supported := err != nil || result.Type != nil
 
 	c.mu.Lock()
 	if err == nil {
-		c.inertSupport = inertNo
-		if supported {
-			c.inertSupport = inertYes
+		if c.typeSupport == nil {
+			c.typeSupport = map[string]bool{}
 		}
+		c.typeSupport[typeName] = supported
 	}
 	c.mu.Unlock()
 	return supported
@@ -242,17 +251,26 @@ func (c *Client) supportsInert(ctx context.Context) bool {
 // lightFields and fullFields are the transaction selection sets, trimmed to
 // what this indexer actually understands.
 func (c *Client) lightFields(ctx context.Context) string {
-	if c.supportsInert(ctx) {
-		return txFieldsLight
-	}
-	return strings.ReplaceAll(txFieldsLight, inertFragments, "")
+	return c.trimFields(ctx, txFieldsLight)
 }
 
 func (c *Client) fullFields(ctx context.Context) string {
-	if c.supportsInert(ctx) {
-		return txFields
+	return c.trimFields(ctx, txFields)
+}
+
+// trimFields drops each optional fragment group this indexer cannot parse.
+//
+// Independently, because the groups are independent: a chain that knows the
+// inert lifecycle but not sessions keeps the first and loses only the second,
+// rather than losing both or, as before, keeping both and failing every query.
+func (c *Client) trimFields(ctx context.Context, fields string) string {
+	if !c.supportsType(ctx, inertProbeType) {
+		fields = strings.ReplaceAll(fields, inertFragments, "")
 	}
-	return strings.ReplaceAll(txFields, inertFragments, "")
+	if !c.supportsType(ctx, sessionProbeType) {
+		fields = strings.ReplaceAll(fields, sessionFragments, "")
+	}
+	return fields
 }
 
 // gqlEscape sanitizes a string for safe use inside GraphQL string literals.
