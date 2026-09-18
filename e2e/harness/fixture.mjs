@@ -19,6 +19,16 @@ export const SHARED_PACKAGES = 12;
 export const HUB_CREATOR = 'g1hubcreator00000000000000000000000000';
 export const BUSY_CALLER = 'g1busycaller0000000000000000000000000';
 
+// Two addresses that each call the same two realms, so the contracts map has a
+// shared-caller edge heavy enough to survive its default minimum of two
+// addresses in common. BUSY_CALLER alone cannot produce one: an address that
+// touches a single realm shares it with nothing.
+export const PAIR_CALLERS = [
+  'g1paircaller10000000000000000000000000',
+  'g1paircaller20000000000000000000000000',
+];
+export const PAIRED_REALMS = ['gno.land/r/consumer00/app', 'gno.land/r/consumer01/app'];
+
 const TS = '2026-08-01T12:00:00Z';
 
 export function seed(dbPath) {
@@ -84,6 +94,15 @@ export function seed(dbPath) {
       call.run(network, `call-${network}-${i}`, h, TS, BUSY_CALLER, HUB, 'Render');
       tx.run(network, `call-${network}-${i}`, h, TS, 90000, 150000, 800);
     }
+    let pairHeight = 1500;
+    for (const caller of PAIR_CALLERS) {
+      for (const path of PAIRED_REALMS) {
+        call.run('alpha', `pair-${caller}-${pairHeight}`, pairHeight, TS, caller, path, 'Render');
+        tx.run('alpha', `pair-${caller}-${pairHeight}`, pairHeight, TS, 90000, 150000, 800);
+        pairHeight++;
+      }
+    }
+
     for (let i = 0; i < 5; i++) {
       run.run('alpha', `run-${i}`, 2000 + i, TS, BUSY_CALLER, 'package main\n\nfunc main() {}\n');
       tx.run('alpha', `run-${i}`, 2000 + i, TS, 50000, 60000, 500);

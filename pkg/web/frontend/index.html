@@ -122,6 +122,8 @@ pre { background: var(--bg2); border: 1px solid var(--border); border-radius: 4p
 .syn-imp { color: #98c379; cursor: pointer; text-decoration: underline; text-decoration-style: dotted; }
 .syn-imp:hover { color: var(--accent); }
 #dep-graph { background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; min-height: 600px; position: relative; overflow: hidden; }
+#contract-map { background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; position: relative; overflow: hidden; }
+#contract-map svg { display: block; }
 #dep-graph svg { display: block; }
 .view { display: none; }
 .view.active { display: block; }
@@ -311,6 +313,7 @@ html.embed .container { padding-top: 0; padding-bottom: 0; max-width: none; }
       <a onclick="navigate('/watch')" id="nav-watch">watch</a>
       <a onclick="navigate('/realms')" id="nav-realms">realms</a>
       <a onclick="navigate('/packages')" id="nav-packages">packages</a>
+      <a onclick="navigate('/contracts')" id="nav-contracts">contracts</a>
       <a onclick="navigate('/txs')" id="nav-txs">txs</a>
       <a onclick="navigate('/blocks')" id="nav-blocks">blocks</a>
       <a onclick="navigate('/accounts')" id="nav-accounts">accounts</a>
@@ -424,6 +427,7 @@ html.embed .container { padding-top: 0; padding-bottom: 0; max-width: none; }
   <div class="view" id="view-govdao-detail"><main><div id="govdao-detail-content"></div></main></div>
   <div class="view" id="view-analytics"><main><div id="analytics-content"></div></main></div>
   <div class="view" id="view-sanity"><main><div id="sanity-content"></div></main></div>
+  <div class="view" id="view-contracts"><main><div id="contracts-content"></div></main></div>
   <div class="view" id="view-gas"><main><div id="gas-content"></div></main></div>
   <div class="view" id="view-dashboards"><main><div id="dashboards-content"></div></main></div>
   <div class="view" id="view-block-detail"><main><div id="block-detail-content"></div></main></div>
@@ -2077,6 +2081,7 @@ function route() {
   if (path === '/' || path === '') { view = 'home'; }
   else if (path === '/realms') { view = 'realms'; }
   else if (path === '/packages') { view = 'packages'; }
+  else if (path === '/contracts') { view = 'contracts'; }
   else if (path === '/txs') { view = 'txs'; }
   else if (path === '/blocks') { view = 'blocks'; }
   else if (path === '/accounts') { view = 'accounts'; }
@@ -2118,6 +2123,7 @@ function route() {
     case 'watch': loadWatchlist(); break;
     case 'realms': loadRealms(); break;
     case 'packages': enterPackages(urlPv); break;
+    case 'contracts': loadContracts(); break;
     case 'txs': loadTxs(); break;
     case 'blocks': loadBlocks(); break;
     case 'accounts': loadAccounts(); break;
@@ -7833,6 +7839,533 @@ window.addEventListener('resize', () => {
     });
   }, 120);
 });
+
+
+// --- Contracts map ---------------------------------------------------------
+//
+// One bubble per deployed package, clustered and coloured by namespace, with
+// two different meanings available for the lines between them: the import
+// graph, and shared callers (two contracts linked when the same addresses
+// called both). The second is the one no other page here shows, so it is the
+// default.
+//
+// Everything is built with el() and d3 selections rather than innerHTML. Every
+// string on this page — a path, a namespace, a deployer address — is on-chain
+// content chosen by whoever deployed it.
+
+const CONTRACT_METRICS = {
+  calls: { label: 'calls', get: n => n.calls, windowed: true },
+  unique_callers: { label: 'unique callers', get: n => n.unique_callers, windowed: true },
+  storage_bytes: { label: 'storage', get: n => n.storage_bytes, windowed: false },
+  gas_used: { label: 'gas', get: n => n.gas_used, windowed: false },
+};
+const CONTRACT_WINDOWS = ['all', '30d', '7d', '24h'];
+const CONTRACT_EDGE_KINDS = {
+  callers: { label: 'shared callers', hint: 'linked when the same addresses called both' },
+  imports: { label: 'imports', hint: 'linked when one imports the other' },
+  none: { label: 'none', hint: 'clusters only' },
+};
+
+let _contracts = {
+  metric: 'calls',
+  scale: 'linear',
+  edges: 'callers',
+  window: 'all',
+  realms: true,
+  packages: true,
+  parked: false,
+  search: '',
+  data: null,
+  edgeData: null,
+  sim: null,
+  gen: 0,
+};
+
+// Controls live in the URL so a map someone found worth looking at is a link
+// they can send, rather than a screenshot plus instructions.
+function contractsStateFromURL() {
+  const q = new URLSearchParams(window.location.search);
+  if (CONTRACT_METRICS[q.get('metric')]) _contracts.metric = q.get('metric');
+  if (q.get('scale') === 'linear' || q.get('scale') === 'log') _contracts.scale = q.get('scale');
+  if (CONTRACT_EDGE_KINDS[q.get('edges')]) _contracts.edges = q.get('edges');
+  if (CONTRACT_WINDOWS.includes(q.get('window'))) _contracts.window = q.get('window');
+  if (q.get('parked') === '1') _contracts.parked = true;
+}
+
+function contractsStateToURL() {
+  const q = new URLSearchParams(window.location.search);
+  q.set('metric', _contracts.metric);
+  q.set('scale', _contracts.scale);
+  q.set('edges', _contracts.edges);
+  q.set('window', _contracts.window);
+  if (_contracts.parked) q.set('parked', '1'); else q.delete('parked');
+  history.replaceState({}, '', window.location.pathname + '?' + q.toString());
+}
+
+// A namespace keeps its colour across reloads, across networks and across the
+// two edge modes, because the hue is derived from the name rather than from
+// the order the rows happened to arrive in. Positions on the map move; a
+// cluster that also changed colour would read as a different cluster.
+function namespaceHue(ns) {
+  let h = 0;
+  for (let i = 0; i < ns.length; i++) h = (h * 31 + ns.charCodeAt(i)) % 360;
+  return h;
+}
+function namespaceColor(ns) { return 'hsl(' + namespaceHue(ns) + ', 62%, 58%)'; }
+
+function contractPill(label, active, onclick) {
+  return el('button', {
+    className: 'pager-btn' + (active ? ' active' : ''),
+    style: {
+      padding: '3px 9px', fontSize: '11px',
+      background: active ? 'var(--accent)' : 'var(--bg3)',
+      color: active ? 'var(--bg)' : 'var(--fg2)',
+      border: '1px solid var(--border)', borderRadius: '3px', cursor: 'pointer',
+    },
+    onclick,
+  }, label);
+}
+
+function contractControlGroup(title, children) {
+  const wrap = el('div', { style: { display: 'flex', alignItems: 'center', gap: '5px' } });
+  wrap.appendChild(el('span', { style: { fontSize: '11px', color: 'var(--fg2)' } }, title));
+  children.forEach(c => wrap.appendChild(c));
+  return wrap;
+}
+
+async function loadContracts() {
+  contractsStateFromURL();
+  const root = clear('contracts-content');
+  const gen = ++_contracts.gen;
+
+  root.appendChild(contractsControls());
+  const mapBox = el('div', { id: 'contract-map' });
+  root.appendChild(mapBox);
+  const rankings = el('div', { id: 'contract-rankings' });
+  root.appendChild(rankings);
+  skeletonBlock(mapBox);
+
+  try {
+    // Both in flight at once: the edges query is the slower of the two and
+    // waiting for nodes first would serialise two independent reads.
+    const [data, edgeData] = await Promise.all([
+      api('contracts/map?window=' + _contracts.window),
+      _contracts.edges === 'none'
+        ? Promise.resolve({ edges: [] })
+        : api('contracts/edges?kind=' + _contracts.edges + '&window=' + _contracts.window),
+    ]);
+    if (gen !== _contracts.gen) return; // superseded by a newer navigation
+    _contracts.data = data;
+    _contracts.edgeData = edgeData;
+    renderContractMap();
+    renderContractRankings();
+  } catch (e) {
+    if (gen !== _contracts.gen) return;
+    clear('contract-map').appendChild(
+      el('div', { style: { padding: '40px', textAlign: 'center', color: 'var(--accent2)' } },
+        'could not load the contract map: ' + e.message));
+  }
+}
+
+function contractsControls() {
+  const bar = el('div', {
+    style: {
+      display: 'flex', gap: '18px', flexWrap: 'wrap', alignItems: 'center',
+      padding: '8px 0', marginBottom: '8px', borderBottom: '1px solid var(--border)',
+    },
+  });
+
+  const metricPills = Object.entries(CONTRACT_METRICS).map(([k, m]) =>
+    contractPill(m.label, _contracts.metric === k, () => {
+      _contracts.metric = k;
+      contractsStateToURL();
+      // Every metric already travelled with the nodes, so this is a repaint,
+      // not a refetch.
+      renderContractMap();
+      renderContractRankings();
+    }));
+  bar.appendChild(contractControlGroup('size', metricPills));
+
+  // Chain activity is heavy-tailed: on mainnet eight contracts carry almost
+  // every call and three hundred have none. Area proportional to the value
+  // says exactly that, and it is the default for the same reason: the shape of
+  // the distribution is the finding, not an obstacle to be smoothed.
+  //
+  // Log is one click away for reading the tail, and on a dense chain it is
+  // worth knowing what it costs. Storage on mainnet spans 1e3 to 6e6 bytes,
+  // a thousandfold, which log compresses to a radius ratio of 0.66: every
+  // bubble renders near maximum and 327 of them pack into one solid mass with
+  // no structure visible at all. Checked against mainnet, not reasoned about.
+  const scalePills = ['log', 'linear'].map(k =>
+    contractPill(k, _contracts.scale === k, () => {
+      _contracts.scale = k;
+      contractsStateToURL();
+      renderContractMap();
+    }));
+  bar.appendChild(contractControlGroup('scale', scalePills));
+
+  const edgePills = Object.entries(CONTRACT_EDGE_KINDS).map(([k, m]) =>
+    contractPill(m.label, _contracts.edges === k, () => {
+      _contracts.edges = k;
+      contractsStateToURL();
+      loadContracts(); // a different query, so this one does refetch
+    }));
+  bar.appendChild(contractControlGroup('links', edgePills));
+
+  const windowPills = CONTRACT_WINDOWS.map(wname =>
+    contractPill(wname, _contracts.window === wname, () => {
+      _contracts.window = wname;
+      contractsStateToURL();
+      loadContracts();
+    }));
+  bar.appendChild(contractControlGroup('window', windowPills));
+
+  const filters = [
+    contractPill('realms', _contracts.realms, () => { _contracts.realms = !_contracts.realms; loadContracts(); }),
+    contractPill('packages', _contracts.packages, () => { _contracts.packages = !_contracts.packages; loadContracts(); }),
+    contractPill('parked', _contracts.parked, () => { _contracts.parked = !_contracts.parked; contractsStateToURL(); loadContracts(); }),
+  ];
+  bar.appendChild(contractControlGroup('show', filters));
+
+  const search = el('input', {
+    type: 'text', placeholder: 'highlight...', value: _contracts.search,
+    style: {
+      background: 'var(--bg2)', border: '1px solid var(--border)', color: 'var(--fg)',
+      padding: '3px 8px', fontSize: '11px', borderRadius: '3px', width: '150px',
+    },
+  });
+  // Highlighting rather than filtering: removing the misses would reflow every
+  // cluster on each keystroke, and the shape of the map is the thing being
+  // searched.
+  search.addEventListener('input', () => {
+    _contracts.search = search.value.trim().toLowerCase();
+    applyContractHighlight();
+  });
+  bar.appendChild(search);
+
+  // Only say what the window does when it is doing something, so the note is
+  // information rather than furniture.
+  if (_contracts.window !== 'all' && !CONTRACT_METRICS[_contracts.metric].windowed) {
+    bar.appendChild(el('span', { style: { fontSize: '11px', color: 'var(--fg2)' } },
+      '⚠ ' + CONTRACT_METRICS[_contracts.metric].label + ' is all-time; the window applies to calls and callers'));
+  }
+  return bar;
+}
+
+function visibleContractNodes() {
+  const all = (_contracts.data && _contracts.data.nodes) || [];
+  return all.filter(n => {
+    if (n.parked && !_contracts.parked) return false;
+    if (n.is_realm && !_contracts.realms) return false;
+    if (!n.is_realm && !_contracts.packages) return false;
+    return true;
+  });
+}
+
+function renderContractMap() {
+  const container = clear('contract-map');
+  container.style.position = 'relative';
+
+  const nodes = visibleContractNodes().map(n => Object.assign({}, n, { id: n.path }));
+  if (!nodes.length) {
+    container.appendChild(el('div', { style: { padding: '40px', textAlign: 'center', color: 'var(--fg2)' } },
+      'no contracts to show with these filters'));
+    return;
+  }
+
+  const byPath = new Map(nodes.map(n => [n.path, n]));
+  const links = ((_contracts.edgeData && _contracts.edgeData.edges) || [])
+    .filter(e => byPath.has(e.source) && byPath.has(e.target))
+    .map(e => ({ source: e.source, target: e.target, weight: e.weight }));
+
+  const width = container.clientWidth || 900;
+  const height = Math.max(520, Math.round(window.innerHeight * 0.68));
+  container.style.minHeight = height + 'px';
+
+  // Area, not radius, carries the value: a contract with ten times the calls
+  // should look ten times as big, and scaling the radius directly would make
+  // it look a hundred times as big. Hence the square root under both scales.
+  //
+  // rMax is capped by how much room each contract actually has. Four hundred
+  // bubbles at a fixed maximum radius cannot fit in the viewport whatever the
+  // layout does, and the force simulation resolves that by pushing them into
+  // a solid disc.
+  const metric = CONTRACT_METRICS[_contracts.metric];
+  const maxVal = Math.max(1, d3.max(nodes, metric.get) || 1);
+  const rMin = 3.5;
+  const rMax = Math.max(14, Math.min(44, Math.sqrt((width * height) / (nodes.length * Math.PI)) * 0.8));
+  const ratio = _contracts.scale === 'linear'
+    ? v => v / maxVal
+    : v => Math.log1p(v) / Math.log1p(maxVal);
+  const radius = d => rMin + (rMax - rMin) * Math.sqrt(ratio(Math.max(0, metric.get(d) || 0)));
+
+  // Namespace centroids sit on a ring, in an order derived from the namespace
+  // name, so the same chain lays out the same way every time.
+  const namespaces = Array.from(new Set(nodes.map(n => n.namespace))).sort();
+  const centroids = new Map();
+  namespaces.forEach((ns) => {
+    const a = (namespaceHue(ns) / 360) * 2 * Math.PI;
+    const spread = Math.min(width, height) * 0.34;
+    centroids.set(ns, { x: width / 2 + Math.cos(a) * spread, y: height / 2 + Math.sin(a) * spread });
+  });
+
+  const svg = d3.select(container).append('svg').attr('width', width).attr('height', height)
+    .attr('role', 'img').attr('aria-label', 'map of deployed contracts');
+  const zoomG = svg.append('g');
+  const zoom = d3.zoom().scaleExtent([0.15, 6]).on('zoom', e => zoomG.attr('transform', e.transform));
+  svg.call(zoom);
+
+  if (_contracts.edges === 'imports') {
+    svg.append('defs').append('marker')
+      .attr('id', 'contract-arrow').attr('viewBox', '0 -5 10 10')
+      .attr('refX', 16).attr('refY', 0).attr('markerWidth', 5).attr('markerHeight', 5)
+      .attr('orient', 'auto')
+      .append('path').attr('d', 'M0,-5L10,0L0,5').attr('fill', 'var(--fg2)');
+  }
+
+  const maxWeight = d3.max(links, l => l.weight) || 1;
+  const linkEl = zoomG.append('g').selectAll('line').data(links).join('line')
+    .attr('stroke', 'var(--fg2)')
+    .attr('stroke-opacity', _contracts.edges === 'imports' ? 0.35 : 0.22)
+    .attr('stroke-width', l => 0.5 + 2.5 * Math.sqrt(l.weight / maxWeight))
+    .attr('marker-end', _contracts.edges === 'imports' ? 'url(#contract-arrow)' : null);
+
+  const nodeEl = zoomG.append('g').selectAll('circle').data(nodes).join('circle')
+    .attr('r', radius)
+    .attr('fill', d => namespaceColor(d.namespace))
+    .attr('fill-opacity', d => d.parked ? 0.25 : 0.8)
+    .attr('stroke', d => d.parked ? 'var(--accent2)' : 'rgba(0,0,0,0.45)')
+    // A dashed ring is how a pure package reads as different from a realm
+    // without spending a second colour channel that namespaces already use.
+    .attr('stroke-dasharray', d => d.is_realm ? null : '2,2')
+    .attr('stroke-width', 1)
+    .style('cursor', 'pointer')
+    .on('click', (e, d) => navigate('/realm/' + d.path.replace('gno.land/', '')))
+    .call(d3.drag()
+      .on('start', (e, d) => { if (!e.active) sim.alphaTarget(0.25).restart(); d.fx = d.x; d.fy = d.y; })
+      .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; })
+      .on('end', (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }));
+
+  const tip = el('div', {
+    style: {
+      position: 'absolute', display: 'none', pointerEvents: 'none', zIndex: '20',
+      background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: '3px',
+      padding: '6px 8px', fontSize: '11px', color: 'var(--fg)', maxWidth: '320px',
+    },
+  });
+  container.appendChild(tip);
+  nodeEl.on('mouseenter', (e, d) => {
+    tip.textContent = '';
+    tip.appendChild(el('div', { style: { color: 'var(--accent)', marginBottom: '3px' } }, d.path));
+    const row = (k, v) => el('div', { style: { color: 'var(--fg2)' } }, k + ': ' + v);
+    tip.appendChild(row('namespace', d.namespace));
+    tip.appendChild(row('kind', d.is_realm ? 'realm' : 'pure package'));
+    tip.appendChild(row('calls', fmtNum(d.calls) + ' from ' + fmtNum(d.unique_callers) + ' addresses'));
+    tip.appendChild(row('storage', fmtNum(d.storage_bytes) + ' bytes'));
+    tip.appendChild(row('deployer', d.creator));
+    if (d.deployed_at) tip.appendChild(row('deployed', d.deployed_at.slice(0, 10)));
+    if (d.parked) tip.appendChild(el('div', { style: { color: 'var(--accent2)' } }, 'parked: submitted, never enabled'));
+    tip.style.display = 'block';
+  }).on('mousemove', (e) => {
+    const b = container.getBoundingClientRect();
+    tip.style.left = Math.min(e.clientX - b.left + 12, b.width - 330) + 'px';
+    tip.style.top = (e.clientY - b.top + 12) + 'px';
+  }).on('mouseleave', () => { tip.style.display = 'none'; });
+
+  const sim = d3.forceSimulation(nodes)
+    .force('link', d3.forceLink(links).id(d => d.id).distance(40).strength(l => Math.min(0.7, 0.1 + l.weight / (maxWeight * 2))))
+    .force('charge', d3.forceManyBody().strength(-24))
+    .force('collide', d3.forceCollide().radius(d => radius(d) + 1.5).iterations(2))
+    // The clustering force is what makes this a bubblemap rather than a
+    // hairball: same-namespace contracts are pulled toward a shared centre, so
+    // clusters emerge and then deform under the links, instead of being drawn
+    // as rigid parent circles that the links have no say in.
+    .force('x', d3.forceX(d => centroids.get(d.namespace).x).strength(0.11))
+    .force('y', d3.forceY(d => centroids.get(d.namespace).y).strength(0.11));
+  if (_contracts.sim) _contracts.sim.stop();
+  _contracts.sim = sim;
+
+  sim.on('tick', () => {
+    linkEl.attr('x1', l => l.source.x).attr('y1', l => l.source.y)
+      .attr('x2', l => l.target.x).attr('y2', l => l.target.y);
+    nodeEl.attr('cx', d => d.x).attr('cy', d => d.y);
+  });
+
+  // A force layout does not respect the box it is drawn in: with several
+  // hundred nodes the clusters push each other past every edge of the SVG and
+  // the first thing a reader sees is a map already half off-screen. So once it
+  // settles, frame what it produced.
+  //
+  // Once, not on every settle: dragging a node restarts the simulation, and
+  // re-fitting when that one ends would yank the view out from under the
+  // person who dragged it.
+  let fitted = false;
+  const fit = () => fitContractMap(svg, zoom, nodes, radius, width, height);
+  sim.on('end', () => { if (!fitted) { fitted = true; fit(); } });
+
+  container.appendChild(contractMapChrome(svg, zoom, namespaces, nodes, links.length, fit));
+  applyContractHighlight();
+}
+
+// fitContractMap frames every node in the viewport, the way the graph tab's
+// "fit" button is expected to behave.
+//
+// Scale is capped at 1: on a chain with three contracts, filling the viewport
+// would magnify three dots into three balloons and say nothing true about the
+// chain's size.
+function fitContractMap(svg, zoom, nodes, radius, width, height) {
+  if (!nodes.length) return;
+  const pad = 24;
+  const minX = d3.min(nodes, d => d.x - radius(d)), maxX = d3.max(nodes, d => d.x + radius(d));
+  const minY = d3.min(nodes, d => d.y - radius(d)), maxY = d3.max(nodes, d => d.y + radius(d));
+  const w = Math.max(1, maxX - minX), h = Math.max(1, maxY - minY);
+  const k = Math.min((width - 2 * pad) / w, (height - 2 * pad) / h, 1);
+  const tx = width / 2 - k * (minX + maxX) / 2;
+  const ty = height / 2 - k * (minY + maxY) / 2;
+  svg.transition().duration(400).call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(k));
+}
+
+// The chrome: zoom buttons, a namespace legend, and a one-line count so the
+// picture says how much of the chain it is showing.
+function contractMapChrome(svg, zoom, namespaces, nodes, linkCount, fit) {
+  const wrap = el('div');
+
+  const controls = el('div', {
+    style: { position: 'absolute', top: '8px', right: '8px', display: 'flex', flexDirection: 'column', gap: '4px' },
+  });
+  controls.appendChild(el('button', { className: 'pager-btn', style: { padding: '4px 8px', fontSize: '14px' }, onclick: () => svg.transition().duration(300).call(zoom.scaleBy, 1.5) }, '+'));
+  controls.appendChild(el('button', { className: 'pager-btn', style: { padding: '4px 8px', fontSize: '14px' }, onclick: () => svg.transition().duration(300).call(zoom.scaleBy, 0.67) }, '–'));
+  controls.appendChild(el('button', { className: 'pager-btn', style: { padding: '4px 8px', fontSize: '11px' }, onclick: fit }, 'fit'));
+  wrap.appendChild(controls);
+
+  // Which chain this is, spelled out. The header's network selector can say
+  // "all networks", and this map can never be all networks: a bubble is a path,
+  // and 193 paths exist on more than one chain.
+  const on = (_contracts.data && _contracts.data.network) ? ' on ' + _contracts.data.network : '';
+  const linkWord = linkCount === 1 ? 'link' : 'links';
+  const edgeNote = _contracts.edges === 'none' ? '' : ' (' + CONTRACT_EDGE_KINDS[_contracts.edges].label + ')';
+  const count = el('div', {
+    style: {
+      position: 'absolute', top: '8px', left: '8px', fontSize: '11px', color: 'var(--fg2)',
+      background: 'var(--bg2)', padding: '2px 6px', borderRadius: '3px',
+    },
+  }, fmtNum(nodes.length) + ' contracts' + on + ' · ' + fmtNum(linkCount) + ' ' + linkWord + edgeNote +
+     ' · size = ' + CONTRACT_METRICS[_contracts.metric].label +
+     (_contracts.scale === 'log' ? ' (log)' : ''));
+  wrap.appendChild(count);
+
+  // Ten namespaces, not sixty: a legend nobody can scan is decoration.
+  //
+  // Ranked by the metric on screen rather than by how many contracts each
+  // namespace holds, so the legend names the clusters the reader is looking
+  // at. Counting contracts instead puts sixty one-contract namespaces ahead of
+  // the one carrying all the traffic.
+  const legendMetric = CONTRACT_METRICS[_contracts.metric];
+  const counts = new Map(), weight = new Map();
+  nodes.forEach(n => {
+    counts.set(n.namespace, (counts.get(n.namespace) || 0) + 1);
+    weight.set(n.namespace, (weight.get(n.namespace) || 0) + (legendMetric.get(n) || 0));
+  });
+  const top = Array.from(counts.keys())
+    .sort((a, b) => (weight.get(b) - weight.get(a)) || (counts.get(b) - counts.get(a)) || a.localeCompare(b))
+    .slice(0, 10)
+    .map(ns => [ns, counts.get(ns)]);
+  const legend = el('div', {
+    style: {
+      position: 'absolute', bottom: '8px', left: '8px', display: 'flex', flexWrap: 'wrap',
+      gap: '8px', fontSize: '11px', color: 'var(--fg2)', maxWidth: '75%',
+      background: 'var(--bg2)', padding: '3px 6px', borderRadius: '3px',
+    },
+  });
+  top.forEach(([ns, n]) => {
+    const dot = el('span', { style: { display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', background: namespaceColor(ns) } });
+    legend.appendChild(el('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '4px' } }, dot, ns + ' (' + n + ')'));
+  });
+  if (namespaces.length > top.length) {
+    legend.appendChild(el('span', {}, '+' + (namespaces.length - top.length) + ' more'));
+  }
+  wrap.appendChild(legend);
+  return wrap;
+}
+
+// Dim everything that does not match, rather than removing it, so the layout
+// stays put while the search box is being typed into.
+function applyContractHighlight() {
+  const q = _contracts.search;
+  const svg = document.querySelector('#contract-map svg');
+  if (!svg) return;
+  d3.select(svg).selectAll('circle')
+    .attr('fill-opacity', d => {
+      const base = d.parked ? 0.25 : 0.8;
+      if (!q) return base;
+      return d.path.toLowerCase().includes(q) ? 1 : 0.08;
+    })
+    .attr('stroke-opacity', d => (!q || d.path.toLowerCase().includes(q)) ? 1 : 0.1);
+}
+
+function contractRankCard(title, rows) {
+  const card = el('div', {
+    style: { border: '1px solid var(--border)', borderRadius: '4px', padding: '10px', background: 'var(--bg2)' },
+  });
+  card.appendChild(el('div', { className: 'section-title', style: { marginBottom: '6px' } }, title));
+  if (!rows.length) {
+    card.appendChild(el('div', { style: { color: 'var(--fg2)', fontSize: '12px' } }, 'nothing yet'));
+    return card;
+  }
+  rows.forEach(r => {
+    const row = el('div', { style: { display: 'flex', justifyContent: 'space-between', gap: '8px', padding: '2px 0', fontSize: '12px' } });
+    // Truncated with the full path on hover. Mainnet's most active deployer
+    // publishes under r/g1n4pl5uc4yt5r96m9w6fmdznx3x0jyg8l6arhmt/, so an
+    // untruncated path runs straight through the column next to it and the
+    // number it was supposed to be read against.
+    const a = link(r.label, r.onclick);
+    Object.assign(a.style, { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: '0' });
+    a.setAttribute('title', r.title || r.label);
+    row.appendChild(a);
+    row.appendChild(el('span', { style: { color: 'var(--fg2)', whiteSpace: 'nowrap' } }, r.value));
+    card.appendChild(row);
+  });
+  return card;
+}
+
+// The literal answer to "a dashboard of deployed contracts", under the map
+// that makes it explorable. Computed from the nodes already fetched: three
+// more endpoints for three ten-row lists would be three more things to keep
+// correct.
+function renderContractRankings() {
+  const root = clear('contract-rankings');
+  // Grid rather than flex-wrap: three cards of equal width that collapse to
+  // one column on a narrow screen, instead of two cards growing to fill the
+  // row and pushing the third onto its own.
+  root.style.display = 'grid';
+  root.style.gridTemplateColumns = 'repeat(auto-fit, minmax(280px, 1fr))';
+  root.style.gap = '10px';
+  root.style.marginTop = '12px';
+
+  const nodes = visibleContractNodes();
+  const short = p => p.replace('gno.land/', '');
+  const goRealm = p => () => navigate('/realm/' + short(p));
+
+  const metric = CONTRACT_METRICS[_contracts.metric];
+  const busiest = nodes.slice().sort((a, b) => metric.get(b) - metric.get(a)).slice(0, 10)
+    .map(n => ({ label: short(n.path), title: n.path, value: fmtNum(metric.get(n)), onclick: goRealm(n.path) }));
+  root.appendChild(contractRankCard('top by ' + metric.label, busiest));
+
+  const newest = nodes.slice().sort((a, b) => b.deploy_height - a.deploy_height).slice(0, 10)
+    .map(n => ({ label: short(n.path), title: n.path, value: n.deployed_at ? n.deployed_at.slice(0, 10) : '#' + n.deploy_height, onclick: goRealm(n.path) }));
+  root.appendChild(contractRankCard('newest deploys', newest));
+
+  const byCreator = new Map();
+  nodes.forEach(n => byCreator.set(n.creator, (byCreator.get(n.creator) || 0) + 1));
+  const deployers = Array.from(byCreator.entries()).sort((a, b) => b[1] - a[1]).slice(0, 10)
+    .map(([addr, n]) => ({
+      label: addr.length > 16 ? addr.slice(0, 10) + '…' + addr.slice(-4) : addr,
+      title: addr,
+      value: n + (n === 1 ? ' contract' : ' contracts'),
+      onclick: () => navigate('/address/' + addr),
+    }));
+  root.appendChild(contractRankCard('top deployers', deployers));
+}
 
 // --- Routing ---
 window.addEventListener('popstate', route);

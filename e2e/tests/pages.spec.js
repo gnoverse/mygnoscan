@@ -14,6 +14,7 @@ const ROUTES = [
   ['watch', '/watch'],
   ['realms', '/realms'],
   ['packages', '/packages'],
+  ['contracts', '/contracts'],
   ['transactions', '/txs'],
   ['blocks', '/blocks'],
   ['accounts', '/accounts'],

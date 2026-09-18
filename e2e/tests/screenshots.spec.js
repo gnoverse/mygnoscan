@@ -24,6 +24,7 @@ const PAGES = [
   ['home', '/'],
   ['realms', '/realms'],
   ['packages', '/packages'],
+  ['contracts', '/contracts'],
   ['transactions', '/txs'],
   ['blocks', '/blocks'],
   ['accounts', '/accounts'],
