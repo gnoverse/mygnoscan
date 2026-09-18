@@ -138,3 +138,92 @@ test('the rankings under the map link into the existing pages', async ({ page })
   expect(unexpected(seen.failedRequests)).toEqual([]);
   expect(unexpected(seen.consoleErrors)).toEqual([]);
 });
+
+// Every toggle, clicked, asserted to have done something.
+//
+// "I click it and nothing happens" was real and had one cause: the control bar
+// was not redrawn on a repaint, so a pill went on looking unselected even when
+// the map under it had changed. For a filter with a small effect there was
+// nothing on screen to say the click had landed at all.
+// Only pills that start inactive: clicking the already-selected option of a
+// radio-style group is correctly a no-op, and asserting it changes would be
+// asserting a bug. 'calls' and 'linear' are the defaults, covered by the
+// round-trip test below.
+const TOGGLES = ['unique callers', 'storage', 'gas', 'depended on by', 'depends on',
+  'log', 'realms', 'packages', 'parked', 'used only', 'linked only',
+  'cluster', 'outlines', 'labels'];
+
+for (const name of TOGGLES) {
+  test(`the ${name} toggle reflects its own state when clicked`, async ({ page }) => {
+    const seen = watch(page);
+    await openMap(page);
+
+    const pill = page.getByRole('button', { name, exact: true });
+    const before = await pill.evaluate(el => el.style.background);
+    await pill.click();
+    // The bar is rebuilt on repaint, so re-resolve the button rather than
+    // holding the detached one.
+    const after = await page.getByRole('button', { name, exact: true })
+      .evaluate(el => el.style.background);
+
+    expect(after, `${name} looks identical after being clicked`).not.toBe(before);
+    expect(seen.jsErrors).toEqual([]);
+  });
+}
+
+test('the outlines toggle draws one shape per namespace', async ({ page }) => {
+  await openMap(page);
+  expect(await page.locator('#contract-map svg path').count()).toBe(0);
+
+  await page.getByRole('button', { name: 'outlines', exact: true }).click();
+  await page.waitForFunction(
+    () => document.querySelectorAll('#contract-map svg path, #contract-map svg g circle').length > 0,
+    null, { timeout: 15_000 });
+  // The fixture's namespaces are mostly single-contract, which get a circle
+  // rather than a hull: both are shapes, and drawing neither is the failure.
+  const shapes = await page.locator('#contract-map svg path').count();
+  const hullCircles = await page.evaluate(
+    () => document.querySelectorAll('#contract-map svg g:first-child circle').length);
+  expect(shapes + hullCircles).toBeGreaterThan(0);
+});
+
+test('clicking a legend entry isolates that namespace', async ({ page }) => {
+  await openMap(page);
+  const before = await bubbles(page).count();
+
+  await page.locator('#contract-map').getByText(/^common \(\d+\)$/).click();
+  await page.waitForFunction(
+    (n) => document.querySelectorAll('#contract-map svg circle').length < n,
+    before, { timeout: 15_000 });
+
+  expect(page.url()).toContain('ns=common');
+  expect(await bubbles(page).count()).toBeLessThan(before);
+});
+
+// The rankings must look like the rest of the explorer: the same address
+// abbreviation and the same identicon every other page uses.
+test('the deployer rankings carry identicons and abbreviated addresses', async ({ page }) => {
+  await openMap(page);
+  const deployers = page.locator('#contract-rankings > div').last();
+  await expect(deployers).toContainText('top deployers');
+  expect(await deployers.locator('.identicon').count()).toBeGreaterThan(0);
+  await expect(deployers.getByText(/g1\w+…\w+/).first()).toBeVisible();
+});
+
+test('the scale switches both ways and says which is active', async ({ page }) => {
+  await openMap(page);
+  const scale = name => page.getByRole('button', { name, exact: true });
+  const isActive = async name => (await scale(name).evaluate(el => el.style.color)) !== '';
+
+  // linear is the default; going to log and back must land where it started,
+  // with exactly one of the two reading as selected at each step.
+  const linearFirst = await scale('linear').evaluate(el => el.style.background);
+  await scale('log').click();
+  expect(await scale('log').evaluate(el => el.style.background)).toBe(linearFirst);
+  expect(page.url()).toContain('scale=log');
+
+  await scale('linear').click();
+  expect(await scale('linear').evaluate(el => el.style.background)).toBe(linearFirst);
+  expect(page.url()).toContain('scale=linear');
+  expect(await isActive('linear')).toBe(true);
+});

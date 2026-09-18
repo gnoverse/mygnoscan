@@ -7947,11 +7947,23 @@ window.addEventListener('resize', () => {
 // content chosen by whoever deployed it.
 
 const CONTRACT_METRICS = {
-  calls: { label: 'calls', get: n => n.calls, windowed: true },
-  unique_callers: { label: 'unique callers', get: n => n.unique_callers, windowed: true },
-  storage_bytes: { label: 'storage', get: n => n.storage_bytes, windowed: false },
-  gas_used: { label: 'gas', get: n => n.gas_used, windowed: false },
+  calls: { label: 'calls', rank: 'most called', get: n => n.calls, windowed: true },
+  unique_callers: { label: 'unique callers', rank: 'most users', get: n => n.unique_callers, windowed: true },
+  storage_bytes: { label: 'storage', rank: 'largest storage', get: n => n.storage_bytes, windowed: false },
+  gas_used: { label: 'gas', rank: 'most gas', get: n => n.gas_used, windowed: false },
+  // How many deployed contracts import this one. The quantity the import graph
+  // is about, and the reason that view was unreadable before: sized by calls or
+  // gas, the packages everything is built on are invisible dots, because a pure
+  // package receives no calls and burns no gas of its own. p/nt/ufmt/v0 has 91
+  // dependents on mainnet and nothing else at all.
+  importers: { label: 'depended on by', rank: 'most depended on', get: n => n.importers, windowed: false },
+  imports: { label: 'depends on', rank: 'most dependencies', get: n => n.imports, windowed: false },
 };
+
+// The metric each link mode is worth reading with, applied when the reader has
+// not picked one. Switching to imports and seeing the same gas-sized bubbles is
+// how that mode ended up looking like it had nothing to say.
+const CONTRACT_EDGE_DEFAULT_METRIC = { imports: 'importers', callers: 'calls' };
 const CONTRACT_WINDOWS = ['all', '30d', '7d', '24h'];
 const CONTRACT_EDGE_KINDS = {
   callers: { label: 'shared callers', hint: 'linked when the same addresses called both' },
@@ -7961,12 +7973,35 @@ const CONTRACT_EDGE_KINDS = {
 
 let _contracts = {
   metric: 'calls',
+  // metricPinned records that the reader chose the metric, so switching link
+  // mode stops re-deciding it for them.
+  metricPinned: false,
   scale: 'linear',
   edges: 'callers',
   window: 'all',
   realms: true,
   packages: true,
   parked: false,
+  // cluster is the namespace force: on, same-namespace contracts are pulled
+  // together; off, position is decided by the links alone, which is the view
+  // that answers "does this structure survive without my grouping".
+  cluster: true,
+  clusterPinned: false,
+  // hulls draw the grouping instead of leaving it to be inferred from colour.
+  // Sixty namespaces do not have sixty distinguishable hues, so on a big chain
+  // colour alone is a hint and the outline is the answer.
+  hulls: false,
+  labels: false,
+  // activeOnly drops contracts with no calls in the window. On mainnet that is
+  // roughly 300 of 327, so it is the difference between a map of the chain and
+  // a map of the part of it anyone uses.
+  activeOnly: false,
+  // linkedOnly drops contracts with no edge in the current link mode: 40 of
+  // mainnet's 327 import nothing and are imported by nothing, and in the
+  // import view they are 40 dots that mean "not part of this picture".
+  linkedOnly: false,
+  // namespace isolates one cluster, set by clicking its legend entry.
+  namespace: null,
   search: '',
   data: null,
   edgeData: null,
@@ -7978,11 +8013,30 @@ let _contracts = {
 // they can send, rather than a screenshot plus instructions.
 function contractsStateFromURL() {
   const q = new URLSearchParams(window.location.search);
-  if (CONTRACT_METRICS[q.get('metric')]) _contracts.metric = q.get('metric');
+  if (CONTRACT_METRICS[q.get('metric')]) {
+    _contracts.metric = q.get('metric');
+    _contracts.metricPinned = true;
+  }
   if (q.get('scale') === 'linear' || q.get('scale') === 'log') _contracts.scale = q.get('scale');
   if (CONTRACT_EDGE_KINDS[q.get('edges')]) _contracts.edges = q.get('edges');
   if (CONTRACT_WINDOWS.includes(q.get('window'))) _contracts.window = q.get('window');
   if (q.get('parked') === '1') _contracts.parked = true;
+  if (q.get('cluster') === '0') { _contracts.cluster = false; _contracts.clusterPinned = true; }
+  if (q.get('cluster') === '1') { _contracts.cluster = true; _contracts.clusterPinned = true; }
+  if (q.get('hulls') === '1') _contracts.hulls = true;
+  if (q.get('labels') === '1') _contracts.labels = true;
+  if (q.get('active') === '1') _contracts.activeOnly = true;
+  if (q.get('linked') === '1') _contracts.linkedOnly = true;
+  if (q.get('ns')) _contracts.namespace = q.get('ns');
+
+  // A link mode arrived at by URL gets the same treatment as one arrived at by
+  // clicking: it carries the metric and the grouping that make it legible,
+  // unless the URL pinned them. Otherwise a shared link to the import view
+  // reproduces the unreadable version rather than the one worth sharing.
+  if (!_contracts.metricPinned && CONTRACT_EDGE_DEFAULT_METRIC[_contracts.edges]) {
+    _contracts.metric = CONTRACT_EDGE_DEFAULT_METRIC[_contracts.edges];
+  }
+  if (!_contracts.clusterPinned) _contracts.cluster = _contracts.edges !== 'imports';
 }
 
 function contractsStateToURL() {
@@ -7991,7 +8045,14 @@ function contractsStateToURL() {
   q.set('scale', _contracts.scale);
   q.set('edges', _contracts.edges);
   q.set('window', _contracts.window);
-  if (_contracts.parked) q.set('parked', '1'); else q.delete('parked');
+  const flag = (name, on) => { if (on) q.set(name, '1'); else q.delete(name); };
+  flag('parked', _contracts.parked);
+  flag('hulls', _contracts.hulls);
+  flag('labels', _contracts.labels);
+  flag('active', _contracts.activeOnly);
+  flag('linked', _contracts.linkedOnly);
+  if (_contracts.clusterPinned) q.set('cluster', _contracts.cluster ? '1' : '0'); else q.delete('cluster');
+  if (_contracts.namespace) q.set('ns', _contracts.namespace); else q.delete('ns');
   history.replaceState({}, '', window.location.pathname + '?' + q.toString());
 }
 
@@ -8060,8 +8121,23 @@ async function loadContracts() {
   }
 }
 
+// repaintContracts redraws everything that comes from state already in hand:
+// the control bar included.
+//
+// Leaving the bar alone was the bug behind "I click it and nothing happens":
+// the map underneath did change, but the pill went on looking unselected, and
+// for a filter whose effect is small (five parked contracts out of 327) there
+// was nothing else on screen to say the click had landed.
+function repaintContracts() {
+  const bar = document.getElementById('contracts-controls');
+  if (bar) bar.replaceWith(contractsControls());
+  renderContractMap();
+  renderContractRankings();
+}
+
 function contractsControls() {
   const bar = el('div', {
+    id: 'contracts-controls',
     style: {
       display: 'flex', gap: '18px', flexWrap: 'wrap', alignItems: 'center',
       padding: '8px 0', marginBottom: '8px', borderBottom: '1px solid var(--border)',
@@ -8071,11 +8147,11 @@ function contractsControls() {
   const metricPills = Object.entries(CONTRACT_METRICS).map(([k, m]) =>
     contractPill(m.label, _contracts.metric === k, () => {
       _contracts.metric = k;
+      _contracts.metricPinned = true;
       contractsStateToURL();
       // Every metric already travelled with the nodes, so this is a repaint,
       // not a refetch.
-      renderContractMap();
-      renderContractRankings();
+      repaintContracts();
     }));
   bar.appendChild(contractControlGroup('size', metricPills));
 
@@ -8093,13 +8169,21 @@ function contractsControls() {
     contractPill(k, _contracts.scale === k, () => {
       _contracts.scale = k;
       contractsStateToURL();
-      renderContractMap();
+      repaintContracts();
     }));
   bar.appendChild(contractControlGroup('scale', scalePills));
 
   const edgePills = Object.entries(CONTRACT_EDGE_KINDS).map(([k, m]) =>
     contractPill(m.label, _contracts.edges === k, () => {
       _contracts.edges = k;
+      // Each link mode carries the metric that makes it legible, until the
+      // reader pins one. Clustering goes with it: the namespace force pulls
+      // p/nt/* away from the eighty contracts importing it, which is the
+      // structure the import view exists to show.
+      if (!_contracts.metricPinned && CONTRACT_EDGE_DEFAULT_METRIC[k]) {
+        _contracts.metric = CONTRACT_EDGE_DEFAULT_METRIC[k];
+      }
+      if (!_contracts.clusterPinned) _contracts.cluster = k !== 'imports';
       contractsStateToURL();
       loadContracts(); // a different query, so this one does refetch
     }));
@@ -8113,12 +8197,42 @@ function contractsControls() {
     }));
   bar.appendChild(contractControlGroup('window', windowPills));
 
+  // Filters change which nodes are drawn, never which data is fetched: the
+  // whole node set already arrived, so every one of these is a repaint.
+  const repaint = () => { contractsStateToURL(); repaintContracts(); };
   const filters = [
-    contractPill('realms', _contracts.realms, () => { _contracts.realms = !_contracts.realms; loadContracts(); }),
-    contractPill('packages', _contracts.packages, () => { _contracts.packages = !_contracts.packages; loadContracts(); }),
-    contractPill('parked', _contracts.parked, () => { _contracts.parked = !_contracts.parked; contractsStateToURL(); loadContracts(); }),
+    contractPill('realms', _contracts.realms, () => { _contracts.realms = !_contracts.realms; repaint(); }),
+    contractPill('packages', _contracts.packages, () => { _contracts.packages = !_contracts.packages; repaint(); }),
+    contractPill('parked', _contracts.parked, () => { _contracts.parked = !_contracts.parked; repaint(); }),
+    contractPill('used only', _contracts.activeOnly, () => { _contracts.activeOnly = !_contracts.activeOnly; repaint(); }),
+    contractPill('linked only', _contracts.linkedOnly, () => { _contracts.linkedOnly = !_contracts.linkedOnly; repaint(); }),
   ];
   bar.appendChild(contractControlGroup('show', filters));
+
+  const grouping = [
+    contractPill('cluster', _contracts.cluster, () => {
+      _contracts.cluster = !_contracts.cluster;
+      _contracts.clusterPinned = true;
+      repaint();
+    }),
+    contractPill('outlines', _contracts.hulls, () => { _contracts.hulls = !_contracts.hulls; repaint(); }),
+    contractPill('labels', _contracts.labels, () => { _contracts.labels = !_contracts.labels; repaint(); }),
+  ];
+  bar.appendChild(contractControlGroup('grouping', grouping));
+
+  // The namespace filter has no pill of its own: it is set by clicking a
+  // legend entry, and this is how it says so and how it is cleared.
+  if (_contracts.namespace) {
+    const chip = el('button', {
+      className: 'pager-btn',
+      style: {
+        padding: '3px 9px', fontSize: '11px', background: namespaceColor(_contracts.namespace),
+        color: '#111', border: '1px solid var(--border)', borderRadius: '3px', cursor: 'pointer',
+      },
+      onclick: () => { _contracts.namespace = null; repaint(); },
+    }, _contracts.namespace + '  \u00d7');
+    bar.appendChild(contractControlGroup('only', [chip]));
+  }
 
   const search = el('input', {
     type: 'text', placeholder: 'highlight...', value: _contracts.search,
@@ -8151,6 +8265,11 @@ function visibleContractNodes() {
     if (n.parked && !_contracts.parked) return false;
     if (n.is_realm && !_contracts.realms) return false;
     if (!n.is_realm && !_contracts.packages) return false;
+    if (_contracts.namespace && n.namespace !== _contracts.namespace) return false;
+    // "Used" means called inside the selected window, not ever: with a 7d
+    // window this is what is alive this week, which is the question the window
+    // was chosen to ask.
+    if (_contracts.activeOnly && !(n.calls > 0)) return false;
     return true;
   });
 }
@@ -8159,7 +8278,18 @@ function renderContractMap() {
   const container = clear('contract-map');
   container.style.position = 'relative';
 
-  const nodes = visibleContractNodes().map(n => Object.assign({}, n, { id: n.path }));
+  let nodes = visibleContractNodes().map(n => Object.assign({}, n, { id: n.path }));
+  if (_contracts.linkedOnly && _contracts.edges !== 'none') {
+    // Computed against the edges as fetched, before they are narrowed to the
+    // visible set, so hiding a namespace does not then hide its neighbours for
+    // having lost their only link.
+    const linked = new Set();
+    ((_contracts.edgeData && _contracts.edgeData.edges) || []).forEach(e => {
+      linked.add(e.source);
+      linked.add(e.target);
+    });
+    nodes = nodes.filter(n => linked.has(n.path));
+  }
   if (!nodes.length) {
     container.appendChild(el('div', { style: { padding: '40px', textAlign: 'center', color: 'var(--fg2)' } },
       'no contracts to show with these filters'));
@@ -8208,20 +8338,33 @@ function renderContractMap() {
   const zoom = d3.zoom().scaleExtent([0.15, 6]).on('zoom', e => zoomG.attr('transform', e.transform));
   svg.call(zoom);
 
-  if (_contracts.edges === 'imports') {
+  // Arrowheads only while they can be read. At 721 import edges over 327
+  // contracts the markers were larger than most bubbles and the map rendered
+  // as a field of grey triangles with the contracts hidden underneath: the
+  // direction of an edge you cannot trace is not information.
+  const arrowLimit = 220;
+  const showArrows = _contracts.edges === 'imports' && links.length <= arrowLimit;
+  if (showArrows) {
     svg.append('defs').append('marker')
       .attr('id', 'contract-arrow').attr('viewBox', '0 -5 10 10')
-      .attr('refX', 16).attr('refY', 0).attr('markerWidth', 5).attr('markerHeight', 5)
+      .attr('refX', 14).attr('refY', 0).attr('markerWidth', 3).attr('markerHeight', 3)
       .attr('orient', 'auto')
       .append('path').attr('d', 'M0,-5L10,0L0,5').attr('fill', 'var(--fg2)');
   }
 
+  // Under the links so an outline never sits on top of the structure it is
+  // grouping.
+  const hullG = zoomG.append('g').attr('pointer-events', 'none');
+
   const maxWeight = d3.max(links, l => l.weight) || 1;
+  // Thinner and fainter as the graph gets denser, so a hairball reads as
+  // texture behind the contracts rather than covering them.
+  const dense = links.length > arrowLimit;
   const linkEl = zoomG.append('g').selectAll('line').data(links).join('line')
     .attr('stroke', 'var(--fg2)')
-    .attr('stroke-opacity', _contracts.edges === 'imports' ? 0.35 : 0.22)
-    .attr('stroke-width', l => 0.5 + 2.5 * Math.sqrt(l.weight / maxWeight))
-    .attr('marker-end', _contracts.edges === 'imports' ? 'url(#contract-arrow)' : null);
+    .attr('stroke-opacity', dense ? 0.14 : 0.3)
+    .attr('stroke-width', l => (dense ? 0.4 : 0.6) + (dense ? 1.2 : 2.4) * Math.sqrt(l.weight / maxWeight))
+    .attr('marker-end', showArrows ? 'url(#contract-arrow)' : null);
 
   const nodeEl = zoomG.append('g').selectAll('circle').data(nodes).join('circle')
     .attr('r', radius)
@@ -8239,6 +8382,23 @@ function renderContractMap() {
       .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; })
       .on('end', (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }));
 
+  // Labels last, so they are never covered by a bubble drawn after them.
+  const labelG = zoomG.append('g').attr('pointer-events', 'none');
+  const labelled = _contracts.labels
+    ? nodes.slice().sort((a, b) => metric.get(b) - metric.get(a)).slice(0, 14)
+    : [];
+  const labelEl = labelG.selectAll('text').data(labelled).join('text')
+    .text(d => d.path.replace('gno.land/', ''))
+    .attr('font-size', 10)
+    .attr('text-anchor', 'middle')
+    .attr('fill', 'var(--fg)')
+    // Painted twice, dark underneath, because a label over a bubble and a
+    // label over the background need different contrast and there is only one
+    // colour to give it.
+    .attr('stroke', 'var(--bg)')
+    .attr('stroke-width', 3)
+    .attr('paint-order', 'stroke');
+
   const tip = el('div', {
     style: {
       position: 'absolute', display: 'none', pointerEvents: 'none', zIndex: '20',
@@ -8255,7 +8415,14 @@ function renderContractMap() {
     tip.appendChild(row('kind', d.is_realm ? 'realm' : 'pure package'));
     tip.appendChild(row('calls', fmtNum(d.calls) + ' from ' + fmtNum(d.unique_callers) + ' addresses'));
     tip.appendChild(row('storage', fmtNum(d.storage_bytes) + ' bytes'));
-    tip.appendChild(row('deployer', d.creator));
+    // Same abbreviation as every other address on the site, with the identicon:
+    // a hover card is exactly where recognising an address at a glance matters,
+    // and this is the only place a bubble names its deployer.
+    const deployer = el('div', { style: { color: 'var(--fg2)', display: 'flex', alignItems: 'center', gap: '4px' } }, 'deployer: ');
+    const icon = identicon(d.creator);
+    if (icon) deployer.appendChild(icon);
+    deployer.append(truncAddr(d.creator));
+    tip.appendChild(deployer);
     if (d.deployed_at) tip.appendChild(row('deployed', d.deployed_at.slice(0, 10)));
     if (d.parked) tip.appendChild(el('div', { style: { color: 'var(--accent2)' } }, 'parked: submitted, never enabled'));
     tip.style.display = 'block';
@@ -8273,15 +8440,28 @@ function renderContractMap() {
     // hairball: same-namespace contracts are pulled toward a shared centre, so
     // clusters emerge and then deform under the links, instead of being drawn
     // as rigid parent circles that the links have no say in.
-    .force('x', d3.forceX(d => centroids.get(d.namespace).x).strength(0.11))
-    .force('y', d3.forceY(d => centroids.get(d.namespace).y).strength(0.11));
+    //
+    // Switchable because the two views answer different questions. With it on,
+    // the grouping is imposed and the links show how far they can stretch it.
+    // With it off, position comes from the links alone, and any grouping you
+    // still see is one the traffic actually has. Off, a weak centring force
+    // replaces it so disconnected nodes do not drift out of the viewport.
+    .force('x', _contracts.cluster
+      ? d3.forceX(d => centroids.get(d.namespace).x).strength(0.11)
+      : d3.forceX(width / 2).strength(0.05))
+    .force('y', _contracts.cluster
+      ? d3.forceY(d => centroids.get(d.namespace).y).strength(0.11)
+      : d3.forceY(height / 2).strength(0.05));
   if (_contracts.sim) _contracts.sim.stop();
   _contracts.sim = sim;
 
+  const byNamespace = d3.group(nodes, d => d.namespace);
   sim.on('tick', () => {
     linkEl.attr('x1', l => l.source.x).attr('y1', l => l.source.y)
       .attr('x2', l => l.target.x).attr('y2', l => l.target.y);
     nodeEl.attr('cx', d => d.x).attr('cy', d => d.y);
+    if (_contracts.hulls) drawNamespaceHulls(hullG, byNamespace, radius);
+    if (_contracts.labels) labelEl.attr('x', d => d.x).attr('y', d => d.y - radius(d) - 3);
   });
 
   // A force layout does not respect the box it is drawn in: with several
@@ -8294,10 +8474,90 @@ function renderContractMap() {
   // person who dragged it.
   let fitted = false;
   const fit = () => fitContractMap(svg, zoom, nodes, radius, width, height);
-  sim.on('end', () => { if (!fitted) { fitted = true; fit(); } });
+  sim.on('end', () => {
+    if (!fitted) { fitted = true; fit(); }
+    if (_contracts.labels) hideOverlappingLabels(labelEl);
+  });
 
   container.appendChild(contractMapChrome(svg, zoom, namespaces, nodes, links.length, fit));
   applyContractHighlight();
+}
+
+// hideOverlappingLabels keeps the first label to claim a piece of the canvas
+// and drops the rest.
+//
+// Run once the layout settles rather than per tick: the set of labels that fit
+// changes on every frame while the simulation is still moving, and a label
+// blinking in and out during settling looks like a fault. Labels are already
+// ordered by the metric, so the one kept in a collision is the bigger
+// contract, which is the one worth naming.
+function hideOverlappingLabels(labelSel) {
+  const placed = [];
+  labelSel.each(function (d) {
+    const box = this.getBBox();
+    const hit = placed.some(p => !(box.x + box.width < p.x || p.x + p.width < box.x ||
+      box.y + box.height < p.y || p.y + p.height < box.y));
+    if (hit) {
+      this.style.display = 'none';
+      return;
+    }
+    this.style.display = '';
+    placed.push(box);
+  });
+}
+
+// drawNamespaceHulls outlines each namespace's contracts, so the grouping is
+// shown rather than inferred from colour. Sixty namespaces do not have sixty
+// distinguishable hues.
+//
+// Redrawn per tick rather than once at the end: the hull of a cluster still
+// being pushed around is wrong the moment it is drawn, and a shape that lags
+// its contents by a second reads as a rendering bug.
+function drawNamespaceHulls(layer, byNamespace, radius) {
+  const shapes = [];
+  for (const [ns, members] of byNamespace) {
+    if (!members.length) continue;
+    // A hull needs three points. One or two contracts get a circle around
+    // their midpoint instead, because a namespace of one is still a namespace
+    // and dropping it would make the outlines say something false about which
+    // groups exist.
+    if (members.length < 3) {
+      const cx = d3.mean(members, d => d.x), cy = d3.mean(members, d => d.y);
+      const r = d3.max(members, d => radius(d)) + 14;
+      shapes.push({ ns, kind: 'circle', cx, cy, r });
+      continue;
+    }
+    const hull = d3.polygonHull(members.map(d => [d.x, d.y]));
+    if (!hull) continue;
+    // Pad outward from the centroid so the outline clears the bubbles rather
+    // than cutting through the outermost ones.
+    const cx = d3.mean(hull, p => p[0]), cy = d3.mean(hull, p => p[1]);
+    const pad = 16;
+    const padded = hull.map(([x, y]) => {
+      const dx = x - cx, dy = y - cy;
+      const len = Math.hypot(dx, dy) || 1;
+      return [x + (dx / len) * pad, y + (dy / len) * pad];
+    });
+    shapes.push({ ns, kind: 'path', d: 'M' + padded.join('L') + 'Z', cx, cy });
+  }
+
+  layer.selectAll('path').data(shapes.filter(s => s.kind === 'path'), s => s.ns)
+    .join('path')
+    .attr('d', s => s.d)
+    .attr('fill', s => namespaceColor(s.ns))
+    .attr('fill-opacity', 0.07)
+    .attr('stroke', s => namespaceColor(s.ns))
+    .attr('stroke-opacity', 0.35)
+    .attr('stroke-width', 1);
+
+  layer.selectAll('circle').data(shapes.filter(s => s.kind === 'circle'), s => s.ns)
+    .join('circle')
+    .attr('cx', s => s.cx).attr('cy', s => s.cy).attr('r', s => s.r)
+    .attr('fill', s => namespaceColor(s.ns))
+    .attr('fill-opacity', 0.07)
+    .attr('stroke', s => namespaceColor(s.ns))
+    .attr('stroke-opacity', 0.35)
+    .attr('stroke-width', 1);
 }
 
 // fitContractMap frames every node in the viewport, the way the graph tab's
@@ -8370,9 +8630,26 @@ function contractMapChrome(svg, zoom, namespaces, nodes, linkCount, fit) {
       background: 'var(--bg2)', padding: '3px 6px', borderRadius: '3px',
     },
   });
+  // Clicking a legend entry isolates that namespace, which is the filter a
+  // reader reaches for first and the one the legend is already the natural
+  // control for. Clicking the active one clears it.
   top.forEach(([ns, n]) => {
     const dot = el('span', { style: { display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', background: namespaceColor(ns) } });
-    legend.appendChild(el('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '4px' } }, dot, ns + ' (' + n + ')'));
+    const active = _contracts.namespace === ns;
+    const entry = el('span', {
+      style: {
+        display: 'inline-flex', alignItems: 'center', gap: '4px', cursor: 'pointer',
+        color: active ? 'var(--fg)' : 'var(--fg2)',
+        textDecoration: active ? 'underline' : 'none',
+      },
+      onclick: () => {
+        _contracts.namespace = active ? null : ns;
+        contractsStateToURL();
+        repaintContracts();
+      },
+    }, dot, ns + ' (' + n + ')');
+    entry.setAttribute('title', active ? 'show every namespace again' : 'show only ' + ns);
+    legend.appendChild(entry);
   });
   if (namespaces.length > top.length) {
     legend.appendChild(el('span', {}, '+' + (namespaces.length - top.length) + ' more'));
@@ -8407,14 +8684,14 @@ function contractRankCard(title, rows) {
   }
   rows.forEach(r => {
     const row = el('div', { style: { display: 'flex', justifyContent: 'space-between', gap: '8px', padding: '2px 0', fontSize: '12px' } });
-    // Truncated with the full path on hover. Mainnet's most active deployer
-    // publishes under r/g1n4pl5uc4yt5r96m9w6fmdznx3x0jyg8l6arhmt/, so an
-    // untruncated path runs straight through the column next to it and the
-    // number it was supposed to be read against.
-    const a = link(r.label, r.onclick);
-    Object.assign(a.style, { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: '0' });
-    a.setAttribute('title', r.title || r.label);
-    row.appendChild(a);
+    // r.el is built by the same helper the rest of the explorer uses for that
+    // kind of value: realmPathEl for a package path, addrLink for an address,
+    // which is what carries the identicon and the g1…abcd abbreviation. A
+    // local shortening here produced rows that looked like nothing else on the
+    // site and dropped the icon entirely.
+    const cell = el('div', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: '0' } });
+    cell.appendChild(r.el);
+    row.appendChild(cell);
     row.appendChild(el('span', { style: { color: 'var(--fg2)', whiteSpace: 'nowrap' } }, r.value));
     card.appendChild(row);
   });
@@ -8436,26 +8713,26 @@ function renderContractRankings() {
   root.style.marginTop = '12px';
 
   const nodes = visibleContractNodes();
-  const short = p => p.replace('gno.land/', '');
-  const goRealm = p => () => navigate('/realm/' + short(p));
+  const network = (_contracts.data && _contracts.data.network) || getNetwork();
 
   const metric = CONTRACT_METRICS[_contracts.metric];
   const busiest = nodes.slice().sort((a, b) => metric.get(b) - metric.get(a)).slice(0, 10)
-    .map(n => ({ label: short(n.path), title: n.path, value: fmtNum(metric.get(n)), onclick: goRealm(n.path) }));
-  root.appendChild(contractRankCard('top by ' + metric.label, busiest));
+    .map(n => ({ el: realmPathEl(n.path, network), value: fmtNum(metric.get(n)) }));
+  root.appendChild(contractRankCard(metric.rank, busiest));
 
   const newest = nodes.slice().sort((a, b) => b.deploy_height - a.deploy_height).slice(0, 10)
-    .map(n => ({ label: short(n.path), title: n.path, value: n.deployed_at ? n.deployed_at.slice(0, 10) : '#' + n.deploy_height, onclick: goRealm(n.path) }));
+    .map(n => ({
+      el: realmPathEl(n.path, network),
+      value: n.deployed_at ? n.deployed_at.slice(0, 10) : '#' + fmtNum(n.deploy_height),
+    }));
   root.appendChild(contractRankCard('newest deploys', newest));
 
   const byCreator = new Map();
   nodes.forEach(n => byCreator.set(n.creator, (byCreator.get(n.creator) || 0) + 1));
   const deployers = Array.from(byCreator.entries()).sort((a, b) => b[1] - a[1]).slice(0, 10)
     .map(([addr, n]) => ({
-      label: addr.length > 16 ? addr.slice(0, 10) + '…' + addr.slice(-4) : addr,
-      title: addr,
-      value: n + (n === 1 ? ' contract' : ' contracts'),
-      onclick: () => navigate('/address/' + addr),
+      el: addrLink(addr, network),
+      value: fmtNum(n) + (n === 1 ? ' contract' : ' contracts'),
     }));
   root.appendChild(contractRankCard('top deployers', deployers));
 }

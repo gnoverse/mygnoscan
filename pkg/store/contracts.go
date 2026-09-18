@@ -45,6 +45,14 @@ type ContractNode struct {
 	// Calls and UniqueCallers honour the window passed to ContractMapNodes.
 	Calls         int `json:"calls"`
 	UniqueCallers int `json:"unique_callers"`
+	// Importers is how many deployed contracts import this one, and Imports how
+	// many it imports. Importers is the quantity the import graph is actually
+	// about: sizing that view by calls or gas hides the load-bearing packages
+	// completely, because a pure package burns no gas and receives no calls of
+	// its own. p/nt/ufmt/v0 has 91 dependents on mainnet and zero of everything
+	// else.
+	Importers int `json:"importers"`
+	Imports   int `json:"imports"`
 	// GasUsed and StorageBytes are all-time, read from the five-minute
 	// rollups. They do not honour the window: gas attribution measured 3.4s
 	// live on a mid-size chain, which is why the rollup exists, and there is
@@ -140,7 +148,11 @@ func (d *DB) ContractMapNodes(network string, since time.Time) ([]ContractNode, 
 		(SELECT COALESCE(g.gas_used, 0) FROM gas_realm_rollup g
 		   WHERE g.network = p.network AND g.path = p.path) AS gas_used,
 		(SELECT COALESCE(sr.bytes_net, 0) FROM storage_realm_rollup sr
-		   WHERE sr.network = p.network AND sr.path = p.path) AS storage_bytes
+		   WHERE sr.network = p.network AND sr.path = p.path) AS storage_bytes,
+		(SELECT COUNT(*) FROM dependencies d
+		   WHERE d.network = p.network AND d.import_path = p.path) AS importers,
+		(SELECT COUNT(*) FROM dependencies d
+		   WHERE d.network = p.network AND d.package_path = p.path) AS imports
 		FROM packages p WHERE p.network = ?
 		ORDER BY p.block_height ASC`
 
@@ -156,7 +168,8 @@ func (d *DB) ContractMapNodes(network string, since time.Time) ([]ContractNode, 
 		var blockTime sql.NullString
 		var gasUsed, storageBytes sql.NullInt64
 		if err := rows.Scan(&n.Path, &n.Name, &n.Creator, &n.DeployHeight, &blockTime,
-			&n.IsRealm, &n.Calls, &n.UniqueCallers, &gasUsed, &storageBytes); err != nil {
+			&n.IsRealm, &n.Calls, &n.UniqueCallers, &gasUsed, &storageBytes,
+			&n.Importers, &n.Imports); err != nil {
 			return nil, err
 		}
 		n.DeployedAt = blockTime.String

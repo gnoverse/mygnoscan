@@ -144,6 +144,22 @@ func TestContractMapNodes(t *testing.T) {
 	if one.DeployedAt == "" {
 		t.Error("deployed_at empty, the map labels bubbles with it")
 	}
+	// r/a/one imports p/b/lib and is imported by r/a/two. Sizing the import
+	// view by anything else hides the packages everything depends on, because
+	// a pure package has no calls and no gas of its own.
+	if one.Imports != 1 {
+		t.Errorf("imports = %d, want 1", one.Imports)
+	}
+	if one.Importers != 1 {
+		t.Errorf("importers = %d, want 1", one.Importers)
+	}
+	if got := by["gno.land/p/b/lib"].Importers; got != 2 {
+		t.Errorf("p/b/lib importers = %d, want 2", got)
+	}
+	// The pearl rows import p/b/lib too, and must not be counted here.
+	if got := by["gno.land/p/b/lib"].Imports; got != 0 {
+		t.Errorf("p/b/lib imports = %d, want 0", got)
+	}
 }
 
 func TestContractMapNodesWindow(t *testing.T) {
