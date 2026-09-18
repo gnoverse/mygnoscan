@@ -4011,6 +4011,97 @@ async function renderSanityCharts(container) {
   }
 }
 
+// Whether we can read each chain, which is not the same question as whether
+// each chain is alive, and used to be invisible when the two disagreed.
+//
+// gno.land's mainnet indexer once rejected every query mygnoscan sent it for
+// more than a day. A fallback endpoint in the same pool answered, so the data
+// stayed fresh, this page reported the chain alive and reachable, and nothing
+// anywhere said the primary had stopped answering. That is what these two rows
+// are for: the sync result, and which endpoint is actually serving us.
+function sanitySyncSection(ov) {
+  const wrap = el('div', { className: 'section' });
+  wrap.appendChild(el('div', { className: 'section-title' }, 'sync health'));
+
+  const sync = ov.sync || {};
+  const indexers = ov.indexers || {};
+  const ids = Array.from(new Set([...Object.keys(sync), ...Object.keys(indexers)])).sort();
+  if (!ids.length) {
+    wrap.appendChild(el('div', { className: 'section-sub' },
+      'no sync passes recorded by this process (running with -sync=false, or none finished yet)'));
+    return wrap;
+  }
+
+  const table = el('table');
+  const head = el('tr');
+  ['network', 'sync', 'last success', 'serving endpoint', 'last error'].forEach(h =>
+    head.appendChild(el('th', {}, h)));
+  table.appendChild(el('thead', {}, head));
+
+  const body = el('tbody');
+  ids.forEach(id => {
+    const h = sync[id] || {};
+    const ep = indexers[id] || {};
+    const row = el('tr');
+
+    const netCell = el('td');
+    netCell.appendChild(netDotEl(id));
+    netCell.append(id);
+    row.appendChild(netCell);
+
+    // Three states, not two: never attempted is not the same as failing, and
+    // colouring it red would make the page cry wolf on every restart.
+    let status;
+    if (h.passes === undefined || h.passes === 0) {
+      status = el('span', { style: { color: 'var(--fg2)' } }, 'not started');
+    } else if (h.healthy) {
+      status = el('span', { style: { color: '#51cf66', fontWeight: 'bold' } }, '● ok');
+    } else {
+      status = el('span', { style: { color: '#ff6b6b', fontWeight: 'bold' } },
+        '● failing (' + fmtNum(h.consecutive_failures || 0) + ' in a row)');
+    }
+    row.appendChild(el('td', {}, status));
+
+    row.appendChild(el('td', {}, h.last_success_at ? timeEl(h.last_success_at) : el('span', { style: { color: 'var(--fg2)' } }, 'never')));
+
+    // The endpoint in use, and how many it could have used. A pool quietly
+    // down to its last working member reads as "1 of 2" here.
+    const epCell = el('td');
+    if (ep.active) {
+      epCell.appendChild(el('span', { style: { fontSize: '11px' } }, ep.active));
+      if ((ep.pool || []).length > 1) {
+        const isPrimary = ep.pool[0] === ep.active;
+        epCell.appendChild(el('span', {
+          style: { color: isPrimary ? 'var(--fg2)' : '#ffd43b', marginLeft: '6px', fontSize: '11px' },
+        }, isPrimary ? '(primary of ' + ep.pool.length + ')' : '(fallback, primary not selected)'));
+      }
+    } else {
+      epCell.appendChild(el('span', { style: { color: 'var(--fg2)' } }, '-'));
+    }
+    row.appendChild(epCell);
+
+    // Kept after recovery, with its timestamp, so a network flapping between
+    // success and failure is visible rather than erased by the next good pass.
+    const errCell = el('td', { style: { fontSize: '11px' } });
+    if (h.last_error) {
+      errCell.appendChild(el('span', { style: { color: h.healthy ? 'var(--fg2)' : '#ff6b6b' } },
+        h.last_error.length > 160 ? h.last_error.slice(0, 160) + '\u2026' : h.last_error));
+      if (h.last_error_at) {
+        errCell.append(' ');
+        errCell.appendChild(timeEl(h.last_error_at));
+      }
+    } else {
+      errCell.appendChild(el('span', { style: { color: 'var(--fg2)' } }, '-'));
+    }
+    row.appendChild(errCell);
+
+    body.appendChild(row);
+  });
+  table.appendChild(body);
+  wrap.appendChild(table);
+  return wrap;
+}
+
 async function loadSanity() {
   const container = clear('sanity-content');
   skeletonBlock(container);
@@ -4058,6 +4149,8 @@ async function loadSanity() {
     cards.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'active addrs 24h'), el('span', { className: 'value' }, fmtNum(ov.active_addresses_24h))));
     cards.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'new pkgs 7d'), el('span', { className: 'value' }, fmtNum(ov.new_packages_7d))));
     container.appendChild(cards);
+
+    container.appendChild(sanitySyncSection(ov));
 
     // Wire up sticky subbar controls (shared for all sanity charts)
     let chartsDiv, storageChartsDiv, realmSel;

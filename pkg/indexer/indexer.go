@@ -141,6 +141,24 @@ func newIndexerClient(urls []string, timeout time.Duration) *Client {
 }
 
 // activeURL is the endpoint currently in use, or "" when none was configured.
+// ActiveURL is the endpoint this pool is currently selecting, and Endpoints is
+// every endpoint it may select from.
+//
+// Exported for the sanity page. A pool of two where one member answers nothing
+// looks identical from outside to a pool of two that are both healthy, which is
+// how gno.land's mainnet indexer rejected every query for more than a day
+// behind a working fallback without anything saying so.
+func (c *Client) ActiveURL() string { return c.activeURL() }
+
+// Endpoints lists the pool's members in configured order.
+func (c *Client) Endpoints() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]string, len(c.urls))
+	copy(out, c.urls)
+	return out
+}
+
 func (c *Client) activeURL() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
