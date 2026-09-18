@@ -301,6 +301,9 @@ html.embed body { background: transparent; }
 html.embed .container { padding-top: 0; padding-bottom: 0; max-width: none; }
 /* Highlight on hover (addresses, tx hashes, event types, etc) */
 [data-hl].hl-active { outline: 2px solid #4ecdc4; outline-offset: 1px; background: rgba(78, 205, 196, 0.15); border-radius: 2px; }
+/* The same highlight on a map bubble. outline and background are no-ops on an
+   SVG shape, so it is drawn as a stroke instead. */
+circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1; stroke-dasharray: none; }
 @media (max-width: 768px) { .stats-bar { gap: 12px; } .stat .value { font-size: 16px; } .search-box input { width: 160px; } nav { gap: 8px; } }
 </style>
 </head>
@@ -8367,6 +8370,10 @@ function renderContractMap() {
     .attr('marker-end', showArrows ? 'url(#contract-arrow)' : null);
 
   const nodeEl = zoomG.append('g').selectAll('circle').data(nodes).join('circle')
+    // The explorer already cross-highlights every occurrence of a value on
+    // hover, keyed by data-hl. Joining that group is all it takes for a bubble
+    // and its row in the rankings to light up together, in both directions.
+    .attr('data-hl', d => 'realm:' + d.path)
     .attr('r', radius)
     .attr('fill', d => namespaceColor(d.namespace))
     .attr('fill-opacity', d => d.parked ? 0.25 : 0.8)
@@ -8690,6 +8697,10 @@ function contractRankCard(title, rows) {
     // local shortening here produced rows that looked like nothing else on the
     // site and dropped the icon entirely.
     const cell = el('div', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: '0' } });
+    // Same key the bubble carries, so hovering either one lights up both.
+    // Addresses need no key here: addrLink already sets its own, which is why
+    // hovering a deployer highlights that address everywhere it appears.
+    if (r.hl) cell.setAttribute('data-hl', r.hl);
     cell.appendChild(r.el);
     row.appendChild(cell);
     row.appendChild(el('span', { style: { color: 'var(--fg2)', whiteSpace: 'nowrap' } }, r.value));
@@ -8717,12 +8728,13 @@ function renderContractRankings() {
 
   const metric = CONTRACT_METRICS[_contracts.metric];
   const busiest = nodes.slice().sort((a, b) => metric.get(b) - metric.get(a)).slice(0, 10)
-    .map(n => ({ el: realmPathEl(n.path, network), value: fmtNum(metric.get(n)) }));
+    .map(n => ({ el: realmPathEl(n.path, network), hl: 'realm:' + n.path, value: fmtNum(metric.get(n)) }));
   root.appendChild(contractRankCard(metric.rank, busiest));
 
   const newest = nodes.slice().sort((a, b) => b.deploy_height - a.deploy_height).slice(0, 10)
     .map(n => ({
       el: realmPathEl(n.path, network),
+      hl: 'realm:' + n.path,
       value: n.deployed_at ? n.deployed_at.slice(0, 10) : '#' + fmtNum(n.deploy_height),
     }));
   root.appendChild(contractRankCard('newest deploys', newest));

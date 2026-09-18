@@ -227,3 +227,42 @@ test('the scale switches both ways and says which is active', async ({ page }) =
   expect(page.url()).toContain('scale=linear');
   expect(await isActive('linear')).toBe(true);
 });
+
+// Hovering a bubble lights up its row in the cards below, and hovering the row
+// lights up the bubble. Both directions come from the explorer's existing
+// data-hl group, so the test is really asserting the map joined it.
+// The force layout has to stop before a hover means anything: a bubble still
+// drifting moves out from under the cursor between the hover and the
+// assertion, which fires mouseout and clears the highlight.
+async function waitForMapSettled(page) {
+  await page.waitForFunction(() => {
+    const c = document.querySelector('#contract-map svg circle');
+    if (!c) return false;
+    const now = c.getAttribute('cx');
+    const settled = window.__lastCx === now;
+    window.__lastCx = now;
+    return settled;
+  }, null, { timeout: 30_000, polling: 400 });
+}
+
+test('hovering a bubble highlights its ranking row, and the reverse', async ({ page }) => {
+  await openMap(page);
+  await waitForMapSettled(page);
+
+  // The biggest bubble under the default metric is the top row of the first
+  // card, so the two are guaranteed to be about the same contract.
+  const topRow = page.locator('#contract-rankings [data-hl^="realm:"]').first();
+  const key = await topRow.getAttribute('data-hl');
+  const bubble = page.locator(`#contract-map svg circle[data-hl="${key}"]`);
+  await expect(bubble).toHaveCount(1);
+
+  await bubble.hover({ force: true });
+  await expect(topRow).toHaveClass(/hl-active/);
+  await expect(bubble).toHaveClass(/hl-active/);
+
+  await page.mouse.move(0, 0);
+  await expect(topRow).not.toHaveClass(/hl-active/);
+
+  await topRow.hover();
+  await expect(bubble).toHaveClass(/hl-active/);
+});
