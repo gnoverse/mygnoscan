@@ -10,6 +10,7 @@ import (
 	"github.com/moul/mygnoscan/pkg/config"
 	"github.com/moul/mygnoscan/pkg/indexer"
 	"github.com/moul/mygnoscan/pkg/store"
+	"github.com/moul/mygnoscan/pkg/syncer"
 )
 
 func (a *API) HandleStats(w http.ResponseWriter, r *http.Request) {
@@ -216,6 +217,45 @@ func (a *API) HandleTimeSeriesCallers(w http.ResponseWriter, r *http.Request) {
 	JSONResponse(w, pts)
 }
 
+// sanityResponse is the stored overview plus the two things that say whether
+// *we* can read the chain, as opposed to whether the chain is running.
+//
+// Kept beside the overview rather than inside it: SanityLiveness describes a
+// chain, and neither of these does. Sync health describes this process, and
+// the endpoint describes our configuration.
+type sanityResponse struct {
+	*store.SanityOverview
+	// Sync is keyed by network, and carries one entry per network that has
+	// attempted a pass. Absent entirely when this process runs no sync loop.
+	Sync map[string]syncer.NetworkHealth `json:"sync,omitempty"`
+	// Indexers names, per network, the endpoint the pool is currently
+	// selecting and the full set it may select from. A pool silently down to
+	// its last working member is the failure this exists to make visible.
+	Indexers map[string]endpointView `json:"indexers,omitempty"`
+}
+
+type endpointView struct {
+	Active string   `json:"active"`
+	Pool   []string `json:"pool"`
+}
+
+// endpointsFor reports which endpoint each network is being served by.
+func (a *API) endpointsFor(networks []string) map[string]endpointView {
+	out := map[string]endpointView{}
+	for _, id := range networks {
+		client := a.clientFor(id)
+		if client == nil {
+			continue
+		}
+		pool := client.Endpoints()
+		if len(pool) == 0 {
+			continue
+		}
+		out[id] = endpointView{Active: client.ActiveURL(), Pool: pool}
+	}
+	return out
+}
+
 func (a *API) HandleSanityOverview(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
 	ov, err := a.db.GetSanityOverview(network)
@@ -223,6 +263,7 @@ func (a *API) HandleSanityOverview(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, err.Error(), 500)
 		return
 	}
+	resp := sanityResponse{SanityOverview: ov, Sync: a.syncHealth.Snapshot()}
 	// Chain height, last block time and liveness always come from the live
 	// indexer. They are also the figures that cannot be merged: there is no
 	// such thing as the height of four chains at once.
@@ -232,7 +273,15 @@ func (a *API) HandleSanityOverview(w http.ResponseWriter, r *http.Request) {
 			ov.ChainHeight, ov.LastBlockTime = live.ChainHeight, live.LastBlockTime
 			ov.SecondsSinceBlock, ov.IsAlive = live.SecondsSinceBlock, live.IsAlive
 		}
-		JSONResponse(w, ov)
+		resp.SanityOverview = ov
+		resp.Indexers = a.endpointsFor([]string{network})
+		// One network selected, so the other chains' sync records are noise.
+		if h, ok := resp.Sync[network]; ok {
+			resp.Sync = map[string]syncer.NetworkHealth{network: h}
+		} else {
+			resp.Sync = nil
+		}
+		JSONResponse(w, resp)
 		return
 	}
 
@@ -259,7 +308,13 @@ func (a *API) HandleSanityOverview(w http.ResponseWriter, r *http.Request) {
 			ov.ByNetwork[n.ID] = store.SanityLiveness{}
 		}
 	}
-	JSONResponse(w, ov)
+	ids := make([]string, 0, len(a.networks))
+	for _, n := range a.networks {
+		ids = append(ids, n.ID)
+	}
+	resp.SanityOverview = ov
+	resp.Indexers = a.endpointsFor(ids)
+	JSONResponse(w, resp)
 }
 
 // livenessOf reads one chain's tip. An unreachable indexer reports Reachable

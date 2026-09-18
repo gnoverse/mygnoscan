@@ -100,14 +100,24 @@ func run() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Written by the sync goroutines below, read by the sanity endpoint.
+	syncHealth := syncer.NewRegistry()
+
 	// Sync data from indexer (one goroutine per network)
+	//
+	// Every pass records its outcome, success or failure, so the sanity page
+	// can say whether we are managing to read each chain. The log line alone
+	// was not enough: a pass that fails every time for a day looks, from every
+	// surface the explorer offers, exactly like one that never fails.
 	if *syncOnStart {
 		for _, n := range cfg.Networks {
 			go func(net config.NetworkConfig) {
 				sy := syncer.NewSyncer(syncClients[net.ID], db, analyzer, net.ID)
 				sy.SetBlockHistoryDays(*blockHistoryDays)
 				log.Printf("[%s] starting initial sync...", net.ID)
-				if err := sy.SyncAll(ctx); err != nil {
+				err := sy.SyncAll(ctx)
+				syncHealth.Record(net.ID, err)
+				if err != nil {
 					log.Printf("[%s] sync error: %v", net.ID, err)
 				}
 				log.Printf("[%s] initial sync complete", net.ID)
@@ -119,7 +129,9 @@ func run() error {
 					case <-ctx.Done():
 						return
 					case <-ticker.C:
-						if err := sy.SyncAll(ctx); err != nil {
+						err := sy.SyncAll(ctx)
+						syncHealth.Record(net.ID, err)
+						if err != nil {
 							log.Printf("[%s] sync error: %v", net.ID, err)
 						}
 					}
@@ -173,6 +185,7 @@ func run() error {
 
 	// Set up API routes
 	api := httpapi.NewAPI(db, clients, cfg.Networks, analyzer)
+	api.SetSyncHealth(syncHealth)
 
 	// A network pairs an indexer with an RPC, and nothing checked they serve the
 	// same chain. Verify before serving rather than after someone reads a

@@ -20,6 +20,7 @@ import (
 	"github.com/moul/mygnoscan/pkg/config"
 	"github.com/moul/mygnoscan/pkg/indexer"
 	"github.com/moul/mygnoscan/pkg/store"
+	"github.com/moul/mygnoscan/pkg/syncer"
 )
 
 type API struct {
@@ -28,6 +29,12 @@ type API struct {
 	networks []config.NetworkConfig
 	analyzer *analyzer.Analyzer
 	health   *healthTracker
+
+	// syncHealth is how the sanity page answers "are our sync passes
+	// succeeding", which chain liveness cannot: a chain can be producing
+	// blocks perfectly while every query we send about it fails. Nil in the
+	// tools and tests that run no sync loop, and nil-safe for that reason.
+	syncHealth *syncer.Registry
 
 	// rpcOK records, per network, whether its RPC has been confirmed to serve
 	// the same chain as its indexer. Written by a background re-check and read
@@ -47,6 +54,13 @@ func NewAPI(db *store.DB, clients map[string]*indexer.Client, networks []config.
 		health:   newHealthTracker(),
 	}
 }
+
+// SetSyncHealth hands the API the registry the sync goroutines write to.
+//
+// A setter rather than a constructor argument: the API is built before the
+// sync loops start, and every test and tool that constructs one runs no sync
+// at all.
+func (a *API) SetSyncHealth(r *syncer.Registry) { a.syncHealth = r }
 
 func JSONResponse(w http.ResponseWriter, data any) {
 	w.Header().Set("Content-Type", "application/json")

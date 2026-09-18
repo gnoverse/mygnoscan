@@ -80,3 +80,26 @@ test('the realm list pages and every row carries its network', async ({ page }) 
 
   expect(seen.jsErrors).toEqual([]);
 });
+
+// The sanity page gained a section that answers "can we read this chain",
+// which is a different question from the chain being alive. The e2e binary
+// runs with -sync=false, so the honest answer here is that nothing has been
+// attempted, and saying so is the assertion: the section must not imply
+// health, and must not imply failure either.
+test('the sanity page says whether our sync passes are succeeding', async ({ page }) => {
+  const seen = watch(page);
+  await page.goto('/sanity');
+  await settle(page);
+
+  const content = page.locator('#sanity-content');
+  await expect(content.getByText('sync health')).toBeVisible();
+  // -sync=false, so every network reads "not started" rather than ok or
+  // failing. Three states, and this is the one that must not raise an alarm.
+  await expect(content).toContainText('not started');
+  // The endpoint each network is being served by is the other half: a pool
+  // silently down to one working member is invisible without it.
+  await expect(content).toContainText('/graphql/query');
+
+  expect(seen.jsErrors).toEqual([]);
+  expect(unexpected(seen.failedRequests)).toEqual([]);
+});

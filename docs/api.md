@@ -119,6 +119,20 @@ fact.
 | `GET /api/storage/{path...}` | storage events for a package. **Requires `network`**: the figures are denominated amounts and blending chains would be meaningless |
 | `GET /api/events/{path...}` | events emitted by a package. Bounded: `limit` defaults to 200, capped at 2000. In all-networks mode it queries every chain and tags each row with its `network` |
 
+### Sync health versus chain liveness
+
+`by_network` answers "is this chain producing blocks". `sync` answers "are we
+managing to read it", and the two come apart: `indexer.gno.land` once rejected
+every query mygnoscan sent it for more than a day while liveness stayed green,
+because a fallback endpoint in the same pool was answering. Nothing surfaced
+that the primary had stopped, which is why `indexers` names the endpoint
+actually serving each network alongside the pool it was chosen from.
+
+`sync` covers this process only and is absent before the first pass finishes, so
+an instance started with `-sync=false` reports no sync state rather than a
+failing one. `last_error` survives a later success, with `last_error_at` beside
+it, because a network flapping between the two is the case most worth seeing.
+
 ## Contracts map
 
 Powers `/contracts`: one bubble per deployed package, clustered by namespace,
@@ -185,7 +199,7 @@ labels this figure "recent" for the same reason.
 | `GET /api/inert/queue` | every package currently parked under the "inert" code submission policy, newest submission first. Read live over RPC (`vm/qinertpaths` for the path list, `vm/qpkgmeta_json` per path for creator/height/reason), cached 20s per network — vm/qinertpaths returns bare paths, so each one needs its own metadata round trip, fanned out concurrently |
 | `GET /api/inert/history` | recent `MsgEnablePackage`/`MsgRejectPackage` activity plus approval-speed stats (`stats.median_wait_blocks`/`median_wait_seconds` etc — the gap between a submission's height, pinned by the enabling message itself, and the block its approval landed in) |
 | `GET /api/inert/package/{path...}` | one path's current `vm/qpkgmeta_json` status plus its full submission history — every `MsgAddPackage`/`MsgEnablePackage`/`MsgRejectPackage` naming it, chronological, including redeploys parked while an earlier submission at the same path was still pending |
-| `GET /api/sanity/overview` | consistency counters and liveness. In all-networks mode liveness moves to `by_network`, one entry per chain, each with `reachable` |
+| `GET /api/sanity/overview` | consistency counters and liveness. In all-networks mode liveness moves to `by_network`, one entry per chain, each with `reachable`. Also carries `sync` (per network: `healthy`, `last_success_at`, `last_error`, `consecutive_failures`) and `indexers` (per network: the `active` endpoint and the full `pool`) |
 
 ## Time series
 
