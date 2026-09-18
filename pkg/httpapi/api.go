@@ -778,6 +778,8 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/govdao", a.HandleGovDAO)
 	mux.HandleFunc("GET /api/govdao/overview", a.HandleGovDAOOverview)
 	mux.HandleFunc("GET /api/govdao/proposals/{id}", a.HandleGovDAOProposal)
+	mux.HandleFunc("GET /api/contracts/map", a.HandleContractsMap)
+	mux.HandleFunc("GET /api/contracts/edges", a.HandleContractsEdges)
 	mux.HandleFunc("GET /api/inert/queue", a.HandleInertQueue)
 	mux.HandleFunc("GET /api/inert/history", a.HandleInertHistory)
 	mux.HandleFunc("GET /api/inert/package/{path...}", a.HandleInertPackage)

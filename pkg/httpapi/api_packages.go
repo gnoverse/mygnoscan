@@ -169,17 +169,9 @@ func (a *API) stampInertStatus(ctx context.Context, items []store.PackageInfo) {
 		byNetwork[item.Network] = append(byNetwork[item.Network], i)
 	}
 	for network, idxs := range byNetwork {
-		rpcURL := a.rpcURLFor(network)
-		if rpcURL == "" {
+		parked := a.parkedPaths(ctx, network)
+		if len(parked) == 0 {
 			continue
-		}
-		queue, err := FetchInertQueue(ctx, network, rpcURL)
-		if err != nil || len(queue) == 0 {
-			continue
-		}
-		parked := make(map[string]bool, len(queue))
-		for _, q := range queue {
-			parked[q.Path] = true
 		}
 		for _, i := range idxs {
 			if parked[items[i].Path] {
