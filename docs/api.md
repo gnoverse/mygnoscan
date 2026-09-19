@@ -255,6 +255,75 @@ Reads degrade per key. One rejected query produces one `error` row and leaves
 the rest of the page intact, which matters because an odd chain state is exactly
 when someone opens this.
 
+## Chain health
+
+Powers the diagnosis and heartbeat sections of `/sanity`, plus the header chip
+that appears on every page when a network is degraded.
+
+| endpoint | description |
+|---|---|
+| `GET /api/sanity/overview` | as before, plus `nodes` and `diagnosis`, keyed by network |
+| `GET /api/health/heartbeat` | block cadence per network. `window` = `5m` (default), `30m`, `3h`, which select 10s, 60s and 360s cells. Always every configured network, never just the selected one |
+
+### Why the node is asked directly
+
+Every liveness figure on this response other than `nodes` comes from the
+indexer, and the indexer cannot distinguish a chain that stopped from a data
+source we have lost. Both read as unreachable, and they need different people to
+fix them.
+
+`nodes` is the node's own account, read over RPC: height, whether it is catching
+up, the live consensus round, peer count and mempool depth. `diagnosis` combines
+it with the indexer's view into one verdict:
+
+| `state` | meaning |
+|---|---|
+| `alive` | blocks advancing, nothing to do |
+| `syncing` | the node is catching up |
+| `stale` | no recent block, but consensus is still advancing |
+| `indexer_down` | the chain is producing blocks and our indexer is not answering |
+| `wedged` | consensus has not advanced, with the height, round and step it stopped on |
+| `node_unreachable` | the node did not answer, so live state is unavailable |
+| `unknown` | neither source answered |
+
+`healthy` is true only for `alive`, so a badge does not have to keep its own
+list of which states are bad.
+
+The load-bearing field is `round_age_seconds`, derived from
+`/consensus_state`'s `round_state.start_time`. A stopped node answers `/status`
+with a plausible height forever, which is why any check written as a floor
+(`height >= 1`) passes on a chain frozen for months. The round start is
+refreshed every height, so its age is seconds when things are fine and weeks
+when they are not, with no baseline to keep and no second sample to take. Past
+120 seconds, matching the threshold `is_alive` already uses, the verdict is
+`wedged` and names the step.
+
+### This probe talks to unverified endpoints, on purpose
+
+Every other RPC caller here goes through the verified endpoint, which is
+withheld until `VerifyRPCChains` has confirmed it serves the same chain as the
+indexer. That verification reads block 1 *from the indexer*, so a network whose
+indexer is gone can never have a verified RPC, and routing this probe through it
+would blind the page to exactly the case it exists for.
+
+Withholding is right for balances, where an unverified endpoint could serve a
+figure from another chain and nobody would see it. Here the node's identity is
+part of what is being reported: each entry carries the `chain_id` it claims and
+a `verified` flag, so a mismatch surfaces instead of being silently trusted.
+
+### The heartbeat is sync coverage, not chain cadence
+
+`/api/health/heartbeat` is built from the local `blocks` table, so it costs one
+indexed range scan per network and shows the same history after a reload. The
+consequence is worth stating: a network this instance is not successfully
+syncing has an empty strip even when its chain is fine, and the newest cells
+trail the tip by up to one sync interval. That is why the strip sits beside the
+diagnosis rather than replacing it.
+
+Cells are anchored to `now`, not to the newest block. A grid built from the last
+block shows a full strip for a chain that stopped an hour ago, which is the one
+answer it must never give.
+
 ## Transactions and blocks
 
 | endpoint | description |

@@ -309,6 +309,11 @@ footer a:hover { color: var(--accent); }
    left sapphire and staging unstyled. */
 .net-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: middle; flex-shrink: 0; }
 .net-swatch { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+/* Chain health, on every page. Hidden entirely while everything is alive: a
+   permanent green light is something a reader stops seeing, and the only job
+   here is to be noticed on the day it is not green. */
+.health-chip { display: none; margin-left: 8px; font-size: 11px; font-weight: bold; cursor: pointer; white-space: nowrap; }
+.health-chip.show { display: inline-block; }
 /* Live mode */
 .live-btn { background: var(--bg2); border: 1px solid var(--border); color: var(--fg2); padding: 4px 10px; border-radius: 4px; font-family: var(--mono); font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 6px; }
 .live-btn:hover { border-color: var(--accent); }
@@ -399,7 +404,7 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
       <span class="kbd-hint" aria-hidden="true">/</span>
       <div id="search-results"></div>
     </div>
-    <span class="net-swatch" id="network-swatch" title=""></span><select class="network-select" id="network-select" onchange="onNetworkChange()"></select>
+    <span class="net-swatch" id="network-swatch" title=""></span><select class="network-select" id="network-select" onchange="onNetworkChange()"></select><a class="health-chip" id="health-chip" onclick="navigate('/sanity')" title=""></a>
     <button class="live-btn" id="live-toggle" onclick="toggleLive()"><span class="live-dot"></span><span id="live-label"> live</span></button>
   </div>
   <div id="refresh-bar" aria-hidden="true"></div>
@@ -1557,6 +1562,7 @@ function onNetworkChange() {
   history.replaceState(null, '', newUrl);
   renderFooterIndexer();
   renderNetworkSwatch();
+  refreshHealthChip();
   // Namespace ownership is per chain, so it is reloaded rather than carried
   // across. Repaint when it lands: the switch itself does not wait on a network
   // round-trip, so the first paint may show paths without their owner's mark.
@@ -1696,6 +1702,69 @@ function renderNetworkSwatch() {
   }
   sw.style.background = netColor(net);
   sw.title = net;
+}
+
+// The health chip: the chain diagnosis, on every page rather than only on the
+// one a reader has to go looking for.
+//
+// #212's lesson in one line. Staging was wedged for ten weeks and the only
+// places that could have said so were a page nobody opens on purpose and two
+// liveness checks written as height floors. The chip is silent while every
+// network is alive, and the moment one is not it says which and why, from
+// wherever the reader happens to be.
+//
+// The worst verdict wins in all-networks mode. A reader does not need to know
+// that two of three chains are fine.
+const HEALTH_SEVERITY = ['alive', 'syncing', 'stale', 'indexer_down', 'unknown', 'node_unreachable', 'wedged'];
+
+// 60s, and only ever one in flight. The endpoint is behind the 30s response
+// cache with a stale window on top, so this costs the server a refresh at most
+// twice a minute however many tabs are open.
+const HEALTH_POLL_MS = 60_000;
+let _healthTimer = null;
+let _healthInFlight = false;
+
+function renderHealthChip(diagnosis) {
+  const chip = document.getElementById('health-chip');
+  if (!chip) return;
+  const entries = Object.entries(diagnosis || {});
+  let worst = null, worstRank = -1;
+  for (const [netId, d] of entries) {
+    const rank = HEALTH_SEVERITY.indexOf(d && d.state);
+    if (rank > worstRank) { worstRank = rank; worst = [netId, d]; }
+  }
+  if (!worst || worstRank <= 0) {
+    chip.classList.remove('show');
+    chip.textContent = '';
+    chip.title = '';
+    return;
+  }
+  const [netId, d] = worst;
+  const style = DIAG_STYLE[d.state] || DIAG_STYLE.unknown;
+  chip.textContent = '● ' + netId + ' ' + style.label;
+  chip.style.color = style.color;
+  chip.title = (d.detail || '') + '\n\nclick for the full diagnosis';
+  chip.classList.add('show');
+}
+
+async function refreshHealthChip() {
+  if (_healthInFlight) return;
+  _healthInFlight = true;
+  try {
+    const ov = await api('sanity/overview');
+    renderHealthChip(ov.diagnosis);
+  } catch (_) {
+    // A failed poll says nothing about the chain, so it must not paint a
+    // warning: inventing one is how a health indicator stops being believed.
+  } finally {
+    _healthInFlight = false;
+  }
+}
+
+function startHealthPolling() {
+  if (_healthTimer) clearInterval(_healthTimer);
+  refreshHealthChip();
+  _healthTimer = setInterval(refreshHealthChip, HEALTH_POLL_MS);
 }
 function netSuffix(n) {
   const net = (n !== undefined ? n : null) || getNetwork();
@@ -4393,6 +4462,246 @@ async function renderSanityCharts(container) {
 // stayed fresh, this page reported the chain alive and reachable, and nothing
 // anywhere said the primary had stopped answering. That is what these two rows
 // are for: the sync result, and which endpoint is actually serving us.
+// --- Chain diagnosis and the heartbeat strip --------------------------------
+//
+// The page used to report liveness from the indexer alone, which cannot tell a
+// stopped chain from a data source we have lost. Both read as "unreachable",
+// and they need different people to fix them. The server now asks the node
+// directly and returns a verdict per network; these render it.
+
+// Colour and wording per verdict. Only `alive` is green: every other state is
+// something a reader should look at, and three shades of amber would just be
+// decoration.
+const DIAG_STYLE = {
+  alive: { color: '#51cf66', label: 'alive' },
+  syncing: { color: '#ffd43b', label: 'syncing' },
+  stale: { color: '#ffd43b', label: 'stale' },
+  indexer_down: { color: '#ffd43b', label: 'indexer down' },
+  wedged: { color: '#ff6b6b', label: 'wedged' },
+  node_unreachable: { color: '#ff6b6b', label: 'node unreachable' },
+  unknown: { color: 'var(--fg2)', label: 'unknown' },
+};
+
+function diagBadgeEl(diag) {
+  if (!diag || !diag.state) return null;
+  const s = DIAG_STYLE[diag.state] || DIAG_STYLE.unknown;
+  const badge = el('span', { style: { color: s.color, fontWeight: 'bold' } }, '● ' + s.label);
+  // The sentence carries the numbers that make the verdict checkable, so it is
+  // always reachable even where only the badge fits.
+  if (diag.detail) badge.title = diag.detail;
+  return badge;
+}
+
+// sanityDiagnosisSection is the node's own account, beside the indexer's.
+//
+// Both heights are shown because they disagree exactly when one of the two is
+// behind, and that disagreement is otherwise invisible: a node 500 blocks
+// behind the network still answers /status with the right chain id.
+function sanityDiagnosisSection(ov) {
+  const wrap = el('div', { className: 'section' });
+  wrap.appendChild(el('div', { className: 'section-title' }, 'chain diagnosis'));
+  wrap.appendChild(el('div', { className: 'section-sub' },
+    'read from each network’s own node, not through the indexer. a chain that stopped and an indexer '
+    + 'we cannot reach look identical from the indexer side, and they are not the same problem.'));
+
+  const nodes = ov.nodes || {};
+  const diags = ov.diagnosis || {};
+  const ids = Array.from(new Set([...Object.keys(diags), ...Object.keys(nodes)])).sort();
+  if (!ids.length) {
+    wrap.appendChild(el('div', { className: 'section-sub' }, 'no node endpoint is configured for any network'));
+    return wrap;
+  }
+
+  const table = el('table');
+  const head = el('tr');
+  ['network', 'verdict', 'node height', 'consensus round', 'peers', 'mempool', 'what it means'].forEach(h =>
+    head.appendChild(el('th', {}, h)));
+  table.appendChild(el('thead', {}, head));
+
+  const body = el('tbody');
+  for (const id of ids) {
+    const n = nodes[id] || {};
+    const row = el('tr');
+
+    const netCell = el('td', { style: { verticalAlign: 'top' } });
+    netCell.appendChild(netDotEl(id));
+    netCell.append(id);
+    // What the node says it is, and whether anything cross-checked that. This
+    // probe talks to the configured endpoint rather than the one verified
+    // against the indexer, because a chain whose indexer is gone could not
+    // otherwise be diagnosed at all. The trade is stated here rather than
+    // hidden.
+    if (n.chain_id) {
+      const idLine = el('div', { style: { color: 'var(--fg2)', fontSize: '11px' } }, n.chain_id);
+      if (!n.verified) {
+        // Spaced away from the id: "staging?" reads as part of the chain name.
+        const mark = el('span', { style: { color: '#ffd43b', marginLeft: '4px' } }, ' (unverified)');
+        mark.title = 'this endpoint has not been cross-checked against the indexer, '
+          + 'so the chain id above is the node’s own claim';
+        idLine.appendChild(mark);
+      }
+      netCell.appendChild(idLine);
+    }
+    row.appendChild(netCell);
+
+    row.appendChild(el('td', { style: { verticalAlign: 'top' } }, diagBadgeEl(diags[id]) || el('span', {}, '-')));
+    row.appendChild(el('td', { style: { verticalAlign: 'top' } }, n.height ? fmtNum(n.height) : '-'));
+
+    // The round, and how long it has sat there. The age is the diagnostic: on
+    // a healthy chain it resets every block, so seconds is normal and anything
+    // larger is the finding.
+    const roundCell = el('td', { style: { verticalAlign: 'top' } });
+    if (n.round_height) {
+      roundCell.append(n.round_height + '/' + (n.round || 0) + '/' + (n.step || 0));
+      if (n.step_name) roundCell.append(' ' + n.step_name);
+      if (n.round_age_seconds !== undefined) {
+        const old = n.round_age_seconds > 120;
+        roundCell.appendChild(el('div', {
+          style: { color: old ? '#ff6b6b' : 'var(--fg2)', fontSize: '11px' },
+        }, 'for ' + fmtAge(n.round_age_seconds)));
+      }
+    } else {
+      roundCell.append('-');
+    }
+    row.appendChild(roundCell);
+
+    row.appendChild(el('td', {
+      style: { verticalAlign: 'top', color: n.reachable && n.peers === 0 ? '#ff6b6b' : undefined },
+    }, n.reachable ? String(n.peers || 0) : '-'));
+    row.appendChild(el('td', { style: { verticalAlign: 'top' } }, n.reachable ? String(n.mempool_txs || 0) : '-'));
+
+    // wordBreak normal because cells inherit `word-break: break-all` for
+    // identifiers, and this column is prose: without it "Prevote" wraps as
+    // "P / revote" and a height splits across two lines.
+    row.appendChild(el('td', { style: { verticalAlign: 'top' } }, el('div', {
+      style: {
+        color: 'var(--fg2)', fontSize: '12px', maxWidth: '420px',
+        whiteSpace: 'normal', wordBreak: 'normal', lineHeight: '1.5',
+      },
+    }, (diags[id] || {}).detail || '')));
+
+    body.appendChild(row);
+  }
+  table.appendChild(body);
+  wrap.appendChild(table);
+  return wrap;
+}
+
+// fmtAge renders a gap the way the server does, so the two never disagree on
+// screen.
+function fmtAge(seconds) {
+  if (seconds < 60) return seconds + 's';
+  if (seconds < 3600) return Math.floor(seconds / 60) + 'm';
+  if (seconds < 86400) return Math.floor(seconds / 3600) + 'h';
+  return Math.floor(seconds / 86400) + 'd';
+}
+
+// The heartbeat strip: one row per network, one cell per interval.
+//
+// A status light says alive or not. This says cadence, which is what degrades
+// before anything trips a threshold: a chain slowing down looks different from
+// one that is fine, and different again from one that stopped.
+let _heartbeatWindow = '5m';
+
+function heartbeatSection() {
+  const wrap = el('div', { className: 'section' });
+  wrap.appendChild(el('div', { className: 'section-title' }, 'heartbeat'));
+  wrap.appendChild(el('div', { className: 'section-sub' },
+    'blocks per interval, newest on the right. drawn from what this instance has synced, so an empty '
+    + 'strip means we have no blocks for that window, which is not the same as the chain having stopped: '
+    + 'the diagnosis above is what distinguishes them.'));
+
+  const controls = el('div', { style: { display: 'flex', gap: '4px', margin: '8px 0 12px' } });
+  const body = el('div');
+  wrap.appendChild(controls);
+  wrap.appendChild(body);
+
+  for (const w of ['5m', '30m', '3h']) {
+    const btn = el('button', { className: 'pager-btn' + (_heartbeatWindow === w ? ' active' : ''), style: { padding: '3px 10px', fontSize: '12px' } }, w);
+    btn.addEventListener('click', () => {
+      _heartbeatWindow = w;
+      controls.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      loadHeartbeat(body);
+    });
+    controls.appendChild(btn);
+  }
+  loadHeartbeat(body);
+  return wrap;
+}
+
+// A generation counter, because the window buttons can be clicked faster than
+// a response arrives and the loser must not paint over the winner.
+let _heartbeatGen = 0;
+
+async function loadHeartbeat(body) {
+  const gen = ++_heartbeatGen;
+  body.textContent = '';
+  skeletonBlock(body);
+  let data;
+  try {
+    data = await api('health/heartbeat?window=' + encodeURIComponent(_heartbeatWindow));
+  } catch (err) {
+    if (gen !== _heartbeatGen) return;
+    body.textContent = '';
+    body.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '12px' } }, 'no block data for this window yet'));
+    return;
+  }
+  if (gen !== _heartbeatGen) return;
+  body.textContent = '';
+
+  const rows = data.rows || [];
+  if (!rows.length) {
+    body.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '12px' } }, 'no networks configured'));
+    return;
+  }
+  // One scale across every row, so two chains can be compared by eye. Scaling
+  // each row to its own maximum would make a chain with one block per cell look
+  // exactly like one with forty.
+  let peak = 0;
+  for (const row of rows) for (const c of (row.cells || [])) peak = Math.max(peak, c.blocks);
+
+  for (const row of rows) {
+    const line = el('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '6px' } });
+    const label = el('div', { style: { width: '90px', flex: '0 0 auto', fontSize: '12px' } });
+    label.appendChild(netDotEl(row.network));
+    label.append(row.network);
+    line.appendChild(label);
+
+    const strip = el('div', { style: { display: 'flex', gap: '2px' } });
+    for (const c of (row.cells || [])) {
+      const share = peak > 0 ? c.blocks / peak : 0;
+      const cell = el('div', {
+        style: {
+          width: '12px', height: '18px', borderRadius: '2px',
+          // An empty cell is a visible gap rather than nothing at all: the
+          // silence is the signal here.
+          background: c.blocks === 0 ? 'var(--bg3)' : 'rgba(78,205,196,' + (0.25 + 0.75 * share).toFixed(2) + ')',
+        },
+      });
+      cell.title = c.blocks + ' block' + (c.blocks === 1 ? '' : 's')
+        + (c.txs ? ', ' + c.txs + ' tx' : '')
+        + ' · ' + new Date(c.start).toLocaleTimeString();
+      strip.appendChild(cell);
+    }
+    line.appendChild(strip);
+
+    const tail = el('div', { style: { color: 'var(--fg2)', fontSize: '11px' } });
+    if (row.last_block) {
+      tail.append('last ' + fmtNum(row.last_block) + ' · ');
+      tail.appendChild(timeEl(row.last_time));
+    } else {
+      tail.append('nothing synced in this window');
+    }
+    line.appendChild(tail);
+
+    body.appendChild(line);
+  }
+
+  body.appendChild(el('div', { style: { color: 'var(--fg2)', fontSize: '11px', marginTop: '8px' } },
+    data.cell_seconds + 's per cell · busiest cell ' + peak + ' block' + (peak === 1 ? '' : 's')));
+}
+
 function sanitySyncSection(ov) {
   const wrap = el('div', { className: 'section' });
   wrap.appendChild(el('div', { className: 'section-title' }, 'sync health'));
@@ -4748,11 +5057,14 @@ async function loadSanity() {
         const value = el('span', { className: 'value' },
           live.reachable ? fmtNum(live.chain_height) + ' · ' + agoOf(live.seconds_since_block) : '-');
         const card = el('div', { className: 'stat' }, label, value);
-        card.appendChild(aliveEl(live.is_alive, live.reachable));
+        // The node's verdict wins over the indexer's guess where there is one:
+        // "wedged" and "indexer down" are both "unreachable" to the line below.
+        card.appendChild(diagBadgeEl((ov.diagnosis || {})[netId]) || aliveEl(live.is_alive, live.reachable));
         cards.appendChild(card);
       }
     } else {
-      cards.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'status'), aliveEl(ov.is_alive, true)));
+      const oneDiag = diagBadgeEl(Object.values(ov.diagnosis || {})[0]);
+      cards.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'status'), oneDiag || aliveEl(ov.is_alive, true)));
       cards.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'height'), el('span', { className: 'value' }, fmtNum(ov.chain_height))));
       cards.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'last block'), el('span', { className: 'value' }, agoOf(ov.seconds_since_block))));
     }
@@ -4766,6 +5078,8 @@ async function loadSanity() {
     cards.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'new pkgs 7d'), el('span', { className: 'value' }, fmtNum(ov.new_packages_7d))));
     container.appendChild(cards);
 
+    container.appendChild(sanityDiagnosisSection(ov));
+    container.appendChild(heartbeatSection());
     container.appendChild(sanitySyncSection(ov));
 
     // Wire up sticky subbar controls (shared for all sanity charts)
@@ -8069,7 +8383,7 @@ document.querySelectorAll('.stat-link').forEach(tile => {
 // --- Init ---
 // Labels first: they change how every address renders, and arriving after the
 // first paint would show raw addresses that then silently rewrite themselves.
-loadAddrLabels().then(loadNamespaceOwners).then(() => { initNetworkSelector(); });
+loadAddrLabels().then(loadNamespaceOwners).then(() => { initNetworkSelector(); startHealthPolling(); });
 // Not gated on anything: a proposer name arriving after the first paint just
 // means blocks/validators re-render plain until it lands, the same way a
 // watch star or an inferred label would.
