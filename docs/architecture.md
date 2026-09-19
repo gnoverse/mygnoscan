@@ -121,6 +121,33 @@ an `el()` helper throughout.
 **Polling SSE rather than WebSockets.** The indexer has no subscription API worth
 relying on, and SSE survives proxies without special configuration.
 
+**Stale-while-revalidate on both sides, rather than a faster cold path.** The
+explorer is read-only over data that moves once every 30 seconds, so "how fast is
+this query" matters far less than "was anyone made to wait for it". Two layers
+say no:
+
+- *Server* (`pkg/httpapi/cache.go`): an expired entry is served immediately and
+  refreshed behind the reader. Only an empty cache blocks. This is what removes
+  the cliff where every visitor arriving more than 30 seconds after the last one
+  paid the full cold cost — 1.8s on `/api/govdao/overview`, 7.8s on
+  `/api/accounts`.
+- *Client* (`apiSWR` in `index.html`): the last payload for every `/api` path is
+  kept in `sessionStorage`, rendered the instant a view opens, and replaced when
+  the network answers. A render function therefore runs up to twice, and has to
+  be synchronous and rebuild its container from scratch. A header chip says when
+  what is on screen came from cache, and a hairline under the header says when
+  anything is in flight.
+
+Cached *data*, never cached DOM: reviving a stored `innerHTML` would be the one
+place the DOM-construction rule below stopped holding.
+
+**Sections load independently where their sources differ in speed.** `/govdao`
+is the worked example: its activity table reads local SQLite (~130ms) and its
+proposal list waits on gov/dao's own `Render()` over RPC (~1.8s cold). They are
+two `apiSWR` calls into two containers rather than one `Promise.all`, so the fast
+half never waits for the slow one. Same shape on a realm page, where the events,
+storage and dependency tabs each load on their own.
+
 ## Known weak points
 
 Documented so they are not rediscovered as surprises:

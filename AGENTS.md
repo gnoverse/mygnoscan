@@ -45,6 +45,14 @@ Break these and things go wrong in ways that are hard to see:
 - **The frontend builds DOM, never HTML strings.** Use the `el()` helper. There is
   no `innerHTML` with interpolated data anywhere, and it should stay that way —
   the explorer renders on-chain content, all of which is attacker-controlled.
+  This is also why the optimistic-UI cache stores payloads and not rendered
+  markup: a revived `innerHTML` would be the one place this stopped being true.
+- **An `apiSWR` render function runs up to twice, and must be synchronous.**
+  Loaders paint cached data first and fresh data second, so a render has to
+  rebuild its container from scratch (appending to something a previous pass
+  filled is how you get two of everything) and must not `await` (an await
+  reopens the interleaving that rebuilding exists to close). Kick long work off
+  in an async IIFE with a generation guard, the way `renderTsCharts` does.
 - **Never commit the built binary.** `mygnoscan` and `*.db` are gitignored.
 
 ## Conventions
