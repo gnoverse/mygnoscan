@@ -439,6 +439,25 @@ func (a *API) enrichGovDAOProposals(ctx context.Context, network, rpcURL string,
 	if len(proposals) == 0 {
 		return
 	}
+	// Which proposals get the full audit. Sorted descending by ID and cut at
+	// govDAOListAuditLimit, so a chain with a long governance history pays a
+	// bounded price and the proposals anyone is still voting on are the ones
+	// covered.
+	audit := make(map[int]bool, len(proposals))
+	{
+		ids := make([]int, 0, len(proposals))
+		for _, p := range proposals {
+			ids = append(ids, p.ID)
+		}
+		sort.Sort(sort.Reverse(sort.IntSlice(ids)))
+		if len(ids) > govDAOListAuditLimit {
+			ids = ids[:govDAOListAuditLimit]
+		}
+		for _, id := range ids {
+			audit[id] = true
+		}
+	}
+
 	var wg sync.WaitGroup
 	for i := range proposals {
 		wg.Add(1)
@@ -449,12 +468,53 @@ func (a *API) enrichGovDAOProposals(ctx context.Context, network, rpcURL string,
 			p.NoPercent = detail.NoPercent
 			p.AbstainPercent = detail.AbstainPercent
 			p.AuthorAddress = resolveGnoUsernameCached(ctx, rpcURL, p.Author)
+			if !audit[p.ID] {
+				return
+			}
+			// The same audit the detail page runs, not a cheaper subset. A
+			// subset would have to either under-report, which turns this
+			// column into a false reassurance, or explain itself in a
+			// tooltip nobody reads. Every input it needs is cached, and the
+			// per-proposal render above was already fetched.
+			detail.AuthorAddress = p.AuthorAddress
+			a.AuditGovDAOProposal(ctx, network, rpcURL, &detail)
+			p.Audited = true
+			for _, s := range detail.Signals {
+				switch s.Level {
+				case SignalAlert:
+					p.Alerts++
+				case SignalWarn:
+					p.Warnings++
+				}
+			}
+			if len(detail.Signals) > 0 && detail.Signals[0].Level != SignalInfo {
+				// Signals arrive most severe first, so the head is the one
+				// worth putting in a tooltip.
+				p.TopSignal = detail.Signals[0].Title
+			}
 		}(&proposals[i])
 	}
 
 	byID := make(map[int]*GovDAOProposalSummary, len(proposals))
 	for i := range proposals {
 		byID[proposals[i].ID] = &proposals[i]
+	}
+	// Creation, exactly. The loop below can only see MsgCalls, so a proposal
+	// created by a `maketx run` script had no call to date it from and its
+	// created column read "–" — which is every proposal on mainnet created
+	// since the run-script pattern took over. The ProposalCreated event
+	// carries the ID, so this is the real creation block.
+	for _, tx := range a.proposalCreations(ctx, network) {
+		id, ok := proposalIDOf(tx)
+		if !ok {
+			continue
+		}
+		if p, ok := byID[id]; ok {
+			p.CreatedHeight, p.CreatedTime = tx.BlockHeight, tx.BlockTime
+			if tx.BlockHeight > p.LastActivityHeight {
+				p.LastActivityHeight, p.LastActivityTime = tx.BlockHeight, tx.BlockTime
+			}
+		}
 	}
 	if txs, ok := a.fetchGovDAOTransactions(ctx, network); ok {
 		for _, tx := range txs {
@@ -471,7 +531,10 @@ func (a *API) enrichGovDAOProposals(ctx context.Context, network, rpcURL string,
 				if !ok {
 					continue
 				}
-				if p.CreatedHeight == 0 || tx.BlockHeight < p.CreatedHeight {
+				// Only as a fallback now: the creation event above is
+				// authoritative, and the earliest *call* naming a proposal
+				// is its first vote, not its creation.
+				if p.CreatedHeight == 0 {
 					p.CreatedHeight, p.CreatedTime = tx.BlockHeight, tx.BlockTime
 				}
 				if tx.BlockHeight > p.LastActivityHeight {
@@ -509,6 +572,26 @@ func (a *API) HandleGovDAOProposal(w http.ResponseWriter, r *http.Request) {
 	for i := range detail.Votes {
 		detail.Votes[i].VoterAddress = resolveGnoUsernameCached(r.Context(), rpcURL, detail.Votes[i].Voter)
 	}
+	// gov/dao's two renders disagree about status: its list prints
+	// "Status: ACTIVE" for an undecided proposal, while the per-proposal
+	// render prints an accepted/rejected marker only once there is one and
+	// nothing at all before that. The detail page therefore knew less than
+	// the list it was reached from. Borrowing the list's answer costs
+	// nothing (the overview is cached) and is what makes the
+	// accepted-not-executed rule below able to fire at all.
+	if detail.Status == "" {
+		for _, p := range FetchGovDAOOverview(r.Context(), network, rpcURL).Proposals {
+			if p.ID == id && p.Status != "" {
+				detail.Status = p.Status
+				break
+			}
+		}
+	}
+	// Everything above answers "what does gov/dao say". This answers "and is
+	// that consistent with what the chain shows", which is the half of the
+	// page a reader cannot get anywhere else. Runs last because it reads the
+	// fields filled above.
+	a.AuditGovDAOProposal(r.Context(), network, rpcURL, &detail)
 	JSONResponse(w, detail)
 }
 

@@ -412,6 +412,12 @@ func (a *API) HandleStorage(w http.ResponseWriter, r *http.Request) {
 
 	storageTxs, _ := client.GetStorageEvents(r.Context(), path)
 	gasTxs, _ := client.GetGasUsageForRealm(r.Context(), path)
+	// Stamp both sets before building entries: a block height with no time
+	// next to it forces the reader to open the block page to answer "when",
+	// which is the question they actually had. One batched lookup covers
+	// every row here, deduplicated by height inside stampBlockTimes.
+	a.stampBlockTimes(r.Context(), network, client, storageTxs)
+	a.stampBlockTimes(r.Context(), network, client, gasTxs)
 
 	// Aggregate storage
 	var totalBytesDeposit, totalBytesUnlock int
@@ -419,6 +425,7 @@ func (a *API) HandleStorage(w http.ResponseWriter, r *http.Request) {
 	type StorageEntry struct {
 		TxHash      string `json:"tx_hash"`
 		BlockHeight int    `json:"block_height"`
+		BlockTime   string `json:"block_time,omitempty"`
 		Type        string `json:"type"`
 		BytesDelta  int    `json:"bytes_delta"`
 		FeeAmount   int    `json:"fee_amount"`
@@ -439,7 +446,7 @@ func (a *API) HandleStorage(w http.ResponseWriter, r *http.Request) {
 					denom = ev.FeeDelta.Denom
 					totalFeeDeposit += fee
 				}
-				entries = append(entries, StorageEntry{tx.Hash, tx.BlockHeight, "deposit", ev.BytesDelta, fee, denom})
+				entries = append(entries, StorageEntry{tx.Hash, tx.BlockHeight, tx.BlockTime, "deposit", ev.BytesDelta, fee, denom})
 			} else if ev.Typename == "StorageUnlockEvent" && ev.PkgPath == path {
 				totalBytesUnlock += ev.BytesDelta
 				fee := 0
@@ -449,7 +456,7 @@ func (a *API) HandleStorage(w http.ResponseWriter, r *http.Request) {
 					denom = ev.FeeRefund.Denom
 					totalFeeRefund += fee
 				}
-				entries = append(entries, StorageEntry{tx.Hash, tx.BlockHeight, "unlock", ev.BytesDelta, fee, denom})
+				entries = append(entries, StorageEntry{tx.Hash, tx.BlockHeight, tx.BlockTime, "unlock", ev.BytesDelta, fee, denom})
 			}
 		}
 	}
@@ -459,6 +466,7 @@ func (a *API) HandleStorage(w http.ResponseWriter, r *http.Request) {
 	type GasEntry struct {
 		TxHash      string `json:"tx_hash"`
 		BlockHeight int    `json:"block_height"`
+		BlockTime   string `json:"block_time,omitempty"`
 		GasUsed     int    `json:"gas_used"`
 		GasWanted   int    `json:"gas_wanted"`
 		GasFee      int    `json:"gas_fee"`
@@ -481,7 +489,7 @@ func (a *API) HandleStorage(w http.ResponseWriter, r *http.Request) {
 				fn = tx.Messages[0].Value.Typename
 			}
 		}
-		gasEntries = append(gasEntries, GasEntry{tx.Hash, tx.BlockHeight, tx.GasUsed, tx.GasWanted, fee, fn, tx.Success})
+		gasEntries = append(gasEntries, GasEntry{tx.Hash, tx.BlockHeight, tx.BlockTime, tx.GasUsed, tx.GasWanted, fee, fn, tx.Success})
 	}
 
 	JSONResponse(w, map[string]any{

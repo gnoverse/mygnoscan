@@ -28,6 +28,13 @@ const ROUTES = [
   ['events', '/events'],
   ['realm detail', `/realm/${HUB_ROUTE}`],
   ['address detail', `/address/${BUSY_CALLER}`],
+  // The fixture has no RPC, so gov/dao's render is unreachable and this
+  // lands on the proposal-not-found branch. That is still worth pinning:
+  // the page builds a verification panel, a timeline, a parameter diff and
+  // a code block, and every one of those has to survive being handed
+  // nothing. A proposal page with real data is verified against a live
+  // chain, not here.
+  ['govdao proposal', '/govdao/0'],
 ];
 
 for (const [name, path] of ROUTES) {
