@@ -138,3 +138,86 @@ func TestEdgeRollupsAreIncrementalAndPerChain(t *testing.T) {
 	}
 
 }
+
+// A chain reset has to take the edge rollups with it, and the row count is only
+// half of why.
+//
+// The sync cursor for these tables is MAX(last_height) over their own rows.
+// Survive a reset and they hold a dead chain's edges *and* a cursor above the
+// replacement chain's tip, so every transfer on the new chain is skipped
+// forever: RollupBankSendsSince asks for block_height > 500 on a chain that has
+// only reached 40. The graphs would go on showing the old chain, with no error
+// anywhere. Wiping the tables resets the cursor to zero as a side effect, which
+// is what makes the re-sync from the new genesis work.
+func TestChainResetClearsTheEdgeCursor(t *testing.T) {
+	db := NewTestDB(t)
+
+	if err := db.UpsertTransferEdges("staging", []TransferEdgeRow{{
+		FromAddress: "g1from", ToAddress: "g1to", Day: "2026-01-01",
+		TotalValue: 100, TxCount: 2, LastHeight: 500,
+	}}); err != nil {
+		t.Fatalf("UpsertTransferEdges: %v", err)
+	}
+	if err := db.UpsertCallerEdges("staging", []CallerEdgeRow{{
+		Caller: "g1caller", PkgPath: "gno.land/r/demo/foo", Day: "2026-01-01",
+		Calls: 3, LastHeight: 500,
+	}}); err != nil {
+		t.Fatalf("UpsertCallerEdges: %v", err)
+	}
+
+	h, ok, err := db.TransferEdgesLastHeight("staging")
+	if err != nil {
+		t.Fatalf("TransferEdgesLastHeight: %v", err)
+	}
+	if !ok || h != 500 {
+		t.Fatalf("cursor before reset = (%d, %v), want (500, true)", h, ok)
+	}
+
+	if _, err := db.DeleteNetworkData("staging"); err != nil {
+		t.Fatalf("DeleteNetworkData: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		get  func(string) (int, bool, error)
+	}{
+		{"transfer", db.TransferEdgesLastHeight},
+		{"caller", db.CallerEdgesLastHeight},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, ok, err := tc.get("staging")
+			if err != nil {
+				t.Fatalf("cursor: %v", err)
+			}
+			if ok || h != 0 {
+				t.Errorf("cursor after reset = (%d, %v), want (0, false): the new chain's rows would be skipped", h, ok)
+			}
+		})
+	}
+}
+
+// The reset is scoped: another chain's rollups are not collateral damage.
+func TestChainResetLeavesOtherChainsEdgesAlone(t *testing.T) {
+	db := NewTestDB(t)
+
+	for _, net := range []string{"staging", "mainnet"} {
+		if err := db.UpsertTransferEdges(net, []TransferEdgeRow{{
+			FromAddress: "g1from", ToAddress: "g1to", Day: "2026-01-01",
+			TotalValue: 100, TxCount: 1, LastHeight: 500,
+		}}); err != nil {
+			t.Fatalf("UpsertTransferEdges(%s): %v", net, err)
+		}
+	}
+
+	if _, err := db.DeleteNetworkData("staging"); err != nil {
+		t.Fatalf("DeleteNetworkData: %v", err)
+	}
+
+	h, ok, err := db.TransferEdgesLastHeight("mainnet")
+	if err != nil {
+		t.Fatalf("TransferEdgesLastHeight: %v", err)
+	}
+	if !ok || h != 500 {
+		t.Errorf("mainnet cursor = (%d, %v), want (500, true): staging's reset took another chain's rollup with it", h, ok)
+	}
+}
