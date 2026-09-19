@@ -55,15 +55,18 @@ type contractsEdgesResponse struct {
 	Edges   []store.ContractEdge `json:"edges"`
 }
 
-// contractsNetwork resolves the network for a map request, which unlike every
-// other endpoint may not be "all".
+// singleNetwork resolves the network for an endpoint that, unlike most, may
+// not answer for "all".
 //
-// A bubble is identified by its path, and 193 paths exist on more than one
-// chain. An all-networks map would draw one bubble carrying two chains'
-// traffic and one edge joining callers who never shared anything, so an absent
-// or "all" network resolves to the first configured one and the response says
-// which it picked.
-func (a *API) contractsNetwork(r *http.Request) string {
+// Two kinds of endpoint need this. The contracts map, because a bubble is
+// identified by its path and 193 paths exist on more than one chain: an
+// all-networks map would draw one bubble carrying two chains' traffic and one
+// edge joining callers who never shared anything. And chain configuration,
+// because there is no such thing as the parameters of three chains at once.
+//
+// In both cases an absent or "all" network resolves to the first configured one
+// and the response says which it picked, rather than blending.
+func (a *API) singleNetwork(r *http.Request) string {
 	if n := a.networkParam(r); n != "" {
 		return n
 	}
@@ -110,7 +113,7 @@ func clampParam(r *http.Request, name string, def, max int) int {
 }
 
 func (a *API) HandleContractsMap(w http.ResponseWriter, r *http.Request) {
-	network := a.contractsNetwork(r)
+	network := a.singleNetwork(r)
 	windowName := r.URL.Query().Get("window")
 	since, ok := parseContractWindow(windowName)
 	if !ok {
@@ -132,7 +135,7 @@ func (a *API) HandleContractsMap(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) HandleContractsEdges(w http.ResponseWriter, r *http.Request) {
-	network := a.contractsNetwork(r)
+	network := a.singleNetwork(r)
 	windowName := r.URL.Query().Get("window")
 	since, ok := parseContractWindow(windowName)
 	if !ok {

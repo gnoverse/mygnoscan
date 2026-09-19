@@ -343,6 +343,7 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
       <a onclick="navigate('/gas')" id="nav-gas">gas</a>
       <a onclick="navigate('/analytics')" id="nav-analytics">analytics</a>
       <a onclick="navigate('/dashboards')" id="nav-dashboards">dashboards</a>
+      <a onclick="navigate('/params')" id="nav-params">params</a>
       <a onclick="navigate('/sanity')" id="nav-sanity">sanity</a>
       <a onclick="navigate('/events')" id="nav-events">events</a>
     </nav>
@@ -448,6 +449,7 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
   <div class="view" id="view-govdao"><main><div id="govdao-content"></div></main></div>
   <div class="view" id="view-govdao-detail"><main><div id="govdao-detail-content"></div></main></div>
   <div class="view" id="view-analytics"><main><div id="analytics-content"></div></main></div>
+  <div class="view" id="view-params"><main><div id="params-content"></div></main></div>
   <div class="view" id="view-sanity"><main><div id="sanity-content"></div></main></div>
   <div class="view" id="view-contracts"><main><div id="contracts-content"></div></main></div>
   <div class="view" id="view-gas"><main><div id="gas-content"></div></main></div>
@@ -2367,6 +2369,7 @@ function route() {
   else if (path === '/gas') { view = 'gas'; }
   else if (path === '/analytics') { view = 'analytics'; }
   else if (path === '/dashboards') { view = 'dashboards'; }
+  else if (path === '/params') { view = 'params'; }
   else if (path === '/sanity') { view = 'sanity'; }
   else if (path === '/watch') { view = 'watch'; }
   else if (path.startsWith('/block/')) { view = 'block-detail'; data = parseInt(path.slice(7)); }
@@ -2410,6 +2413,7 @@ function route() {
     case 'gas': loadGas(); break;
     case 'analytics': loadAnalytics(); break;
     case 'dashboards': loadDashboards(); break;
+    case 'params': loadParams(); break;
     case 'sanity': loadSanity(); break;
     case 'block-detail': loadBlockDetail(data); break;
     case 'realm-detail': loadRealmDetail(data, urlTab); break;
@@ -4423,6 +4427,248 @@ function sanitySyncSection(ov) {
   table.appendChild(body);
   wrap.appendChild(table);
   return wrap;
+}
+
+// --- Chain parameters -------------------------------------------------------
+//
+// What this chain is currently configured to do, read live from one node.
+//
+// The page exists because on gno.land the params are the interesting state, and
+// reading any one of them today means knowing both the key and the query shape.
+// Whether a deploy parks or goes live, whether GNOT can move, and whether a halt
+// is armed are each a single key nobody can find.
+//
+// Two rules the rendering keeps, both of them about not being believed too
+// easily. The raw response is always shown next to the humanised one, because
+// the raw string is what a reader pastes into a proposal and it is the only form
+// that survives a decoding bug here. And "unset" is never rendered as "empty":
+// an empty approver list freezes every parked package on the chain, an unset one
+// is not a configuration that exists.
+
+// paramAddrList renders a list value, abbreviating a long one behind a toggle.
+// auth:p:unrestricted_addrs held 95 entries on mainnet, and a 95-row cell makes
+// the six keys around it unreadable.
+const PARAM_LIST_PREVIEW = 4;
+function paramListEl(p, network) {
+  const wrap = el('div');
+  const isAddr = v => /^g1[a-z0-9]{30,}$/.test(v);
+  const rows = el('div', { style: { display: 'flex', flexDirection: 'column', gap: '2px' } });
+  const paint = (limit) => {
+    rows.textContent = '';
+    const shown = p.list.slice(0, limit);
+    for (const v of shown) {
+      rows.appendChild(el('div', {}, isAddr(v) ? addrLink(v, network) : el('span', {}, v)));
+    }
+    if (p.list.length > limit) {
+      const more = link('show all ' + p.list.length, () => paint(p.list.length));
+      rows.appendChild(el('div', { style: { marginTop: '2px' } }, more));
+    }
+  };
+  paint(PARAM_LIST_PREVIEW);
+  wrap.appendChild(rows);
+  wrap.appendChild(el('div', { style: { color: 'var(--fg2)', fontSize: '11px', marginTop: '3px' } },
+    p.list.length === 1 ? '1 entry' : p.list.length + ' entries'));
+  return wrap;
+}
+
+// paramValueEl renders one value according to its state. The four states are
+// visually distinct on purpose: a reader scanning the page should be able to
+// tell a configured value from an absent one without reading the text.
+function paramValueEl(p, network) {
+  const wrap = el('div');
+  if (p.state === 'error') {
+    wrap.appendChild(el('div', { style: { color: 'var(--red)' } }, 'could not be read'));
+    wrap.appendChild(el('div', { style: { color: 'var(--fg2)', fontSize: '11px' } }, p.error || ''));
+    return wrap;
+  }
+  // Neither state is good or bad in itself: an empty restricted_denoms means
+  // the transfer lock is lifted, an empty pkg_approvers freezes the chain's
+  // deploy queue. So they get distinct but unjudged styling, and any verdict
+  // is left to the note, which knows which key it is talking about.
+  if (p.state === 'unset') {
+    wrap.appendChild(el('span', {
+      className: 'badge',
+      style: { color: 'var(--fg2)', border: '1px solid var(--border)' },
+      title: 'this chain has never held a value for this key',
+    }, 'unset'));
+    return wrap;
+  }
+  if (p.state === 'empty') {
+    wrap.appendChild(el('span', { className: 'badge badge-realm', title: 'the key is configured, and its value is empty' }, 'empty'));
+    wrap.appendChild(el('span', { style: { marginLeft: '8px', color: 'var(--fg2)' } }, p.raw || ''));
+    return wrap;
+  }
+  if (p.list) {
+    // No raw line under a list: the decoded entries are the raw array, item for
+    // item, so printing both says everything twice. The copy button keeps the
+    // exact response one click away, which is the part that had to survive.
+    wrap.appendChild(paramListEl(p, network));
+    wrap.appendChild(copyButton(p.raw || '', 'copy the raw value'));
+    return wrap;
+  } else {
+    // The exact response stays one hover away even when the line below is
+    // suppressed, so no rendering of this page can hide what the chain said.
+    const v = el('span', { style: { fontWeight: 'bold' }, title: p.raw || '' }, p.value || '');
+    wrap.appendChild(v);
+    wrap.appendChild(copyButton(p.value || '', 'copy the value'));
+  }
+  // The raw form under the decoded one, unless decoding only removed the JSON
+  // quotes. "inert" over inert is noise on every row; a list, a number or
+  // anything that decoded oddly is not.
+  if (p.raw && p.raw !== '"' + (p.value || '') + '"') {
+    const short = p.raw.length > 160;
+    const line = el('div', {
+      style: { color: 'var(--fg2)', fontSize: '11px', marginTop: '3px', wordBreak: 'break-all' },
+      title: 'exactly what the chain returned',
+    }, short ? p.raw.slice(0, 160) + '…' : p.raw);
+    // A truncated raw value would be uncopyable, which defeats the point of
+    // showing it: unrestricted_addrs is 95 addresses and quoting it is exactly
+    // what someone reading this row wants to do.
+    if (short) line.appendChild(copyButton(p.raw, 'copy the full raw value'));
+    wrap.appendChild(line);
+  }
+  return wrap;
+}
+
+function paramGroupEl(group, network) {
+  const section = el('div', { className: 'section', style: { marginTop: '24px' } });
+  section.appendChild(el('div', { className: 'section-title' }, group.title));
+  if (group.explain) section.appendChild(el('div', { className: 'section-sub' }, group.explain));
+  const tbody = el('tbody');
+  for (const p of (group.params || [])) {
+    // The query path, not the key, is what the copy button yields: the `params/`
+    // prefix is the difference between the real value and a blank that looks
+    // like "unset", so a key copied without it is a key that will mislead
+    // whoever pastes it.
+    const keyLine = el('div', { style: { color: 'var(--fg2)', fontSize: '11px' } }, p.key);
+    keyLine.appendChild(copyButton('params/' + p.key, 'copy the query path'));
+    const keyCell = el('td', { style: { verticalAlign: 'top' } },
+      el('div', { style: { fontWeight: 'bold' } }, p.label || p.key),
+      keyLine);
+    const valueCell = el('td', { style: { verticalAlign: 'top' } }, paramValueEl(p, network));
+    if (p.note) {
+      valueCell.appendChild(el('div', {
+        style: { color: 'var(--accent2)', fontSize: '11px', marginTop: '4px', whiteSpace: 'normal' },
+      }, p.note));
+    }
+    // Every table in this app is one line per cell (`tr { white-space: nowrap }`)
+    // because every other one holds identifiers. This column holds prose, so it
+    // opts out locally rather than by loosening the rule for all of them. The
+    // max-width goes on an inner div because table layout ignores it on a td.
+    tbody.appendChild(el('tr', {}, keyCell, valueCell,
+      el('td', { style: { verticalAlign: 'top' } }, el('div', {
+        style: {
+          color: 'var(--fg2)', fontSize: '12px', maxWidth: '420px',
+          whiteSpace: 'normal', wordBreak: 'normal', lineHeight: '1.5',
+        },
+      }, p.explain || ''))));
+  }
+  section.appendChild(el('table', { style: { tableLayout: 'fixed' } },
+    el('thead', {}, el('tr', {},
+      el('th', { style: { width: '22%' } }, 'key'),
+      el('th', { style: { width: '38%' } }, 'value'),
+      el('th', { style: { width: '40%' } }, 'what it gates'))),
+    tbody));
+  return section;
+}
+
+function paramIdentityEl(id) {
+  const bar = el('div', { className: 'stats-bar' });
+  const stat = (label, value, title) => {
+    const s = el('div', { className: 'stat' },
+      el('span', { className: 'label' }, label),
+      el('span', { className: 'value' }, value));
+    if (title) s.title = title;
+    return s;
+  };
+  bar.appendChild(stat('chain id', id.chain_id || '-'));
+  bar.appendChild(stat('height', id.latest_height ? fmtNum(id.latest_height) : '-'));
+  bar.appendChild(stat('node version', id.node_version || '-'));
+  // tx_index off is why this explorer needs an indexer at all, so it is worth a
+  // line rather than a footnote.
+  bar.appendChild(stat('tx index', id.tx_index || '-',
+    id.tx_index === 'off' ? 'this node keeps no transaction index, which is why history comes from the indexer' : ''));
+  bar.appendChild(stat('catching up', id.catching_up ? 'yes' : 'no'));
+  return bar;
+}
+
+function paramConsensusEl(c) {
+  const section = el('div', { className: 'section', style: { marginTop: '24px' } });
+  section.appendChild(el('div', { className: 'section-title' }, 'consensus limits'));
+  section.appendChild(el('div', { className: 'section-sub' },
+    'node configuration, not governance: these change with a release, not with a proposal.'));
+  if (c.error) {
+    section.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '12px' } },
+      'could not be read: ' + c.error));
+    return section;
+  }
+  const rows = [
+    ['max gas per block', c.max_gas],
+    ['max tx bytes', c.max_tx_bytes],
+    ['max data bytes', c.max_data_bytes],
+    ['max block bytes', c.max_block_bytes],
+    ['time iota', c.time_iota_ms ? c.time_iota_ms + 'ms' : ''],
+    ['validator key types', (c.pubkey_types || []).join(', ')],
+  ];
+  const tbody = el('tbody');
+  for (const [label, value] of rows) {
+    if (!value) continue;
+    const n = Number(value);
+    // Humanise where it helps and keep the exact figure beside it, the same
+    // rule the params table follows.
+    const pretty = Number.isFinite(n) && String(n) === String(value) ? fmtNum(n) : value;
+    tbody.appendChild(el('tr', {},
+      el('td', {}, label),
+      el('td', {}, pretty)));
+  }
+  section.appendChild(el('table', {}, tbody));
+  return section;
+}
+
+function renderParams(container, data) {
+  container.textContent = '';
+  const id = data.identity || {};
+
+  const head = el('div', { className: 'section-sub', style: { marginBottom: '4px' } });
+  head.append('read live from ');
+  head.appendChild(el('span', {}, id.rpc || 'no endpoint'));
+  if (data.fetched_at) {
+    head.append(' · ');
+    head.appendChild(timeEl(data.fetched_at));
+  }
+  // Which chain, said out loud. This endpoint never blends networks, and in
+  // all-networks mode it picks one, so the page has to name it.
+  head.append(' · network ' + (data.network || '-'));
+  container.appendChild(head);
+
+  if (id.error) {
+    container.appendChild(el('p', { style: { color: 'var(--red)', fontSize: '12px' } }, id.error));
+  } else {
+    container.appendChild(paramIdentityEl(id));
+  }
+
+  for (const group of (data.groups || [])) {
+    container.appendChild(paramGroupEl(group, data.network));
+  }
+  if (data.consensus) container.appendChild(paramConsensusEl(data.consensus));
+
+  // The honest limitation, on the page rather than in a comment: the chain has
+  // no way to list its own keys, so an absent row means nobody has added it
+  // here, not that the chain lacks it.
+  container.appendChild(el('div', {
+    className: 'section-sub',
+    style: { marginTop: '24px' },
+  }, 'the chain cannot enumerate its own params, so this is a curated list of keys. a key missing from it is one this page does not know about yet, not one the chain does not have.'));
+}
+
+async function loadParams() {
+  const container = clear('params-content');
+  skeletonBlock(container);
+  try {
+    await apiSWR('params', (data) => renderParams(container, data));
+  } catch (err) {
+    failBlock(container, err, loadParams);
+  }
 }
 
 async function loadSanity() {
