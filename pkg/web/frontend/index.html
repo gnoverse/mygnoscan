@@ -7914,10 +7914,14 @@ const DASHBOARDS = [
             tooltip: {
               // Addresses and realm paths are attacker-controlled: the tooltip
               // must be a DOM node, never a string.
+              // An edge line names two addresses, so both are abbreviated:
+              // 83 characters of bech32 on one line is not a label. A node
+              // line names one, and stays whole, because that is the value a
+              // reader came to the tooltip to read.
               formatter: p => dashTooltipNode(
                 p.dataType === 'edge'
-                  ? [p.data.source + ' \u2192 ' + p.data.target, String(p.data.value) + ' ugnot']
-                  : [p.data.name, 'volume ' + p.data.value]
+                  ? [truncAddr(p.data.source) + ' \u2192 ' + truncAddr(p.data.target), fmtNum(p.data.value) + ' ugnot']
+                  : [p.data.name, 'volume ' + fmtNum(p.data.value)]
               ),
             },
             series: [{
@@ -7971,7 +7975,10 @@ const DASHBOARDS = [
           });
           return dashBase({
             tooltip: {
-              formatter: p => dashTooltipNode([p.data.source + ' \u2192 ' + p.data.target, String(p.data.value) + ' ugnot']),
+              formatter: p => dashTooltipNode([
+                truncAddr(p.data.source) + ' \u2192 ' + truncAddr(p.data.target),
+                fmtNum(p.data.value) + ' ugnot',
+              ]),
             },
             series: [{
               type: 'sankey',
@@ -7980,7 +7987,13 @@ const DASHBOARDS = [
               links: Array.from(seen.values()).map(e => ({ source: e.from, target: e.to, value: e.value })),
               lineStyle: { color: 'gradient', curveness: 0.5 },
               itemStyle: { color: DASH_PAL[0], borderColor: '#2a2a2a' },
-              label: { color: '#888', fontSize: 10 },
+              // Abbreviated with the same helper every other address on the
+              // site uses. At full length the labels are 40 characters each,
+              // stacked at both edges of the diagram, and overlap into an
+              // unreadable block: the node names are the one part of a sankey a
+              // reader has to be able to read. The full value stays in the
+              // tooltip.
+              label: { color: '#888', fontSize: 10, formatter: p => truncAddr(p.name) },
             }],
           });
         },
@@ -8005,10 +8018,13 @@ const DASHBOARDS = [
           const maxE = graph.edges.reduce((m, e) => Math.max(m, e.calls), 1);
           return dashBase({
             tooltip: {
+              // Same rule as the transfer graph, except only the caller side
+              // is an address here: a realm path is already readable and
+              // truncating it would hide the part that identifies it.
               formatter: p => dashTooltipNode(
                 p.dataType === 'edge'
-                  ? [p.data.source + ' \u2192 ' + p.data.target, p.data.value + ' calls']
-                  : [p.data.name, p.data.value + ' calls']
+                  ? [truncAddr(p.data.source) + ' \u2192 ' + p.data.target, fmtNum(p.data.value) + ' calls']
+                  : [p.data.name, fmtNum(p.data.value) + ' calls']
               ),
             },
             series: [{
@@ -8468,6 +8484,27 @@ async function loadContracts() {
   }
 }
 
+// Hovering an address anywhere on the contracts page lights up every bubble
+// that address deployed.
+//
+// Separate from the data-hl group rather than folded into it: that mechanism
+// matches one value against one attribute, and a bubble's own identity is its
+// path. "Everything this address deployed" is a different relation, so it gets
+// its own listener rather than a second meaning for the same attribute.
+//
+// Registered once at load, and a no-op on every other page, because the
+// selector only matches inside #contract-map.
+function contractCreatorHighlight(e, on) {
+  const el = e.target.closest('[data-hl]');
+  if (!el) return;
+  const addr = el.getAttribute('data-hl');
+  if (!addr || !addr.startsWith('g1')) return;
+  document.querySelectorAll('#contract-map svg circle[data-creator="' + CSS.escape(addr) + '"]')
+    .forEach(c => c.classList.toggle('hl-active', on));
+}
+document.addEventListener('mouseover', e => contractCreatorHighlight(e, true));
+document.addEventListener('mouseout', e => contractCreatorHighlight(e, false));
+
 // repaintContracts redraws everything that comes from state already in hand:
 // the control bar included.
 //
@@ -8718,6 +8755,10 @@ function renderContractMap() {
     // hover, keyed by data-hl. Joining that group is all it takes for a bubble
     // and its row in the rankings to light up together, in both directions.
     .attr('data-hl', d => 'realm:' + d.path)
+    // A second key, because an element can only carry one data-hl and the
+    // path is the more precise one. This is what lets hovering a deployer in
+    // the rankings light up every contract they published.
+    .attr('data-creator', d => d.creator)
     .attr('r', radius)
     .attr('fill', d => namespaceColor(d.namespace))
     .attr('fill-opacity', d => d.parked ? 0.25 : 0.8)
@@ -8875,7 +8916,7 @@ function drawNamespaceHulls(layer, byNamespace, radius) {
     if (members.length < 3) {
       const cx = d3.mean(members, d => d.x), cy = d3.mean(members, d => d.y);
       const r = d3.max(members, d => radius(d)) + 14;
-      shapes.push({ ns, kind: 'circle', cx, cy, r });
+      shapes.push({ ns, kind: 'circle', cx, cy, r, labelY: cy - r - 5 });
       continue;
     }
     const hull = d3.polygonHull(members.map(d => [d.x, d.y]));
@@ -8889,7 +8930,8 @@ function drawNamespaceHulls(layer, byNamespace, radius) {
       const len = Math.hypot(dx, dy) || 1;
       return [x + (dx / len) * pad, y + (dy / len) * pad];
     });
-    shapes.push({ ns, kind: 'path', d: 'M' + padded.join('L') + 'Z', cx, cy });
+    const top = d3.min(padded, pt => pt[1]);
+    shapes.push({ ns, kind: 'path', d: 'M' + padded.join('L') + 'Z', cx, cy, labelY: top - 5 });
   }
 
   layer.selectAll('path').data(shapes.filter(s => s.kind === 'path'), s => s.ns)
@@ -8909,6 +8951,23 @@ function drawNamespaceHulls(layer, byNamespace, radius) {
     .attr('stroke', s => namespaceColor(s.ns))
     .attr('stroke-opacity', 0.35)
     .attr('stroke-width', 1);
+
+  // An unlabelled outline says "these belong together" and not which group
+  // they are, which is half an answer: the colour it shares with the legend is
+  // only legible while there are few enough namespaces to tell hues apart, and
+  // the outlines matter most when there are not. Address namespaces are
+  // abbreviated the way they are everywhere else.
+  layer.selectAll('text').data(shapes, s => s.ns)
+    .join('text')
+    .attr('x', s => s.cx)
+    .attr('y', s => s.labelY)
+    .attr('text-anchor', 'middle')
+    .attr('font-size', 10)
+    .attr('fill', s => namespaceColor(s.ns))
+    .attr('stroke', 'var(--bg2)')
+    .attr('stroke-width', 3)
+    .attr('paint-order', 'stroke')
+    .text(s => s.ns.startsWith('g1') ? truncAddr(s.ns) : s.ns);
 }
 
 // fitContractMap frames every node in the viewport, the way the graph tab's

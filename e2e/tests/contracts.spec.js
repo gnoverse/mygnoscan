@@ -266,3 +266,38 @@ test('hovering a bubble highlights its ranking row, and the reverse', async ({ p
   await topRow.hover();
   await expect(bubble).toHaveClass(/hl-active/);
 });
+
+test('outlines are named, so a group says which group it is', async ({ page }) => {
+  await openMap(page, '?hulls=1');
+  await page.waitForFunction(
+    () => document.querySelectorAll('#contract-map svg text').length > 0,
+    null, { timeout: 20_000 });
+
+  // A hull that only says "these belong together" is half an answer. The
+  // colour it shares with the legend stops being legible exactly when there
+  // are enough namespaces for outlines to be worth drawing.
+  const labels = await page.locator('#contract-map svg text').allTextContents();
+  expect(labels.length).toBeGreaterThan(0);
+  expect(labels.some(t => t.trim().length > 0)).toBe(true);
+});
+
+test('hovering a deployer lights up every contract they published', async ({ page }) => {
+  await openMap(page);
+  await waitForMapSettled(page);
+
+  const row = page.locator('#contract-rankings [data-hl^="g1"]').first();
+  const addr = await row.getAttribute('data-hl');
+  const expected = await page.locator(
+    `#contract-map svg circle[data-creator="${addr}"]`).count();
+  expect(expected, 'fixture has no contracts for the top deployer').toBeGreaterThan(0);
+
+  await row.hover();
+  await expect
+    .poll(() => page.locator('#contract-map svg circle.hl-active').count())
+    .toBe(expected);
+
+  await page.mouse.move(0, 0);
+  await expect
+    .poll(() => page.locator('#contract-map svg circle.hl-active').count())
+    .toBe(0);
+});
