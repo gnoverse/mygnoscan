@@ -29,7 +29,7 @@
   --bg: #0a0a0a; --bg2: #141414; --bg3: #1e1e1e;
   --fg: #e0e0e0; --fg2: #888;
   --accent: #4ecdc4; --accent2: #ff6b6b;
-  --green: #51cf66; --red: #ff6b6b;
+  --green: #51cf66; --red: #ff6b6b; --amber: #ffd93d;
   --border: #2a2a2a;
   --mono: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
 }
@@ -106,6 +106,53 @@ tr { white-space: nowrap; }
 /* Infrastructural traffic the reader is rarely looking for: present, legible,
    and not competing with the rows that carry meaning. */
 .badge-session { background: rgba(136,136,136,0.15); color: var(--fg2); }
+/* --- Proposal verification panel, timeline and parameter diff -------------
+   A governance page is read by someone deciding how to vote, so the visual
+   order has to be severity order: an alert is a red left rule you cannot
+   scroll past, an info is quiet enough to skim. Three levels, no more --
+   a fourth would mean nothing at a glance. */
+.sig { display: flex; gap: 10px; align-items: flex-start; padding: 9px 12px; border-left: 3px solid var(--border);
+       background: var(--bg2); border-radius: 0 4px 4px 0; margin-bottom: 6px; }
+.sig-alert { border-left-color: var(--red); background: rgba(255,107,107,0.07); }
+.sig-warn  { border-left-color: var(--amber); background: rgba(255,217,61,0.06); }
+.sig-info  { border-left-color: var(--accent); background: rgba(78,205,196,0.05); }
+.sig-icon { font-size: 13px; line-height: 1.5; flex: 0 0 auto; }
+.sig-alert .sig-icon { color: var(--red); }
+.sig-warn .sig-icon { color: var(--amber); }
+.sig-info .sig-icon { color: var(--accent); }
+.sig-title { font-size: 13px; font-weight: 600; }
+.sig-detail { font-size: 12px; color: var(--fg2); line-height: 1.55; margin-top: 2px; max-width: 90ch; }
+.sig-detail code { background: var(--bg3); padding: 0 4px; border-radius: 3px; font-family: var(--mono); font-size: 11px; }
+.sig-counts { display: flex; gap: 10px; align-items: center; font-size: 12px; color: var(--fg2); margin-bottom: 10px; flex-wrap: wrap; }
+
+/* The timeline is one row per transaction, never per rendered state: a step
+   with no tx hash is a claim nobody can check, so it does not get drawn. */
+.tl { position: relative; margin: 0 0 4px; padding-left: 22px; }
+.tl::before { content: ''; position: absolute; left: 6px; top: 6px; bottom: 6px; width: 1px; background: var(--border); }
+.tl-step { position: relative; padding: 7px 0; }
+.tl-dot { position: absolute; left: -19px; top: 12px; width: 9px; height: 9px; border-radius: 50%;
+          background: var(--bg); border: 2px solid var(--fg2); }
+.tl-created .tl-dot { border-color: var(--accent); }
+.tl-vote .tl-dot { border-color: #a78bfa; }
+.tl-executed .tl-dot { border-color: var(--green); background: var(--green); }
+.tl-attempt .tl-dot { border-color: var(--red); }
+.tl-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 13px; }
+.tl-detail { font-size: 12px; color: var(--fg2); margin-top: 2px; font-family: var(--mono); }
+.tl-fx { margin-top: 5px; font-size: 12px; background: var(--bg2); border: 1px solid var(--border);
+         border-radius: 4px; padding: 6px 9px; display: inline-block; }
+.tl-fx-type { color: var(--green); font-family: var(--mono); }
+.tl-fx-attr { color: var(--fg2); font-family: var(--mono); }
+
+/* Added and removed values in a parameter diff. Colour alone never carries
+   it -- every row also gets a + or - glyph, for the same reason the vote bar
+   has a tooltip. */
+.pd-add { color: var(--green); }
+.pd-del { color: var(--red); text-decoration: line-through; }
+.pd-same { color: var(--fg2); }
+.pd-row { font-family: var(--mono); font-size: 12px; padding: 1px 0; }
+.dep-chip { display: inline-flex; align-items: center; gap: 6px; background: var(--bg2); border: 1px solid var(--border);
+            border-radius: 4px; padding: 3px 8px; font-size: 12px; margin: 0 6px 6px 0; font-family: var(--mono); }
+.dep-chip a { font-size: 11px; }
 .tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
 .tab { padding: 8px 16px; cursor: pointer; color: var(--fg2); font-size: 13px; border-bottom: 2px solid transparent; margin-bottom: -1px; }
 .tab:hover { color: var(--fg); }
@@ -2161,17 +2208,17 @@ async function loadWatchlist() {
         container.appendChild(el('div', { className: 'section-title' }, 'recent activity'));
         const tbl = el('table');
         tbl.appendChild(el('thead', {}, el('tr', {},
-          el('th', {}, 'hash'), el('th', {}, 'signer'), el('th', {}, 'block'),
-          el('th', {}, 'type'), el('th', {}, 'detail'), el('th', {}, 'status'))));
+          el('th', {}, 'hash'), el('th', {}, 'signer'),
+          el('th', {}, 'type'), el('th', {}, 'detail'), el('th', {}, 'status'), el('th', {}, 'block'))));
         const body = el('tbody');
         for (const tx of data.transactions) {
           body.appendChild(netRow(tx.network,
             el('td', {}, txLink(tx.hash, tx.block_height, tx.network, { showBlock: false })),
             el('td', {}, tx.caller ? addrLink(tx.caller, tx.network) : ''),
-            el('td', {}, blockLink(tx.block_height, tx.network)),
             el('td', {}, typeBadge(tx.type)),
             el('td', {}, storedTxDetail(tx)),
-            el('td', {}, statusBadge(tx.success))
+            el('td', {}, statusBadge(tx.success)),
+            el('td', {}, blockWithAge(tx.block_height, tx.block_time, tx.network))
           ));
         }
         tbl.appendChild(body);
@@ -3177,7 +3224,7 @@ async function loadInertQueue() {
       container.appendChild(el('div', { className: 'section-sub' },
         'submissions an approver, the creator, or a live package’s owner explicitly dropped, rather than left parked.'));
       const rTbl = el('table');
-      rTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'path'), el('th', {}, 'by'), el('th', {}, 'when'), el('th', {}, 'tx'))));
+      rTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'path'), el('th', {}, 'by'), el('th', {}, 'tx'), el('th', {}, 'block'))));
       const rBody = el('tbody');
       if (!rejected.length) {
         rBody.appendChild(el('tr', {}, el('td', { colspan: '4', style: { color: 'var(--fg2)' } }, 'none found')));
@@ -3186,8 +3233,8 @@ async function loadInertQueue() {
         rBody.appendChild(el('tr', {},
           el('td', {}, realmPathEl(r.pkg_path)),
           el('td', {}, addrLink(r.actor)),
-          el('td', {}, blockWithAge(r.block_height, r.block_time)),
-          el('td', {}, txLink(r.tx_hash, r.block_height, null, { showBlock: false }))
+          el('td', {}, txLink(r.tx_hash, r.block_height, null, { showBlock: false })),
+          el('td', {}, blockWithAge(r.block_height, r.block_time))
         ));
       }
       rTbl.appendChild(rBody);
@@ -3873,15 +3920,15 @@ function renderValoperRows(container) {
     const detailTd = el('td', { colspan: '6', style: { padding: '0 0 12px' } });
     const dTbl = el('table', { style: { margin: '4px 0 0' } });
     dTbl.appendChild(el('thead', {}, el('tr', {},
-      el('th', {}, 'block'), el('th', {}, 'function'), el('th', {}, 'moniker'), el('th', {}, 'status'), el('th', {}, 'tx'))));
+      el('th', {}, 'tx'), el('th', {}, 'function'), el('th', {}, 'moniker'), el('th', {}, 'status'), el('th', {}, 'block'))));
     const dBody = el('tbody');
     for (const r of sorted.slice().reverse()) {
       dBody.appendChild(el('tr', {},
-        el('td', {}, blockWithAge(r.block_height, r.block_time)),
+        el('td', {}, txLink(r.tx_hash, r.block_height, null, { showBlock: false })),
         el('td', {}, r.func),
         el('td', {}, r.moniker || '–'),
         el('td', {}, statusBadge(r.success)),
-        el('td', {}, txLink(r.tx_hash, r.block_height, null, { showBlock: false }))
+        el('td', {}, blockWithAge(r.block_height, r.block_time))
       ));
     }
     dTbl.appendChild(dBody);
@@ -4875,7 +4922,13 @@ function govDAOStatusBadge(status) {
   if (s === 'ACCEPTED') return badge('ok', 'accepted');
   if (s === 'REJECTED' || s === 'DENIED') return badge('fail', 'rejected');
   if (s) return badge('realm', s.toLowerCase());
-  return badge('', 'unknown');
+  // gov/dao prints an accepted/rejected marker only once a proposal is
+  // decided, so an empty status means undecided, not unreadable. It used to
+  // render as "unknown", which reads as a parse failure on exactly the
+  // proposals a reader still has a vote to cast on.
+  const b = badge('run', 'voting');
+  b.title = 'gov/dao reports no decision marker for this proposal yet';
+  return b;
 }
 // A compact yes/no/abstain stacked bar. Percentages come straight from
 // gov/dao's own render (see govdao.go) — this only draws them.
@@ -4892,6 +4945,38 @@ function voteBar(yes, no, abstain, big) {
     if (no > 0) wrap.appendChild(el('div', { style: { width: no + '%', background: 'var(--red)' } }));
     if (abstain > 0) wrap.appendChild(el('div', { style: { width: abstain + '%', background: 'var(--fg2)' } }));
   }
+  return wrap;
+}
+// auditSummaryEl renders a proposal row's audit result: the same counts the
+// detail page's verification panel shows, so an inconsistency is visible
+// from the list rather than only to whoever opens the proposal.
+//
+// "audited" is carried explicitly and checked first. Without it, a proposal
+// the audit never ran on and a proposal that came back clean both render as
+// two zeroes, and the second reading is a false reassurance on exactly the
+// page where a reader is deciding which proposal deserves their attention.
+function auditSummaryEl(p) {
+  if (!p.audited) {
+    const s = el('span', { style: { color: 'var(--fg2)' } }, '\u2013');
+    s.title = 'not audited on this page; open the proposal for its full verification panel';
+    return s;
+  }
+  const wrap = el('span', { style: { display: 'inline-flex', gap: '8px', alignItems: 'center', fontSize: '12px' } });
+  if (!p.alerts && !p.warnings) {
+    const ok = badge('ok', 'clear');
+    ok.title = 'every automated check came back clean';
+    wrap.appendChild(ok);
+    return wrap;
+  }
+  if (p.alerts) {
+    const a = el('span', { className: 'sig-icon', style: { color: 'var(--red)' } }, SIG_ICON.alert + ' ' + p.alerts);
+    wrap.appendChild(a);
+  }
+  if (p.warnings) {
+    const w = el('span', { className: 'sig-icon', style: { color: 'var(--amber)' } }, SIG_ICON.warn + ' ' + p.warnings);
+    wrap.appendChild(w);
+  }
+  wrap.title = (p.top_signal || '') + '\n\nOpen the proposal for the full verification panel.';
   return wrap;
 }
 let _govDAOTierChart = [];
@@ -5009,11 +5094,11 @@ function renderGovDAOOverview(container, overview, meta) {
   const pTbl = el('table');
   pTbl.appendChild(el('thead', {}, el('tr', {},
     el('th', {}, 'id'), el('th', {}, 'title'), el('th', {}, 'author'), el('th', {}, 'status'),
-    el('th', {}, 'votes'), el('th', {}, 'tiers'), el('th', {}, 'created'), el('th', {}, 'last activity')
+    el('th', {}, 'checks'), el('th', {}, 'votes'), el('th', {}, 'tiers'), el('th', {}, 'created'), el('th', {}, 'last activity')
   )));
   const pBody = el('tbody');
   if (!proposals.length) {
-    pBody.appendChild(el('tr', {}, el('td', { colspan: '8', style: { color: 'var(--fg2)' } }, 'no proposals found')));
+    pBody.appendChild(el('tr', {}, el('td', { colspan: '9', style: { color: 'var(--fg2)' } }, 'no proposals found')));
   }
   for (const p of proposals) {
     const goToProposal = () => navigate('/govdao/' + p.id);
@@ -5022,6 +5107,7 @@ function renderGovDAOOverview(container, overview, meta) {
       el('td', {}, p.title || ''),
       el('td', {}, gnoUserEl(p.author, p.author_address)),
       el('td', {}, govDAOStatusBadge(p.status)),
+      el('td', {}, auditSummaryEl(p)),
       el('td', {}, voteBar(p.yes_percent || 0, p.no_percent || 0, p.abstain_percent || 0)),
       el('td', {}, (p.tiers || []).join(', ')),
       el('td', {}, p.created_height ? blockWithAge(p.created_height, p.created_time) : el('span', { style: { color: 'var(--fg2)' } }, '–')),
@@ -5045,15 +5131,15 @@ function renderGovDAOActivity(container, calls, meta) {
   // function, say) is still visible.
   container.appendChild(el('div', { className: 'section-title', style: { marginTop: '20px' } }, 'recent on-chain activity'));
   const aTbl = el('table');
-  aTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'caller'), el('th', {}, 'function'), el('th', {}, 'status'), el('th', {}, 'tx'))));
+  aTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'tx'), el('th', {}, 'caller'), el('th', {}, 'function'), el('th', {}, 'status'), el('th', {}, 'block'))));
   const aBody = el('tbody');
   for (const c of (calls || []).slice(0, 50)) {
     aBody.appendChild(el('tr', {},
-      el('td', {}, blockWithAge(c.block_height, c.block_time)),
+      el('td', {}, txLink(c.hash, c.block_height, null, { showBlock: false })),
       el('td', {}, addrLink(c.caller)),
       el('td', {}, funcSpan(c.detail || '')),
       el('td', {}, statusBadge(c.success)),
-      el('td', {}, txLink(c.hash, c.block_height, null, { showBlock: false }))
+      el('td', {}, blockWithAge(c.block_height, c.block_time))
     ));
   }
   if (!(calls || []).length) {
@@ -5062,6 +5148,339 @@ function renderGovDAOActivity(container, calls, meta) {
   aTbl.appendChild(aBody);
   container.appendChild(aTbl);
 
+}
+
+// --- Proposal verification, timeline, parameter diff, dependencies --------
+//
+// Everything below draws what govdao_audit.go computed. None of it decides
+// anything: a signal's level, its wording and its evidence all arrive from
+// the API, so the page and the JSON always agree about what was found. The
+// frontend's job here is to make severity survive a five-second skim.
+
+const SIG_ICON = { alert: '●', warn: '▲', info: '○' };
+
+// sigDetailEl renders a signal's evidence, turning `backticked` spans into
+// code and linking any address or realm path it names. The detail text is
+// generated server-side from chain data, never from user input that has not
+// been through the same path as every other rendered value here, and it is
+// still built as DOM rather than HTML for the reason AGENTS.md gives.
+function sigDetailEl(text) {
+  const wrap = el('div', { className: 'sig-detail' });
+  const parts = (text || '').split('`');
+  for (let i = 0; i < parts.length; i++) {
+    if (i % 2 === 1) wrap.appendChild(el('code', {}, parts[i]));
+    else wrap.appendChild(linkify(parts[i]));
+  }
+  return wrap;
+}
+
+// renderSignals draws the verification panel: a one-line severity count,
+// then every alert and warning expanded, then the informational checks that
+// passed folded into a details element. A reader who only reads what is
+// open has read everything that is wrong.
+function renderSignals(container, signals) {
+  const sigs = signals || [];
+  if (!sigs.length) return;
+  const counts = { alert: 0, warn: 0, info: 0 };
+  for (const s of sigs) counts[s.level] = (counts[s.level] || 0) + 1;
+
+  container.appendChild(el('div', { className: 'section-title', style: { marginTop: '20px' } }, 'verification'));
+  container.appendChild(el('div', { className: 'section-sub' },
+    'Automated checks against chain data. These are facts, not a verdict: "first proposal from this address" is a fact about the chain, and whether it matters is yours to decide.'));
+
+  const countsRow = el('div', { className: 'sig-counts' });
+  const addCount = (level, label) => {
+    if (!counts[level]) return;
+    countsRow.appendChild(el('span', {},
+      el('span', { className: 'sig-icon', style: { marginRight: '4px' } }, SIG_ICON[level]),
+      counts[level] + ' ' + label));
+  };
+  addCount('alert', 'inconsistency'); addCount('warn', 'to read'); addCount('info', 'checked out');
+  container.appendChild(countsRow);
+
+  const drawInto = (parent, s) => {
+    parent.appendChild(el('div', { className: 'sig sig-' + s.level },
+      el('span', { className: 'sig-icon' }, SIG_ICON[s.level] || '○'),
+      el('div', {}, el('div', { className: 'sig-title' }, s.title), sigDetailEl(s.detail))));
+  };
+  const loud = sigs.filter(s => s.level !== 'info');
+  const quiet = sigs.filter(s => s.level === 'info');
+  for (const s of loud) drawInto(container, s);
+  if (quiet.length) {
+    const det = el('details', { style: { marginTop: '4px' } });
+    det.appendChild(el('summary', { style: { cursor: 'pointer', color: 'var(--fg2)', fontSize: '12px', marginBottom: '6px' } },
+      quiet.length + ' check(s) that came back clean'));
+    for (const s of quiet) drawInto(det, s);
+    container.appendChild(det);
+  }
+}
+
+// valueEl renders one parameter value, linking it when it is an address so a
+// reader can check who they are about to authorise without retyping 40
+// characters into the search box.
+function paramValueEl(v) {
+  if (/^g1[a-z0-9]{38}$/.test(v)) return addrLink(v);
+  if (v === '') return el('span', { className: 'pd-same' }, '(empty)');
+  return el('span', {}, v);
+}
+
+// renderParamChanges draws the current-to-proposed diff for every system
+// parameter the creating transaction would write.
+//
+// This is the section that exists because the chain cannot show it: gov/dao
+// renders a generic sys/params proposal without the value it carries, so
+// the ballot as published says which key changes and never what to. The
+// values here are decoded from the creating transaction and the "current"
+// column is read live over ABCI, which is stated on the page rather than
+// assumed, because a reader who trusts the wrong one of those two is
+// exactly who this page is for.
+function renderParamChanges(container, changes) {
+  const list = changes || [];
+  if (!list.length) return;
+  container.appendChild(el('div', { className: 'section-title', style: { marginTop: '20px' } }, 'what it changes'));
+  container.appendChild(el('div', { className: 'section-sub' },
+    'System parameters this proposal would write, decoded from the creating transaction. The current column is read live from the chain, so the result is what would happen if it executed now.'));
+
+  for (const pc of list) {
+    const card = el('div', { className: 'card', style: { marginBottom: '10px' } });
+    const head = el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '8px' } },
+      el('span', { style: { fontFamily: 'var(--mono)', fontWeight: '600' } }, pc.key),
+      badge(pc.verb === 'remove' ? 'fail' : pc.verb === 'add' ? 'ok' : 'realm', pc.verb),
+      el('span', { style: { color: 'var(--fg2)', fontSize: '12px' } }, pc.type));
+    card.appendChild(head);
+
+    const cur = pc.current || [];
+    const res = pc.result || [];
+    const inRes = new Set(res), inCur = new Set(cur);
+    const tbl = el('table');
+    tbl.appendChild(el('thead', {}, el('tr', {},
+      el('th', {}, pc.current_known ? 'current on chain' : 'current (unreadable)'),
+      el('th', {}, 'if this executes'))));
+    const body = el('tbody');
+    const curCell = el('td');
+    if (!cur.length) curCell.appendChild(el('span', { className: 'pd-same' }, pc.current_known ? '(unset)' : '(could not read)'));
+    for (const v of cur) {
+      curCell.appendChild(el('div', { className: 'pd-row ' + (inRes.has(v) ? 'pd-same' : 'pd-del') },
+        el('span', {}, (inRes.has(v) ? '  ' : '− ')), paramValueEl(v)));
+    }
+    const resCell = el('td');
+    if (!pc.current_known) {
+      resCell.appendChild(el('span', { className: 'pd-same' }, 'unknown: the proposed values are ' + (pc.values || []).join(', ')));
+    } else if (!res.length) {
+      resCell.appendChild(el('span', { className: 'pd-del' }, '(empty)'));
+    }
+    for (const v of res) {
+      resCell.appendChild(el('div', { className: 'pd-row ' + (inCur.has(v) ? 'pd-same' : 'pd-add') },
+        el('span', {}, (inCur.has(v) ? '  ' : '+ ')), paramValueEl(v)));
+    }
+    body.appendChild(el('tr', {}, curCell, resCell));
+    tbl.appendChild(body);
+    card.appendChild(tbl);
+    container.appendChild(card);
+  }
+}
+
+const TL_LABEL = { created: 'created', vote: 'vote', executed: 'executed', attempt: 'failed attempt' };
+
+// renderTimeline draws the proposal's life: creation, every vote, and the
+// execution, each anchored to the transaction that did it.
+//
+// Creation comes from gov/dao's own ProposalCreated event and the rest from
+// calls naming this proposal ID, so every row is an exact match rather than
+// a text-similarity guess. A vote cast inside the creating script is not a
+// separate transaction and so is not a separate row -- the creation row says
+// so instead, which beats inventing a second row with the same hash.
+function renderTimeline(container, steps) {
+  container.appendChild(el('div', { className: 'section-title', style: { marginTop: '20px' } }, 'timeline'));
+  const list = steps || [];
+  if (!list.length) {
+    container.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '13px' } },
+      'No transaction naming this proposal was found. It may predate this indexer’s history.'));
+    return;
+  }
+  const tl = el('div', { className: 'tl' });
+  for (const st of list) {
+    const step = el('div', { className: 'tl-step tl-' + st.kind });
+    step.appendChild(el('div', { className: 'tl-dot' }));
+    const head = el('div', { className: 'tl-head' });
+    head.appendChild(badge(st.kind === 'executed' ? 'ok' : st.kind === 'attempt' ? 'fail' : 'realm',
+      TL_LABEL[st.kind] || st.kind));
+    head.appendChild(txLink(st.tx_hash, st.block_height, null, { showBlock: false }));
+    if (st.caller) { head.append('by '); head.appendChild(addrLink(st.caller)); }
+    if (!st.success) head.appendChild(badge('fail', 'failed'));
+    head.appendChild(el('span', { className: 'block-ctx' },
+      'block ' + fmtNum(st.block_height) + (st.block_time ? ' · ' + shortAge(st.block_time) : '')));
+    step.appendChild(head);
+    if (st.detail) step.appendChild(el('div', { className: 'tl-detail' }, st.detail));
+    for (const fx of (st.effects || [])) {
+      const fxEl = el('div', { className: 'tl-fx' });
+      fxEl.appendChild(el('span', { className: 'tl-fx-type' }, fx.type));
+      if (fx.pkg_path) { fxEl.append(' '); fxEl.appendChild(realmPathEl(fx.pkg_path)); }
+      for (const a of (fx.attrs || [])) {
+        fxEl.appendChild(el('span', { className: 'tl-fx-attr' }, '  ' + a.key + '='));
+        fxEl.appendChild(a.value === '' ? el('span', { className: 'pd-same' }, '(empty)') : linkify(a.value));
+      }
+      step.appendChild(fxEl);
+    }
+    tl.appendChild(step);
+  }
+  container.appendChild(tl);
+}
+
+// gnowebSourceURL and githubSourceURL are the two places a reader can go to
+// read a package for themselves.
+//
+// gnoweb serves what the chain actually holds, which is the authoritative
+// answer and the only one that reflects a package deployed outside the
+// monorepo. GitHub serves what the monorepo has on master, which can be
+// ahead of, behind, or unrelated to the chain -- so it is offered second and
+// only for the gno.land/{r,p} paths the monorepo actually carries, never as
+// the primary link.
+// An import path comes out of a script anyone can submit, so both of these
+// refuse anything that is not a plain gno.land package path rather than
+// building a link out of it. A path with a traversal segment or a stray
+// character has no source page to point at anyway.
+const SAFE_PKG_PATH = /^gno\.land\/[rp]\/[a-z0-9][a-z0-9_.\-]*(\/[a-z0-9][a-z0-9_.\-]*)*$/;
+function safePkgPath(pkgPath) {
+  return typeof pkgPath === 'string' && !pkgPath.includes('..') && SAFE_PKG_PATH.test(pkgPath);
+}
+function gnowebSourceURL(pkgPath) {
+  if (!safePkgPath(pkgPath)) return null;
+  return 'https://gno.land/' + pkgPath.replace('gno.land/', '') + '$source';
+}
+function githubSourceURL(pkgPath) {
+  if (!safePkgPath(pkgPath)) return null;
+  return 'https://github.com/gnolang/gno/tree/master/examples/' + pkgPath;
+}
+function extLink(text, href, title) {
+  const a = el('a', { href: href, target: '_blank', rel: 'noopener' }, text);
+  if (title) a.title = title;
+  return a;
+}
+
+// renderDependencies draws one chip per package the creating script imports:
+// the path (to this explorer's own page for it), then the two places to read
+// its source. An executor package that is not in the import list is still
+// listed, flagged, because that combination is worth seeing.
+function renderDependencies(container, imports, executorPkgPath) {
+  const list = (imports || []).slice();
+  if (executorPkgPath && !list.includes(executorPkgPath)) list.push(executorPkgPath);
+  if (!list.length) return;
+  container.appendChild(el('div', { className: 'section-title', style: { marginTop: '20px' } }, 'code this proposal depends on'));
+  container.appendChild(el('div', { className: 'section-sub' },
+    'Every package the creating script imports. Code in an imported realm runs as part of building the proposal, and the executor package runs with GovDAO’s authority if it passes — read them, not just the script.'));
+  const wrap = el('div');
+  for (const imp of list) {
+    const chip = el('div', { className: 'dep-chip' });
+    chip.appendChild(realmPathEl(imp));
+    if (imp === executorPkgPath) chip.appendChild(badge('ok', 'executor'));
+    const chain = gnowebSourceURL(imp);
+    if (chain) chip.appendChild(extLink('chain ↗', chain, 'the source the chain holds, which is the one that runs'));
+    const gh = githubSourceURL(imp);
+    if (gh) chip.appendChild(extLink('github ↗', gh, 'the monorepo copy on master, which may differ from the chain'));
+    wrap.appendChild(chip);
+  }
+  container.appendChild(wrap);
+}
+
+const ADDR_VERDICT = {
+  match: { badge: 'ok', text: 'verified', why: 'the comment names the username r/sys/users has registered for this address' },
+  mismatch: { badge: 'fail', text: 'mismatch', why: 'r/sys/users has a different username registered for this address' },
+  unregistered: { badge: 'run', text: 'unverifiable', why: 'no username is registered for this address, so the comment cannot be checked' },
+  unlabelled: { badge: 'session', text: 'no claim', why: 'the source does not say who this address is' },
+};
+
+// renderAddressAudit draws every address the creating script names, what the
+// source claims it is, and what the registry says.
+//
+// This is the cheapest lie a governance script can tell and the most
+// expensive to catch by eye: three near-identical bech32 strings, one
+// comment each, and a reader who recognises the names but not the
+// addresses. Three columns turn that into something anyone can check.
+function renderAddressAudit(container, addresses) {
+  const list = addresses || [];
+  if (!list.length) return;
+  container.appendChild(el('div', { className: 'section-title', style: { marginTop: '20px' } }, 'addresses named in the code'));
+  container.appendChild(el('div', { className: 'section-sub' },
+    'What the source comment claims, against what r/sys/users has registered. The comment is the proposer’s word; the registry is the chain’s.'));
+  const tbl = el('table');
+  tbl.appendChild(el('thead', {}, el('tr', {},
+    el('th', {}, 'address'), el('th', {}, 'source says'), el('th', {}, 'r/sys/users'),
+    el('th', {}, 'govdao'), el('th', {}, 'check'), el('th', {}, 'line'))));
+  const body = el('tbody');
+  for (const a of list) {
+    const v = ADDR_VERDICT[a.verdict] || ADDR_VERDICT.unlabelled;
+    const chk = badge(v.badge, v.text);
+    chk.title = v.why;
+    body.appendChild(el('tr', {},
+      el('td', {}, addrLink(a.address)),
+      el('td', {}, a.comment ? el('span', { style: { fontFamily: 'var(--mono)', fontSize: '12px' } }, '// ' + a.comment) : el('span', { style: { color: 'var(--fg2)' } }, '–')),
+      el('td', {}, a.onchain_name ? el('span', {}, '@' + a.onchain_name) : el('span', { style: { color: 'var(--fg2)' } }, 'unregistered')),
+      el('td', {}, a.is_member ? badge('realm', a.tier || 'member') : el('span', { style: { color: 'var(--fg2)' } }, '–')),
+      el('td', {}, chk),
+      el('td', { style: { color: 'var(--fg2)', fontFamily: 'var(--mono)', fontSize: '12px' } }, a.line ? 'L' + a.line : '')));
+  }
+  tbl.appendChild(body);
+  container.appendChild(tbl);
+}
+
+// renderProposalCode draws the code that created the proposal.
+//
+// For a `maketx run` proposal this is the entire specification of what the
+// ballot does: there is no template, no schema and no on-chain rendering of
+// its arguments, so the script is the only complete statement of intent
+// that exists. It is therefore shown in full and expanded by default, not
+// behind a disclosure triangle.
+function renderProposalCode(container, code) {
+  if (!code) return;
+  container.appendChild(el('div', { className: 'section-title', style: { marginTop: '20px' } }, 'the code that created this proposal'));
+
+  const prov = el('div', { className: 'section-sub' });
+  prov.append(code.kind === 'run'
+    ? 'Submitted as a maketx run script in transaction '
+    : 'Submitted as a direct realm call in transaction ');
+  prov.appendChild(txLink(code.tx_hash, code.block_height, null, { showBlock: false }));
+  prov.append(' by ');
+  prov.appendChild(addrLink(code.caller));
+  prov.append('. Matched to this proposal by gov/dao’s own ProposalCreated event, not by guessing.');
+  container.appendChild(prov);
+
+  if (code.kind === 'call') {
+    const tbl = el('table', { style: { marginBottom: '10px' } });
+    const body = el('tbody');
+    body.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'realm'), el('td', {}, realmPathEl(code.pkg_path))));
+    body.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'function'), el('td', {}, funcSpan(code.func))));
+    (code.args || []).forEach((arg, i) => {
+      body.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'arg[' + i + ']'), el('td', {}, linkify(arg))));
+    });
+    tbl.appendChild(body);
+    container.appendChild(tbl);
+    return;
+  }
+
+  if (code.file_name) {
+    container.appendChild(el('div', { style: { color: 'var(--accent)', fontSize: '12px', marginBottom: '4px', fontFamily: 'var(--mono)' } }, code.file_name));
+  }
+  if (code.source) container.appendChild(codeBlock(code.source));
+
+  if ((code.requests || []).length) {
+    container.appendChild(el('div', { className: 'section-sub', style: { marginTop: '10px' } },
+      'Proposal requests the script builds, with their arguments as written:'));
+    const tbl = el('table');
+    tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'constructor'), el('th', {}, 'arguments'))));
+    const body = el('tbody');
+    for (const r of code.requests) {
+      const args = el('td');
+      (r.args || []).forEach((a, i) => {
+        args.appendChild(el('div', { className: 'pd-row' }, el('span', { style: { color: 'var(--fg2)' } }, '[' + i + '] '), linkify(a)));
+      });
+      body.appendChild(el('tr', {},
+        el('td', {}, el('span', { style: { fontFamily: 'var(--mono)', fontSize: '12px' } }, r.pkg + '.' + r.func)),
+        args));
+    }
+    tbl.appendChild(body);
+    container.appendChild(tbl);
+  }
 }
 
 async function loadGovDAODetail(id) {
@@ -5092,14 +5511,25 @@ async function loadGovDAODetail(id) {
       }, 'see on gnoweb ↗'));
       container.appendChild(titleRow);
 
-      const meta = el('div', { style: { color: 'var(--fg2)', margin: '8px 0 16px' } });
+      const meta = el('div', { style: { color: 'var(--fg2)', margin: '8px 0 4px' } });
       meta.append('proposed by ');
       meta.appendChild(p.author ? gnoUserEl(p.author, p.author_address) : document.createTextNode('unknown'));
       if ((p.tiers || []).length) meta.append(' · eligible to vote: ' + p.tiers.join(', '));
+      if (p.code && p.code.tx_hash) {
+        meta.append(' · created in ');
+        meta.appendChild(txLink(p.code.tx_hash, p.code.block_height, null, { showBlock: false }));
+        if (p.code.block_time) meta.appendChild(el('span', { className: 'block-ctx' }, ' block ' + fmtNum(p.code.block_height) + ' · ' + shortAge(p.code.block_time)));
+      }
       container.appendChild(meta);
 
+      // Verification first. A reader deciding how to vote should meet the
+      // inconsistencies before the prose that may contain one.
+      renderSignals(container, p.signals);
+
       if (p.description) {
-        container.appendChild(el('div', { className: 'section-title' }, 'description'));
+        container.appendChild(el('div', { className: 'section-title', style: { marginTop: '20px' } }, 'description'));
+        container.appendChild(el('div', { className: 'section-sub' },
+          'As gov/dao renders it. A sys/params proposal’s description can be generated boilerplate that omits the values it writes; where that is the case, the values are decoded from the transaction and shown above.'));
         container.appendChild(el('pre', {
           style: {
             whiteSpace: 'pre-wrap', fontFamily: 'inherit', fontSize: '13px', lineHeight: '1.5',
@@ -5108,15 +5538,14 @@ async function loadGovDAODetail(id) {
         }, p.description));
       }
 
-      if (p.executor_pkg_path) {
-        const execDiv = el('div', { style: { margin: '12px 0', display: 'flex', alignItems: 'center', gap: '8px' } });
-        execDiv.append('executor package (what runs if accepted): ');
-        execDiv.appendChild(realmPathEl(p.executor_pkg_path));
-        container.appendChild(execDiv);
-      }
+      renderParamChanges(container, p.param_changes);
+      renderTimeline(container, p.timeline);
+      renderProposalCode(container, p.code);
+      renderAddressAudit(container, p.addresses);
+      renderDependencies(container, (p.code || {}).imports, p.executor_pkg_path);
 
       // Votes
-      container.appendChild(el('div', { className: 'section-title', style: { marginTop: '16px' } }, 'votes'));
+      container.appendChild(el('div', { className: 'section-title', style: { marginTop: '20px' } }, 'votes'));
       const voteSummary = el('div', { style: { display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' } });
       voteSummary.appendChild(voteBar(p.yes_percent || 0, p.no_percent || 0, p.abstain_percent || 0, true));
       voteSummary.appendChild(el('span', { style: { fontSize: '13px' } },
@@ -5139,50 +5568,60 @@ async function loadGovDAODetail(id) {
         container.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '13px' } }, 'no votes recorded yet'));
       }
 
-      // Related on-chain activity: two independent trails, per govdao.go's
-      // comments on RelatedCalls/RelatedMsgRuns — votes/execution (exact,
-      // matched by proposal ID) and a possible creation script (a heuristic
-      // source-text match, since creation is a MsgRun and MsgRun arguments are
-      // never indexed).
-      container.appendChild(el('div', { className: 'section-title', style: { marginTop: '20px' } }, 'related transactions'));
-      container.appendChild(el('div', { className: 'section-sub' }, 'votes, execution, and any other call naming this proposal ID directly.'));
-      if ((p.related_calls || []).length) {
+      // Everything the timeline already places is deliberately not repeated
+      // here. What is left is the wider net: calls naming this proposal ID
+      // that the timeline classified, kept as a flat table for anyone who
+      // wants to scan hashes rather than read a sequence.
+      const related = p.related_calls || [];
+      if (related.length) {
+        const relDetails = el('details', { style: { marginTop: '20px' } });
+        relDetails.appendChild(el('summary', { style: { cursor: 'pointer', color: 'var(--fg2)', fontSize: '13px' } },
+          'all ' + related.length + ' transaction(s) naming this proposal ID'));
         const rcTbl = el('table');
-        rcTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'caller'), el('th', {}, 'function'), el('th', {}, 'status'), el('th', {}, 'tx'))));
+        rcTbl.appendChild(el('thead', {}, el('tr', {},
+          el('th', {}, 'tx'), el('th', {}, 'caller'), el('th', {}, 'function'), el('th', {}, 'status'), el('th', {}, 'block'))));
         const rcBody = el('tbody');
-        for (const c of p.related_calls.slice().sort((a, b) => a.block_height - b.block_height)) {
+        for (const c of related.slice().sort((a, b) => a.block_height - b.block_height)) {
           rcBody.appendChild(el('tr', {},
-            el('td', {}, blockWithAge(c.block_height, c.block_time)),
+            el('td', {}, txLink(c.tx_hash, c.block_height, null, { showBlock: false })),
             el('td', {}, addrLink(c.caller)),
             el('td', {}, funcSpan(c.func)),
             el('td', {}, statusBadge(c.success)),
-            el('td', {}, txLink(c.tx_hash, c.block_height, null, { showBlock: false }))
+            el('td', {}, blockWithAge(c.block_height, c.block_time))
           ));
         }
         rcTbl.appendChild(rcBody);
-        container.appendChild(rcTbl);
-      } else {
-        container.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '13px' } }, 'none found'));
+        relDetails.appendChild(rcTbl);
+        container.appendChild(relDetails);
       }
 
-      container.appendChild(el('div', { className: 'section-title', style: { marginTop: '20px' } }, 'possible creation script'));
-      container.appendChild(el('div', { className: 'section-sub' }, '`maketx run` scripts whose source references both gov/dao and the executor package above — a heuristic match on source text, not a guarantee. Read the source to confirm.'));
-      if ((p.related_msgruns || []).length) {
+      // The old heuristic trail, demoted. It matched scripts by source text
+      // against the executor package path, which found every script that ever
+      // mentioned that package — on mainnet, six candidates for proposal 6,
+      // five belonging to other proposals. Now that the creating transaction
+      // is known exactly, this is only worth keeping as "other scripts that
+      // touched the same package", which is what it always actually was, and
+      // it is labelled that way and folded shut.
+      const runs = (p.related_msgruns || []).filter(r => !(p.code && r.tx_hash === p.code.tx_hash));
+      if (runs.length) {
+        const rmDetails = el('details', { style: { marginTop: '10px' } });
+        rmDetails.appendChild(el('summary', { style: { cursor: 'pointer', color: 'var(--fg2)', fontSize: '13px' } },
+          runs.length + ' other maketx run script(s) mentioning ' + (p.executor_pkg_path || 'this executor') + ' (text match, not this proposal)'));
         const rmTbl = el('table');
-        rmTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'caller'), el('th', {}, 'status'), el('th', {}, 'tx'))));
+        rmTbl.appendChild(el('thead', {}, el('tr', {},
+          el('th', {}, 'tx'), el('th', {}, 'caller'), el('th', {}, 'status'), el('th', {}, 'block'))));
         const rmBody = el('tbody');
-        for (const r of p.related_msgruns) {
+        for (const r of runs) {
           rmBody.appendChild(el('tr', {},
-            el('td', {}, blockLink(r.block_height)),
+            el('td', {}, txLink(r.tx_hash, r.block_height, null, { showBlock: false })),
             el('td', {}, addrLink(r.caller)),
             el('td', {}, statusBadge(r.success)),
-            el('td', {}, txLink(r.tx_hash, r.block_height, null, { showBlock: false }))
+            el('td', {}, blockLink(r.block_height))
           ));
         }
         rmTbl.appendChild(rmBody);
-        container.appendChild(rmTbl);
-      } else {
-        container.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '13px' } }, 'none found — this proposal may predate mygnoscan’s synced history, or its executor package could not be determined.'));
+        rmDetails.appendChild(rmTbl);
+        container.appendChild(rmDetails);
       }
 
       if ((p.errors || []).length) {
@@ -5233,7 +5672,7 @@ function renderInertTab(container, inert) {
   container.appendChild(el('div', { className: 'section-sub' },
     'every submission, approval and rejection recorded for this path, oldest first.'));
   const tbl = el('table');
-  tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'when'), el('th', {}, 'event'), el('th', {}, 'by'), el('th', {}, 'tx'))));
+  tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'tx'), el('th', {}, 'event'), el('th', {}, 'by'), el('th', {}, 'block'))));
   const body = el('tbody');
   for (const ev of history) {
     const label = ev.kind === 'submitted' ? badge('pkg', 'submitted')
@@ -5245,10 +5684,10 @@ function renderInertTab(container, inert) {
         ' (submitted at ' + fmtNum(ev.submitted_height) + (ev.wait_blocks ? ', ' + fmtNum(ev.wait_blocks) + ' blocks later' : '') + ')'));
     }
     body.appendChild(el('tr', {},
-      el('td', {}, blockWithAge(ev.block_height, ev.block_time)),
+      el('td', {}, txLink(ev.tx_hash, ev.block_height, null, { showBlock: false })),
       eventTd,
       el('td', {}, addrLink(ev.actor)),
-      el('td', {}, txLink(ev.tx_hash, ev.block_height, null, { showBlock: false }))
+      el('td', {}, blockWithAge(ev.block_height, ev.block_time))
     ));
   }
   tbl.appendChild(body);
@@ -5657,7 +6096,7 @@ async function loadRealmDetail(path, initialTab) {
       allRows.sort((a, b) => b.block - a.block);
       if (allRows.length) {
         const callTbl = el('table');
-        callTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'type'), el('th', {}, 'caller'), el('th', {}, 'detail'), el('th', {}, 'status'), el('th', {}, 'tx'))));
+        callTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'tx'), el('th', {}, 'type'), el('th', {}, 'caller'), el('th', {}, 'detail'), el('th', {}, 'status'), el('th', {}, 'block'))));
         const callBody = el('tbody');
         // A multicall produces several call rows sharing one tx (and so one
         // block); span those columns across the group instead of repeating.
@@ -5665,12 +6104,12 @@ async function loadRealmDetail(path, initialTab) {
         allRows.forEach((row, i) => {
           const typeBdg = row.type === 'call' ? badge('realm', 'call') : row.type === 'run' ? badge('ok', 'run') : badge('pkg', 'deploy');
           callBody.appendChild(el('tr', {},
-            spanTd(callSpans, i, blockLink(row.block)),
+            spanTd(callSpans, i, txLink(row.tx, row.block, null, { showBlock: false })),
             el('td', {}, typeBdg),
             el('td', { className: 'truncate' }, addrLink(row.caller)),
             el('td', {}, row.type === 'call' ? funcSpan(row.detail) : row.detail),
             el('td', {}, statusBadge(row.success)),
-            spanTd(callSpans, i, txLink(row.tx, row.block, null, { showBlock: false }))
+            spanTd(callSpans, i, blockLink(row.block))
           ));
         });
         callTbl.appendChild(callBody); calls.appendChild(callTbl);
@@ -5691,16 +6130,16 @@ async function loadRealmDetail(path, initialTab) {
             return;
           }
           const evTbl = el('table');
-          evTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'type'), el('th', {}, 'attributes'), el('th', {}, 'tx'))));
+          evTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'tx'), el('th', {}, 'type'), el('th', {}, 'attributes'), el('th', {}, 'block'))));
           const evBody = el('tbody');
           for (const item of evData) {
             for (const ev of item.events) {
               const attrStr = (ev.attrs || []).map(a => a.key + '=' + a.value).join(', ');
               evBody.appendChild(el('tr', {},
-                el('td', {}, blockLink(item.block_height)),
+                el('td', {}, txLink(item.tx_hash, item.block_height, null, { showBlock: false })),
                 el('td', {}, badge('realm', ev.type || 'event')),
                 el('td', {}, attrStr ? linkify(attrStr) : el('span', {}, '-')),
-                el('td', {}, txLink(item.tx_hash, item.block_height))
+                el('td', {}, blockWithAge(item.block_height, item.block_time))
               ));
             }
           }
@@ -5741,7 +6180,7 @@ async function loadRealmDetail(path, initialTab) {
           if ((st.entries || []).length) {
             storageEl.appendChild(el('div', { className: 'section-title', style: { marginTop: '16px' } }, 'storage events'));
             const stTbl = el('table');
-            stTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'type'), el('th', {}, 'bytes'), el('th', {}, 'fee'), el('th', {}, 'tx'))));
+            stTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'tx'), el('th', {}, 'type'), el('th', {}, 'bytes'), el('th', {}, 'fee'), el('th', {}, 'block'))));
             const stBody = el('tbody');
             // Storage events from the same call (e.g. a multicall posting
             // several times at once) share a block and a tx; span those
@@ -5749,11 +6188,11 @@ async function loadRealmDetail(path, initialTab) {
             const stSpans = rowSpans(st.entries, e => e.tx_hash);
             st.entries.forEach((e, i) => {
               stBody.appendChild(el('tr', {},
-                spanTd(stSpans, i, blockLink(e.block_height)),
+                spanTd(stSpans, i, txLink(e.tx_hash, e.block_height, null, { showBlock: false })),
                 el('td', {}, badge(e.type === 'deposit' ? 'pkg' : 'ok', e.type)),
                 el('td', {}, fmtNum(e.bytes_delta)),
                 el('td', {}, fmtNum(e.fee_amount) + ' ' + (e.fee_denom || '')),
-                spanTd(stSpans, i, txLink(e.tx_hash, e.block_height, null, { showBlock: false }))
+                spanTd(stSpans, i, blockWithAge(e.block_height, e.block_time))
               ));
             });
             // Total row
@@ -5771,18 +6210,18 @@ async function loadRealmDetail(path, initialTab) {
           if ((gs.entries || []).length) {
             storageEl.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'gas usage per transaction'));
             const gsTbl = el('table');
-            gsTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'block'), el('th', {}, 'function'), el('th', {}, 'gas used'), el('th', {}, 'gas wanted'), el('th', {}, 'fee'), el('th', {}, 'status'), el('th', {}, 'tx'))));
+            gsTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'tx'), el('th', {}, 'function'), el('th', {}, 'gas used'), el('th', {}, 'gas wanted'), el('th', {}, 'fee'), el('th', {}, 'status'), el('th', {}, 'block'))));
             const gsBody = el('tbody');
             for (const e of gs.entries) {
               const pct = e.gas_wanted > 0 ? (e.gas_used / e.gas_wanted * 100).toFixed(0) + '%' : '-';
               gsBody.appendChild(el('tr', {},
-                el('td', {}, blockLink(e.block_height)),
+                el('td', {}, txLink(e.tx_hash, e.block_height, null, { showBlock: false })),
                 el('td', {}, e.func ? funcSpan(e.func) : '-'),
                 el('td', {}, fmtNum(e.gas_used) + ' (' + pct + ')'),
                 el('td', {}, fmtNum(e.gas_wanted)),
                 el('td', {}, fmtNum(e.gas_fee) + ' ugnot'),
                 el('td', {}, statusBadge(e.success)),
-                el('td', {}, txLink(e.tx_hash, e.block_height, null, { showBlock: false }))
+                el('td', {}, blockWithAge(e.block_height, e.block_time))
               ));
             }
             // Total row
