@@ -25,6 +25,13 @@ const PAGES = [
   ['realms', '/realms'],
   ['packages', '/packages'],
   ['contracts', '/contracts'],
+  // One per layout: a change to any of the six is invisible in a single shot
+  // of whichever one happens to be the default.
+  ['contracts-orbit', '/contracts?view=orbit&edges=imports&flow=0'],
+  ['contracts-packed', '/contracts?view=packed'],
+  ['contracts-bundled', '/contracts?view=bundled&edges=imports&metric=importers&flow=0'],
+  ['contracts-chord', '/contracts?view=chord&edges=imports'],
+  ['contracts-treemap', '/contracts?view=treemap&edges=none&metric=storage_bytes'],
   ['transactions', '/txs'],
   ['blocks', '/blocks'],
   ['accounts', '/accounts'],
