@@ -221,6 +221,8 @@ All accept `days` and `granularity`.
 | `GET /api/timeseries/health` | chain health indicators |
 | `GET /api/timeseries/storage` | storage growth. `realm=<path>` scopes it to one realm |
 | `GET /api/timeseries/storage/realms` | realms that have storage data, for populating a selector |
+| `GET /api/timeseries/storage/deltas` | on-chain storage movement per bucket: `deposited`, `released` (negative, as the chain emits it) and `net`, from `storage_events`. `realm=<path>` scopes it to one realm. Distinct from `/api/timeseries/storage`, which counts source bytes added and only ever grows |
+| `GET /api/storage/consumers` | realms ranked by absolute net storage change. `topN` (default 20, max 100). Keyed by `(network, pkg_path)`, so a realm deployed on two chains is two rows |
 | `GET /api/timeseries/blocks` | blocks and transactions per bucket. **Single-network** |
 | `GET /api/timeseries/new-addresses` | addresses seen on-chain for the first time, bucketed by that first appearance. First-seen is derived over all indexed history, so widening the window never relabels an old address as new |
 | `GET /api/timeseries/active-rolling` | `dau`, `wau`, `mau` — distinct active addresses over trailing 1/7/30-day windows. **Always daily**: `granularity` is ignored, because the three windows are day-defined. A request shorter than 7 days is widened to 7, and capped at 365 regardless of `window`/`days`/`granularity` |

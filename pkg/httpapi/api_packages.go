@@ -532,6 +532,50 @@ func (a *API) HandleTimeSeriesStorage(w http.ResponseWriter, r *http.Request) {
 	JSONResponse(w, pts)
 }
 
+func (a *API) HandleTimeSeriesStorageDeltas(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	days, granularity := a.resolveTimeseriesParams(r, network)
+	realmPath := r.URL.Query().Get("realm")
+	pts, err := a.db.GetStorageDeltaTimeSeries(network, realmPath, granularity, days)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	if pts == nil {
+		pts = []store.StorageDeltaPoint{}
+	}
+	JSONResponse(w, pts)
+}
+
+func (a *API) HandleStorageEventRealms(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	days, _ := a.resolveTimeseriesParams(r, network)
+	paths, err := a.db.GetRealmsWithStorageEvents(network, days)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	if paths == nil {
+		paths = []string{}
+	}
+	JSONResponse(w, paths)
+}
+
+func (a *API) HandleStorageConsumers(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	days, _ := a.resolveTimeseriesParams(r, network)
+	topN, _ := strconv.Atoi(r.URL.Query().Get("topN"))
+	rows, err := a.db.GetStorageConsumers(network, days, topN)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	if rows == nil {
+		rows = []store.StorageConsumer{}
+	}
+	JSONResponse(w, rows)
+}
+
 func (a *API) HandleStorageRealms(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
 	days, _ := a.resolveTimeseriesParams(r, network)
