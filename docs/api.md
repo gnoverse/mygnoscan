@@ -123,13 +123,41 @@ bounded at 3650 days instead.
 | `GET /api/version` | build info: `git_hash`, `build_time` |
 | `GET /api/networks` | configured network IDs — the fastest way to confirm which chains an instance is actually serving |
 | `GET /api/watch` | activity digest for a watchlist, plus a `transactions` timeline: the 50 most recent rows across every watched realm and address, merged and deduplicated. Repeated `realm=` and `address=` parameters, each optionally `id@height` — that height is the baseline `new_since` counts against (the timeline itself is not filtered by it). Answered from stored rows only, so a watchlist costs no indexer round-trips. Capped at 100 items |
-| `GET /api/labels` | display names for addresses, derived from on-chain data: `{address: {label, kind, why}}`. Currently one rule — the sole deployer of a named namespace is that namespace. `why` states the evidence so any label can be checked |
+| `GET /api/labels` | display names for addresses: `{address: {label, kind, why}}`, the curated registry merged with what the chain proves |
+| `GET /api/registry/apps` | the curated app directory: `categories`, `apps` and a count of known tokens |
 
 **Address labels are global, not per network.** An address is the same key on
-every chain, so a name earned on one applies everywhere. `/api/labels` derives
-what it can prove; the UI adds a small curated map for names that cannot be
-derived — faucets and infrastructure keys — and marks any label inferred from
-behaviour rather than proved, with the reasoning in its tooltip.
+every chain, so a name earned on one applies everywhere.
+
+**`kind` is the provenance, and it is the point.** Four values, never collapsed,
+because a name a human vouched for, a fact the chain proves, a claim the subject
+made about itself and a heuristic are four different things:
+
+| `kind` | means | asserted by |
+|---|---|---|
+| `curated` | a human vouched for it in a merged pull request | a contributor |
+| `derived` | proved from chain data, recomputed on every request | the chain |
+| `declared` | the subject said so (`r/sys/users`, a valoper moniker) | the address itself |
+| `inferred` | a heuristic over observed behaviour | this repo |
+
+The explorer marks the two that ask a reader to take something on trust, with
+the evidence in the tooltip. `declared` is attacker-controlled by construction:
+anyone may call `UpdateDescription` on `r/gnops/valopers` and claim any name.
+
+**Precedence is curated, derived, declared, inferred.** Curated winning over
+derived is the one judgement call here, and the obvious argument runs the other
+way, since derived is proved and live while curated can rot. It still loses,
+because the registry's own rule is that a curated entry is only added for
+something that *cannot* be derived. An address carrying both therefore means a
+person looked at the derived name and decided a better one was needed. The
+losing claim is not discarded: it is appended to the winner's `why`, so the
+corroboration survives.
+
+The curated half lives in `pkg/registry/data/`, embedded at build time, and
+adding an entry is a pull request against a JSON file. `pkg/registry/README.md`
+has the rules and `go test ./pkg/registry/` enforces them, including that a
+`derived` label may never be written down: a stored copy of something computed
+live stops being true the moment the chain moves.
 
 Nothing is derived from a namespace with more than one deployer. Seven exist on
 the live chains, and naming one of their deployers would present a guess as a

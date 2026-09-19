@@ -1,0 +1,41 @@
+{
+  "apps": [
+    {
+      "path": "gno.land/r/gnoland/wugnot",
+      "name": "wugnot",
+      "category": "token",
+      "description": "Wrapped GNOT: the GRC20 form of the native coin, so realms that speak the token interface can hold it."
+    },
+    {
+      "path": "gno.land/r/gnoswap/router",
+      "name": "GnoSwap",
+      "category": "defi",
+      "description": "Concentrated-liquidity AMM. The router is the entry point; positions, staker and gns are the rest of it.",
+      "url": "https://gnoswap.io"
+    },
+    {
+      "path": "gno.land/r/gnoland/blog",
+      "name": "gno.land blog",
+      "category": "content",
+      "description": "The official blog, rendered on chain. Posts are published by an admin through the realm rather than by a deploy."
+    },
+    {
+      "path": "gno.land/r/gov/dao",
+      "name": "GovDAO",
+      "category": "governance",
+      "description": "Chain governance: proposals, votes and the executors that change parameters under r/sys/params."
+    },
+    {
+      "path": "gno.land/r/gnops/valopers",
+      "name": "Valopers",
+      "category": "infrastructure",
+      "description": "The validator registry. Operators register here and edit their own description, so a moniker is self-declared."
+    },
+    {
+      "path": "gno.land/r/sys/users",
+      "name": "Users",
+      "category": "infrastructure",
+      "description": "The on-chain username registry. It is what resolves a @handle to an address across the explorer."
+    }
+  ]
+}

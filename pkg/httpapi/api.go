@@ -19,6 +19,7 @@ import (
 	"github.com/moul/mygnoscan/pkg/analyzer"
 	"github.com/moul/mygnoscan/pkg/config"
 	"github.com/moul/mygnoscan/pkg/indexer"
+	"github.com/moul/mygnoscan/pkg/registry"
 	"github.com/moul/mygnoscan/pkg/store"
 	"github.com/moul/mygnoscan/pkg/syncer"
 )
@@ -29,6 +30,11 @@ type API struct {
 	networks []config.NetworkConfig
 	analyzer *analyzer.Analyzer
 	health   *healthTracker
+
+	// registry is the curated data that cannot be derived from a chain. Parsed
+	// once at construction: it is embedded in the binary, so a failure here is
+	// a build problem rather than a runtime one.
+	registry *registry.Registry
 
 	// syncHealth is how the sanity page answers "are our sync passes
 	// succeeding", which chain liveness cannot: a chain can be producing
@@ -46,12 +52,21 @@ type API struct {
 }
 
 func NewAPI(db *store.DB, clients map[string]*indexer.Client, networks []config.NetworkConfig, analyzer *analyzer.Analyzer) *API {
+	reg, err := registry.Load()
+	if err != nil {
+		// Fatal rather than degraded. A registry that failed to parse means
+		// every curated name is silently missing, and an explorer quietly
+		// showing bare addresses where it used to show people is worse than one
+		// that refuses to start and says which entry is malformed.
+		panic("registry: " + err.Error())
+	}
 	return &API{
 		db:       db,
 		clients:  clients,
 		networks: networks,
 		analyzer: analyzer,
 		health:   newHealthTracker(),
+		registry: reg,
 	}
 }
 
@@ -338,15 +353,6 @@ const (
 // Kept separate from the rows that mention an address so it can be fetched once
 // and applied everywhere, rather than repeating a label on every transaction in
 // a list.
-
-func (a *API) HandleLabels(w http.ResponseWriter, r *http.Request) {
-	labels, err := a.db.DerivedAddressLabels(a.networkParam(r))
-	if err != nil {
-		jsonError(w, err.Error(), 500)
-		return
-	}
-	JSONResponse(w, labels)
-}
 
 // maxWatchItems bounds a watchlist request. Each item is a handful of indexed
 // counts, so the cost is linear — but the parameters come from a URL and this is
@@ -800,6 +806,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/govdao/proposals/{id}", a.HandleGovDAOProposal)
 	mux.HandleFunc("GET /api/params", a.HandleParameters)
 	mux.HandleFunc("GET /api/health/heartbeat", a.HandleHeartbeat)
+	mux.HandleFunc("GET /api/registry/apps", a.HandleApps)
 	mux.HandleFunc("GET /api/contracts/map", a.HandleContractsMap)
 	mux.HandleFunc("GET /api/contracts/edges", a.HandleContractsEdges)
 	mux.HandleFunc("GET /api/inert/queue", a.HandleInertQueue)

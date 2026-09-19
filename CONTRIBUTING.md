@@ -86,3 +86,15 @@ untested areas are listed in
 Include the output of `/api/version` and `/api/networks`, the network in question,
 and whether the instance uses a config file or flags. A surprising number of issues
 turn out to be an instance pointed at a different chain than intended.
+
+## Adding a name, a token or an app
+
+Curated data (what an address is called, which token is the real one, what an
+app does) lives in [`pkg/registry/data/`](pkg/registry/data/) as JSON, embedded
+into the binary at build time. Adding one is a pull request against a file, with
+no Go or JavaScript involved.
+
+[`pkg/registry/README.md`](pkg/registry/README.md) has the rules. The two that
+catch people: only add what **cannot be derived** from the chain, and anything
+that is not a human vouching for it has to carry its evidence in `why`.
+`go test ./pkg/registry/` checks both.
