@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"fmt"
 	"time"
 
@@ -128,3 +129,157 @@ func (d *DB) GetRealmsWithStorage(network string, days int) ([]string, error) {
 // Before the first refresh there is no rollup — a fresh database, or the first
 // start after this shipped — and the whole series is computed live rather than
 // reported as zero, which would read as "nobody has ever used this chain".
+
+// StorageDeltaPoint is on-chain storage movement per bucket, read from
+// storage_events.
+//
+// This measures something different from StorageTimePoint: deposits and
+// releases are what the chain actually charged and refunded, while bytes_added
+// counts source bytes from package_files, a proxy that only ever grows. Both
+// are useful, so both are served.
+type StorageDeltaPoint struct {
+	Time      string `json:"time"`
+	Deposited int    `json:"deposited"`
+	Released  int    `json:"released"` // negative, as the chain emits it
+	Net       int    `json:"net"`
+}
+
+func (d *DB) GetStorageDeltaTimeSeries(network, realmPath, granularity string, days int) ([]StorageDeltaPoint, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	sqlFmt, step, truncFn := timeseriesFormat(granularity)
+	start := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
+
+	filter := " AND " + d.networkFilter("network", network)
+	args := []any{start}
+	if realmPath != "" {
+		filter += " AND pkg_path = ?"
+		args = append(args, realmPath)
+	}
+
+	q := fmt.Sprintf(`
+		SELECT strftime('%s', block_time) AS bucket,
+		       COALESCE(SUM(CASE WHEN bytes_delta > 0 THEN bytes_delta ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN bytes_delta < 0 THEN bytes_delta ELSE 0 END), 0),
+		       COALESCE(SUM(bytes_delta), 0)
+		FROM storage_events
+		WHERE block_time >= ?%s
+		GROUP BY bucket ORDER BY bucket ASC`, sqlFmt, filter)
+
+	rows, err := d.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	buckets := make(map[string]*StorageDeltaPoint)
+	for rows.Next() {
+		var bucket sql.NullString
+		var dep, rel, net int
+		if err := rows.Scan(&bucket, &dep, &rel, &net); err != nil {
+			return nil, err
+		}
+		// A row whose block_time will not parse yields a NULL bucket: the window
+		// filter is a string comparison, so garbage gets past it. Skip the row
+		// rather than failing the whole chart.
+		if !bucket.Valid || bucket.String == "" {
+			continue
+		}
+		p := StorageDeltaPoint{Time: bucket.String, Deposited: dep, Released: rel, Net: net}
+		buckets[p.Time] = &p
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return fillBuckets(buckets, days, granularity, step, truncFn,
+		func(k string) StorageDeltaPoint { return StorageDeltaPoint{Time: k} },
+		func(p *StorageDeltaPoint) {}), nil
+}
+
+// StorageConsumer ranks realms by how much storage they moved.
+type StorageConsumer struct {
+	Network   string `json:"network"`
+	PkgPath   string `json:"pkg_path"`
+	Deposited int    `json:"deposited"`
+	Released  int    `json:"released"`
+	Net       int    `json:"net"`
+}
+
+// GetStorageConsumers ranks realms by absolute net storage change.
+//
+// Keyed by (network, pkg_path), not pkg_path alone: the same realm path is
+// deployed on more than one chain, and ranking by path would add a busy realm's
+// mainnet and testnet storage into one row that describes neither.
+func (d *DB) GetStorageConsumers(network string, days, topN int) ([]StorageConsumer, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	if topN <= 0 {
+		topN = 20
+	}
+	if topN > 100 {
+		topN = 100
+	}
+	start := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
+
+	q := fmt.Sprintf(`
+		SELECT network, pkg_path,
+		       COALESCE(SUM(CASE WHEN bytes_delta > 0 THEN bytes_delta ELSE 0 END), 0) AS deposited,
+		       COALESCE(SUM(CASE WHEN bytes_delta < 0 THEN bytes_delta ELSE 0 END), 0) AS released,
+		       COALESCE(SUM(bytes_delta), 0) AS net
+		FROM storage_events
+		WHERE block_time >= ? AND %s
+		GROUP BY network, pkg_path
+		ORDER BY ABS(net) DESC, network ASC, pkg_path ASC
+		LIMIT ?`, d.networkFilter("network", network))
+
+	rows, err := d.db.Query(q, start, topN)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []StorageConsumer
+	for rows.Next() {
+		var c StorageConsumer
+		if err := rows.Scan(&c.Network, &c.PkgPath, &c.Deposited, &c.Released, &c.Net); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// GetRealmsWithStorageEvents lists realms that actually moved storage in the
+// window.
+//
+// GetRealmsWithStorage answers the same question for the package_files series
+// and cannot be reused here: it lists realms with recent *package rows*, which
+// is a different set. A realm that only released state has storage events and
+// no new files, so picking it from that list would draw an empty chart.
+func (d *DB) GetRealmsWithStorageEvents(network string, days int) ([]string, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	start := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
+	rows, err := d.db.Query(`
+		SELECT DISTINCT pkg_path FROM storage_events
+		 WHERE block_time >= ? AND `+d.networkFilter("network", network)+`
+		 ORDER BY pkg_path ASC`, start)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var paths []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		paths = append(paths, p)
+	}
+	return paths, rows.Err()
+}

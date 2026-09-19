@@ -7627,6 +7627,172 @@ const DASHBOARDS = [
           series: [{ type: 'bar', data: rows.map(r => r.txs), itemStyle: { color: DASH_PAL[1] } }],
         }),
       },
+      {
+        id: 'storage-growth',
+        title: 'cumulative storage growth',
+        window: 'all',
+        networkScoped: true,
+        state: { realm: '' },
+        why: 'How much chain state realms are paying to hold, summed across all indexed history. State only grows unless a realm prunes, so the slope is the long-run cost driver. Pinned to the full range: a running total over a partial window understates the real figure. A downward slope means realms released more than they stored.',
+        controls: (bar, rerender, state) => {
+          bar.appendChild(el('span', { className: 'label' }, 'realm'));
+          const sel = el('select', { className: 'dash-select' });
+          sel.appendChild(el('option', { value: '' }, 'all realms'));
+          (state.realms || []).forEach(p => {
+            const o = el('option', { value: p }, p);
+            if (p === state.realm) o.selected = true;
+            sel.appendChild(o);
+          });
+          sel.addEventListener('change', () => { state.realm = sel.value; rerender(); });
+          bar.appendChild(sel);
+        },
+        fetch: async function (w) {
+          this.state = this.state || {};
+          // Realms that moved storage in the window, from the same table the
+          // chart reads. timeseries/storage/realms lists realms with recent
+          // package rows instead, which is a different set.
+          const realms = await dashApi('storage/realms', w);
+          this.state.realms = realms;
+          if (this.state.realm && realms.indexOf(this.state.realm) === -1) this.state.realm = '';
+          const path = this.state.realm
+            ? 'timeseries/storage/deltas?realm=' + encodeURIComponent(this.state.realm)
+            : 'timeseries/storage/deltas';
+          return dashApi(path, w);
+        },
+        opt: rows => dashBase({
+          tooltip: { trigger: 'axis' },
+          xAxis: dashCatAxis(rows.map(r => r.time)),
+          yAxis: dashValAxis('bytes'),
+          series: [{
+            type: 'line', smooth: true, showSymbol: false,
+            areaStyle: { opacity: 0.25 },
+            lineStyle: { color: DASH_PAL[4] }, itemStyle: { color: DASH_PAL[4] },
+            data: cumulative(rows.map(r => r.net)),
+          }],
+        }),
+      },
+      {
+        id: 'storage-deposit-release',
+        title: 'storage deposited vs released',
+        networkScoped: true,
+        state: { realm: '' },
+        why: 'Deposits lock GNOT when a realm grows chain state; releases refund it when state is pruned. Released bars sit below zero because the chain emits them as negative deltas. At 100 ugnot per byte, the bar heights are also the fee flow.',
+        controls: (bar, rerender, state) => {
+          bar.appendChild(el('span', { className: 'label' }, 'realm'));
+          const sel = el('select', { className: 'dash-select' });
+          sel.appendChild(el('option', { value: '' }, 'all realms'));
+          (state.realms || []).forEach(p => {
+            const o = el('option', { value: p }, p);
+            if (p === state.realm) o.selected = true;
+            sel.appendChild(o);
+          });
+          sel.addEventListener('change', () => { state.realm = sel.value; rerender(); });
+          bar.appendChild(sel);
+        },
+        fetch: async function (w) {
+          this.state = this.state || {};
+          // Realms that moved storage in the window, from the same table the
+          // chart reads. timeseries/storage/realms lists realms with recent
+          // package rows instead, which is a different set.
+          const realms = await dashApi('storage/realms', w);
+          this.state.realms = realms;
+          if (this.state.realm && realms.indexOf(this.state.realm) === -1) this.state.realm = '';
+          const path = this.state.realm
+            ? 'timeseries/storage/deltas?realm=' + encodeURIComponent(this.state.realm)
+            : 'timeseries/storage/deltas';
+          return dashApi(path, w);
+        },
+        opt: rows => dashBase({
+          tooltip: { trigger: 'axis' },
+          legend: dashLegend(['deposited', 'released']),
+          xAxis: dashCatAxisBars(rows.map(r => r.time)),
+          yAxis: dashValAxis('bytes'),
+          series: [
+            { name: 'deposited', type: 'bar', stack: 's', itemStyle: { color: DASH_PAL[0] }, data: rows.map(r => r.deposited) },
+            { name: 'released', type: 'bar', stack: 's', itemStyle: { color: DASH_PAL[1] }, data: rows.map(r => r.released) },
+          ],
+        }),
+      },
+      {
+        id: 'storage-consumers',
+        title: 'top storage consumers',
+        wide: true,
+        networkScoped: true,
+        state: { topN: 20 },
+        why: 'Which realms hold the most chain state, by net bytes. A treemap answers "who is biggest" at a glance. Realms with a negative net (they released more than they stored) are omitted here because a treemap cannot draw a negative area — the net-delta chart below shows them.',
+        controls: (bar, rerender, state) => {
+          bar.appendChild(el('span', { className: 'label' }, 'top'));
+          const seg = el('div', { className: 'dash-seg' });
+          [10, 20, 50].forEach(n => {
+            const b = el('button', { type: 'button', className: n === state.topN ? 'on' : '' }, String(n));
+            b.addEventListener('click', () => { state.topN = n; rerender(); });
+            seg.appendChild(b);
+          });
+          bar.appendChild(seg);
+        },
+        fetch: function (w) {
+          return dashApi('storage/consumers?topN=' + (this.state && this.state.topN ? this.state.topN : 20), w);
+        },
+        opt: rows => dashBase({
+          // pkg_path is attacker-controlled: the tooltip must be a DOM node,
+          // never a string, or ECharts writes it as innerHTML.
+          tooltip: {
+            formatter: p => dashTooltipNode([p.name, dashCompactNumber(p.value) + ' bytes net']),
+          },
+          series: [{
+            type: 'treemap',
+            roam: false, nodeClick: false, breadcrumb: { show: false },
+            // A treemap cannot represent a negative area.
+            data: rows.filter(r => r.net > 0).map(r => ({ name: r.pkg_path, value: r.net })),
+            // Labels are canvas-drawn, not HTML, so a string is safe here.
+            label: { color: '#06231f', fontSize: 11, formatter: p => p.name },
+            levels: [{ itemStyle: { borderColor: '#0a0a0a', borderWidth: 2, gapWidth: 2 } }],
+          }],
+        }),
+      },
+      {
+        id: 'storage-net-delta',
+        title: 'net storage change by realm',
+        wide: true,
+        networkScoped: true,
+        state: { topN: 20 },
+        why: 'Net bytes each realm added or released in the window. Bars to the left of zero are realms that pruned more state than they stored, which the treemap above cannot show. Ordered by net, so growth and cleanup sit at opposite ends.',
+        controls: (bar, rerender, state) => {
+          bar.appendChild(el('span', { className: 'label' }, 'top'));
+          const seg = el('div', { className: 'dash-seg' });
+          [10, 20, 50].forEach(n => {
+            const b = el('button', { type: 'button', className: n === state.topN ? 'on' : '' }, String(n));
+            b.addEventListener('click', () => { state.topN = n; rerender(); });
+            seg.appendChild(b);
+          });
+          bar.appendChild(seg);
+        },
+        fetch: function (w) {
+          return dashApi('storage/consumers?topN=' + (this.state && this.state.topN ? this.state.topN : 20), w);
+        },
+        opt: rows => {
+          // rows arrive ordered by ABS(net) (GetStorageConsumers sorts that way so
+          // large-magnitude realms in either direction survive topN), so this chart
+          // re-sorts by plain net ascending to put growth and cleanup at opposite ends.
+          const ordered = rows.slice().sort((a, b) => a.net - b.net);
+          return dashBase({
+            grid: { left: 220, right: 20, top: 10, bottom: 28 },
+            tooltip: {
+              formatter: p => dashTooltipNode([p.name, dashCompactNumber(p.value) + ' bytes net']),
+            },
+            xAxis: dashValAxis('net bytes'),
+            yAxis: dashCatAxisBars(ordered.map(r => r.pkg_path)),
+            series: [{
+              type: 'bar',
+              data: ordered.map(r => ({
+                value: r.net,
+                name: r.pkg_path,
+                itemStyle: { color: r.net < 0 ? DASH_PAL[1] : DASH_PAL[2] },
+              })),
+            }],
+          });
+        },
+      },
     ],
   },
   {

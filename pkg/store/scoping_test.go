@@ -370,3 +370,66 @@ func TestPackageDetailExcludesRetiredNetworks(t *testing.T) {
 		t.Errorf("a live package failed to resolve: %v", err)
 	}
 }
+
+// Storage readers carry the same two invariants as every other aggregate: they
+// must ignore chains that are no longer configured, and they must key by
+// (network, pkg_path) rather than by path alone, since the same realm path is
+// deployed on more than one chain.
+func TestStorageReadersAreScopedAndKeyedPerChain(t *testing.T) {
+	db := newScopedDB(t)
+
+	when := time.Now().UTC().Add(-time.Hour).Format("2006-01-02T15:04:05Z")
+	const shared = "gno.land/r/demo/boards"
+	seed := func(network, hash string, idx int, delta int) {
+		t.Helper()
+		if err := db.InsertStorageEvent(network, hash, idx, shared, 100, when, "deposit", delta, 1); err != nil {
+			t.Fatalf("InsertStorageEvent: %v", err)
+		}
+	}
+	seed("live1", "l1-a", 0, 1000)
+	seed("live1", "l1-b", 1, -300)
+	seed("live2", "l2-a", 0, 500)
+	seed("retired", "ret-a", 0, 9999)
+
+	consumers, err := db.GetStorageConsumers("", 30, 10)
+	if err != nil {
+		t.Fatalf("GetStorageConsumers: %v", err)
+	}
+	got := map[string]int{}
+	for _, c := range consumers {
+		got[c.Network+"|"+c.PkgPath] = c.Net
+	}
+	want := map[string]int{"live1|" + shared: 700, "live2|" + shared: 500}
+	if len(got) != len(want) {
+		t.Errorf("consumers = %v, want one row per live chain (%v); a retired chain or a merged path leaked in", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("consumer %s net = %d, want %d", k, got[k], v)
+		}
+	}
+
+	pts, err := db.GetStorageDeltaTimeSeries("", "", "daily", 7)
+	if err != nil {
+		t.Fatalf("GetStorageDeltaTimeSeries: %v", err)
+	}
+	var dep, rel, net int
+	for _, p := range pts {
+		dep, rel, net = dep+p.Deposited, rel+p.Released, net+p.Net
+	}
+	if dep != 1500 || rel != -300 || net != 1200 {
+		t.Errorf("deltas = (deposited %d, released %d, net %d), want (1500, -300, 1200); retired rows must not count", dep, rel, net)
+	}
+
+	// An explicitly named chain is unaffected by the configured set.
+	if pts, err = db.GetStorageDeltaTimeSeries("retired", "", "daily", 7); err != nil {
+		t.Fatalf("GetStorageDeltaTimeSeries(retired): %v", err)
+	}
+	net = 0
+	for _, p := range pts {
+		net += p.Net
+	}
+	if net != 9999 {
+		t.Errorf("explicit network=retired net = %d, want 9999", net)
+	}
+}
