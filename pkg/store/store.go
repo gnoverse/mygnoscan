@@ -44,6 +44,15 @@ var NetworkScopedTables = []string{
 	"transactions",
 	"blocks",
 	"proposers",
+	// The edge rollups belong here for a reason their source tables do not make
+	// obvious: their sync cursor is MAX(last_height) over their own rows. Left
+	// behind by a reset, they would hold a dead chain's edges *and* a cursor
+	// above the new chain's tip, so the replacement chain's transfers would
+	// never be folded in and the graphs would show the old chain forever,
+	// silently. Wiping them resets the cursor to zero as a side effect, which
+	// is exactly what a re-sync from the new genesis needs.
+	"transfer_edges",
+	"caller_edges",
 }
 
 // DeleteNetworkData removes every row belonging to a network, in one transaction.

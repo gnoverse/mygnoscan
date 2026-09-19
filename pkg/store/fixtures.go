@@ -76,6 +76,18 @@ func SeedNetwork(t TB, db *DB, network string, height int) {
 	if err := db.UpsertBlock(network, height, "", proposerID, 1); err != nil {
 		t.Fatalf("upsert block: %v", err)
 	}
+	if err := db.UpsertTransferEdges(network, []TransferEdgeRow{{
+		FromAddress: "g1from", ToAddress: "g1to", Day: "2026-01-01",
+		TotalValue: 1, TxCount: 1, LastHeight: height,
+	}}); err != nil {
+		t.Fatalf("upsert transfer edges: %v", err)
+	}
+	if err := db.UpsertCallerEdges(network, []CallerEdgeRow{{
+		Caller: "g1caller", PkgPath: "gno.land/r/demo/foo", Day: "2026-01-01",
+		Calls: 1, LastHeight: height,
+	}}); err != nil {
+		t.Fatalf("upsert caller edges: %v", err)
+	}
 }
 
 // SQL exposes the underlying handle.
