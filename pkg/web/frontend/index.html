@@ -574,6 +574,28 @@ async function loadAddrLabels() {
     _derivedAddrLabels = {};
   }
 }
+// Namespace -> the account registered for it in r/sys/users.
+//
+// Read from the chain's own registry rather than inferred from deploy history,
+// because the inference is wrong often enough to matter: onbloc's packages were
+// included in genesis, so "who deployed them" answers with the genesis deployer
+// — as it does for gnoland, aeddi and several others. Four of twelve mainnet
+// namespaces resolve to a different account than their deploys suggest.
+//
+// Per network: the same name can belong to different accounts on two chains,
+// so this is reloaded when the selector changes and is empty in all-networks
+// mode rather than merging them.
+let _nsOwners = {};
+async function loadNamespaceOwners() {
+  const net = getNetwork();
+  if (!net || net === 'all') { _nsOwners = {}; return; }
+  try {
+    _nsOwners = await api('namespaces?network=' + encodeURIComponent(net)) || {};
+  } catch (_) {
+    _nsOwners = {};
+  }
+}
+
 // Consensus-address -> moniker, from gnockpit (see proposerEl). Best-effort
 // and independent of loadAddrLabels' network-selector gate: a proposer name
 // arriving a moment late just means the first paint shows raw addresses.
@@ -954,6 +976,21 @@ function realmPathEl(fullPath, network) {
     nsEl.setAttribute('data-hl', nsName);
     span.appendChild(nsEl);
   } else {
+    // A named namespace has an owner, so it gets that owner's icon — the same
+    // image their address shows anywhere else, which is what makes /r/onbloc
+    // and an onbloc transaction recognisable as the same party.
+    //
+    // Only when the registry actually answered. An unregistered namespace
+    // (leon holds packages without a registration) renders plain rather than
+    // borrowing a face from whoever happened to deploy under it.
+    const owner = _nsOwners[nsName];
+    const ownerIcon = owner && identicon(owner, 11);
+    if (ownerIcon) {
+      ownerIcon.style.marginRight = '3px';
+      ownerIcon.style.verticalAlign = '-1px';
+      ownerIcon.title = nsName + ' is registered to ' + owner;
+      span.appendChild(ownerIcon);
+    }
     span.appendChild(el('span', { className: 'rp-ns' }, nsName));
   }
   // Package name (bold)
@@ -1452,6 +1489,10 @@ function onNetworkChange() {
   history.replaceState(null, '', newUrl);
   renderFooterIndexer();
   renderNetworkSwatch();
+  // Namespace ownership is per chain, so it is reloaded rather than carried
+  // across. Repaint when it lands: the switch itself does not wait on a network
+  // round-trip, so the first paint may show paths without their owner's mark.
+  loadNamespaceOwners().then(route);
   route();
 }
 // gno testnets are named after gemstones, so a network that is one wears its
@@ -7022,7 +7063,7 @@ document.querySelectorAll('.stat-link').forEach(tile => {
 // --- Init ---
 // Labels first: they change how every address renders, and arriving after the
 // first paint would show raw addresses that then silently rewrite themselves.
-loadAddrLabels().then(() => { initNetworkSelector(); });
+loadAddrLabels().then(loadNamespaceOwners).then(() => { initNetworkSelector(); });
 // Not gated on anything: a proposer name arriving after the first paint just
 // means blocks/validators re-render plain until it lands, the same way a
 // watch star or an inferred label would.

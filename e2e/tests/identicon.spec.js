@@ -153,3 +153,42 @@ test('the address test is shared, not re-invented per call site', async ({ page 
   }));
   expect(r).toEqual({ addr: true, short: true, path: false, empty: false, nonString: false });
 });
+
+// A named namespace shows its *registered* owner's icon, not the icon of
+// whoever happened to deploy under it.
+//
+// Deploy history is not ownership: onbloc's packages were included in genesis,
+// so "who deployed them" answers with the genesis deployer — as it does for
+// gnoland, aeddi and others. Four of twelve mainnet namespaces resolve to a
+// different account than their deploys suggest, so this reads r/sys/users, the
+// registry the chain itself uses.
+test('a named namespace wears its owner, and an unregistered one wears nobody', async ({ page }) => {
+  await page.goto('/');
+  await settle(page);
+
+  const r = await page.evaluate(() => {
+    // Stand in for the registry: onbloc registered, leon not.
+    _nsOwners = { onbloc: 'g18839tls6c4w9kkxtzthjst4qdcm4lgyntvtqvs' };
+    const registered = realmPathEl('gno.land/r/onbloc/foo');
+    const unregistered = realmPathEl('gno.land/r/leon/bar');
+    const icon = registered.querySelector('.identicon');
+    return {
+      registeredHasIcon: !!icon,
+      title: icon ? icon.title : '',
+      unregisteredHasIcon: !!unregistered.querySelector('.identicon'),
+      // The owner's icon must be the same image their address shows elsewhere.
+      // Compared against another rendered element rather than the raw markup:
+      // the browser normalises innerHTML (attribute order, self-closing tags),
+      // so a string built by hand never matches one read back.
+      matchesAddressIcon: icon
+        ? icon.innerHTML === identicon('g18839tls6c4w9kkxtzthjst4qdcm4lgyntvtqvs', 11).innerHTML
+        : false,
+    };
+  });
+
+  expect(r.registeredHasIcon, 'a registered namespace should show its owner').toBe(true);
+  expect(r.title, 'and say who, rather than asserting it silently').toContain('registered to');
+  expect(r.matchesAddressIcon, 'it must be the same image that account shows anywhere else').toBe(true);
+  // Borrowing a face from whoever deployed under it is the error this avoids.
+  expect(r.unregisteredHasIcon, 'an unregistered namespace must not borrow one').toBe(false);
+});
