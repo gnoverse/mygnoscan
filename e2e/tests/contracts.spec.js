@@ -301,3 +301,157 @@ test('hovering a deployer lights up every contract they published', async ({ pag
     .poll(() => page.locator('#contract-map svg circle.hl-active').count())
     .toBe(0);
 });
+
+// --- the alternative layouts ------------------------------------------------
+//
+// Six views over the same nodes and the same edges. The force map is the only
+// one that has to settle before it means anything; the other five are laid out
+// once, so "did it draw" is a question that can be asked immediately.
+//
+// Each of these asserts the same two things, because they are the two ways a
+// layout fails: it drew nothing, or it drew shapes that are not contracts and
+// so join none of the page's highlight groups.
+
+// The floor is per view because what a view draws is per view. The fixture's
+// one shared-caller edge is two contracts however it is rendered, and the
+// chord draws one shape per namespace rather than one per contract, so a low
+// count there is the correct answer and not a failure.
+const VIEWS = [
+  ['force', '?view=force&edges=callers', 20],
+  ['orbit', '?view=orbit&edges=imports', 20],
+  ['packed', '?view=packed&edges=callers', 20],
+  ['bundled', '?view=bundled&edges=imports', 20],
+  ['chord', '?view=chord&edges=callers', 2],
+  ['treemap', '?view=treemap&edges=none', 20],
+];
+
+for (const [view, query, floor] of VIEWS) {
+  test(`the ${view} view draws contracts that carry their path`, async ({ page }) => {
+    const seen = watch(page);
+    await page.goto(`/contracts${query}`);
+    await page.waitForSelector('#contract-map svg [data-path]', { timeout: 20_000 });
+
+    expect(await page.locator('#contract-map svg [data-path]').count())
+      .toBeGreaterThanOrEqual(floor);
+
+    // A view that renders but leaves the search box, the ranking cross-
+    // highlight and the deployer highlight inert is half a view.
+    if (view !== 'chord') {
+      expect(await page.locator('#contract-map svg [data-hl^="realm:"]').count()).toBeGreaterThan(0);
+      expect(await page.locator('#contract-map svg [data-creator^="g1"]').count()).toBeGreaterThan(0);
+    }
+
+    expect(seen.jsErrors).toEqual([]);
+    expect(unexpected(seen.failedRequests)).toEqual([]);
+    expect(unexpected(seen.consoleErrors)).toEqual([]);
+  });
+}
+
+for (const view of ['orbit', 'packed', 'bundled', 'chord', 'treemap']) {
+  test(`the ${view} view pill reflects its own state when clicked`, async ({ page }) => {
+    const seen = watch(page);
+    await openMap(page);
+    const pill = page.getByRole('button', { name: view, exact: true });
+    const before = await pill.evaluate(el => el.style.background);
+    await pill.click();
+    const after = await page.getByRole('button', { name: view, exact: true })
+      .evaluate(el => el.style.background);
+
+    expect(after, `${view} looks identical after being clicked`).not.toBe(before);
+    expect(page.url()).toContain(`view=${view}`);
+    expect(seen.jsErrors).toEqual([]);
+  });
+}
+
+test('switching the view repaints without refetching', async ({ page }) => {
+  await openMap(page);
+  const requests = [];
+  page.on('request', r => {
+    if (r.url().includes('/api/contracts/')) requests.push(r.url());
+  });
+
+  // Every layout reads the same nodes and the same edges. Going back to the
+  // server for a second rendering of data already in the tab is the thing the
+  // endpoint returning all metrics at once exists to avoid.
+  await page.getByRole('button', { name: 'treemap', exact: true }).click();
+  await page.waitForSelector('#contract-map svg rect[data-path]');
+  await page.getByRole('button', { name: 'packed', exact: true }).click();
+  await page.waitForSelector('#contract-map svg circle[data-path]');
+  expect(requests).toEqual([]);
+});
+
+test('the grouping pills only appear where they mean something', async ({ page }) => {
+  await openMap(page);
+  // cluster and outlines are the force layout's own vocabulary: every other
+  // view places a contract by its namespace as a matter of construction, so
+  // offering to switch the clustering off would be offering a no-op.
+  await expect(page.getByRole('button', { name: 'cluster', exact: true })).toBeVisible();
+
+  await page.getByRole('button', { name: 'treemap', exact: true }).click();
+  await page.waitForSelector('#contract-map svg rect[data-path]');
+  await expect(page.getByRole('button', { name: 'cluster', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'outlines', exact: true })).toHaveCount(0);
+});
+
+test('clicking a contract in the orbit re-centres on it', async ({ page }) => {
+  const seen = watch(page);
+  // The import graph, because the fixture's hub has sixty dependants and its
+  // shared-caller graph has one edge: a ring of one is not a ring.
+  await page.goto('/contracts?view=orbit&edges=imports');
+  await page.waitForSelector('#contract-map svg circle[data-path]', { timeout: 20_000 });
+
+  // The centre is the largest circle and opens the contract; everything else
+  // re-centres, which is the whole interaction.
+  const target = page.locator('#contract-map svg circle[data-path]').nth(1);
+  const path = await target.getAttribute('data-path');
+  await target.click();
+  await page.waitForFunction(
+    p => window.location.search.includes('focus=') &&
+      decodeURIComponent(window.location.search).includes(p),
+    path, { timeout: 10_000 });
+
+  await expect(page.getByRole('button', { name: new RegExp(path.replace('gno.land/', '')) }))
+    .toBeVisible();
+  expect(seen.jsErrors).toEqual([]);
+});
+
+test('the search dims the misses in a layout that draws rectangles', async ({ page }) => {
+  await page.goto('/contracts?view=treemap&edges=none');
+  await page.waitForSelector('#contract-map svg rect[data-path]', { timeout: 20_000 });
+  const total = await page.locator('#contract-map svg rect[data-path]').count();
+
+  // Dimming is driven by the data-path attribute rather than the bound datum,
+  // precisely so it keeps working when the datum is a treemap node and not a
+  // contract.
+  await page.getByPlaceholder('highlight...').fill(PAIRED_REALMS[0]);
+  await page.waitForFunction(
+    () => [...document.querySelectorAll('#contract-map svg rect[data-path]')]
+      .some(r => parseFloat(r.getAttribute('fill-opacity')) < 0.1),
+    null, { timeout: 10_000 });
+
+  expect(await page.locator('#contract-map svg rect[data-path]').count()).toBe(total);
+  const matched = await page.locator('#contract-map svg rect[data-path]').evaluateAll(els =>
+    els.filter(e => parseFloat(e.getAttribute('fill-opacity')) === 1).length);
+  expect(matched).toBeGreaterThan(0);
+});
+
+test('a link-only view says so rather than drawing an empty ring', async ({ page }) => {
+  const seen = watch(page);
+  // The chord, the orbit and the bundled ring are all about the edges. Told to
+  // draw one with links switched off, an empty circle reads as a broken page.
+  await page.goto('/contracts?view=chord&edges=none');
+  await expect(page.locator('#contract-map')).toContainText('this view is about the links');
+  expect(await page.locator('#contract-map svg').count()).toBe(0);
+  expect(seen.jsErrors).toEqual([]);
+});
+
+test('the view survives a reload, because it lives in the URL', async ({ page }) => {
+  await page.goto('/contracts?view=bundled&edges=imports&metric=importers');
+  await page.waitForSelector('#contract-map svg circle[data-path]', { timeout: 20_000 });
+  await page.reload();
+  await page.waitForSelector('#contract-map svg circle[data-path]', { timeout: 20_000 });
+
+  expect(page.url()).toContain('view=bundled');
+  await expect(page.getByRole('button', { name: 'bundled', exact: true }))
+    .toHaveAttribute('title', /ring/);
+});

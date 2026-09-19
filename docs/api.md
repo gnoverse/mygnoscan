@@ -162,8 +162,24 @@ it, because a network flapping between the two is the case most worth seeing.
 
 ## Contracts map
 
-Powers `/contracts`: one bubble per deployed package, clustered by namespace,
-with two different meanings available for the lines between them.
+Powers `/contracts`: every deployed package on one network, with two different
+meanings available for the lines between them.
+
+The page draws that data six ways, selected by `?view=` and served by the same
+two endpoints, and switching view is a repaint, never a refetch:
+
+| view | what it keeps, and what it gives up |
+|---|---|
+| `force` | the bubblemaps read: clusters emerge from the links. The only one whose positions carry no meaning you could read off an axis, and the only one that has to settle before it means anything. Above ~400 contracts it is a field of uniform dots |
+| `orbit` | one contract at the centre, its direct links on the first ring and their links on the second. Trades the whole chain for one neighbourhood, and is bounded by construction: a chain of ten thousand contracts still draws one centre and two rings |
+| `packed` | namespaces as nested circles, the bubblemaps *cluster* rendering taken literally. Deterministic, instant, spends the whole viewport. Gives up the edges, which come back on hover for one contract at a time |
+| `bundled` | every contract on one ring grouped by namespace, edges routed through the namespace they belong to. The only legible rendering of a dense import graph; hovering separates what a contract imports from what imports it |
+| `chord` | namespace to namespace, one ribbon per pair, intra-namespace links excluded. Gives up the contracts to answer who shares a population with whom |
+| `treemap` | area is the metric, nested by namespace. The boring control: a packing wastes the gaps between circles, so comparing two areas is guesswork, and a treemap spends every pixel |
+
+`?focus=` names the orbit's centre; absent, it picks the best-connected
+contract. `?flow=0` stops the particle animation on `orbit` and `bundled`, which
+is also what `prefers-reduced-motion` does.
 
 | endpoint | description |
 |---|---|
