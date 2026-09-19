@@ -414,6 +414,34 @@ func initSchema(db *sql.DB) error {
 			PRIMARY KEY (network, tx_hash, event_index)
 		);
 
+		-- Edge rollups for the network graphs, bucketed by day so a window query
+		-- is a range scan rather than a scan of every send or call in history.
+		--
+		-- last_height is a per-edge cursor: a pass folds in rows above
+		-- MAX(last_height) and adds to the existing totals, so re-running it
+		-- cannot double-count. The day in the primary key is what keeps a
+		-- window narrowable; collapsing parallel edges is left to read time.
+		CREATE TABLE IF NOT EXISTS transfer_edges (
+			network      TEXT NOT NULL DEFAULT 'gnoland1',
+			from_address TEXT NOT NULL,
+			to_address   TEXT NOT NULL,
+			day          TEXT NOT NULL,
+			total_value  INTEGER NOT NULL DEFAULT 0,
+			tx_count     INTEGER NOT NULL DEFAULT 0,
+			last_height  INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (network, from_address, to_address, day)
+		);
+
+		CREATE TABLE IF NOT EXISTS caller_edges (
+			network     TEXT NOT NULL DEFAULT 'gnoland1',
+			caller      TEXT NOT NULL,
+			pkg_path    TEXT NOT NULL,
+			day         TEXT NOT NULL,
+			calls       INTEGER NOT NULL DEFAULT 0,
+			last_height INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (network, caller, pkg_path, day)
+		);
+
 		CREATE TABLE IF NOT EXISTS package_files (
 			network TEXT NOT NULL DEFAULT 'gnoland1',
 			package_path TEXT NOT NULL,
@@ -703,6 +731,11 @@ func initSchema(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_sends_net_to      ON bank_sends(network, to_address);
 		CREATE INDEX IF NOT EXISTS idx_storage_net_path  ON storage_events(network, pkg_path);
 		CREATE INDEX IF NOT EXISTS idx_storage_net_time  ON storage_events(network, block_time);
+		CREATE INDEX IF NOT EXISTS idx_transfer_edges_day  ON transfer_edges(network, day, total_value);
+		CREATE INDEX IF NOT EXISTS idx_transfer_edges_from ON transfer_edges(network, from_address);
+		CREATE INDEX IF NOT EXISTS idx_transfer_edges_to   ON transfer_edges(network, to_address);
+		CREATE INDEX IF NOT EXISTS idx_caller_edges_day    ON caller_edges(network, day, calls);
+		CREATE INDEX IF NOT EXISTS idx_caller_edges_pkg    ON caller_edges(network, pkg_path);
 		CREATE INDEX IF NOT EXISTS idx_pkgsub_net_creator ON package_submissions(network, creator);
 		CREATE INDEX IF NOT EXISTS idx_pkgsub_net_path    ON package_submissions(network, path);
 		CREATE INDEX IF NOT EXISTS idx_pkgsub_block_time  ON package_submissions(network, block_time);

@@ -73,6 +73,59 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 	if err := s.syncMsgRuns(ctx); err != nil {
 		return fmt.Errorf("sync msg runs: %w", err)
 	}
+	// Last: both fold rows the passes above have just written.
+	if err := s.syncTransferEdges(); err != nil {
+		return fmt.Errorf("sync transfer edges: %w", err)
+	}
+	if err := s.syncCallerEdges(); err != nil {
+		return fmt.Errorf("sync caller edges: %w", err)
+	}
+	return nil
+}
+
+// syncTransferEdges folds newly-synced bank_sends rows into transfer_edges.
+//
+// Unlike every other pass this reads local SQLite rather than walking the
+// indexer: bank_sends is already populated by syncCalls, so there is no fetch
+// to make, only a local GROUP BY. No ctx for the same reason — there is no
+// round trip to cancel.
+func (s *Syncer) syncTransferEdges() error {
+	last, _, err := s.db.TransferEdgesLastHeight(s.networkID)
+	if err != nil {
+		return fmt.Errorf("transfer edges cursor: %w", err)
+	}
+	rows, err := s.db.RollupBankSendsSince(s.networkID, last)
+	if err != nil {
+		return fmt.Errorf("rollup bank sends: %w", err)
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	if err := s.db.UpsertTransferEdges(s.networkID, rows); err != nil {
+		return fmt.Errorf("upsert transfer edges: %w", err)
+	}
+	log.Printf("[%s] syncTransferEdges: rolled up %d edges", s.networkID, len(rows))
+	return nil
+}
+
+// syncCallerEdges folds newly-synced calls rows into caller_edges. Same
+// local-read shape as syncTransferEdges.
+func (s *Syncer) syncCallerEdges() error {
+	last, _, err := s.db.CallerEdgesLastHeight(s.networkID)
+	if err != nil {
+		return fmt.Errorf("caller edges cursor: %w", err)
+	}
+	rows, err := s.db.RollupCallsSince(s.networkID, last)
+	if err != nil {
+		return fmt.Errorf("rollup calls: %w", err)
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	if err := s.db.UpsertCallerEdges(s.networkID, rows); err != nil {
+		return fmt.Errorf("upsert caller edges: %w", err)
+	}
+	log.Printf("[%s] syncCallerEdges: rolled up %d edges", s.networkID, len(rows))
 	return nil
 }
 

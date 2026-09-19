@@ -764,6 +764,8 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/timeseries/storage/deltas", a.HandleTimeSeriesStorageDeltas)
 	mux.HandleFunc("GET /api/storage/realms", a.HandleStorageEventRealms)
 	mux.HandleFunc("GET /api/storage/consumers", a.HandleStorageConsumers)
+	mux.HandleFunc("GET /api/graph/transfers", a.HandleGraphTransfers)
+	mux.HandleFunc("GET /api/graph/callers", a.HandleGraphCallers)
 	mux.HandleFunc("GET /api/sanity/overview", a.HandleSanityOverview)
 	mux.HandleFunc("GET /api/timeseries/health", a.HandleTimeSeriesHealth)
 	mux.HandleFunc("GET /api/timeseries/active-addresses", a.HandleTimeSeriesActiveAddresses)
