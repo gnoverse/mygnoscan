@@ -696,3 +696,37 @@ func TestHandleCallRealmsValidatesLimit(t *testing.T) {
 		t.Fatalf("garbage limit: status = %d, want 200", w.Code)
 	}
 }
+
+// The graph queries filter on an exact network, so an empty one matches nothing.
+// Without a guard an all-networks request returns an empty graph, which reads as
+// "this chain is quiet" rather than "ask per chain".
+func TestGraphEndpointsRequireANetwork(t *testing.T) {
+	api := &API{db: store.NewTestDB(t)}
+
+	for _, tt := range []struct {
+		name    string
+		handler func(http.ResponseWriter, *http.Request)
+	}{
+		{"transfers", api.HandleGraphTransfers},
+		{"callers", api.HandleGraphCallers},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, q := range []string{"", "?network=all"} {
+				rec := httptest.NewRecorder()
+				tt.handler(rec, httptest.NewRequest("GET", "/api/graph/"+tt.name+q, nil))
+				if rec.Code != 400 {
+					t.Errorf("%q gave status %d, want 400", q, rec.Code)
+				}
+			}
+			// A named network is answered, empty database and all.
+			rec := httptest.NewRecorder()
+			tt.handler(rec, httptest.NewRequest("GET", "/api/graph/"+tt.name+"?network=live", nil))
+			if rec.Code != 200 {
+				t.Errorf("named network gave status %d, want 200", rec.Code)
+			}
+			if body := rec.Body.String(); !strings.Contains(body, `"nodes":[]`) {
+				t.Errorf("empty graph should serialise nodes as [], got %s", body)
+			}
+		})
+	}
+}

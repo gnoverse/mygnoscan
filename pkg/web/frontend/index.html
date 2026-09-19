@@ -465,6 +465,7 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
 <script src="https://d3js.org/d3.v7.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/echarts-gl@2/dist/echarts-gl.min.js"></script>
 <script>
 function el(tag, attrs, ...children) {
   const e = document.createElement(tag);
@@ -1438,6 +1439,13 @@ function onNetworkChange() {
   const sel = document.getElementById('network-select');
   const n = sel.value;
   setNetwork(n);
+  // transfer-graph's drilled-into ego address lives on the module-level
+  // DASHBOARDS array, so it survives a network switch even though it is
+  // meaningless there: an address from one chain almost certainly has no edges
+  // on another. Persisting it across a *window* change is intentional; only a
+  // network switch resets it.
+  const transferGraph = DASHBOARDS.flatMap(s => s.charts).find(c => c.id === 'transfer-graph');
+  if (transferGraph && transferGraph.state) transferGraph.state.ego = null;
   const params = new URLSearchParams(window.location.search);
   if (n && n !== 'all') { params.set('network', n); } else { params.delete('network'); }
   const newUrl = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
@@ -7875,6 +7883,154 @@ const DASHBOARDS = [
       },
     ],
   },
+  {
+    id: 'network',
+    title: 'network',
+    charts: [
+      {
+        id: 'transfer-graph',
+        title: 'value-transfer network',
+        wide: true,
+        mode: 'B',
+        networkScoped: true,
+        state: { ego: null },
+        why: 'Who sends GNOT to whom. Node size is total volume in the window; edge width is the value moved between that pair. Starts on the top 100 addresses by volume — click a node to drill into its direct counterparties only (1 hop), and use "back to overview" to return.',
+        controls: (bar, rerender, state) => {
+          if (!state.ego) return;
+          const btn = el('button', { type: 'button' }, '\u2190 back to overview');
+          btn.addEventListener('click', () => { state.ego = null; rerender(); });
+          bar.appendChild(btn);
+        },
+        fetch: function (w) {
+          this.state = this.state || {};
+          const q = this.state.ego ? 'ego=' + encodeURIComponent(this.state.ego) : 'topN=100';
+          return dashApi('graph/transfers?' + q, w);
+        },
+        opt: function (graph) {
+          const maxVol = graph.nodes.reduce((m, n) => Math.max(m, n.volume), 1);
+          const maxVal = graph.edges.reduce((m, e) => Math.max(m, e.value), 1);
+          const chart = this;
+          return dashBase({
+            tooltip: {
+              // Addresses and realm paths are attacker-controlled: the tooltip
+              // must be a DOM node, never a string.
+              formatter: p => dashTooltipNode(
+                p.dataType === 'edge'
+                  ? [p.data.source + ' \u2192 ' + p.data.target, String(p.data.value) + ' ugnot']
+                  : [p.data.name, 'volume ' + p.data.value]
+              ),
+            },
+            series: [{
+              type: 'graph',
+              layout: 'force',
+              roam: true,
+              draggable: true,
+              force: { repulsion: 120, edgeLength: [40, 160] },
+              label: { show: false },
+              // Node size scales 8-32px by volume share; a flat radius would
+              // make every address look equally significant.
+              data: graph.nodes.map(n => ({
+                id: n.id, name: n.id, value: n.volume,
+                symbolSize: 8 + 24 * (n.volume / maxVol),
+                itemStyle: { color: n.id === (chart.state && chart.state.ego) ? DASH_PAL[1] : DASH_PAL[0] },
+              })),
+              edges: graph.edges.map(e => ({
+                source: e.from, target: e.to, value: e.value,
+                lineStyle: { width: 1 + 5 * (e.value / maxVal), color: '#3a3a3a', curveness: 0.1 },
+              })),
+            }],
+          });
+        },
+      },
+      {
+        id: 'token-flow-sankey',
+        title: 'token flow (top senders \u2192 receivers)',
+        wide: true,
+        mode: 'B',
+        networkScoped: true,
+        why: 'The same top-100-by-volume subgraph as the network graph above, reshaped as a sankey: link width is value moved from sender to receiver. Reads best for spotting where GNOT concentrates — hubs show up as wide bands.',
+        fetch: w => dashApi('graph/transfers?topN=100', w),
+        opt: graph => {
+          const ids = new Set();
+          graph.edges.forEach(e => { ids.add(e.from); ids.add(e.to); });
+          // ECharts' sankey rejects any graph with a cycle — not just simple
+          // A<->B mutual-send pairs, but longer cycles (A->B->C->A) and
+          // self-loops (A->A, which real chain data does contain via
+          // self-transfers). Dropping self-loops and then orienting every
+          // remaining edge along a fixed total order over addresses
+          // (alphabetical) guarantees a DAG however long a cycle would
+          // otherwise be, while still surfacing the combined value per pair.
+          const seen = new Map();
+          graph.edges.forEach(e => {
+            if (e.from === e.to) return;
+            const [lo, hi] = [e.from, e.to].sort();
+            const key = lo + '|' + hi;
+            const cur = seen.get(key) || { from: lo, to: hi, value: 0 };
+            cur.value += e.value;
+            seen.set(key, cur);
+          });
+          return dashBase({
+            tooltip: {
+              formatter: p => dashTooltipNode([p.data.source + ' \u2192 ' + p.data.target, String(p.data.value) + ' ugnot']),
+            },
+            series: [{
+              type: 'sankey',
+              emphasis: { focus: 'adjacency' },
+              data: Array.from(ids).map(id => ({ name: id })),
+              links: Array.from(seen.values()).map(e => ({ source: e.from, target: e.to, value: e.value })),
+              lineStyle: { color: 'gradient', curveness: 0.5 },
+              itemStyle: { color: DASH_PAL[0], borderColor: '#2a2a2a' },
+              label: { color: '#888', fontSize: 10 },
+            }],
+          });
+        },
+      },
+      {
+        id: 'caller-graph',
+        title: 'caller \u2192 realm graph',
+        wide: true,
+        mode: 'B',
+        networkScoped: true,
+        why: 'Who calls into which realms. Blue nodes are calling addresses, teal nodes are realms; edge width is call volume. Rendered in WebGL (no ego drill-down yet) since this graph can have more nodes than the force-directed canvas view above comfortably lays out.',
+        fetch: w => dashApi('graph/callers?topN=300', w),
+        opt: graph => {
+          if (graph.nodes.length === 0) {
+            // echarts-gl's graphGL series throws "The texture attached to
+            // color buffer is not a valid" when handed an empty node/edge set
+            // (it still allocates a WebGL render target). Render a blank chart
+            // instead of invoking that broken path.
+            return dashBase({ series: [] });
+          }
+          const maxN = graph.nodes.reduce((m, n) => Math.max(m, n.calls), 1);
+          const maxE = graph.edges.reduce((m, e) => Math.max(m, e.calls), 1);
+          return dashBase({
+            tooltip: {
+              formatter: p => dashTooltipNode(
+                p.dataType === 'edge'
+                  ? [p.data.source + ' \u2192 ' + p.data.target, p.data.value + ' calls']
+                  : [p.data.name, p.data.value + ' calls']
+              ),
+            },
+            series: [{
+              type: 'graphGL',
+              layout: 'forceAtlas2',
+              forceAtlas2: { steps: 5, stopThreshold: 1 },
+              label: { show: false },
+              data: graph.nodes.map(n => ({
+                id: n.id, name: n.id, value: n.calls,
+                symbolSize: 6 + 18 * (n.calls / maxN),
+                itemStyle: { color: n.type === 'realm' ? DASH_PAL[0] : DASH_PAL[5] },
+              })),
+              edges: graph.edges.map(e => ({
+                source: e.caller, target: e.pkg_path, value: e.calls,
+                lineStyle: { width: 1 + 3 * (e.calls / maxE), color: '#3a3a3a' },
+              })),
+            }],
+          });
+        },
+      },
+    ],
+  },
 ];
 
 function infoTip(text) {
@@ -7978,8 +8134,30 @@ async function renderDashChart(chart, gen) {
   if (existing) existing.dispose();
   const inst = echarts.init(host);
   const ctx = { window: chart.window || _dashWindow, granularity: dashGranularityOf(rows) };
-  inst.setOption(chart.opt(rows, ctx), true);
+  try {
+    // setOption can throw synchronously for reasons opt() cannot predict from
+    // data alone: caller-graph's graphGL series type only exists if the
+    // echarts-gl script loaded, and if that one request failed while the main
+    // echarts script succeeded, the throw lands here. Catching it here covers
+    // every chart uniformly instead of special-casing one. No retry button —
+    // a script that failed to load will not reload on its own.
+    inst.setOption(chart.opt(rows, ctx), true);
+  } catch (err) {
+    console.error('setOption failed for chart', chart.id, err);
+    inst.dispose();
+    host.textContent = '';
+    host.appendChild(el('div', { className: 'dash-msg' }, 'could not render this chart'));
+    return;
+  }
   _dashCharts[chart.id] = inst;
+  if (chart.id === 'transfer-graph') {
+    inst.on('click', params => {
+      if (params.dataType !== 'node') return;
+      chart.state = chart.state || {};
+      chart.state.ego = params.data.id;
+      renderDashChart(chart, _dashGen);
+    });
+  }
   renderControls();
 }
 
