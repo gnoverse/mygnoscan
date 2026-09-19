@@ -2,10 +2,16 @@
 package web
 
 import (
+	"bytes"
+	"compress/gzip"
+	"crypto/sha256"
 	"embed"
+	"encoding/base64"
 	"fmt"
 	"io/fs"
 	"net/http"
+	"strconv"
+	"strings"
 )
 
 //go:embed frontend
@@ -32,6 +38,23 @@ func Handler() (http.HandlerFunc, error) {
 		return nil, fmt.Errorf("read index.html: %w", err)
 	}
 
+	// The app is a single 450 KB HTML file, and every deep link serves the
+	// whole thing again. It is also immutable for the life of the process — it
+	// is compiled in — so its ETag can be computed once here, and a reader
+	// navigating the site pays for it exactly once per deploy instead of once
+	// per cold tab. `no-cache` is deliberate rather than a max-age: it means
+	// "revalidate", so a new build is picked up on the next request, while an
+	// unchanged one costs a 304 with no body.
+	sum := sha256.Sum256(index)
+	etag := `"` + base64.RawURLEncoding.EncodeToString(sum[:16]) + `"`
+
+	// And compressed once, at the best ratio rather than the fastest, for the
+	// same reason: this body never changes, so the cost is paid at startup and
+	// the saving is paid back on every cold page load. 466 KB -> ~110 KB, where
+	// the generic middleware's BestSpeed pass gets ~155 KB and spends a few
+	// milliseconds of CPU per request to do it.
+	indexGzip := gzipBytes(index)
+
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			if f, err := sub.Open(r.URL.Path[1:]); err == nil {
@@ -41,8 +64,78 @@ func Handler() (http.HandlerFunc, error) {
 			}
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write(index)
+		w.Header().Set("ETag", etag)
+		w.Header().Set("Cache-Control", "no-cache")
+		// Set, not Add: WithCompression has already added one on the way in,
+		// and two identical values in a Vary header is noise a shared cache
+		// has to parse.
+		w.Header().Set("Vary", "Accept-Encoding")
+		if matchesETag(r.Header.Get("If-None-Match"), etag) {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		body := index
+		if indexGzip != nil && acceptsGzip(r) {
+			w.Header().Set("Content-Encoding", "gzip")
+			body = indexGzip
+		}
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		w.Write(body)
 	}, nil
+}
+
+// gzipBytes compresses at the best available ratio, or returns nil if it
+// cannot. A nil result is a supported outcome, not a failure: the caller simply
+// serves the body uncompressed, and the generic middleware still gets a chance
+// at it.
+func gzipBytes(b []byte) []byte {
+	var buf bytes.Buffer
+	zw, err := gzip.NewWriterLevel(&buf, gzip.BestCompression)
+	if err != nil {
+		return nil
+	}
+	if _, err := zw.Write(b); err != nil {
+		return nil
+	}
+	if err := zw.Close(); err != nil {
+		return nil
+	}
+	return buf.Bytes()
+}
+
+// acceptsGzip reports whether the client advertised gzip. Same rule as the
+// httpapi middleware, duplicated rather than imported because pkg/web must not
+// depend on pkg/httpapi — it is the leaf the whole binary can serve without.
+func acceptsGzip(r *http.Request) bool {
+	for _, v := range strings.Split(r.Header.Get("Accept-Encoding"), ",") {
+		name, _, _ := strings.Cut(strings.TrimSpace(v), ";")
+		if strings.EqualFold(name, "gzip") {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesETag reports whether an If-None-Match header names the given tag.
+//
+// The header is a comma-separated list and a revalidating browser may send the
+// tag back weakened (`W/"..."`) even though it was issued strong, so a plain
+// string comparison against the whole header misses the match and re-sends
+// 450 KB for nothing.
+func matchesETag(inm, etag string) bool {
+	if inm == "" {
+		return false
+	}
+	for _, candidate := range strings.Split(inm, ",") {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "*" {
+			return true
+		}
+		if strings.TrimPrefix(candidate, "W/") == etag {
+			return true
+		}
+	}
+	return false
 }
 
 // Index is the embedded index.html, for callers that need the bytes rather than

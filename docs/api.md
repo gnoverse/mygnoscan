@@ -49,12 +49,39 @@ with its own figures. This is what the leaderboards mean by a "top" entry.
 
 ## Caching
 
-Successful `GET /api/*` responses are cached in memory for 30 seconds, keyed on
-path plus query string, and served with `X-Cache: HIT` or `MISS`. The TTL matches
-the sync interval, so it costs no freshness the pipeline could have delivered.
+Successful `GET /api/*` responses are cached in memory, keyed on path, query
+string and negotiated content encoding. The TTL is 30 seconds and matches the
+sync interval, so it costs no freshness the pipeline could have delivered.
+
+Past the TTL an entry is **served stale while it is refreshed** — the reader gets
+the old body immediately and one background refresh is started for everyone
+behind them. `X-Cache` says which of the three happened:
+
+| `X-Cache` | Meaning |
+|---|---|
+| `HIT` | within the TTL, served as-is |
+| `STALE` | past the TTL, served anyway; a refresh is running |
+| `MISS` | nothing usable was stored; the handler ran inline and the caller waited |
+
+The stale window is 15 minutes past the TTL. Beyond it an entry stops being
+servable at all: a reader returning after a long absence should not be handed a
+long-dead chain tip, however fast. One stale entry produces one refresh no matter
+how many readers arrive during it, and a refresh runs on its own context so it
+survives the reader who triggered it closing the tab.
 
 Errors are never cached — a cached 500 would pin a transient indexer failure for
 the whole window. `/api/live` and `/api/version` bypass the cache entirely.
+
+## Compression
+
+Responses are gzipped when the client sends `Accept-Encoding: gzip` and the body
+is over 1 KiB of a compressible type (JSON, HTML, JS, SVG, plain text). This is
+the dominant term in how long a page takes to appear: `/api/txs` is 3.5 MB of
+JSON on mainnet, `/api/allevents` 1.3 MB, and gzip takes roughly 85-90% of that
+away. `Vary: Accept-Encoding` is set on every response.
+
+`text/event-stream` is never compressed — `/api/live` is an open stream, and
+anything that buffers it holds the live feed back for the life of the tab.
 
 **Time-series parameters**, on every `/api/timeseries/*` endpoint:
 

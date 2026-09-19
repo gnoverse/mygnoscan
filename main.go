@@ -245,9 +245,15 @@ func run() error {
 	}
 	mux.HandleFunc("GET /", frontend)
 
-	// Cache first, so a hit costs nothing beyond the network-name check.
+	// Cache outermost, so a hit costs nothing beyond the network-name check —
+	// and compression *inside* it, so what the cache stores is already
+	// compressed and a hit does not re-gzip 3.5 MB of JSON per reader. The
+	// cache key carries the negotiated encoding to keep those two facts
+	// consistent (see cacheKey).
 	cache := httpapi.NewResponseCache(httpapi.CacheTTL)
-	handler := httpapi.WithResponseCache(cache, httpapi.RejectUnknownNetwork(cfg.Networks, mux))
+	handler := httpapi.WithResponseCache(cache,
+		httpapi.RejectUnknownNetwork(cfg.Networks,
+			httpapi.WithCompression(mux)))
 
 	srv := &http.Server{
 		Addr:         *listenAddr,
