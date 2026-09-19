@@ -8701,7 +8701,58 @@ const CONTRACT_EDGE_KINDS = {
   none: { label: 'none', hint: 'clusters only' },
 };
 
+// Six ways to draw the same chain. Not skins: each one keeps a different thing
+// and drops another, and the drop is the point.
+//
+// force is the bubblemaps read and the only one whose positions carry no
+// meaning you could read off an axis. orbit trades the whole chain for one
+// contract's neighbourhood. packed and treemap trade the edges for a layout
+// that is instant, deterministic and wastes no space. bundled trades position
+// for the only legible rendering of a dense import graph. chord trades the
+// contracts themselves for the namespaces behind them.
+const CONTRACT_LAYOUTS = {
+  force: {
+    label: 'force',
+    hint: 'clusters emerge from the links, the bubblemaps read',
+    grouping: true, sized: true,
+  },
+  orbit: {
+    label: 'orbit',
+    hint: 'one contract at the centre, everything it touches around it',
+    needsLinks: true, sized: true, flow: true,
+  },
+  packed: {
+    label: 'packed',
+    hint: 'namespaces as nested circles, edges on hover',
+    sized: true,
+  },
+  bundled: {
+    label: 'bundled',
+    hint: 'every contract on one ring, edges routed through their namespace',
+    needsLinks: true, sized: true, flow: true,
+  },
+  chord: {
+    label: 'chord',
+    hint: 'namespace to namespace, one ribbon per pair',
+    needsLinks: true,
+  },
+  treemap: {
+    label: 'treemap',
+    hint: 'area is the metric, nested by namespace',
+    sized: true,
+  },
+};
+
 let _contracts = {
+  layout: 'force',
+  // focus is orbit's centre: the contract whose neighbourhood is being read.
+  // Null means "pick the best-connected one", which is what makes the view
+  // open on something worth looking at rather than on an arbitrary node.
+  focus: null,
+  // flow animates particles along the edges. On by default in the two views
+  // whose subject is the edges, off under prefers-reduced-motion, and a pill
+  // so a screenshot can be a still.
+  flow: true,
   metric: 'calls',
   // metricPinned records that the reader chose the metric, so switching link
   // mode stops re-deciding it for them.
@@ -8736,6 +8787,9 @@ let _contracts = {
   data: null,
   edgeData: null,
   sim: null,
+  // The particle animation's handle, stopped on every repaint: a timer left
+  // running is a timer moving dots along edges that are no longer on screen.
+  timer: null,
   gen: 0,
 };
 
@@ -8743,6 +8797,10 @@ let _contracts = {
 // they can send, rather than a screenshot plus instructions.
 function contractsStateFromURL() {
   const q = new URLSearchParams(window.location.search);
+  if (CONTRACT_LAYOUTS[q.get('view')]) _contracts.layout = q.get('view');
+  if (q.get('focus')) _contracts.focus = q.get('focus');
+  if (q.get('flow') === '0') _contracts.flow = false;
+  if (q.get('flow') === '1') _contracts.flow = true;
   if (CONTRACT_METRICS[q.get('metric')]) {
     _contracts.metric = q.get('metric');
     _contracts.metricPinned = true;
@@ -8771,6 +8829,7 @@ function contractsStateFromURL() {
 
 function contractsStateToURL() {
   const q = new URLSearchParams(window.location.search);
+  q.set('view', _contracts.layout);
   q.set('metric', _contracts.metric);
   q.set('scale', _contracts.scale);
   q.set('edges', _contracts.edges);
@@ -8783,6 +8842,10 @@ function contractsStateToURL() {
   flag('linked', _contracts.linkedOnly);
   if (_contracts.clusterPinned) q.set('cluster', _contracts.cluster ? '1' : '0'); else q.delete('cluster');
   if (_contracts.namespace) q.set('ns', _contracts.namespace); else q.delete('ns');
+  // Only where it means something: a focus recorded from an orbit visit would
+  // otherwise travel into a treemap link and read as a filter that is not one.
+  if (_contracts.focus && _contracts.layout === 'orbit') q.set('focus', _contracts.focus); else q.delete('focus');
+  if (CONTRACT_LAYOUTS[_contracts.layout].flow) q.set('flow', _contracts.flow ? '1' : '0'); else q.delete('flow');
   history.replaceState({}, '', window.location.pathname + '?' + q.toString());
 }
 
@@ -8895,6 +8958,22 @@ function contractsControls() {
     },
   });
 
+  // The view comes first because it changes what every control below it
+  // means: a metric sizes bubbles in one view, rectangles in another, and
+  // nothing at all in the chord.
+  const viewPills = Object.entries(CONTRACT_LAYOUTS).map(([k, spec]) => {
+    const pill = contractPill(spec.label, _contracts.layout === k, () => {
+      _contracts.layout = k;
+      // Switching views keeps the data in hand: every layout reads the same
+      // nodes and the same edges, so none of these is a refetch.
+      contractsStateToURL();
+      repaintContracts();
+    });
+    pill.setAttribute('title', spec.hint);
+    return pill;
+  });
+  bar.appendChild(contractControlGroup('view', viewPills));
+
   const metricPills = Object.entries(CONTRACT_METRICS).map(([k, m]) =>
     contractPill(m.label, _contracts.metric === k, () => {
       _contracts.metric = k;
@@ -8960,16 +9039,42 @@ function contractsControls() {
   ];
   bar.appendChild(contractControlGroup('show', filters));
 
-  const grouping = [
-    contractPill('cluster', _contracts.cluster, () => {
+  // Grouping is the force layout's own vocabulary: the other five place a
+  // contract by its namespace as a matter of construction, so a pill offering
+  // to switch the clustering off would be a pill that does nothing.
+  const spec = CONTRACT_LAYOUTS[_contracts.layout] || CONTRACT_LAYOUTS.force;
+  const grouping = [];
+  if (spec.grouping) {
+    grouping.push(contractPill('cluster', _contracts.cluster, () => {
       _contracts.cluster = !_contracts.cluster;
       _contracts.clusterPinned = true;
       repaint();
-    }),
-    contractPill('outlines', _contracts.hulls, () => { _contracts.hulls = !_contracts.hulls; repaint(); }),
-    contractPill('labels', _contracts.labels, () => { _contracts.labels = !_contracts.labels; repaint(); }),
-  ];
-  bar.appendChild(contractControlGroup('grouping', grouping));
+    }));
+    grouping.push(contractPill('outlines', _contracts.hulls, () => { _contracts.hulls = !_contracts.hulls; repaint(); }));
+  }
+  if (_contracts.layout !== 'chord' && _contracts.layout !== 'packed' && _contracts.layout !== 'treemap') {
+    grouping.push(contractPill('labels', _contracts.labels, () => { _contracts.labels = !_contracts.labels; repaint(); }));
+  }
+  if (spec.flow) {
+    grouping.push(contractPill('flow', _contracts.flow, () => { _contracts.flow = !_contracts.flow; repaint(); }));
+  }
+  if (grouping.length) bar.appendChild(contractControlGroup('grouping', grouping));
+
+  // Orbit's centre, named, with the way back out. Without this the view can be
+  // several clicks deep into a chain with nothing on screen saying where it
+  // started.
+  if (_contracts.layout === 'orbit' && _contracts.focus) {
+    const chip = el('button', {
+      className: 'pager-btn',
+      style: {
+        padding: '3px 9px', fontSize: '11px', background: 'var(--bg3)', color: 'var(--fg2)',
+        border: '1px solid var(--border)', borderRadius: '3px', cursor: 'pointer',
+      },
+      onclick: () => { _contracts.focus = null; contractsStateToURL(); repaintContracts(); },
+    }, _contracts.focus.replace('gno.land/', '') + '  ×');
+    chip.setAttribute('title', 'back to the best-connected contract');
+    bar.appendChild(contractControlGroup('centre', [chip]));
+  }
 
   // The namespace filter has no pill of its own: it is set by clicking a
   // legend entry, and this is how it says so and how it is cleared.
@@ -9025,20 +9130,36 @@ function visibleContractNodes() {
   });
 }
 
+// renderContractMap prepares everything every layout needs (the visible
+// nodes, the links between them, the radius scale, the SVG and its zoom, the
+// hover card) and then hands off to the one that is selected.
+//
+// The layouts are deliberately different answers rather than different skins.
+// A force layout is the only one here that has to settle before it means
+// anything, and it is the only one whose position carries no information you
+// could read off an axis; the other five are laid out once, deterministically,
+// and each one drops a dimension the force layout keeps in exchange for
+// answering a question the hairball cannot.
 function renderContractMap() {
   const container = clear('contract-map');
   container.style.position = 'relative';
 
+  // Anything still running from the previous render is running against nodes
+  // that are no longer on screen.
+  if (_contracts.sim) { _contracts.sim.stop(); _contracts.sim = null; }
+  if (_contracts.timer) { _contracts.timer.stop(); _contracts.timer = null; }
+
+  const layoutKey = CONTRACT_LAYOUTS[_contracts.layout] ? _contracts.layout : 'force';
+  const spec = CONTRACT_LAYOUTS[layoutKey];
+
   let nodes = visibleContractNodes().map(n => Object.assign({}, n, { id: n.path }));
+  const rawEdges = (_contracts.edgeData && _contracts.edgeData.edges) || [];
   if (_contracts.linkedOnly && _contracts.edges !== 'none') {
     // Computed against the edges as fetched, before they are narrowed to the
     // visible set, so hiding a namespace does not then hide its neighbours for
     // having lost their only link.
     const linked = new Set();
-    ((_contracts.edgeData && _contracts.edgeData.edges) || []).forEach(e => {
-      linked.add(e.source);
-      linked.add(e.target);
-    });
+    rawEdges.forEach(e => { linked.add(e.source); linked.add(e.target); });
     nodes = nodes.filter(n => linked.has(n.path));
   }
   if (!nodes.length) {
@@ -9048,13 +9169,28 @@ function renderContractMap() {
   }
 
   const byPath = new Map(nodes.map(n => [n.path, n]));
-  const links = ((_contracts.edgeData && _contracts.edgeData.edges) || [])
-    .filter(e => byPath.has(e.source) && byPath.has(e.target))
+  const links = rawEdges
+    .filter(e => byPath.has(e.source) && byPath.has(e.target) && e.source !== e.target)
     .map(e => ({ source: e.source, target: e.target, weight: e.weight }));
 
   const width = container.clientWidth || 900;
   const height = Math.max(520, Math.round(window.innerHeight * 0.68));
   container.style.minHeight = height + 'px';
+
+  // Four of the six layouts are about the edges. Told to draw one with no
+  // edges in hand, the honest thing is to say so: an empty ring and an empty
+  // chord both look like a rendering fault.
+  if (spec.needsLinks && !links.length) {
+    const why = _contracts.edges === 'none'
+      ? 'this view is about the links, and links are switched off'
+      : 'no ' + CONTRACT_EDGE_KINDS[_contracts.edges].label + ' links survive the current filters';
+    container.appendChild(el('div', {
+      style: { padding: '60px 40px', textAlign: 'center', color: 'var(--fg2)', lineHeight: '1.8' },
+    },
+      el('div', {}, why),
+      el('div', { style: { fontSize: '11px' } }, 'pick a link mode above, or switch to force or packed')));
+    return;
+  }
 
   // Area, not radius, carries the value: a contract with ten times the calls
   // should look ten times as big, and scaling the radius directly would make
@@ -9071,23 +9207,157 @@ function renderContractMap() {
   const ratio = _contracts.scale === 'linear'
     ? v => v / maxVal
     : v => Math.log1p(v) / Math.log1p(maxVal);
-  const radius = d => rMin + (rMax - rMin) * Math.sqrt(ratio(Math.max(0, metric.get(d) || 0)));
+  const norm = d => Math.sqrt(ratio(Math.max(0, metric.get(d) || 0)));
+  const radius = d => rMin + (rMax - rMin) * norm(d);
 
-  // Namespace centroids sit on a ring, in an order derived from the namespace
-  // name, so the same chain lays out the same way every time.
   const namespaces = Array.from(new Set(nodes.map(n => n.namespace))).sort();
-  const centroids = new Map();
-  namespaces.forEach((ns) => {
-    const a = (namespaceHue(ns) / 360) * 2 * Math.PI;
-    const spread = Math.min(width, height) * 0.34;
-    centroids.set(ns, { x: width / 2 + Math.cos(a) * spread, y: height / 2 + Math.sin(a) * spread });
-  });
 
   const svg = d3.select(container).append('svg').attr('width', width).attr('height', height)
     .attr('role', 'img').attr('aria-label', 'map of deployed contracts');
   const zoomG = svg.append('g');
   const zoom = d3.zoom().scaleExtent([0.15, 6]).on('zoom', e => zoomG.attr('transform', e.transform));
   svg.call(zoom);
+
+  const tip = contractTooltip(container);
+  const ctx = {
+    container, svg, zoomG, zoom, tip,
+    nodes, links, byPath, namespaces,
+    radius, rMin, rMax, norm, metric, maxVal,
+    width, height,
+  };
+
+  const draw = {
+    force: drawContractForce,
+    orbit: drawContractOrbit,
+    packed: drawContractPacked,
+    bundled: drawContractBundled,
+    chord: drawContractChord,
+    treemap: drawContractTreemap,
+  }[layoutKey];
+  const fit = draw(ctx) || (() => svg.transition().duration(300).call(zoom.transform, d3.zoomIdentity));
+
+  container.appendChild(contractMapChrome(svg, zoom, namespaces, nodes, links.length, fit));
+  applyContractHighlight();
+}
+
+// One hover card, shared by every layout, so a bubble on the force map and a
+// leaf in the packing say the same things in the same order.
+function contractTooltip(container) {
+  const tip = el('div', {
+    style: {
+      position: 'absolute', display: 'none', pointerEvents: 'none', zIndex: '20',
+      background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: '3px',
+      padding: '6px 8px', fontSize: '11px', color: 'var(--fg)', maxWidth: '320px',
+    },
+  });
+  container.appendChild(tip);
+  const row = (k, v) => el('div', { style: { color: 'var(--fg2)' } }, k + ': ' + v);
+  return {
+    node: tip,
+    lines(title, rows) {
+      tip.textContent = '';
+      tip.appendChild(el('div', { style: { color: 'var(--accent)', marginBottom: '3px' } }, title));
+      rows.forEach(([k, v]) => tip.appendChild(row(k, v)));
+      tip.style.display = 'block';
+    },
+    show(d) {
+      tip.textContent = '';
+      tip.appendChild(el('div', { style: { color: 'var(--accent)', marginBottom: '3px' } }, d.path));
+      tip.appendChild(row('namespace', d.namespace));
+      tip.appendChild(row('kind', d.is_realm ? 'realm' : 'pure package'));
+      tip.appendChild(row('calls', fmtNum(d.calls) + ' from ' + fmtNum(d.unique_callers) + ' addresses'));
+      tip.appendChild(row('storage', fmtNum(d.storage_bytes) + ' bytes'));
+      // Same abbreviation as every other address on the site, with the
+      // identicon: a hover card is exactly where recognising an address at a
+      // glance matters, and this is the only place a bubble names its deployer.
+      const deployer = el('div', { style: { color: 'var(--fg2)', display: 'flex', alignItems: 'center', gap: '4px' } }, 'deployer: ');
+      const icon = identicon(d.creator);
+      if (icon) deployer.appendChild(icon);
+      deployer.append(truncAddr(d.creator));
+      tip.appendChild(deployer);
+      if (d.deployed_at) tip.appendChild(row('deployed', d.deployed_at.slice(0, 10)));
+      if (d.parked) tip.appendChild(el('div', { style: { color: 'var(--accent2)' } }, 'parked: submitted, never enabled'));
+      tip.style.display = 'block';
+    },
+    move(e) {
+      const b = container.getBoundingClientRect();
+      tip.style.left = Math.min(e.clientX - b.left + 12, b.width - 330) + 'px';
+      tip.style.top = (e.clientY - b.top + 12) + 'px';
+    },
+    hide() { tip.style.display = 'none'; },
+  };
+}
+
+// Every layout paints a contract the same way, and every layout's contracts
+// join the same three highlight groups. data-hl is the explorer's existing
+// cross-highlight; data-creator is "everything this address deployed";
+// data-path is what the search box dims against, and it is an attribute rather
+// than a bound datum because four of these layouts bind a d3 hierarchy node
+// and not the contract itself.
+function decorateContractShape(sel, get) {
+  return sel
+    .attr('data-hl', d => 'realm:' + get(d).path)
+    .attr('data-path', d => get(d).path)
+    .attr('data-creator', d => get(d).creator)
+    .attr('data-base-op', d => get(d).parked ? 0.25 : 0.8)
+    .attr('fill', d => namespaceColor(get(d).namespace))
+    .attr('fill-opacity', d => get(d).parked ? 0.25 : 0.8)
+    .attr('stroke', d => get(d).parked ? 'var(--accent2)' : 'rgba(0,0,0,0.45)')
+    // A dashed ring is how a pure package reads as different from a realm
+    // without spending a second colour channel that namespaces already use.
+    .attr('stroke-dasharray', d => get(d).is_realm ? null : '2,2')
+    .attr('stroke-width', 1)
+    .style('cursor', 'pointer');
+}
+
+function contractHover(sel, tip, get) {
+  return sel
+    .on('mouseenter', (e, d) => tip.show(get(d)))
+    .on('mousemove', e => tip.move(e))
+    .on('mouseleave', () => tip.hide());
+}
+
+function contractOpen(d) { navigate('/realm/' + d.path.replace('gno.land/', '')); }
+
+// The hierarchy four of the layouts share: root, one child per namespace, one
+// leaf per contract, valued by the selected metric.
+//
+// The +1 is what keeps a contract with no calls from having no area at all.
+// On mainnet 314 of 341 contracts have never been called, and a packing that
+// draws them as zero-radius points is a packing of 27 contracts that claims to
+// be a map of the chain.
+function contractHierarchy(nodes, metric) {
+  const byNs = d3.group(nodes, n => n.namespace);
+  const root = {
+    name: 'root',
+    children: Array.from(byNs, ([ns, members]) => ({
+      name: ns, ns,
+      children: members.map(n => ({ name: n.name, ns, leaf: n })),
+    })),
+  };
+  return d3.hierarchy(root)
+    .sum(d => d.leaf ? (Math.max(0, metric.get(d.leaf) || 0) + 1) : 0)
+    .sort((a, b) => b.value - a.value);
+}
+
+// A namespace label, abbreviated the way addresses are everywhere else on the
+// site. Half of mainnet's namespaces are a bare deployer address.
+function namespaceLabel(ns) { return ns.startsWith('g1') ? truncAddr(ns) : ns; }
+
+// ---------------------------------------------------------------------------
+// force: the original. Clusters emerge from the links rather than being drawn.
+// ---------------------------------------------------------------------------
+function drawContractForce(ctx) {
+  const { svg, zoomG, zoom, tip, nodes, links, radius, metric, width, height, namespaces } = ctx;
+
+  // Namespace centroids sit on a ring, in an order derived from the namespace
+  // name, so the same chain lays out the same way every time.
+  const centroids = new Map();
+  namespaces.forEach((ns) => {
+    const a = (namespaceHue(ns) / 360) * 2 * Math.PI;
+    const spread = Math.min(width, height) * 0.34;
+    centroids.set(ns, { x: width / 2 + Math.cos(a) * spread, y: height / 2 + Math.sin(a) * spread });
+  });
 
   // Arrowheads only while they can be read. At 721 import edges over 327
   // contracts the markers were larger than most bubbles and the map rendered
@@ -9117,29 +9387,15 @@ function renderContractMap() {
     .attr('stroke-width', l => (dense ? 0.4 : 0.6) + (dense ? 1.2 : 2.4) * Math.sqrt(l.weight / maxWeight))
     .attr('marker-end', showArrows ? 'url(#contract-arrow)' : null);
 
-  const nodeEl = zoomG.append('g').selectAll('circle').data(nodes).join('circle')
-    // The explorer already cross-highlights every occurrence of a value on
-    // hover, keyed by data-hl. Joining that group is all it takes for a bubble
-    // and its row in the rankings to light up together, in both directions.
-    .attr('data-hl', d => 'realm:' + d.path)
-    // A second key, because an element can only carry one data-hl and the
-    // path is the more precise one. This is what lets hovering a deployer in
-    // the rankings light up every contract they published.
-    .attr('data-creator', d => d.creator)
+  const nodeEl = decorateContractShape(
+    zoomG.append('g').selectAll('circle').data(nodes).join('circle'), d => d)
     .attr('r', radius)
-    .attr('fill', d => namespaceColor(d.namespace))
-    .attr('fill-opacity', d => d.parked ? 0.25 : 0.8)
-    .attr('stroke', d => d.parked ? 'var(--accent2)' : 'rgba(0,0,0,0.45)')
-    // A dashed ring is how a pure package reads as different from a realm
-    // without spending a second colour channel that namespaces already use.
-    .attr('stroke-dasharray', d => d.is_realm ? null : '2,2')
-    .attr('stroke-width', 1)
-    .style('cursor', 'pointer')
-    .on('click', (e, d) => navigate('/realm/' + d.path.replace('gno.land/', '')))
+    .on('click', (e, d) => contractOpen(d))
     .call(d3.drag()
       .on('start', (e, d) => { if (!e.active) sim.alphaTarget(0.25).restart(); d.fx = d.x; d.fy = d.y; })
       .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; })
       .on('end', (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }));
+  contractHover(nodeEl, tip, d => d);
 
   // Labels last, so they are never covered by a bubble drawn after them.
   const labelG = zoomG.append('g').attr('pointer-events', 'none');
@@ -9157,39 +9413,6 @@ function renderContractMap() {
     .attr('stroke', 'var(--bg)')
     .attr('stroke-width', 3)
     .attr('paint-order', 'stroke');
-
-  const tip = el('div', {
-    style: {
-      position: 'absolute', display: 'none', pointerEvents: 'none', zIndex: '20',
-      background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: '3px',
-      padding: '6px 8px', fontSize: '11px', color: 'var(--fg)', maxWidth: '320px',
-    },
-  });
-  container.appendChild(tip);
-  nodeEl.on('mouseenter', (e, d) => {
-    tip.textContent = '';
-    tip.appendChild(el('div', { style: { color: 'var(--accent)', marginBottom: '3px' } }, d.path));
-    const row = (k, v) => el('div', { style: { color: 'var(--fg2)' } }, k + ': ' + v);
-    tip.appendChild(row('namespace', d.namespace));
-    tip.appendChild(row('kind', d.is_realm ? 'realm' : 'pure package'));
-    tip.appendChild(row('calls', fmtNum(d.calls) + ' from ' + fmtNum(d.unique_callers) + ' addresses'));
-    tip.appendChild(row('storage', fmtNum(d.storage_bytes) + ' bytes'));
-    // Same abbreviation as every other address on the site, with the identicon:
-    // a hover card is exactly where recognising an address at a glance matters,
-    // and this is the only place a bubble names its deployer.
-    const deployer = el('div', { style: { color: 'var(--fg2)', display: 'flex', alignItems: 'center', gap: '4px' } }, 'deployer: ');
-    const icon = identicon(d.creator);
-    if (icon) deployer.appendChild(icon);
-    deployer.append(truncAddr(d.creator));
-    tip.appendChild(deployer);
-    if (d.deployed_at) tip.appendChild(row('deployed', d.deployed_at.slice(0, 10)));
-    if (d.parked) tip.appendChild(el('div', { style: { color: 'var(--accent2)' } }, 'parked: submitted, never enabled'));
-    tip.style.display = 'block';
-  }).on('mousemove', (e) => {
-    const b = container.getBoundingClientRect();
-    tip.style.left = Math.min(e.clientX - b.left + 12, b.width - 330) + 'px';
-    tip.style.top = (e.clientY - b.top + 12) + 'px';
-  }).on('mouseleave', () => { tip.style.display = 'none'; });
 
   const sim = d3.forceSimulation(nodes)
     .force('link', d3.forceLink(links).id(d => d.id).distance(40).strength(l => Math.min(0.7, 0.1 + l.weight / (maxWeight * 2))))
@@ -9211,7 +9434,6 @@ function renderContractMap() {
     .force('y', _contracts.cluster
       ? d3.forceY(d => centroids.get(d.namespace).y).strength(0.11)
       : d3.forceY(height / 2).strength(0.05));
-  if (_contracts.sim) _contracts.sim.stop();
   _contracts.sim = sim;
 
   const byNamespace = d3.group(nodes, d => d.namespace);
@@ -9237,9 +9459,679 @@ function renderContractMap() {
     if (!fitted) { fitted = true; fit(); }
     if (_contracts.labels) hideOverlappingLabels(labelEl);
   });
+  return fit;
+}
 
-  container.appendChild(contractMapChrome(svg, zoom, namespaces, nodes, links.length, fit));
-  applyContractHighlight();
+// ---------------------------------------------------------------------------
+// orbit: one contract at the centre, its neighbourhood in rings around it.
+//
+// This is the mintscan IBC-network read, and it exists because the force map
+// answers "what does this chain look like" and cannot answer "what is this
+// contract connected to". A hairball hides a neighbourhood; a ring is the
+// neighbourhood, laid out so the first ring is every direct link and the
+// second is everything one step further. Click anything to make it the centre.
+//
+// Rings, not a force: the point of the view is that distance from the middle
+// means degrees of separation, and a simulation would trade that for prettier
+// spacing. Bounded by construction too, which the hairball is not: a chain of
+// ten thousand contracts still draws one centre and two rings.
+// ---------------------------------------------------------------------------
+function drawContractOrbit(ctx) {
+  const { svg, zoomG, zoom, tip, nodes, links, byPath, radius, metric, width, height } = ctx;
+
+  const adj = new Map(nodes.map(n => [n.path, []]));
+  links.forEach(l => {
+    adj.get(l.source).push({ other: l.target, weight: l.weight, out: true });
+    adj.get(l.target).push({ other: l.source, weight: l.weight, out: false });
+  });
+
+  // The focus: whatever the URL asked for, else the best-connected contract,
+  // ties broken by the metric on screen. Deterministic, so the same chain
+  // opens on the same contract every time.
+  let focus = _contracts.focus && byPath.get(_contracts.focus);
+  if (!focus) {
+    focus = nodes.slice().sort((a, b) =>
+      (adj.get(b.path).length - adj.get(a.path).length) ||
+      (metric.get(b) - metric.get(a)) ||
+      a.path.localeCompare(b.path))[0];
+  }
+
+  const RING1_MAX = 36, RING2_MAX = 90;
+  const ring1 = adj.get(focus.path).slice()
+    .sort((a, b) => b.weight - a.weight || a.other.localeCompare(b.other))
+    .slice(0, RING1_MAX)
+    .map(e => ({ node: byPath.get(e.other), weight: e.weight }));
+  const inRing1 = new Set(ring1.map(r => r.node.path));
+
+  const ring2 = new Map();
+  ring1.forEach((r, i) => {
+    adj.get(r.node.path).forEach(e => {
+      if (e.other === focus.path || inRing1.has(e.other)) return;
+      const cur = ring2.get(e.other);
+      if (!cur || e.weight > cur.weight) ring2.set(e.other, { node: byPath.get(e.other), weight: e.weight, parent: i });
+    });
+  });
+  const ring2List = Array.from(ring2.values())
+    .sort((a, b) => b.weight - a.weight || a.node.path.localeCompare(b.node.path))
+    .slice(0, RING2_MAX);
+
+  const cx = width / 2, cy = height / 2;
+  const R1 = Math.min(width, height) * 0.27;
+  const R2 = Math.min(width, height) * 0.45;
+
+  // Ring one is evenly spaced and starts at the top, so the heaviest link is
+  // always in the same place and two orbits of different contracts can be
+  // compared at a glance.
+  ring1.forEach((r, i) => {
+    r.angle = -Math.PI / 2 + (i * 2 * Math.PI) / Math.max(1, ring1.length);
+  });
+  // Ring two sits under whichever ring-one contract pulled it in, then is
+  // spread just enough to stop its members overlapping. Placing it by angle
+  // alone would scatter a contract's own dependants around the circle and lose
+  // the only structure this ring has.
+  ring2List.forEach(r => {
+    const p = ring1[r.parent];
+    r.angle = p ? p.angle : 0;
+  });
+  spreadRingAngles(ring2List, ring2List.length ? Math.min(
+    (2 * Math.PI) / ring2List.length,
+    (2 * d3.max(ring2List, r => radius(r.node)) + 6) / R2) : 0);
+
+  const place = (r, R) => { r.x = cx + Math.cos(r.angle) * R; r.y = cy + Math.sin(r.angle) * R; };
+  ring1.forEach(r => place(r, R1));
+  ring2List.forEach(r => place(r, R2));
+
+  const pos = new Map([[focus.path, { x: cx, y: cy }]]);
+  ring1.forEach(r => pos.set(r.node.path, { x: r.x, y: r.y }));
+  ring2List.forEach(r => pos.set(r.node.path, { x: r.x, y: r.y }));
+
+  // Faint guide rings, so "one step out" and "two steps out" are readable
+  // without counting. The second one only when something is on it: an empty
+  // ring says there is a second degree and it happens to be off screen, which
+  // on mainnet is false, because every neighbour of a neighbour is already in ring
+  // one.
+  const guides = zoomG.append('g').attr('pointer-events', 'none');
+  (ring2List.length ? [R1, R2] : [R1]).forEach(R => guides.append('circle')
+    .attr('cx', cx).attr('cy', cy).attr('r', R)
+    .attr('fill', 'none').attr('stroke', 'var(--border)').attr('stroke-dasharray', '2,6'));
+
+  const drawn = links.filter(l => pos.has(l.source) && pos.has(l.target));
+  const maxWeight = d3.max(drawn, l => l.weight) || 1;
+  const directed = _contracts.edges === 'imports';
+
+  // Curved, because two contracts can be linked both to each other and to the
+  // centre, and three straight lines through one point are one line. The bow
+  // is away from the middle so an edge between two ring-one contracts arcs
+  // outward instead of cutting across the focus.
+  const arc = l => {
+    const a = pos.get(l.source), b = pos.get(l.target);
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    const dx = mx - cx, dy = my - cy, len = Math.hypot(dx, dy) || 1;
+    const bow = Math.hypot(b.x - a.x, b.y - a.y) * 0.18;
+    return 'M' + a.x + ',' + a.y + 'Q' + (mx + (dx / len) * bow) + ',' + (my + (dy / len) * bow) +
+      ' ' + b.x + ',' + b.y;
+  };
+  const touchesFocus = l => l.source === focus.path || l.target === focus.path;
+  const linkEl = zoomG.append('g').attr('fill', 'none').selectAll('path').data(drawn).join('path')
+    .attr('d', arc)
+    .attr('stroke', l => touchesFocus(l) ? 'var(--accent)' : 'var(--fg2)')
+    // Two registers. The focus's own links are the subject and are drawn as
+    // such; the links among its neighbours are context, and at 36 neighbours
+    // there are up to 630 of them, enough to fill the middle of the ring with
+    // grey if they are drawn at the same weight as the six that matter.
+    .attr('stroke-opacity', l => touchesFocus(l) ? 0.55 : 0.1)
+    .attr('stroke-width', l => touchesFocus(l)
+      ? 0.8 + 3.5 * Math.sqrt(l.weight / maxWeight)
+      : 0.5 + 0.8 * Math.sqrt(l.weight / maxWeight))
+    .attr('stroke-linecap', 'round');
+  linkEl.append('title').text(l =>
+    l.source.replace('gno.land/', '') + (directed ? ' imports ' : ' ↔ ') +
+    l.target.replace('gno.land/', '') + ' (' + fmtNum(l.weight) + ')');
+
+  // Particles along the heaviest edges. Not decoration: on a link mode that is
+  // directed they are the only thing on screen that says which way it points
+  // now that the arrowheads are gone, and on shared callers their density is
+  // the weight, read without measuring a stroke width.
+  if (_contracts.flow && !prefersReducedMotion()) {
+    animateContractFlow(zoomG, linkEl.nodes(), drawn, maxWeight, directed);
+  }
+
+  const ringData = [
+    { node: focus, ring: 0, x: cx, y: cy },
+    ...ring1.map(r => ({ node: r.node, ring: 1, x: r.x, y: r.y, weight: r.weight })),
+    ...ring2List.map(r => ({ node: r.node, ring: 2, x: r.x, y: r.y, weight: r.weight })),
+  ];
+
+  const nodeEl = decorateContractShape(
+    zoomG.append('g').selectAll('circle').data(ringData).join('circle'), d => d.node)
+    .attr('cx', d => d.x).attr('cy', d => d.y)
+    // The centre is drawn at a fixed large radius rather than by the metric:
+    // it is the subject of the view, and a focus that shrank when you switched
+    // metric would read as having been deselected.
+    .attr('r', d => d.ring === 0 ? Math.max(20, ctx.rMax * 0.8) : Math.max(5, radius(d.node) * (d.ring === 1 ? 0.9 : 0.7)))
+    .attr('stroke', d => d.ring === 0 ? 'var(--accent)' : (d.node.parked ? 'var(--accent2)' : 'rgba(0,0,0,0.45)'))
+    .attr('stroke-width', d => d.ring === 0 ? 2 : 1)
+    // Clicking re-centres, which is the whole interaction. The centre is the
+    // exception and opens the contract, so the view is never a dead end.
+    .on('click', (e, d) => {
+      if (d.ring === 0) { contractOpen(d.node); return; }
+      _contracts.focus = d.node.path;
+      contractsStateToURL();
+      repaintContracts();
+    });
+  contractHover(nodeEl, tip, d => d.node);
+
+  // Ring one is always labelled: it is at most 36 contracts on a circle with
+  // room for them, and an orbit of unnamed dots answers nothing.
+  const labelG = zoomG.append('g').attr('pointer-events', 'none');
+  const labelSet = ringData.filter(d => d.ring <= 1 || _contracts.labels);
+  labelG.selectAll('text').data(labelSet).join('text')
+    .text(d => shortContractLabel(d.node))
+    .attr('x', d => d.x)
+    .attr('y', d => d.ring === 0
+      ? cy + Math.max(20, ctx.rMax * 0.8) + 13
+      : d.y - Math.max(5, radius(d.node) * 0.9) - 4)
+    .attr('text-anchor', 'middle')
+    .attr('font-size', d => d.ring === 0 ? 12 : 9.5)
+    .attr('fill', d => d.ring === 0 ? 'var(--accent)' : 'var(--fg)')
+    .attr('stroke', 'var(--bg)').attr('stroke-width', 3).attr('paint-order', 'stroke');
+
+  const dropped = adj.get(focus.path).length - ring1.length;
+  if (dropped > 0) {
+    zoomG.append('text')
+      .attr('x', cx).attr('y', cy + Math.max(20, ctx.rMax * 0.8) + 27)
+      .attr('text-anchor', 'middle').attr('font-size', 10).attr('fill', 'var(--fg2)')
+      .text('+' + fmtNum(dropped) + ' weaker links not drawn');
+  }
+
+  return () => svg.transition().duration(300).call(zoom.transform, d3.zoomIdentity);
+}
+
+// spreadRingAngles nudges items apart around a circle until none of them
+// overlaps, keeping the order they arrived in. Items start stacked on their
+// parent's angle, so without this a contract with eight dependants draws one
+// dot with seven underneath it.
+function spreadRingAngles(items, minGap) {
+  const n = items.length;
+  if (!n || !(minGap > 0)) return;
+  items.sort((a, b) => a.angle - b.angle);
+  if (n * minGap >= 2 * Math.PI) {
+    items.forEach((it, i) => { it.angle = -Math.PI / 2 + (i * 2 * Math.PI) / n; });
+    return;
+  }
+  for (let pass = 0; pass < 4; pass++) {
+    for (let i = 1; i < n; i++) {
+      if (items[i].angle - items[i - 1].angle < minGap) items[i].angle = items[i - 1].angle + minGap;
+    }
+    const overflow = (items[n - 1].angle - items[0].angle) - (2 * Math.PI - minGap);
+    if (overflow <= 0) break;
+    const shift = overflow / 2;
+    items.forEach(it => { it.angle -= shift; });
+  }
+}
+
+function prefersReducedMotion() {
+  return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+// animateContractFlow sends dots along the drawn edges.
+//
+// Capped hard at 90 in flight: getPointAtLength is a layout query and a few
+// hundred of them per frame is the difference between an explorer and a space
+// heater. The heaviest edges get the particles, which is also where the eye
+// should be.
+function animateContractFlow(layer, pathNodes, linkData, maxWeight, directed) {
+  const FLOW_MAX = 90;
+  const order = linkData.map((l, i) => i).sort((a, b) => linkData[b].weight - linkData[a].weight);
+  const particles = [];
+  for (const i of order) {
+    if (particles.length >= FLOW_MAX) break;
+    const node = pathNodes[i];
+    if (!node) continue;
+    const share = linkData[i].weight / maxWeight;
+    const count = Math.max(1, Math.round(1 + 2 * share));
+    for (let k = 0; k < count && particles.length < FLOW_MAX; k++) {
+      particles.push({
+        node, len: node.getTotalLength(),
+        offset: k / count,
+        dur: 2600 + 2400 * (1 - share),
+        // An undirected link has no upstream, so half its particles run the
+        // other way rather than inventing a direction the data does not have.
+        back: !directed && (k % 2 === 1),
+      });
+    }
+  }
+  if (!particles.length) return;
+
+  const holder = layer.append('g').attr('pointer-events', 'none');
+  const sel = holder.selectAll('circle').data(particles).join('circle')
+    .attr('r', 1.8).attr('fill', 'var(--accent)').attr('fill-opacity', 0.85);
+
+  _contracts.timer = d3.timer(elapsed => {
+    // Navigating away tears the SVG out without going through a repaint, and
+    // getPointAtLength on a detached path is a console error per frame.
+    if (!holder.node().isConnected) { _contracts.timer.stop(); _contracts.timer = null; return; }
+    sel.attr('transform', p => {
+      let u = ((elapsed / p.dur) + p.offset) % 1;
+      if (p.back) u = 1 - u;
+      const pt = p.node.getPointAtLength(u * p.len);
+      return 'translate(' + pt.x + ',' + pt.y + ')';
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// packed: circle packing, namespace inside namespace. The bubblemaps cluster
+// rendering, taken literally.
+//
+// No simulation at all, which is the point: the force map takes seconds to
+// settle and lands somewhere slightly different every time, so two screenshots
+// of the same chain are not comparable and nothing can be pointed at by
+// position. A packing is deterministic, paints instantly, and wastes no space
+// the whole viewport is contracts. What it gives up is the edges, so they
+// come back on hover, for one contract at a time.
+// ---------------------------------------------------------------------------
+function drawContractPacked(ctx) {
+  const { svg, zoomG, zoom, tip, nodes, links, metric, width, height } = ctx;
+
+  const root = contractHierarchy(nodes, metric);
+  d3.pack().size([width - 8, height - 8]).padding(d => d.depth === 0 ? 10 : 2.5)(root);
+  const shift = g => g.attr('transform', 'translate(4,4)');
+  const groups = zoomG.append('g').call(shift);
+
+  const nsNodes = root.children || [];
+  groups.append('g').selectAll('circle').data(nsNodes).join('circle')
+    .attr('cx', d => d.x).attr('cy', d => d.y).attr('r', d => d.r)
+    .attr('fill', d => namespaceColor(d.data.ns))
+    .attr('fill-opacity', 0.06)
+    .attr('stroke', d => namespaceColor(d.data.ns))
+    .attr('stroke-opacity', 0.4)
+    .style('cursor', 'zoom-in')
+    // Clicking a namespace frames it, reusing the same zoom the rest of the
+    // map is panned with rather than a second, private notion of "zoomed in".
+    .on('click', (e, d) => {
+      e.stopPropagation();
+      const k = Math.min(6, Math.min(width, height) / (2.2 * d.r));
+      svg.transition().duration(500).call(zoom.transform,
+        d3.zoomIdentity.translate(width / 2, height / 2).scale(k).translate(-(d.x + 4), -(d.y + 4)));
+    })
+    .append('title').text(d => d.data.ns + ' \u00b7 ' + d.children.length + ' contracts');
+
+  const leaves = root.leaves();
+  const leafEl = decorateContractShape(
+    groups.append('g').selectAll('circle').data(leaves).join('circle'), d => d.data.leaf)
+    .attr('cx', d => d.x).attr('cy', d => d.y).attr('r', d => d.r)
+    .on('click', (e, d) => contractOpen(d.data.leaf));
+  contractHover(leafEl, tip, d => d.data.leaf);
+
+  // The edges the packing dropped, shown for one contract at a time. Hovering
+  // is the natural gesture for "and what is this connected to", and drawing
+  // them all at once is the hairball this layout exists to avoid.
+  const at = new Map(leaves.map(d => [d.data.leaf.path, d]));
+  const overlay = groups.append('g').attr('pointer-events', 'none').attr('fill', 'none');
+  const neighbours = new Map();
+  links.forEach(l => {
+    if (!neighbours.has(l.source)) neighbours.set(l.source, []);
+    if (!neighbours.has(l.target)) neighbours.set(l.target, []);
+    neighbours.get(l.source).push(l);
+    neighbours.get(l.target).push(l);
+  });
+  leafEl.on('mouseenter.edges', (e, d) => {
+    const mine = neighbours.get(d.data.leaf.path) || [];
+    overlay.selectAll('path').data(mine.filter(l => at.has(l.source) && at.has(l.target)))
+      .join('path')
+      .attr('d', l => {
+        const a = at.get(l.source), b = at.get(l.target);
+        return 'M' + a.x + ',' + a.y + 'A' + (Math.hypot(b.x - a.x, b.y - a.y) * 0.9) + ',' +
+          (Math.hypot(b.x - a.x, b.y - a.y) * 0.9) + ' 0 0,1 ' + b.x + ',' + b.y;
+      })
+      .attr('stroke', 'var(--accent)').attr('stroke-opacity', 0.75).attr('stroke-width', 1.6);
+  }).on('mouseleave.edges', () => overlay.selectAll('path').remove());
+
+  // A namespace is named when its circle has room for the name, and the ones
+  // that do not are the long tail of single-contract namespaces that the
+  // legend already covers.
+  const nsLabels = groups.append('g').attr('pointer-events', 'none');
+  nsLabels.selectAll('text').data(nsNodes.filter(d => d.r > 26)).join('text')
+    .attr('x', d => d.x).attr('y', d => d.y - d.r + 11)
+    .attr('text-anchor', 'middle').attr('font-size', 11)
+    .attr('fill', d => namespaceColor(d.data.ns))
+    .attr('stroke', 'var(--bg)').attr('stroke-width', 3).attr('paint-order', 'stroke')
+    .text(d => namespaceLabel(d.data.ns));
+
+  const leafLabels = groups.append('g').attr('pointer-events', 'none');
+  leafLabels.selectAll('text').data(leaves.filter(d => d.r > 18)).join('text')
+    .attr('x', d => d.x).attr('y', d => d.y + 3)
+    .attr('text-anchor', 'middle').attr('font-size', 9.5).attr('fill', 'var(--bg)')
+    .text(d => d.data.leaf.name);
+
+  return () => svg.transition().duration(300).call(zoom.transform, d3.zoomIdentity);
+}
+
+// ---------------------------------------------------------------------------
+// bundled: hierarchical edge bundling. Every contract on one ring, grouped by
+// namespace, edges routed through the namespace they belong to.
+//
+// This is the layout for the import graph specifically. 746 import edges over
+// 341 contracts is the case the force map cannot draw: it was a field of grey
+// triangles before the arrowheads were capped, and it is a grey haze after.
+// Bundling turns that into a few thick cables between namespaces plus the
+// strands inside each one, and hovering a contract separates what it imports
+// from what imports it, which no other view here does at all.
+// ---------------------------------------------------------------------------
+function drawContractBundled(ctx) {
+  const { svg, zoomG, zoom, tip, nodes, links, metric, width, height } = ctx;
+
+  const R = Math.min(width, height) / 2 - 76;
+  const cx = width / 2, cy = height / 2;
+  // Ordered by namespace, then by the metric inside it, so the contract that
+  // matters in a namespace is always at the same end of its arc.
+  const hier = d3.hierarchy(contractHierarchyData(nodes))
+    .sort((a, b) => d3.ascending(a.data.ns || '', b.data.ns || '') ||
+      ((metric.get(b.data.leaf || {}) || 0) - (metric.get(a.data.leaf || {}) || 0)) ||
+      d3.ascending(a.data.name, b.data.name));
+  d3.cluster().size([2 * Math.PI, R])(hier);
+
+  const g = zoomG.append('g').attr('transform', 'translate(' + cx + ',' + cy + ')');
+  const leaves = hier.leaves();
+  const at = new Map(leaves.map(d => [d.data.leaf.path, d]));
+  const xy = d => [Math.sin(d.x) * d.y, -Math.cos(d.x) * d.y];
+
+  // The namespace band outside the ring: sixty hues are not sixty
+  // distinguishable colours, and an arc with a name on it is.
+  const arcG = g.append('g').attr('pointer-events', 'none');
+  const arc = d3.arc().innerRadius(R + 4).outerRadius(R + 10);
+  (hier.children || []).forEach(nsNode => {
+    const kids = nsNode.leaves();
+    const a0 = d3.min(kids, k => k.x), a1 = d3.max(kids, k => k.x);
+    const pad = kids.length === 1 ? 0.012 : 0;
+    arcG.append('path')
+      .attr('d', arc({ startAngle: a0 - pad, endAngle: a1 + pad }))
+      .attr('fill', namespaceColor(nsNode.data.ns))
+      .attr('fill-opacity', 0.75);
+    // Only arcs wide enough to hold a name get one. Below this, mainnet's
+    // twenty single-contract namespaces stack their labels into an unreadable
+    // fan at the top of the ring, and the legend already names them.
+    if (a1 - a0 > 0.16) {
+      const mid = (a0 + a1) / 2;
+      const flip = mid > Math.PI;
+      arcG.append('text')
+        .attr('transform', 'rotate(' + ((mid * 180) / Math.PI - 90) + ') translate(' + (R + 16) + ',0)' +
+          (flip ? ' rotate(180)' : ''))
+        .attr('text-anchor', flip ? 'end' : 'start')
+        .attr('dy', '0.32em').attr('font-size', 10)
+        .attr('fill', namespaceColor(nsNode.data.ns))
+        .text(namespaceLabel(nsNode.data.ns));
+    }
+  });
+
+  const line = d3.lineRadial().curve(d3.curveBundle.beta(0.82)).radius(d => d.y).angle(d => d.x);
+  const drawn = links.filter(l => at.has(l.source) && at.has(l.target))
+    .map(l => Object.assign({}, l, { path: at.get(l.source).path(at.get(l.target)) }));
+  const maxWeight = d3.max(drawn, l => l.weight) || 1;
+  const linkEl = g.append('g').attr('fill', 'none').selectAll('path').data(drawn).join('path')
+    .attr('d', l => line(l.path))
+    .attr('stroke', 'var(--fg2)')
+    .attr('stroke-opacity', drawn.length > 400 ? 0.13 : 0.26)
+    .attr('stroke-width', l => 0.5 + 2 * Math.sqrt(l.weight / maxWeight))
+    .attr('stroke-linecap', 'round');
+
+  if (_contracts.flow && !prefersReducedMotion()) {
+    animateContractFlow(g, linkEl.nodes(), drawn, maxWeight, _contracts.edges === 'imports');
+  }
+
+  const dotEl = decorateContractShape(
+    g.append('g').selectAll('circle').data(leaves).join('circle'), d => d.data.leaf)
+    .attr('transform', d => 'translate(' + xy(d) + ')')
+    // Small and in a narrow band: on a ring, a bubble sized like the force
+    // map's would swallow its neighbours, so the metric drives a 2.5-to-8
+    // pixel dot and the ranking cards carry the magnitudes.
+    .attr('r', d => 2.5 + 5.5 * ctx.norm(d.data.leaf))
+    .on('click', (e, d) => contractOpen(d.data.leaf));
+  contractHover(dotEl, tip, d => d.data.leaf);
+
+  // Hovering separates the two directions, which is the question the import
+  // graph is: what does this depend on, and what would break if it changed.
+  const bySource = new Map(), byTarget = new Map();
+  drawn.forEach(l => {
+    if (!bySource.has(l.source)) bySource.set(l.source, []);
+    if (!byTarget.has(l.target)) byTarget.set(l.target, []);
+    bySource.get(l.source).push(l);
+    byTarget.get(l.target).push(l);
+  });
+  const baseOpacity = drawn.length > 400 ? 0.13 : 0.26;
+  dotEl.on('mouseenter.bundle', (e, d) => {
+    const p = d.data.leaf.path;
+    const out = new Set(bySource.get(p) || []), inc = new Set(byTarget.get(p) || []);
+    linkEl
+      .attr('stroke', l => out.has(l) ? 'var(--accent)' : (inc.has(l) ? 'var(--accent2)' : 'var(--fg2)'))
+      .attr('stroke-opacity', l => (out.has(l) || inc.has(l)) ? 0.9 : 0.04)
+      .filter(l => out.has(l) || inc.has(l)).raise();
+  }).on('mouseleave.bundle', () => {
+    linkEl.attr('stroke', 'var(--fg2)').attr('stroke-opacity', baseOpacity);
+  });
+
+  // Naming every leaf on a ring of 341 is a grey band. Naming the top of the
+  // metric is the same 14 labels the force map offers, in a place they fit.
+  const named = leaves.slice()
+    .sort((a, b) => (metric.get(b.data.leaf) || 0) - (metric.get(a.data.leaf) || 0))
+    .slice(0, _contracts.labels ? 40 : 14);
+  const nameEl = g.append('g').attr('pointer-events', 'none').selectAll('text').data(named).join('text')
+    .attr('transform', d => 'rotate(' + ((d.x * 180) / Math.PI - 90) + ') translate(' + (d.y + 8) + ',0)' +
+      (d.x > Math.PI ? ' rotate(180)' : ''))
+    .attr('text-anchor', d => d.x > Math.PI ? 'end' : 'start')
+    .attr('dy', '0.31em').attr('font-size', 9)
+    .attr('fill', 'var(--fg)')
+    .attr('stroke', 'var(--bg)').attr('stroke-width', 2.5).attr('paint-order', 'stroke')
+    .text(d => d.data.leaf.name);
+  // The top of the metric clusters inside one namespace (p/nt has the five
+  // most-depended-on packages on mainnet and they sit within a few degrees of
+  // each other) so the labels land on top of one another. Same rule as the
+  // force map: first to claim the space keeps it, and the list is already in
+  // metric order so the one kept is the one worth naming.
+  hideOverlappingLabels(nameEl);
+
+  return () => svg.transition().duration(300).call(zoom.transform, d3.zoomIdentity);
+}
+
+// The same tree contractHierarchy builds, without the d3.hierarchy wrapper,
+// because bundling sorts and lays out but never sums.
+function contractHierarchyData(nodes) {
+  const byNs = d3.group(nodes, n => n.namespace);
+  return {
+    name: 'root',
+    children: Array.from(byNs, ([ns, members]) => ({
+      name: ns, ns,
+      children: members.map(n => ({ name: n.name, ns, leaf: n })),
+    })),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// chord: namespace to namespace, one ribbon per pair.
+//
+// Every other layout here draws contracts. This one draws teams, and it is the
+// only view that answers the question the ranking cards cannot: not "who is
+// big" but "who shares a population with whom". On mainnet it takes 29 edges
+// scattered over 341 bubbles and says, in one picture, that gnoland and
+// gnoswap are the same users.
+// ---------------------------------------------------------------------------
+function drawContractChord(ctx) {
+  const { svg, zoomG, zoom, tip, nodes, links, byPath, width, height } = ctx;
+
+  const nsOf = p => (byPath.get(p) || {}).namespace;
+  // Only links that cross a namespace boundary.
+  //
+  // With them in, mainnet's chord is one solid disc: gnoswap's 35 contracts
+  // share callers with each other far more than with anything else, so the
+  // self-ribbon covers the circle and the six pairs worth seeing are hairlines
+  // underneath it. A namespace is not a pair with itself, and this is the one
+  // view whose entire subject is the pairs.
+  const crossing = links.filter(l => nsOf(l.source) !== nsOf(l.target));
+  const total = new Map();
+  crossing.forEach(l => {
+    const a = nsOf(l.source), b = nsOf(l.target);
+    total.set(a, (total.get(a) || 0) + l.weight);
+    total.set(b, (total.get(b) || 0) + l.weight);
+  });
+  if (!crossing.length) {
+    ctx.container.querySelector('svg').remove();
+    ctx.container.appendChild(el('div', {
+      style: { padding: '60px 40px', textAlign: 'center', color: 'var(--fg2)', lineHeight: '1.8' },
+    },
+      el('div', {}, 'every link here is inside a single namespace'),
+      el('div', { style: { fontSize: '11px' } },
+        'nothing crosses a boundary, so there are no pairs to draw')));
+    return () => {};
+  }
+  const TOP = 12;
+  const ranked = Array.from(total.keys()).sort((a, b) => total.get(b) - total.get(a) || a.localeCompare(b));
+  const kept = ranked.slice(0, TOP);
+  // Everything past the top twelve is folded into one group rather than
+  // dropped: a chord that silently omits half the traffic reads as a complete
+  // picture of a chain that does not exist.
+  const hasRest = ranked.length > kept.length;
+  const groups = hasRest ? kept.concat(['other']) : kept;
+  const idx = new Map(groups.map((g, i) => [g, i]));
+  const at = ns => idx.has(ns) ? idx.get(ns) : idx.get('other');
+
+  const n = groups.length;
+  const matrix = Array.from({ length: n }, () => new Array(n).fill(0));
+  const directed = _contracts.edges === 'imports';
+  crossing.forEach(l => {
+    const a = at(nsOf(l.source)), b = at(nsOf(l.target));
+    if (a === undefined || b === undefined) return;
+    matrix[a][b] += l.weight;
+    // Shared callers are a symmetric relation and the matrix has to say so;
+    // imports are not, and symmetrising them would invent dependencies.
+    if (!directed && a !== b) matrix[b][a] += l.weight;
+  });
+
+  const outer = Math.min(width, height) / 2 - 92;
+  if (outer < 40) return () => {};
+  const layout = (directed ? d3.chordDirected() : d3.chord())
+    .padAngle(0.035).sortSubgroups(d3.descending);
+  const chords = layout(matrix);
+  const g = zoomG.append('g').attr('transform', 'translate(' + width / 2 + ',' + height / 2 + ')');
+
+  const arc = d3.arc().innerRadius(outer).outerRadius(outer + 14);
+  const ribbon = (directed ? d3.ribbonArrow() : d3.ribbon()).radius(outer - 1);
+  const colorOf = i => groups[i] === 'other' ? 'var(--fg2)' : namespaceColor(groups[i]);
+
+  const ribbonEl = g.append('g').attr('fill-opacity', 0.62).selectAll('path')
+    .data(chords).join('path')
+    .attr('d', ribbon)
+    .attr('fill', d => colorOf(d.source.index))
+    .attr('stroke', 'rgba(0,0,0,0.4)')
+    .style('cursor', 'default');
+  ribbonEl
+    .on('mouseenter', (e, d) => tip.lines(groups[d.source.index] + (directed ? ' imports ' : ' ↔ ') + groups[d.target.index], [
+      [directed ? 'imports' : 'addresses in common', fmtNum(d.source.value)],
+      ...(directed || d.source.value === d.target.value ? [] : [['the other way', fmtNum(d.target.value)]]),
+    ]))
+    .on('mousemove', e => tip.move(e))
+    .on('mouseleave', () => tip.hide());
+
+  const groupEl = g.append('g').selectAll('path').data(chords.groups).join('path')
+    .attr('d', arc)
+    .attr('data-path', d => groups[d.index])
+    .attr('data-base-op', 1)
+    .attr('fill', d => colorOf(d.index))
+    .attr('fill-opacity', 1)
+    .style('cursor', 'pointer')
+    // Clicking a group is the same namespace filter the legend offers, so the
+    // strategic view hands off to the detailed one.
+    .on('click', (e, d) => {
+      if (groups[d.index] === 'other') return;
+      _contracts.namespace = _contracts.namespace === groups[d.index] ? null : groups[d.index];
+      contractsStateToURL();
+      repaintContracts();
+    });
+  groupEl
+    .on('mouseenter', (e, d) => {
+      ribbonEl.attr('fill-opacity', c => (c.source.index === d.index || c.target.index === d.index) ? 0.85 : 0.07);
+      const members = nodes.filter(x => at(x.namespace) === d.index).length;
+      tip.lines(groups[d.index], [
+        ['contracts', fmtNum(members)],
+        [directed ? 'imports across namespaces' : 'addresses shared with others', fmtNum(Math.round(d.value))],
+      ]);
+    })
+    .on('mousemove', e => tip.move(e))
+    .on('mouseleave', () => { ribbonEl.attr('fill-opacity', 0.62); tip.hide(); });
+
+  g.append('g').attr('pointer-events', 'none').selectAll('text').data(chords.groups).join('text')
+    .attr('transform', d => {
+      const a = (d.startAngle + d.endAngle) / 2;
+      return 'rotate(' + ((a * 180) / Math.PI - 90) + ') translate(' + (outer + 20) + ',0)' +
+        (a > Math.PI ? ' rotate(180)' : '');
+    })
+    .attr('text-anchor', d => ((d.startAngle + d.endAngle) / 2) > Math.PI ? 'end' : 'start')
+    .attr('dy', '0.32em').attr('font-size', 11).attr('fill', 'var(--fg)')
+    .attr('stroke', 'var(--bg)').attr('stroke-width', 3).attr('paint-order', 'stroke')
+    .text(d => namespaceLabel(groups[d.index]));
+
+  return () => svg.transition().duration(300).call(zoom.transform, d3.zoomIdentity);
+}
+
+// ---------------------------------------------------------------------------
+// treemap: area is the metric, nested by namespace.
+//
+// The least exciting view and the one that answers "how is this chain divided
+// up" without any interpretation at all. A packing wastes the gaps between
+// circles, so comparing two areas across the map is guesswork; a treemap
+// spends every pixel and the comparison is exact. Worth having precisely
+// because it is the boring control the other five are measured against.
+// ---------------------------------------------------------------------------
+function drawContractTreemap(ctx) {
+  const { svg, zoomG, zoom, tip, nodes, metric, width, height } = ctx;
+
+  const root = contractHierarchy(nodes, metric);
+  // paddingOuter sets all four sides, so it has to come before paddingTop or
+  // it silently overwrites it, and with a 2px top band the namespace name and
+  // its first contract's name are drawn two pixels apart, on top of each other.
+  // A treemap that names its groups and then covers the names is worse than
+  // one that never named them.
+  //
+  // The top inset is for the count overlay, which otherwise sits on the first
+  // namespace in the grid. Every other layout has slack up there; this one
+  // spends every pixel by construction.
+  const TOP = 26;
+  d3.treemap().size([width, height - TOP])
+    .paddingOuter(2).paddingInner(1).paddingTop(16).round(true)(root);
+  const zoomGT = zoomG.append('g').attr('transform', 'translate(0,' + TOP + ')');
+
+  const nsNodes = root.children || [];
+  zoomGT.append('g').selectAll('rect').data(nsNodes).join('rect')
+    .attr('x', d => d.x0).attr('y', d => d.y0)
+    .attr('width', d => Math.max(0, d.x1 - d.x0)).attr('height', d => Math.max(0, d.y1 - d.y0))
+    .attr('fill', d => namespaceColor(d.data.ns))
+    .attr('fill-opacity', 0.12)
+    .attr('stroke', d => namespaceColor(d.data.ns))
+    .attr('stroke-opacity', 0.5)
+    .append('title').text(d => d.data.ns + ' \u00b7 ' + d.children.length + ' contracts');
+
+  const leaves = root.leaves();
+  const leafEl = decorateContractShape(
+    zoomGT.append('g').selectAll('rect').data(leaves).join('rect'), d => d.data.leaf)
+    .attr('x', d => d.x0).attr('y', d => d.y0)
+    .attr('width', d => Math.max(0, d.x1 - d.x0)).attr('height', d => Math.max(0, d.y1 - d.y0))
+    .attr('rx', 1)
+    .on('click', (e, d) => contractOpen(d.data.leaf));
+  contractHover(leafEl, tip, d => d.data.leaf);
+
+  const labels = zoomGT.append('g').attr('pointer-events', 'none');
+  labels.selectAll('text.ns').data(nsNodes.filter(d => (d.x1 - d.x0) > 44 && (d.y1 - d.y0) > 26))
+    .join('text').attr('class', 'ns')
+    .attr('x', d => d.x0 + 4).attr('y', d => d.y0 + 12)
+    .attr('font-size', 10).attr('fill', d => namespaceColor(d.data.ns))
+    .text(d => namespaceLabel(d.data.ns));
+  labels.selectAll('text.leaf').data(leaves.filter(d => (d.x1 - d.x0) > 52 && (d.y1 - d.y0) > 14))
+    .join('text').attr('class', 'leaf')
+    .attr('x', d => d.x0 + 4).attr('y', d => d.y0 + 11)
+    .attr('font-size', 9.5).attr('fill', 'var(--bg)')
+    .text(d => d.data.leaf.name);
+
+  return () => svg.transition().duration(300).call(zoom.transform, d3.zoomIdentity);
 }
 
 // hideOverlappingLabels keeps the first label to claim a piece of the canvas
@@ -9250,10 +10142,16 @@ function renderContractMap() {
 // blinking in and out during settling looks like a fault. Labels are already
 // ordered by the metric, so the one kept in a collision is the bigger
 // contract, which is the one worth naming.
+// Measured with getBoundingClientRect, not getBBox: getBBox is the element's
+// own coordinate space and ignores its transform, so every radial label on the
+// bundled ring reports the same box a few pixels from the origin and all but
+// one of them is dropped as an overlap. The client rect is what is actually on
+// screen, which is the only space in which "do these two collide" is a
+// question with an answer.
 function hideOverlappingLabels(labelSel) {
   const placed = [];
   labelSel.each(function (d) {
-    const box = this.getBBox();
+    const box = this.getBoundingClientRect();
     const hit = placed.some(p => !(box.x + box.width < p.x || p.x + p.width < box.x ||
       box.y + box.height < p.y || p.y + p.height < box.y));
     if (hit) {
@@ -9263,6 +10161,13 @@ function hideOverlappingLabels(labelSel) {
     this.style.display = '';
     placed.push(box);
   });
+}
+
+// A contract's short name, with its namespace when the name alone would not
+// identify it. gnoswap/gns and moul/gns are two contracts called gns.
+function shortContractLabel(n) {
+  const rest = n.path.replace('gno.land/', '').replace(/^[rp]\//, '');
+  return rest.length > 26 ? n.name : rest;
 }
 
 // drawNamespaceHulls outlines each namespace's contracts, so the grouping is
@@ -9334,7 +10239,7 @@ function drawNamespaceHulls(layer, byNamespace, radius) {
     .attr('stroke', 'var(--bg2)')
     .attr('stroke-width', 3)
     .attr('paint-order', 'stroke')
-    .text(s => s.ns.startsWith('g1') ? truncAddr(s.ns) : s.ns);
+    .text(s => namespaceLabel(s.ns));
 }
 
 // fitContractMap frames every node in the viewport, the way the graph tab's
@@ -9377,11 +10282,16 @@ function contractMapChrome(svg, zoom, namespaces, nodes, linkCount, fit) {
   const count = el('div', {
     style: {
       position: 'absolute', top: '8px', left: '8px', fontSize: '11px', color: 'var(--fg2)',
-      background: 'var(--bg2)', padding: '2px 6px', borderRadius: '3px',
+      background: 'var(--bg2)', padding: '2px 6px', borderRadius: '3px', maxWidth: '62%',
     },
   }, fmtNum(nodes.length) + ' contracts' + on + ' · ' + fmtNum(linkCount) + ' ' + linkWord + edgeNote +
      ' · size = ' + CONTRACT_METRICS[_contracts.metric].label +
      (_contracts.scale === 'log' ? ' (log)' : ''));
+  // Each view is a different question, and none of them announces which one on
+  // its own. One line, under the count, so switching view says what changed.
+  const spec = CONTRACT_LAYOUTS[_contracts.layout] || CONTRACT_LAYOUTS.force;
+  count.appendChild(el('div', { style: { color: 'var(--fg2)', opacity: '0.75' } },
+    spec.label + ': ' + spec.hint));
   wrap.appendChild(count);
 
   // Ten namespaces, not sixty: a legend nobody can scan is decoration.
@@ -9400,11 +10310,15 @@ function contractMapChrome(svg, zoom, namespaces, nodes, linkCount, fit) {
     .sort((a, b) => (weight.get(b) - weight.get(a)) || (counts.get(b) - counts.get(a)) || a.localeCompare(b))
     .slice(0, 10)
     .map(ns => [ns, counts.get(ns)]);
+  // Under the map, not floating over its bottom-left corner. Two of the six
+  // layouts spend every pixel of the box by construction (the treemap has a
+  // contract in that corner, the packing has half a namespace) so an
+  // overlay there hides data rather than sitting on background.
   const legend = el('div', {
     style: {
-      position: 'absolute', bottom: '8px', left: '8px', display: 'flex', flexWrap: 'wrap',
-      gap: '8px', fontSize: '11px', color: 'var(--fg2)', maxWidth: '75%',
-      background: 'var(--bg2)', padding: '3px 6px', borderRadius: '3px',
+      display: 'flex', flexWrap: 'wrap', alignItems: 'center',
+      gap: '8px', fontSize: '11px', color: 'var(--fg2)',
+      padding: '6px 2px 0', borderTop: '1px solid var(--border)', marginTop: '6px',
     },
   });
   // Clicking a legend entry isolates that namespace, which is the filter a
@@ -9437,17 +10351,25 @@ function contractMapChrome(svg, zoom, namespaces, nodes, linkCount, fit) {
 
 // Dim everything that does not match, rather than removing it, so the layout
 // stays put while the search box is being typed into.
+//
+// Driven by the data-path attribute rather than the bound datum, because four
+// of the six layouts bind a d3 hierarchy or chord node and not the contract
+// itself, and the search box should not have to know which one is on screen.
 function applyContractHighlight() {
   const q = _contracts.search;
-  const svg = document.querySelector('#contract-map svg');
-  if (!svg) return;
-  d3.select(svg).selectAll('circle')
-    .attr('fill-opacity', d => {
-      const base = d.parked ? 0.25 : 0.8;
-      if (!q) return base;
-      return d.path.toLowerCase().includes(q) ? 1 : 0.08;
-    })
-    .attr('stroke-opacity', d => (!q || d.path.toLowerCase().includes(q)) ? 1 : 0.1);
+  const root = document.getElementById('contract-map');
+  if (!root) return;
+  root.querySelectorAll('[data-path]').forEach(node => {
+    const base = parseFloat(node.getAttribute('data-base-op') || '1');
+    if (!q) {
+      node.setAttribute('fill-opacity', base);
+      node.setAttribute('stroke-opacity', 1);
+      return;
+    }
+    const hit = node.getAttribute('data-path').toLowerCase().includes(q);
+    node.setAttribute('fill-opacity', hit ? 1 : 0.08);
+    node.setAttribute('stroke-opacity', hit ? 1 : 0.1);
+  });
 }
 
 function contractRankCard(title, rows) {
