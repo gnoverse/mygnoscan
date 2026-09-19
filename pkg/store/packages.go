@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -920,5 +921,38 @@ func (d *DB) GetRealmShareTimeSeries(network, metric, granularity string, days i
 		}
 		out = append(out, p)
 	}
+	return out, rows.Err()
+}
+
+// Namespaces lists the named namespaces that have packages on a network.
+//
+// Address-shaped namespaces (gno.land/r/g1…/foo) are excluded: they are their
+// own owner, so there is nothing to resolve for them.
+func (d *DB) Namespaces(network string) ([]string, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	rows, err := d.db.Query(`SELECT DISTINCT path FROM packages WHERE ` +
+		d.networkFilter("network", network))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	seen := map[string]bool{}
+	var out []string
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return nil, err
+		}
+		m := namespacePath.FindStringSubmatch(path)
+		if m == nil || strings.HasPrefix(m[1], "g1") || seen[m[1]] {
+			continue
+		}
+		seen[m[1]] = true
+		out = append(out, m[1])
+	}
+	sort.Strings(out)
 	return out, rows.Err()
 }
