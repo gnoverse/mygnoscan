@@ -374,6 +374,59 @@ labels this figure "recent" for the same reason.
 | `GET /api/address/{addr}` | activity for an address, **from local storage**: calls, deploys, runs, sends (both directions), with `total` covering its whole history and `limit`/`offset` paging the rows. `balance` comes from RPC and is present only when a single network is selected **and** that RPC has been confirmed to serve the same chain as the network's indexer — an unverified or mismatched RPC yields an empty balance rather than one from another chain. The indexer cannot serve this at chain scale — five address predicates over unindexed fields means a scan |
 | `GET /api/accounts` | most active accounts. `limit` (default 100, max 500), `offset`, and `sort` = `calls`, `deploys`, `runs`, `sends` or total activity. One row per `(address, network)`: the same key on two chains is two different actors, and each row carries its `network` |
 
+## Validators
+
+| endpoint | description |
+|---|---|
+| `GET /api/validator/{addr}` | one validator by consensus address: its proposed blocks, and a daily share series |
+| `GET /api/validators` | unchanged: the `r/gnops/valopers` registration log |
+
+`/validators` already renders the set, deriving proposers from recent blocks,
+drawing a liveness sparkline per row and joining gnockpit's power, missed-block
+and spof columns onto them. That table is a snapshot; this endpoint is the one
+view it cannot be, which is a single validator across the chain's history.
+
+### Two address spaces, deliberately not joined
+
+The word "validator" covers two disjoint keys, and conflating them is a bug this
+repo has already had (`loadValMonikers` never matched a proposer):
+
+| key | who has it | where it appears |
+|---|---|---|
+| **consensus** | the node signing blocks | `blocks.proposer_id`, gnockpit |
+| **operator** | the account registering the validator | `valoper_registrations` |
+
+Nothing on chain maps one to the other. This endpoint is keyed on the consensus
+address, and the registration table stays its own view. Verified against mainnet
+on 2026-09-20: all four gnockpit addresses matched the interned proposer
+addresses exactly, so *that* join does work and is the one used here.
+
+### What each figure comes from
+
+`voting_power`, `missed_24h`, `missed_100`, `avg_block_ms` and `spof` come from
+gnockpit. `blocks`, `txs`, `share` and `last_block_time` come from the blocks
+this instance has synced, so they cover the synced range rather than all of
+history.
+
+`in_set` separates the two cases that otherwise look identical: an address with
+proposal history that gnockpit no longer lists has **left the set**, and the
+page says so instead of rendering an active-looking validator. A live member
+this instance has never seen propose is served too, with zero blocks. An address
+that is neither is a 404, because an empty page reads as an idle validator.
+
+### No staking, and no voting-power timeline
+
+gno has no delegation and its set is governance-assigned, so there is no APR, no
+bonded ratio, no commission and no delegator list. Those columns would be four
+confident zeros.
+
+No historical validator set is stored anywhere and gnockpit reports only the
+current one, so a true voting-power timeline is not derivable. `shares` is the
+observable half of one: each day's blocks split between proposers, so a
+validator joining or leaving shows up as its share appearing or going to zero.
+A share rather than a count, because variable block time makes per-day counts
+incomparable.
+
 ## Assets (GRC20)
 
 | endpoint | description |

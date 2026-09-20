@@ -509,6 +509,7 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
     <div id="asset-detail"></div></main></div>
   <div class="view" id="view-validators"><main><div class="section"><div class="section-title">validators</div>
     <div id="validators-content"></div></div></main></div>
+  <div class="view" id="view-validator-detail"><main><div id="validator-detail-content"></div></main></div>
   <div class="view" id="view-govdao"><main><div id="govdao-content"></div></main></div>
   <div class="view" id="view-govdao-detail"><main><div id="govdao-detail-content"></div></main></div>
   <div class="view" id="view-analytics"><main><div id="analytics-content"></div></main></div>
@@ -2442,6 +2443,7 @@ function route() {
   else if (path === '/accounts') { view = 'accounts'; }
   else if (path === '/tokens') { view = 'tokens'; }
   else if (path === '/validators') { view = 'validators'; }
+  else if (path.startsWith('/validator/')) { view = 'validator-detail'; data = path.slice(11); }
   else if (path === '/govdao') { view = 'govdao'; }
   else if (path === '/events') { view = 'events'; }
   else if (path === '/gas') { view = 'gas'; }
@@ -2487,6 +2489,7 @@ function route() {
     case 'accounts': enterAccounts(urlAv); break;
     case 'tokens': loadTokens(); break;
     case 'validators': loadValidators(); break;
+    case 'validator-detail': loadValidatorDetail(data); break;
     case 'govdao': loadGovDAO(); break;
     case 'govdao-detail': loadGovDAODetail(data); break;
     case 'events': loadEvents(); break;
@@ -4078,6 +4081,108 @@ function livenessSpark(blocks, addr) {
   return spark;
 }
 
+// --- One validator ----------------------------------------------------------
+//
+// /validators already renders the set, keyed on the proposer's consensus
+// address, with a liveness sparkline and gnockpit's power/missed/spof columns.
+// What it had no way to show was one validator over time, so this is the detail
+// page those rows now link to.
+//
+// ⚠️ Keyed on the **consensus** address. The operator address that registers in
+// r/gnops/valopers is a different key and nothing on chain maps the two, which
+// is why the registration table on /validators stays its own thing.
+async function loadValidatorDetail(addr) {
+  const container = clear('validator-detail-content');
+  skeletonBlock(container);
+  try {
+    await apiSWR('validator/' + encodeURIComponent(addr), (data) => renderValidatorDetail(container, data, addr));
+  } catch (err) {
+    failBlock(container, err, () => loadValidatorDetail(addr));
+  }
+}
+
+function renderValidatorDetail(container, data, addr) {
+  container.textContent = '';
+  const v = data.validator || { address: addr };
+
+  container.appendChild(el('div', { style: { marginBottom: '12px' } },
+    link('\u2190 all validators', () => navigate('/validators' + netSuffix()))));
+
+  const head = el('div', { className: 'section' });
+  head.appendChild(el('div', { className: 'section-title' }, v.name || truncAddr(addr)));
+  const sub = el('div', { className: 'section-sub' });
+  sub.append('consensus address ' + addr + '. ');
+  if (!data.in_set) {
+    // Proposed blocks in the past but is not in the current set: it left, and
+    // the page has to say which rather than showing a validator that looks
+    // active.
+    sub.appendChild(el('span', { style: { color: '#ffd43b' } },
+      'not in the current set: this address has proposed blocks but gnockpit does not list it now.'));
+  }
+  head.appendChild(sub);
+  container.appendChild(head);
+
+  const bar = el('div', { className: 'stats-bar' });
+  const stat = (label, value, color) => bar.appendChild(el('div', { className: 'stat' },
+    el('span', { className: 'label' }, label),
+    el('span', { className: 'value', style: color ? { color } : {} }, value)));
+  stat('voting power', v.voting_power ? fmtNum(v.voting_power) : '-');
+  stat('blocks proposed', fmtNum(v.blocks || 0));
+  stat('share', ((v.share || 0) * 100).toFixed(1) + '%');
+  stat('txs in them', fmtNum(v.txs || 0));
+  stat('missed 24h', fmtNum(v.missed_24h || 0), v.missed_24h > 0 ? '#ff6b6b' : undefined);
+  stat('avg block', v.avg_block_ms ? v.avg_block_ms + 'ms' : '-');
+  container.appendChild(bar);
+
+  // The share series, which is the honest stand-in for a voting-power
+  // timeline: no historical valset is stored anywhere, and gnockpit reports
+  // only the current one. When a validator joined or left shows up here as its
+  // share appearing or going to zero.
+  const shares = data.shares || [];
+  if (shares.length) {
+    const trend = el('div', { className: 'section' });
+    trend.appendChild(el('div', { className: 'section-title' }, 'share of blocks, by day'));
+    trend.appendChild(el('div', { className: 'section-sub' },
+      'no historical validator set is recorded anywhere, so this is the observable half of one: '
+      + 'a validator joining or leaving shows up as its share appearing or going to zero.'));
+    const tbody = el('tbody');
+    for (const p of shares.slice(-14)) {
+      const share = p.shares && p.shares[addr] ? p.shares[addr] : 0;
+      const bar2 = el('div', {
+        style: {
+          height: '10px', borderRadius: '2px', width: Math.max(2, share * 200) + 'px',
+          background: share > 0 ? 'var(--accent)' : 'var(--bg3)',
+        },
+      });
+      tbody.appendChild(el('tr', {},
+        el('td', {}, p.day),
+        el('td', {}, (share * 100).toFixed(1) + '%'),
+        el('td', {}, bar2),
+        el('td', { style: { color: 'var(--fg2)', fontSize: '11px' } }, fmtNum(p.blocks) + ' blocks that day')));
+    }
+    trend.appendChild(el('table', {}, tbody));
+    container.appendChild(trend);
+  }
+
+  const blocks = el('div', { className: 'section' });
+  blocks.appendChild(el('div', { className: 'section-title' }, 'recent blocks proposed'));
+  const bbody = el('tbody');
+  for (const b of (data.blocks || [])) {
+    bbody.appendChild(el('tr', {},
+      el('td', {}, link(fmtNum(b.height), () => navigate('/block/' + b.height + netSuffix()))),
+      el('td', {}, fmtNum(b.num_txs || 0)),
+      el('td', {}, b.time ? timeEl(b.time) : '')));
+  }
+  if (!(data.blocks || []).length) {
+    bbody.appendChild(el('tr', {}, el('td', { colspan: '3', style: { color: 'var(--fg2)' } },
+      'no proposed blocks in the synced range')));
+  }
+  blocks.appendChild(el('table', {},
+    el('thead', {}, el('tr', {}, el('th', {}, 'height'), el('th', {}, 'txs'), el('th', {}, 'when'))),
+    bbody));
+  container.appendChild(blocks);
+}
+
 async function loadValidators() {
   const container = clear('validators-content');
   skeletonRows(container, 3, 5);
@@ -4127,8 +4232,13 @@ async function loadValidators() {
       const recent = (blocks || []).slice(0, SPARK_BLOCKS);
       for (const [addr, count] of sorted) {
         const live = liveByAddr.get(addr);
+        const nameCell = el('td', {}, proposerEl(addr));
+        // Through to the per-validator page, which is the one view this table
+        // cannot be: it is a snapshot, and a validator's story is over time.
+        nameCell.appendChild(el('div', { style: { fontSize: '11px' } },
+          link('history', () => navigate('/validator/' + addr + netSuffix()))));
         vsBody.appendChild(el('tr', {},
-          el('td', {}, proposerEl(addr)),
+          nameCell,
           el('td', {}, fmtNum(count)),
           el('td', {}, (count / total * 100).toFixed(1) + '%'),
           el('td', {}, livenessSpark(recent, addr)),
