@@ -443,8 +443,16 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
   </main></div>
   <div class="view" id="view-accounts"><main>
     <div id="accounts-stats" class="stats-bar" style="display:none"></div>
-    <div class="section"><div class="section-title">active accounts</div>
-    <table><thead><tr><th>address</th><th>calls</th><th>deploys</th><th>msg_runs</th><th>sends</th><th>total</th><th>spent</th><th>received</th><th>balance</th></tr></thead><tbody id="accounts-list"></tbody></table></div></main></div>
+    <div class="tabs" id="accounts-subnav">
+      <div class="tab active" data-av="activity" onclick="switchAccountsView('activity', this)">activity</div>
+      <div class="tab" data-av="balances" onclick="switchAccountsView('balances', this)">balances</div>
+    </div>
+    <div id="accounts-view-activity">
+      <div class="section"><div class="section-title">active accounts</div>
+      <table><thead><tr><th>address</th><th>calls</th><th>deploys</th><th>msg_runs</th><th>sends</th><th>total</th><th>spent</th><th>received</th><th>balance</th></tr></thead><tbody id="accounts-list"></tbody></table></div>
+    </div>
+    <div id="accounts-view-balances" style="display:none"><div id="accounts-rich-content"></div></div>
+  </main></div>
   <div class="view" id="view-tokens"><main>
     <div id="tokens-stats" class="stats-bar" style="display:none"></div>
     <div id="tokens-bank-content"></div>
@@ -2400,6 +2408,7 @@ function route() {
   else if (path.startsWith('/address/')) { view = 'address-detail'; data = path.slice(9); }
   const urlTab = new URLSearchParams(window.location.search).get('tab');
   const urlPv = new URLSearchParams(window.location.search).get('pv');
+  const urlAv = new URLSearchParams(window.location.search).get('av');
 
   const ve = document.getElementById('view-' + view);
   if (ve) ve.classList.add('active');
@@ -2426,7 +2435,7 @@ function route() {
     case 'apps': loadApps(); break;
     case 'txs': loadTxs(); break;
     case 'blocks': loadBlocks(); break;
-    case 'accounts': loadAccounts(); break;
+    case 'accounts': enterAccounts(urlAv); break;
     case 'tokens': loadTokens(); break;
     case 'validators': loadValidators(); break;
     case 'govdao': loadGovDAO(); break;
@@ -3536,20 +3545,149 @@ function callsCell(a) {
   }
   return span;
 }
+// --- Accounts: activity, balances, and how many there are --------------------
+//
+// Two rankings that answer different questions. "Active accounts" ranks by what
+// an address did, which is the more useful of the two on a chain this young.
+// "Balances" ranks by what it holds, which is the one every explorer has and
+// this one could not, because ranking by balance needs every balance and gno
+// offers neither an account enumeration nor a batch balance query.
+//
+// It is possible now because balances are swept into a local table in the
+// background instead of fetched per row on the read path. The consequence is
+// that the ranking covers what has been swept, and the page says so: see
+// renderRichList's coverage line.
+let _accountsActivityLoaded = false;
+let _accountsRichLoaded = false;
+
+function switchAccountsView(view, tabEl) {
+  document.querySelectorAll('#accounts-subnav .tab').forEach(t => t.classList.remove('active'));
+  if (!tabEl) tabEl = document.querySelector('#accounts-subnav .tab[data-av="' + view + '"]');
+  if (tabEl) tabEl.classList.add('active');
+  document.getElementById('accounts-view-activity').style.display = view === 'activity' ? '' : 'none';
+  document.getElementById('accounts-view-balances').style.display = view === 'balances' ? '' : 'none';
+
+  // Persisted in the URL, the same way the packages tabs are: a reload or a
+  // shared link lands back where it was.
+  const params = new URLSearchParams(window.location.search);
+  if (view === 'balances') params.set('av', 'balances'); else params.delete('av');
+  const qs = params.toString();
+  history.replaceState(null, '', window.location.pathname + (qs ? '?' + qs : ''));
+
+  if (view === 'activity' && !_accountsActivityLoaded) {
+    _accountsActivityLoaded = true;
+    loadAccounts();
+  }
+  if (view === 'balances' && !_accountsRichLoaded) {
+    _accountsRichLoaded = true;
+    loadRichList();
+  }
+}
+
+function enterAccounts(av) {
+  _accountsActivityLoaded = false;
+  _accountsRichLoaded = false;
+  loadAccountPopulation();
+  switchAccountsView(av === 'balances' ? 'balances' : 'activity');
+}
+
+// The population summary. Three numbers that each count something different,
+// each labelled with what it actually counts.
+async function loadAccountPopulation() {
+  const bar = document.getElementById('accounts-stats');
+  if (!bar) return;
+  let pop;
+  try {
+    pop = await api('accounts/population');
+  } catch (_) {
+    bar.style.display = 'none';
+    return;
+  }
+  bar.textContent = '';
+  bar.style.display = 'flex';
+  const stat = (label, value, title) => {
+    const s = el('div', { className: 'stat' },
+      el('span', { className: 'label' }, label),
+      el('span', { className: 'value' }, fmtNum(value)));
+    if (title) s.title = title;
+    bar.appendChild(s);
+  };
+  // Deliberately not "total accounts". gno cannot enumerate the auth module
+  // over RPC, so a true account count is unavailable at any price, and putting
+  // this number under that name would be a different figure wearing it.
+  stat('addresses seen', pop.known,
+    'distinct addresses this instance has seen on chain, in any role. not the number of accounts that exist, which gno offers no way to count');
+  stat('active 24h', pop.daily_active, 'distinct addresses that called, ran or sent in the last 24 hours');
+  stat('active 7d', pop.weekly_active, 'distinct over the whole week, not the sum of seven days');
+  stat('active 30d', pop.monthly_active, 'distinct over the whole month');
+}
+
+async function loadRichList() {
+  const container = clear('accounts-rich-content');
+  skeletonBlock(container);
+  try {
+    await apiSWR('accounts/rich', (data) => renderRichList(container, data));
+  } catch (err) {
+    failBlock(container, err, loadRichList);
+  }
+}
+
+function renderRichList(container, data) {
+  container.textContent = '';
+  const cov = data.coverage || {};
+  const entries = data.entries || [];
+
+  // The boundary, printed rather than implied. Mintscan can say it ranks a
+  // chain's accounts because Cosmos can enumerate them. This ranks the
+  // addresses it has seen and swept, and a reader has to know which.
+  const note = el('div', { className: 'section-sub' });
+  note.append('ranked over the ' + fmtNum(cov.swept || 0) + ' addresses whose balance has been read, '
+    + 'out of ' + fmtNum(cov.known || 0) + ' seen on ' + (data.network || 'this chain') + '. ');
+  if (cov.oldest_fetch) {
+    note.append('oldest reading ');
+    note.appendChild(timeEl(cov.oldest_fetch));
+    note.append('. ');
+  }
+  note.append('balances are read in the background, so each figure is as of its own timestamp rather than of now.');
+  container.appendChild(note);
+
+  if (!entries.length) {
+    container.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '12px' } },
+      'no balances read yet: the first sweep runs shortly after startup'));
+    return;
+  }
+
+  const tbody = el('tbody');
+  for (const e of entries) {
+    const info = addrInfo(e.address);
+    tbody.appendChild(el('tr', {},
+      el('td', {}, '#' + e.rank),
+      el('td', {}, addrLink(e.address, data.network)),
+      // The provenance of the name beside it, from the curated registry.
+      // Without a label column the top of any chain's rich list is
+      // infrastructure that reads as whales.
+      el('td', { style: { color: 'var(--fg2)', fontSize: '12px' } }, info ? (info.kind || '') : ''),
+      el('td', {}, fmtGnotAmount(e.ugnot)),
+      el('td', { style: { color: 'var(--fg2)', fontSize: '11px' } }, e.height ? 'at block ' + fmtNum(e.height) : ''),
+      el('td', {}, e.fetched_at ? timeEl(e.fetched_at) : '')));
+  }
+  const section = el('div', { className: 'section', style: { marginTop: '16px' } });
+  section.appendChild(el('div', { className: 'section-title' }, 'balances'));
+  section.appendChild(el('table', {},
+    el('thead', {}, el('tr', {},
+      el('th', {}, 'rank'), el('th', {}, 'address'), el('th', {}, 'label'),
+      el('th', {}, 'balance'), el('th', {}, 'as of'), el('th', {}, 'read'))),
+    tbody));
+  container.appendChild(section);
+}
+
 async function loadAccounts() {
   skeletonRows(clear('accounts-list'), 6, 10);
-  const statsBar = document.getElementById('accounts-stats');
-  statsBar.style.display = 'none';
+  // The stats bar above is the population summary now (loadAccountPopulation):
+  // it describes the chain, where these totals only ever described the rows
+  // that happened to be on screen.
   try {
     await apiSWR('accounts', (data, swrMeta) => {
-      // Stats
-      const totalCalls = (data || []).reduce((s, a) => s + a.call_count, 0);
-      const totalSends = (data || []).reduce((s, a) => s + (a.send_count || 0), 0);
-      statsBar.textContent = '';
-      statsBar.style.display = 'flex';
-      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'accounts'), el('span', { className: 'value' }, fmtNum((data || []).length))));
-      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total calls'), el('span', { className: 'value' }, fmtNum(totalCalls))));
-      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total sends'), el('span', { className: 'value' }, fmtNum(totalSends))));
       const tbody = clear('accounts-list');
       for (const a of (data || [])) {
         const total = a.call_count + a.deploy_count + a.msgrun_count + (a.send_count || 0);
