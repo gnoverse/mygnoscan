@@ -194,6 +194,17 @@ func run() error {
 	// Re-checked periodically because an endpoint can be repointed under a
 	// running process — which is exactly what a mainnet launch on an existing
 	// hostname does.
+	// Account balances, on their own slower timer, and only for networks whose
+	// RPC has been verified above.
+	//
+	// Same reason as the rollups: too slow to do per request. Different reason
+	// for the interval, since this one is traffic against somebody else's node
+	// rather than work on our own database. See pkg/httpapi/balances.go.
+	go func() {
+		db.WaitBackground()
+		api.RunBalanceSweeper(ctx)
+	}()
+
 	go func() {
 		check := func() {
 			ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
