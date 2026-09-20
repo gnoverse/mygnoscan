@@ -374,6 +374,64 @@ labels this figure "recent" for the same reason.
 | `GET /api/address/{addr}` | activity for an address, **from local storage**: calls, deploys, runs, sends (both directions), with `total` covering its whole history and `limit`/`offset` paging the rows. `balance` comes from RPC and is present only when a single network is selected **and** that RPC has been confirmed to serve the same chain as the network's indexer — an unverified or mismatched RPC yields an empty balance rather than one from another chain. The indexer cannot serve this at chain scale — five address predicates over unindexed fields means a scan |
 | `GET /api/accounts` | most active accounts. `limit` (default 100, max 500), `offset`, and `sort` = `calls`, `deploys`, `runs`, `sends` or total activity. One row per `(address, network)`: the same key on two chains is two different actors, and each row carries its `network` |
 
+## Assets (GRC20)
+
+| endpoint | description |
+|---|---|
+| `GET /api/assets` | every asset seen on a network: supply, holders, transfer counts, first and last seen, plus registry metadata |
+| `GET /api/asset/{token...}` | one asset: top holders, recent transfers, and a daily supply series. Single network |
+
+Built from the `Transfer` events the chain already emits, which were flowing
+through the sync walk unstored. An empty `from` is a mint and an empty `to` a
+burn, so replaying the column gives **exact** supply and every holder's balance
+with no extra RPC call. Holders are counted from reconstructed balances, not
+from distinct recipients: an address that received and passed it all on is not a
+holder.
+
+`/api/tokens` previously listed packages whose `dependencies.import_path`
+matched `%grc20%`. That matches anything that *imports* grc20 rather than
+anything that *is* a token, so a DEX router sat in the list beside the tokens it
+calls, and the row carried no supply, holders or volume.
+
+### Three things the events do not guarantee
+
+Each of these was measured against mainnet on 2026-09-20 and each would produce
+a plausible wrong answer if assumed away.
+
+**The event's `pkg_path` is the library, not the token.** Every GRC20 event on
+the chain reports `gno.land/p/nt/grc20/v0`. Grouping by it produces one giant
+asset holding every token on the chain. The token is in the `token` attribute.
+
+**The `token` attribute is usually, not always, `<path>.<name>.<id>`.** Two live
+mainnet tokens (`COVID`, `META`) emit a bare symbol instead. The key is stored
+verbatim and only split when it has the shape; for the others `pkg_path` is
+empty and the UI says the realm is unknown rather than printing the symbol in a
+column headed "realm".
+
+**Not every `Transfer` carries an amount.** GRC721 emits the same event shape
+without a value, so gnoswap's GNFT has 201 transfers that all parse to 0.
+Summing them yields a supply of 0 and no holders, which reads as "this token is
+empty" when it means "this arithmetic does not apply". Each asset therefore
+carries `fungible`, derived from whether *any* of its transfers carried a
+positive amount, and both figures are suppressed when it is false. Derived from
+the data rather than from the library path, so a token that starts carrying
+amounts starts counting.
+
+Failed transactions are skipped: their events are still reported and counting
+them would invent supply.
+
+### What is deliberately absent
+
+No price, no market cap, no total value. GNOT is not listed on any exchange and
+there is no oracle on chain, so every such column would be a number this
+explorer invented. `verified` is the curated registry's claim and is worded as
+one: anyone can deploy a realm called `gns`, and nothing on chain distinguishes
+the real one.
+
+Amounts are raw units, not scaled by `decimals`. Only a handful of tokens have a
+curated entry, and dividing by a guessed exponent produces a different number
+wearing the right shape.
+
 ## Account balances
 
 | endpoint | description |
