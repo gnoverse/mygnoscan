@@ -388,3 +388,81 @@ func TestContractMapNodesEmptyNetwork(t *testing.T) {
 		t.Errorf("got %d nodes for an unknown network, want 0", len(nodes))
 	}
 }
+
+// The activity filter's whole job is to answer "has anyone touched this
+// lately", so the two ways a contract can qualify and the one way a chain can
+// leak into another are what this covers.
+func TestActivePaths(t *testing.T) {
+	db := NewTestDB(t)
+	base := seedContracts(t, db)
+
+	// A mainnet package deployed long after the last call and never called.
+	// It is the whole reason ActivePaths is not just a DISTINCT over calls: a
+	// realm published this morning is exactly what a one-day window is for.
+	if err := db.UpsertPackage("mainnet", "gno.land/r/a/fresh", "fresh", "g1creator", "TXF", 999,
+		rfc3339(base.Add(10*time.Hour)), true, 1); err != nil {
+		t.Fatalf("upsert fresh: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		network string
+		since   time.Time
+		want    []string
+	}{
+		{
+			name:    "all time, one chain: every path ever called",
+			network: "mainnet",
+			since:   time.Time{},
+			// r/a/fresh is absent: with no cutoff the deploy half is skipped,
+			// and "active ever" means called at least once.
+			want: []string{"gno.land/p/b/lib", "gno.land/r/a/one", "gno.land/r/a/two"},
+		},
+		{
+			name:    "a window drops what was last touched before it",
+			network: "mainnet",
+			since:   base.Add(3 * time.Hour),
+			// r/a/two's only call is at +2h and it was deployed at +1h, so it
+			// fails both halves and is the one that goes. r/a/fresh passes on
+			// its deploy alone.
+			want: []string{"gno.land/p/b/lib", "gno.land/r/a/fresh", "gno.land/r/a/one"},
+		},
+		{
+			name:    "deployed inside the window counts, with no calls at all",
+			network: "mainnet",
+			since:   base.Add(7 * time.Hour),
+			want:    []string{"gno.land/r/a/fresh"},
+		},
+		{
+			name:    "another chain answers for itself",
+			network: "pearl",
+			since:   time.Time{},
+			want:    []string{"gno.land/r/a/one"},
+		},
+		{
+			name:    "no network is the union, not an empty answer",
+			network: "",
+			since:   time.Time{},
+			want:    []string{"gno.land/p/b/lib", "gno.land/r/a/one", "gno.land/r/a/two"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := db.ActivePaths(tt.network, tt.since)
+			if err != nil {
+				t.Fatalf("ActivePaths: %v", err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+			// ActivePaths sorts, so this compares order too, which is the
+			// property that lets the response be cached and diffed.
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("got %v, want %v", got, tt.want)
+				}
+			}
+		})
+	}
+}

@@ -76,7 +76,8 @@ func (a *API) singleNetwork(r *http.Request) string {
 	return ""
 }
 
-// parseContractWindow maps the window names the UI offers to a cutoff.
+// parseContractWindow maps the window names the UI offers to a cutoff. Shared
+// with /api/graph/active, which offers the reader the same five periods.
 //
 // Unknown values are rejected rather than treated as all time: a typo that
 // silently widens the window produces a plausible map of the wrong period,
@@ -91,6 +92,8 @@ func parseContractWindow(s string) (time.Time, bool) {
 		return time.Now().UTC().AddDate(0, 0, -7), true
 	case "30d":
 		return time.Now().UTC().AddDate(0, 0, -30), true
+	case "90d":
+		return time.Now().UTC().AddDate(0, 0, -90), true
 	}
 	return time.Time{}, false
 }
@@ -117,7 +120,7 @@ func (a *API) HandleContractsMap(w http.ResponseWriter, r *http.Request) {
 	windowName := r.URL.Query().Get("window")
 	since, ok := parseContractWindow(windowName)
 	if !ok {
-		http.Error(w, "unknown window: use all, 24h, 7d or 30d", http.StatusBadRequest)
+		http.Error(w, "unknown window: use all, 24h, 7d, 30d or 90d", http.StatusBadRequest)
 		return
 	}
 	if windowName == "" {
@@ -139,7 +142,7 @@ func (a *API) HandleContractsEdges(w http.ResponseWriter, r *http.Request) {
 	windowName := r.URL.Query().Get("window")
 	since, ok := parseContractWindow(windowName)
 	if !ok {
-		http.Error(w, "unknown window: use all, 24h, 7d or 30d", http.StatusBadRequest)
+		http.Error(w, "unknown window: use all, 24h, 7d, 30d or 90d", http.StatusBadRequest)
 		return
 	}
 	if windowName == "" {

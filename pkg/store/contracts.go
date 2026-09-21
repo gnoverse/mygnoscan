@@ -391,6 +391,96 @@ func (d *DB) deployedPathIDs(network string) (map[string]int32, []string, error)
 	return ids, paths, rows.Err()
 }
 
+// ActivePaths returns the set of package paths that saw activity on the
+// network inside the window: called at least once, or deployed inside it.
+//
+// The one thing the contracts map computes for itself and every other graph
+// has no way to ask for. A dependency graph is drawn from `dependencies`,
+// which records what the source imports and knows nothing about whether
+// anyone still calls it, so "hide what nobody has touched this week" needs
+// this set handed to it separately.
+//
+// Unlike the rest of this file, an empty network means every configured one
+// rather than being rejected. A path set carries no per-chain quantity to be
+// mixed up: "called somewhere in the last day" is the right answer for a
+// dependency graph that is itself the union of every chain, which is what
+// /api/deps returns when the reader has not picked one.
+//
+// Deploys count because a realm published this morning and not yet called is
+// the most interesting thing on a one-day view, and the one thing a filter
+// built on calls alone would hide. The contracts map applies the same two
+// tests client-side against data it already holds; this is the same definition
+// for the graphs that hold nothing.
+//
+// A zero `since` means all time, and is a real answer here rather than a
+// no-op: "called ever" is what the all-time reading of the filter asks for,
+// and on mainnet it is already a strong filter, because 152 of 346 deployed
+// packages have never been called once.
+func (d *DB) ActivePaths(network string, since time.Time) ([]string, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	// Built by concatenation for the reason ContractMapNodes documents: the
+	// tidier `(? = '' OR ...)` form defeats idx_calls_block_time and makes
+	// SQLite build a temp B-tree over the whole calls table instead.
+	cutoff := sinceParam(since)
+	clause := func() (string, []any) {
+		var where []string
+		var args []any
+		if network != "" {
+			where = append(where, "network = ?")
+			args = append(args, network)
+		}
+		if cutoff != "" {
+			where = append(where, "block_time >= ?")
+			args = append(args, cutoff)
+		}
+		if len(where) == 0 {
+			return "", nil
+		}
+		return " WHERE " + strings.Join(where, " AND "), args
+	}
+
+	callWhere, callArgs := clause()
+	pkgWhere, pkgArgs := clause()
+	// A UNION rather than two round trips. EXPLAIN QUERY PLAN on a seeded
+	// database: the call half SEARCHes calls USING idx_calls_block_time and
+	// the deploy half SEARCHes packages USING idx_pkgs_block_time, both on
+	// (network=? AND block_time>?). The one temp B-tree is the UNION's own
+	// dedup, not a table scan.
+	//
+	// The deploy half is skipped entirely for an all-time window, where every
+	// package qualifies and the union would just be every path on the chain.
+	q := "SELECT DISTINCT pkg_path FROM calls" + callWhere
+	args := callArgs
+	if cutoff != "" {
+		q += " UNION SELECT path FROM packages" + pkgWhere
+		args = append(args, pkgArgs...)
+	}
+
+	rows, err := d.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	paths := []string{}
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		paths = append(paths, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Sorted so the response is byte-identical between two calls with the same
+	// arguments, which is what lets it be cached and diffed.
+	sort.Strings(paths)
+	return paths, nil
+}
+
 // sinceParam renders a window cutoff the way block_time is stored, or empty
 // for "all time".
 //

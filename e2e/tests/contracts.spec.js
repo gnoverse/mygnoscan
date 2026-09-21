@@ -288,8 +288,11 @@ test('the rankings under the map link into the existing pages', async ({ page })
 // radio-style group is correctly a no-op, and asserting it changes would be
 // asserting a bug. 'calls' and 'linear' are the defaults, covered by the
 // round-trip test below.
+// '+ imports' is not here on purpose: it is inert until the activity filter is
+// on, so clicking it from the default state is correctly a no-op. It has its
+// own tests below.
 const TOGGLES = ['unique callers', 'storage', 'gas', 'depended on by', 'depends on',
-  'log', 'realms', 'packages', 'parked', 'used only', 'linked only',
+  'log', 'realms', 'packages', 'parked', 'active ever', 'linked only',
   'cluster', 'outlines', 'labels'];
 
 for (const name of TOGGLES) {
@@ -674,4 +677,87 @@ test('the view survives a reload, because it lives in the URL', async ({ page })
   expect(page.url()).toContain('view=bundled');
   await expect(page.getByRole('button', { name: 'bundled', exact: true }))
     .toHaveAttribute('title', /ring/);
+});
+
+// --- The activity filter ---------------------------------------------------
+//
+// The fixture is one busy hub, two realms called by a pair of addresses, and
+// roughly seventy contracts nobody has ever touched. That ratio is the whole
+// point of the filter, and it is also what makes the import closure worth
+// having: the twelve p/common/util packages the hub is built on have no calls
+// of their own and never will, because a pure package is reached through the
+// realm that imports it.
+
+async function bubbleCount(page) {
+  return page.locator('#contract-map svg circle[data-path]').count();
+}
+
+test('the activity filter keeps only what has been called', async ({ page }) => {
+  const seen = watch(page);
+  await openMap(page);
+  const all = await bubbleCount(page);
+
+  await page.getByRole('button', { name: 'active ever', exact: true }).click();
+  await page.waitForFunction(
+    total => document.querySelectorAll('#contract-map svg circle[data-path]').length < total,
+    all, { timeout: 15_000 });
+
+  const active = await bubbleCount(page);
+  expect(active).toBeGreaterThan(0);
+  // Most of the fixture has never been called, so this is a large cut and not
+  // a rounding difference. Asserting a ratio rather than a count keeps it from
+  // breaking every time the fixture grows a package.
+  expect(active).toBeLessThan(all / 2);
+  expect(page.url()).toContain('active=1');
+
+  // The map's own count line switches to "N of M" while anything is hidden.
+  // It is the only thing on screen that tells a filter which removed nothing
+  // apart from one that is broken, and it has to be right on the first paint,
+  // not only after a second click.
+  await expect(page.locator('#contract-map')).toContainText(`${active} of ${all} contracts`);
+  expect(seen.jsErrors).toEqual([]);
+});
+
+test('following the imports is what keeps the import view from emptying', async ({ page }) => {
+  const seen = watch(page);
+  await openMap(page, '?edges=imports&metric=importers&active=1');
+  const direct = await bubbleCount(page);
+
+  // No pure package has ever been called, so a direct filter drops every one
+  // of them and takes the import edges with them. This is the regression that
+  // matters: on mainnet the same filter leaves 15 of 771 edges.
+  await page.getByRole('button', { name: '+ imports', exact: true }).click();
+  await page.waitForFunction(
+    before => document.querySelectorAll('#contract-map svg circle[data-path]').length > before,
+    direct, { timeout: 15_000 });
+
+  const withDeps = await bubbleCount(page);
+  expect(withDeps).toBeGreaterThan(direct);
+  expect(await page.locator('#contract-map svg line').count()).toBeGreaterThan(0);
+  expect(page.url()).toContain('deps=1');
+  expect(seen.jsErrors).toEqual([]);
+  expect(unexpected(seen.failedRequests)).toEqual([]);
+});
+
+test('the activity filter and its closure survive a reload', async ({ page }) => {
+  await page.goto('/contracts?edges=imports&active=1&deps=1');
+  await page.waitForSelector('#contract-map svg circle[data-path]', { timeout: 20_000 });
+  const before = await bubbleCount(page);
+
+  await page.reload();
+  await page.waitForSelector('#contract-map svg circle[data-path]', { timeout: 20_000 });
+
+  expect(await bubbleCount(page)).toBe(before);
+  await expect(page.getByRole('button', { name: '+ imports', exact: true }))
+    .toHaveCSS('background-color', /rgb/);
+});
+
+test('the filter names the window it reads against', async ({ page }) => {
+  await openMap(page, '?window=24h');
+  await expect(page.getByRole('button', { name: 'active in 24h', exact: true })).toBeVisible();
+
+  // The fixture's rows are all months old, so a one-day window leaves nothing
+  // and the map has to say so rather than draw an empty box.
+  await page.getByRole('button', { name: 'active in 24h', exact: true }).click();
+  await expect(page.locator('#contract-map')).toContainText('no contracts to show');
 });

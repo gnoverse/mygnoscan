@@ -771,7 +771,7 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
     <div class="tab-content" id="tab-events"></div>
     <div class="tab-content" id="tab-storage"></div>
     <div class="tab-content" id="tab-deps"></div>
-    <div class="tab-content" id="tab-graph"><div id="dep-graph"></div></div>
+    <div class="tab-content" id="tab-graph"><div id="dep-graph-controls"></div><div id="dep-graph"></div></div>
     <div class="tab-content" id="tab-inert"></div>
   </main></div>
   <div class="view" id="view-tx-detail"><main><div id="tx-detail-content"></div></main></div>
@@ -8754,7 +8754,15 @@ async function loadRealmDetail(path, initialTab) {
         grid.appendChild(buildDepTree('dependents (what uses this)', dependents, path,
           'what else depends on each of these'));
         depsEl.appendChild(grid);
-        renderDepGraph(imports, dependents, path);
+        // Through reloadDepGraphActivity rather than straight into
+        // renderDepGraph: the window is sticky across realms, like the
+        // dashboards' picker, so arriving on a new realm with 7d still
+        // selected has to fetch that realm's active set before the first
+        // paint instead of drawing unfiltered and then jumping.
+        _depGraph.imports = imports;
+        _depGraph.dependents = dependents;
+        _depGraph.center = path;
+        reloadDepGraphActivity();
       })();
       // Inert lifecycle: whether this path has ever been submitted, parked,
       // enabled or rejected under the "inert" code submission policy.
@@ -9852,12 +9860,221 @@ function switchTab(name, tabEl) {
   history.replaceState(null, '', url);
 }
 
+// --- Activity windows ------------------------------------------------------
+//
+// "Only show what anyone has actually touched lately", shared by every graph
+// on the site so there is one vocabulary and not three.
+//
+// The three graphs under /dashboards need nothing from here: they are drawn
+// from a windowed query, so a node only exists in them if it moved value or
+// made a call inside the selected window. The two drawn from the whole chain,
+// the contracts map and the realm dependency graph, are the ones that have to
+// filter themselves.
+//
+// The periods match the dashboards' picker. `all` is a real choice and not an
+// off switch: on mainnet 152 of 346 deployed packages have never been called
+// once, so "active ever" already removes 44% of the map.
+const ACTIVITY_WINDOWS = ['all', '90d', '30d', '7d', '24h'];
+const ACTIVITY_WINDOW_MS = { '24h': 864e5, '7d': 6048e5, '30d': 2592e6, '90d': 7776e6 };
+
+// activityCutoff is the epoch milliseconds a node has to beat, or null for an
+// unbounded window.
+function activityCutoff(w) {
+  const ms = ACTIVITY_WINDOW_MS[w];
+  return ms ? Date.now() - ms : null;
+}
+
+// deployedWithin: a contract published an hour ago and not yet called is the
+// single most interesting thing in a 24h view, and counting only calls would
+// hide exactly that. `deployed_at` is RFC 3339 and travels with every node, so
+// this costs nothing.
+function deployedWithin(node, w) {
+  const cutoff = activityCutoff(w);
+  if (cutoff === null) return false;
+  if (!node || !node.deployed_at) return false;
+  const t = Date.parse(node.deployed_at);
+  return !isNaN(t) && t >= cutoff;
+}
+
+// expandThroughImports grows a set of active contracts to include everything
+// they import, transitively.
+//
+// Without this the filter deletes the import graph rather than narrowing it.
+// A pure package is never called directly — it is reached through the realm
+// that imports it — and on mainnet that is not a rounding error but the whole
+// category: all 152 of them have exactly zero calls, forever. Measured against
+// production on 2026-09-21, filtering the import view to contracts called in
+// the last 24h leaves 20 nodes and 15 of 771 edges, a picture with nothing in
+// it. Following the imports leaves 72 nodes and 239 edges, which is the live
+// part of the chain and the thing worth looking at.
+//
+// `edges` is any list of { source, target } where source imports target.
+function expandThroughImports(seed, edges) {
+  const out = new Map();
+  for (const e of edges || []) {
+    const src = typeof e.source === 'object' ? e.source.id : e.source;
+    const tgt = typeof e.target === 'object' ? e.target.id : e.target;
+    if (src == null || tgt == null) continue;
+    let list = out.get(src);
+    if (!list) { list = []; out.set(src, list); }
+    list.push(tgt);
+  }
+  const kept = new Set(seed);
+  const queue = Array.from(kept);
+  while (queue.length) {
+    for (const tgt of (out.get(queue.pop()) || [])) {
+      if (!kept.has(tgt)) { kept.add(tgt); queue.push(tgt); }
+    }
+  }
+  return kept;
+}
+
+// activityPills builds the shared control: one pill per period, plus the
+// "follow the imports" extension.
+//
+// `state` is read and written in place — { window, deps } — and `onchange` is
+// called after either changes. `offLabel` is what the first pill says when the
+// filter is not a filter.
+//
+// The contracts map does not use this: it already carries a window pill, for
+// the period its call metrics cover, and a second row of periods next to it
+// would be two controls that look like the same one. It builds a filter that
+// reads against that pill instead, out of the same pieces below.
+function activityPills(state, onchange, opts) {
+  const o = opts || {};
+  const pills = [contractPill(o.offLabel || 'off', !state.window, () => {
+    state.window = null;
+    onchange();
+  })];
+  for (const w of ACTIVITY_WINDOWS) {
+    // 'ever' rather than 'all', which is already the word next to it for the
+    // pill that turns the filter off. Never-called packages are 44% of
+    // mainnet, so "active at some point" is a filter and not a synonym.
+    pills.push(contractPill(w === 'all' ? 'ever' : w, state.window === w, () => {
+      state.window = w;
+      onchange();
+    }));
+  }
+  // Disabled rather than hidden when there is no filter to extend: a control
+  // that vanishes and reappears makes the bar jump under the cursor, and the
+  // pill is also the only place that explains what the extension does.
+  const deps = contractPill('+ imports', !!state.deps && !!state.window, () => {
+    if (!state.window) return;
+    state.deps = !state.deps;
+    onchange();
+  });
+  if (!state.window) {
+    deps.style.opacity = '0.4';
+    deps.style.cursor = 'default';
+  }
+  deps.setAttribute('title', 'also keep the packages an active contract imports, transitively — '
+    + 'without this a pure package is never active, because it is called through the realm that imports it');
+  pills.push(deps);
+  return pills;
+}
+
 // --- D3 Graph ---
 // Depth colors: 0=center, 1=direct, 2=2nd degree, etc
 const DEPTH_COLORS = ['#4ecdc4', '#61afef', '#c678dd', '#e5c07b', '#d19a66', '#ff6b6b', '#888'];
 function depthColor(d) { return DEPTH_COLORS[Math.min(d, DEPTH_COLORS.length - 1)]; }
 
+// The dependency graph's own copy of the activity filter.
+//
+// `imports`, `dependents` and `center` are kept so the filter can repaint
+// without refetching: changing the window changes which of these packages are
+// drawn, never what the dependency graph is. `active` is the path set from
+// /api/graph/active, null until a window is picked, because the filter being
+// off is the common case and should cost no request.
+let _depGraph = {
+  imports: null, dependents: null, center: null,
+  window: null, deps: false,
+  active: null, activeWindow: null, activeNetwork: null,
+  gen: 0,
+};
+
+function depGraphControls() {
+  const bar = el('div', {
+    id: 'dep-graph-controls',
+    style: {
+      display: 'flex', gap: '18px', flexWrap: 'wrap', alignItems: 'center',
+      padding: '8px 0', marginBottom: '8px',
+    },
+  });
+  if (!_depGraph.center) return bar;
+
+  const pills = activityPills(_depGraph, () => {
+    reloadDepGraphActivity();
+  }, { offLabel: 'off' });
+  bar.appendChild(contractControlGroup('active', pills));
+
+  // What the filter did, in numbers, because on a dependency graph the honest
+  // answer is often "almost nothing is live" and a map that simply got small
+  // does not say whether that is the chain or a broken filter.
+  if (_depGraph.window && _depGraph.note) {
+    bar.appendChild(el('span', { style: { fontSize: '11px', color: 'var(--fg2)' } }, _depGraph.note));
+  }
+  return bar;
+}
+
+// reloadDepGraphActivity fetches the active-path set if the current window
+// needs one, then repaints.
+//
+// Guarded by a generation counter for the same reason every loader here is: a
+// reader clicking 24h then 7d gets two requests in flight, and the slower one
+// must not paint over the newer answer.
+async function reloadDepGraphActivity() {
+  const gen = ++_depGraph.gen;
+  const bar = document.getElementById('dep-graph-controls');
+  if (bar) bar.replaceWith(depGraphControls());
+  const net = getNetwork();
+  if (_depGraph.window
+      && (_depGraph.activeWindow !== _depGraph.window || _depGraph.activeNetwork !== net)) {
+    try {
+      const data = await api('graph/active?window=' + _depGraph.window);
+      if (gen !== _depGraph.gen) return;
+      _depGraph.active = new Set(data.paths || []);
+      _depGraph.activeWindow = _depGraph.window;
+      _depGraph.activeNetwork = net;
+    } catch (e) {
+      if (gen !== _depGraph.gen) return;
+      _depGraph.active = null;
+      _depGraph.window = null;
+    }
+  }
+  if (gen !== _depGraph.gen) return;
+  renderDepGraph(_depGraph.imports, _depGraph.dependents, _depGraph.center);
+}
+
+// filterDepGraphNodes decides which of the graph's packages survive the
+// activity filter.
+//
+// The centre is never dropped. It is the subject of the page, and a graph of
+// one realm's dependencies that hides the realm because nobody called it today
+// is answering a question nobody asked.
+//
+// Direction matters here in a way it does not on the contracts map. The
+// `imports` half is stored as "pkg imports each of these"; the `dependents`
+// half comes from the reverse query and is stored as "each of these imports
+// pkg", so the closure has to walk it the other way round or it would keep
+// everything that depends on an active package rather than everything an
+// active package depends on.
+function filterDepGraphNodes(nodes, links, centerPath) {
+  if (!_depGraph.window || !_depGraph.active) return null;
+  const kept = new Set([centerPath]);
+  for (const id of nodes.keys()) {
+    if (_depGraph.active.has(id)) kept.add(id);
+  }
+  if (!_depGraph.deps) return kept;
+  const importEdges = links.map(l => l.type === 'dependent'
+    ? { source: l.target, target: l.source }
+    : { source: l.source, target: l.target });
+  return expandThroughImports(kept, importEdges);
+}
+
 function renderDepGraph(imports, dependents, centerPath) {
+  _depGraph.imports = imports;
+  _depGraph.dependents = dependents;
+  _depGraph.center = centerPath;
   const container = document.getElementById('dep-graph'); container.textContent = '';
   const nodes = new Map(); const links = [];
 
@@ -9877,6 +10094,27 @@ function renderDepGraph(imports, dependents, centerPath) {
       links.push({ source: pkg, target: dep, type: 'dependent' });
     }
   }
+
+  // The activity filter, applied before the BFS rather than after it: depth is
+  // distance from the centre through the links that are actually drawn, and
+  // computing it over packages that are about to be removed would leave every
+  // surviving node coloured for a path that is no longer on screen.
+  const total = nodes.size;
+  const kept = filterDepGraphNodes(nodes, links, centerPath);
+  if (kept) {
+    for (const id of Array.from(nodes.keys())) {
+      if (!kept.has(id)) nodes.delete(id);
+    }
+    for (let i = links.length - 1; i >= 0; i--) {
+      if (!nodes.has(links[i].source) || !nodes.has(links[i].target)) links.splice(i, 1);
+    }
+    _depGraph.note = nodes.size + ' of ' + total + ' shown';
+  } else {
+    _depGraph.note = null;
+  }
+
+  const bar = document.getElementById('dep-graph-controls');
+  if (bar) bar.replaceWith(depGraphControls());
 
   // BFS to compute depth from center
   const adj = new Map();
@@ -9917,7 +10155,10 @@ function renderDepGraph(imports, dependents, centerPath) {
   nodeArr.forEach(n => { n.isRealm = n.id.includes('/r/'); });
 
   if (nodeArr.length <= 1) {
-    container.appendChild(el('div', { style: { padding: '40px', textAlign: 'center', color: 'var(--fg2)' } }, 'no dependencies to visualize'));
+    container.appendChild(el('div', { style: { padding: '40px', textAlign: 'center', color: 'var(--fg2)' } },
+      _depGraph.window
+        ? 'nothing in this dependency graph saw activity in the last ' + _depGraph.window
+        : 'no dependencies to visualize'));
     return;
   }
 
@@ -11641,7 +11882,10 @@ function nsMetricTotal(d, m) { return d3.sum(d.children || [], c => m.get(c.data
 // not picked one. Switching to imports and seeing the same gas-sized bubbles is
 // how that mode ended up looking like it had nothing to say.
 const CONTRACT_EDGE_DEFAULT_METRIC = { imports: 'importers', callers: 'calls' };
-const CONTRACT_WINDOWS = ['all', '30d', '7d', '24h'];
+// The map's window pill offers the same five periods as the activity filter
+// and as the dashboards, and is the same list rather than a copy of it: two
+// lists is how one of them ends up missing 90d.
+const CONTRACT_WINDOWS = ACTIVITY_WINDOWS;
 const CONTRACT_EDGE_KINDS = {
   callers: { label: 'shared callers', hint: 'linked when the same addresses called both' },
   imports: { label: 'imports', hint: 'linked when one imports the other' },
@@ -11725,10 +11969,26 @@ let _contracts = {
   // colour alone is a hint and the outline is the answer.
   hulls: false,
   labels: false,
-  // activeOnly drops contracts with no calls in the window. On mainnet that is
-  // roughly 300 of 327, so it is the difference between a map of the chain and
-  // a map of the part of it anyone uses.
+  // activeOnly drops contracts nothing has touched in the window: no calls,
+  // and not deployed inside it either. On mainnet on 2026-09-21 that is 325 of
+  // 346 at 24h and 269 at 7d, so it is the difference between a map of the
+  // chain and a map of the part of it anyone uses.
+  //
+  // It drops nothing at all at 30d, and that is the right answer rather than a
+  // broken one: every package on mainnet was deployed on or after 2026-09-12,
+  // so a month-wide window contains the whole chain. The count beside the
+  // pills is there so that reads as a fact and not as a dead control.
   activeOnly: false,
+  // activeDeps keeps, on top of those, everything an active contract imports.
+  // Without it the filter does not narrow the import view, it empties it: no
+  // pure package has ever been called, so a direct filter cuts 771 import
+  // edges down to 15. See expandThroughImports.
+  activeDeps: false,
+  // importEdges caches the all-time import graph for that closure, keyed by
+  // the network it was read on. Imports are a property of the deployed source
+  // and ignore the window, so one fetch per chain answers every window.
+  importEdges: null,
+  importEdgesNetwork: null,
   // linkedOnly drops contracts with no edge in the current link mode: 40 of
   // mainnet's 327 import nothing and are imported by nothing, and in the
   // import view they are 40 dots that mean "not part of this picture".
@@ -11773,6 +12033,7 @@ function contractsStateFromURL() {
   if (q.get('hulls') === '1') _contracts.hulls = true;
   if (q.get('labels') === '1') _contracts.labels = true;
   if (q.get('active') === '1') _contracts.activeOnly = true;
+  if (q.get('deps') === '1') _contracts.activeDeps = true;
   if (q.get('linked') === '1') _contracts.linkedOnly = true;
   if (q.get('ns')) _contracts.namespace = q.get('ns');
 
@@ -11798,6 +12059,7 @@ function contractsStateToURL() {
   flag('hulls', _contracts.hulls);
   flag('labels', _contracts.labels);
   flag('active', _contracts.activeOnly);
+  flag('deps', _contracts.activeDeps && _contracts.activeOnly);
   flag('linked', _contracts.linkedOnly);
   if (_contracts.clusterPinned) q.set('cluster', _contracts.cluster ? '1' : '0'); else q.delete('cluster');
   if (_contracts.namespace) q.set('ns', _contracts.namespace); else q.delete('ns');
@@ -11877,6 +12139,11 @@ async function loadContracts(opts) {
       _contracts.edges === 'none'
         ? Promise.resolve({ edges: [] })
         : api('contracts/edges?kind=' + _contracts.edges + '&window=' + _contracts.window),
+      // A link arriving with the closure already on needs the import graph
+      // before the first paint, or the map draws once without it and jumps.
+      _contracts.activeOnly && _contracts.activeDeps
+        ? ensureContractImportEdges()
+        : Promise.resolve(),
     ]);
     if (gen !== _contracts.gen) return; // superseded by a newer navigation
     _contracts.data = data;
@@ -12061,10 +12328,46 @@ function contractsControls() {
     contractPill('realms', _contracts.realms, () => { _contracts.realms = !_contracts.realms; repaint(); }),
     contractPill('packages', _contracts.packages, () => { _contracts.packages = !_contracts.packages; repaint(); }),
     contractPill('parked', _contracts.parked, () => { _contracts.parked = !_contracts.parked; repaint(); }),
-    contractPill('used only', _contracts.activeOnly, () => { _contracts.activeOnly = !_contracts.activeOnly; repaint(); }),
     contractPill('linked only', _contracts.linkedOnly, () => { _contracts.linkedOnly = !_contracts.linkedOnly; repaint(); }),
   ];
   bar.appendChild(contractControlGroup('show', filters));
+
+  // The activity filter and the window pill above it are one control split in
+  // two: the window decides the period, this decides whether contracts outside
+  // it are drawn at all. So the label names the period rather than saying
+  // "used only" and leaving the reader to guess which used, when.
+  const activeLabel = _contracts.window === 'all' ? 'active ever' : 'active in ' + _contracts.window;
+  const activity = [
+    contractPill(activeLabel, _contracts.activeOnly, () => {
+      _contracts.activeOnly = !_contracts.activeOnly;
+      // The closure can already be on, from the URL or from a previous visit
+      // to this pill, in which case turning the filter back on needs the
+      // import graph it was switched off holding.
+      if (_contracts.activeOnly && _contracts.activeDeps) {
+        contractsStateToURL();
+        ensureContractImportEdges().then(repaintContracts);
+        return;
+      }
+      repaint();
+    }),
+  ];
+  const depsPill = contractPill('+ imports', _contracts.activeDeps && _contracts.activeOnly, () => {
+    if (!_contracts.activeOnly) return;
+    _contracts.activeDeps = !_contracts.activeDeps;
+    contractsStateToURL();
+    // The closure needs the import graph, which is only already in hand when
+    // that is also the link mode on screen. Fetched once per chain and cached:
+    // imports ignore the window, so every period reuses the same answer.
+    ensureContractImportEdges().then(repaintContracts);
+  });
+  if (!_contracts.activeOnly) {
+    depsPill.style.opacity = '0.4';
+    depsPill.style.cursor = 'default';
+  }
+  depsPill.setAttribute('title', 'also keep the packages an active contract imports, transitively \u2014 '
+    + 'no pure package is ever called directly, so without this the import view empties instead of narrowing');
+  activity.push(depsPill);
+  bar.appendChild(contractControlGroup('activity', activity));
 
   // Grouping is the force layout's own vocabulary: the other five place a
   // contract by its namespace as a matter of construction, so a pill offering
@@ -12141,19 +12444,65 @@ function contractsControls() {
   return bar;
 }
 
+// activeContractPaths is the set the activity filter keeps, or null when the
+// filter is off.
+//
+// Two steps, because a contract can be active in two different senses. It was
+// called inside the window, which is the obvious one and is what `calls`
+// already counts, the server having scoped it to the same window. Or it was
+// deployed inside the window: a realm published this morning and not yet
+// called is the most interesting thing on a 24h map, and counting calls alone
+// would be the one filter that hides it.
+//
+// Then, optionally, the import closure. That is not a refinement, it is what
+// makes the filter usable on the import view at all: see expandThroughImports.
+function activeContractPaths() {
+  if (!_contracts.activeOnly) return null;
+  const all = (_contracts.data && _contracts.data.nodes) || [];
+  const seed = all
+    .filter(n => n.calls > 0 || deployedWithin(n, _contracts.window))
+    .map(n => n.path);
+  if (!_contracts.activeDeps) return new Set(seed);
+  const edges = _contracts.edges === 'imports'
+    ? ((_contracts.edgeData && _contracts.edgeData.edges) || [])
+    : (_contracts.importEdges || []);
+  return expandThroughImports(seed, edges);
+}
+
 function visibleContractNodes() {
   const all = (_contracts.data && _contracts.data.nodes) || [];
+  const active = activeContractPaths();
   return all.filter(n => {
     if (n.parked && !_contracts.parked) return false;
     if (n.is_realm && !_contracts.realms) return false;
     if (!n.is_realm && !_contracts.packages) return false;
     if (_contracts.namespace && n.namespace !== _contracts.namespace) return false;
-    // "Used" means called inside the selected window, not ever: with a 7d
-    // window this is what is alive this week, which is the question the window
-    // was chosen to ask.
-    if (_contracts.activeOnly && !(n.calls > 0)) return false;
+    if (active && !active.has(n.path)) return false;
     return true;
   });
+}
+
+// ensureContractImportEdges fetches the all-time import graph once per chain,
+// for the "+ imports" closure.
+//
+// Separate from the map's own edge fetch because the closure needs imports
+// whatever the link mode on screen is: reading a caller-linked map and asking
+// to keep the packages behind the active realms is a reasonable thing to do,
+// and it should not require switching the lines first.
+async function ensureContractImportEdges() {
+  if (_contracts.edges === 'imports') return; // already on screen, reused directly
+  const net = getNetwork();
+  if (_contracts.importEdges && _contracts.importEdgesNetwork === net) return;
+  try {
+    const data = await api('contracts/edges?kind=imports');
+    _contracts.importEdges = data.edges || [];
+    _contracts.importEdgesNetwork = net;
+  } catch (e) {
+    // Leave the cache empty: the closure then keeps only the directly active
+    // contracts, which is a narrower map rather than a broken one.
+    _contracts.importEdges = [];
+    _contracts.importEdgesNetwork = net;
+  }
 }
 
 // renderContractMap prepares everything every layout needs (the visible
@@ -13518,6 +13867,15 @@ function contractMapChrome(svg, zoom, namespaces, nodes, linkCount, fit) {
   // and 193 paths exist on more than one chain.
   const on = (_contracts.data && _contracts.data.network) ? ' on ' + _contracts.data.network : '';
   const linkWord = linkCount === 1 ? 'link' : 'links';
+  // "15 of 73 contracts" rather than "15 contracts" whenever a filter is
+  // hiding some, because a filter that removed nothing and a filter that
+  // removed everything both draw a plausible map. It is the only thing on
+  // screen that distinguishes a 30d window containing the whole chain, which
+  // is what 30d does on a nine-day-old mainnet, from a pill that does nothing.
+  const deployed = (_contracts.data && _contracts.data.nodes || []).length;
+  const shown = deployed && nodes.length < deployed
+    ? fmtNum(nodes.length) + ' of ' + fmtNum(deployed)
+    : fmtNum(nodes.length);
   const edgeNote = _contracts.edges === 'none' ? '' : ' (' + CONTRACT_EDGE_KINDS[_contracts.edges].label + ')';
   // The total is what turns "size = gas" from a caption into a scale: every
   // area on screen is a share of this number, and without it the largest
@@ -13533,7 +13891,7 @@ function contractMapChrome(svg, zoom, namespaces, nodes, linkCount, fit) {
       position: 'absolute', top: '8px', left: '8px', fontSize: '11px', color: 'var(--fg2)',
       background: 'var(--bg2)', padding: '2px 6px', borderRadius: '3px', maxWidth: '62%',
     },
-  }, fmtNum(nodes.length) + ' contracts' + on + ' · ' + fmtNum(linkCount) + ' ' + linkWord + edgeNote +
+  }, shown + ' contracts' + on + ' · ' + fmtNum(linkCount) + ' ' + linkWord + edgeNote +
      ' · size = ' + sizeMetric.label +
      // Only where the scale reaches: packed and treemap lay out from the
      // summed metric, so "(log)" over their areas was a caption answering a
