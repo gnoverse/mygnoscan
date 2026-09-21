@@ -97,6 +97,12 @@ everything newer than the build, so the newest bucket does not lag the timer.
   that is 1,333,000,221,686,563 ugnot over 100 ugnot/byte, or 13.33 TB, the same
   sum the monorepo does in a comment beside the default price. `/storage` is built
   on it, and every one of its figures is per chain for that reason.
+- **A per-row share of that capacity is unreadable, and that is the data, not
+  the formatting.** At mainnet's 43.7 MB in use against 12.1 TB the largest
+  namespace is 0.0002% of the disk and the rest are exponents, a column in which
+  every row says the same thing. `/storage` states fullness once, for the whole
+  chain, in the header; the table's second percentage is the running total of
+  what is in use, which is the question a table sorted by size can answer.
 - **Local `storage_events` reproduce what the chain reports.** Summing
   `bytes_delta` per realm matches `vm/qstorage` exactly: checked on mainnet
   2026-09-21, `gno.land/r/gnoland/blog` sums to 1,278,609 here and the chain

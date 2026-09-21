@@ -425,8 +425,32 @@ footer a:hover { color: var(--accent); }
    works in, and a hover that only brightens (no size change) so 1536 cells
    cannot reflow the page under the cursor. */
 .storage-cell { transition: opacity 0.1s, filter 0.1s; }
-.storage-cell:hover { filter: brightness(1.45); opacity: 1 !important; }
+.storage-cell:hover { filter: brightness(1.45); }
 .storage-cell-free:hover { filter: none; background: var(--border) !important; }
+/* The click-to-focus dim is a class, not an inline style, so the hover rules
+   below can override it. Inline opacity could only be beaten with !important,
+   and then the hover could never dim anything back. */
+.storage-cell.is-dim { opacity: 0.15; }
+/* Cross-highlight: hovering a block, a legend chip or a table row lights every
+   other drawing of the same group and pushes the rest back. The map is the
+   reason this is done with two classes on a container rather than per-element
+   styles — 1536 cells, and only the container's class changes per hover. */
+#storage-content.hl-on .storage-cell[data-skey] { opacity: 0.12; }
+#storage-content.hl-on .storage-cell[data-skey].hl-match { opacity: 1; filter: brightness(1.4); }
+#storage-content.hl-on .storage-name { opacity: 0.4; }
+#storage-content.hl-on .storage-name.hl-match { opacity: 1; }
+.storage-name.hl-match { outline: 1px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+#storage-content.hl-on tbody tr.hl-match > td { background: rgba(78, 205, 196, 0.12); }
+/* The readout is what makes a 6px cell legible: it names what is under the
+   cursor immediately, where a title tooltip takes a second and covers the map.
+   Fixed height so the page does not jump as it fills and empties. */
+.storage-readout { display: flex; align-items: center; gap: 8px; min-height: 20px; margin-top: 8px; font-size: 12px; color: var(--fg2); }
+.storage-readout .k { display: inline-flex; align-items: center; gap: 5px; color: var(--fg); }
+.storage-readout .sw { width: 10px; height: 10px; border-radius: 2px; flex: 0 0 10px; }
+/* A share as a bar as well as a number: the eye reads the column shape before
+   it reads any of the percentages. */
+.storage-bar { display: inline-block; vertical-align: middle; width: 54px; height: 6px; margin-left: 7px; background: var(--bg3); border-radius: 2px; overflow: hidden; }
+.storage-bar > i { display: block; height: 100%; background: var(--accent); }
 
 html.embed header, html.embed footer, html.embed #sanity-subbar,
 html.embed .rail { display: none !important; }
@@ -5797,6 +5821,77 @@ function storagePct(part, whole) {
 // two pages agree about who is who.
 function storageColor(key) { return namespaceColor(String(key)); }
 
+// --- Cross-highlight ------------------------------------------------------
+//
+// One group is drawn three times on this page: as a run of blocks in the map,
+// as a chip in the legend, as a row in the table. Hovering any of the three
+// lights the other two, so a name can be found in a 1536-cell grid and a block
+// can be named without clicking it.
+//
+// Every element that belongs to a group carries data-skey and is registered
+// here at render time, so a hover is a Map lookup and two class toggles rather
+// than a querySelectorAll over the grid. The page's existing data-hl mechanism
+// does the document-wide version of this for addresses and tx hashes; it is not
+// reused here because it can only add a class to what matches, and the map
+// needs the complement — everything that does not match has to recede.
+let _storageIndex = new Map();
+let _storageHover = null;
+
+function storageTag(node, key, kind) {
+  const k = String(key);
+  node.setAttribute('data-skey', k);
+  if (kind) node.classList.add(kind);
+  let list = _storageIndex.get(k);
+  if (!list) { list = []; _storageIndex.set(k, list); }
+  list.push(node);
+  return node;
+}
+
+function storageSetHover(key) {
+  if (key === _storageHover) return;
+  const root = document.getElementById('storage-content');
+  if (!root) return;
+  for (const node of _storageIndex.get(_storageHover) || []) node.classList.remove('hl-match');
+  _storageHover = key;
+  root.classList.toggle('hl-on', key !== null);
+  for (const node of _storageIndex.get(key) || []) node.classList.add('hl-match');
+  storageReadout(key);
+}
+
+// The hovered group, named in full under the map. A single delegated listener:
+// mouseover fires again with a different target whenever the cursor crosses
+// into another element, including one with no key at all, so leaving the map
+// clears the highlight without a matching mouseout handler.
+document.addEventListener('mouseover', (e) => {
+  // One listener for the whole document, so the guard has to be the cheapest
+  // thing that can be true on every other page: nothing registered means there
+  // is no map on screen and no highlight to clear.
+  if (!_storageIndex.size) return;
+  const hit = e.target.closest ? e.target.closest('[data-skey]') : null;
+  storageSetHover(hit ? hit.getAttribute('data-skey') : null);
+});
+
+let _storageRunByKey = new Map();
+let _storageReadoutEl = null;
+
+function storageReadout(key) {
+  const out = _storageReadoutEl;
+  if (!out) return;
+  out.textContent = '';
+  const run = key === null ? null : _storageRunByKey.get(key);
+  if (!run) {
+    out.appendChild(el('span', {}, 'hover a block or a name to light up every other place it appears.'));
+    return;
+  }
+  const name = el('span', { className: 'k' });
+  name.appendChild(el('span', { className: 'sw', style: { background: storageColor(run.key) } }));
+  name.appendChild(storageKeyLabel(run.key));
+  out.appendChild(name);
+  out.appendChild(el('span', {}, fmtSize(run.bytes) + ' · ' + storagePct(run.bytes, run.used) +
+    ' of what is in use · ' + fmtGnotAmount(run.fee) + ' locked · ' +
+    fmtNum(run.cells) + (run.cells === 1 ? ' cell' : ' cells')));
+}
+
 function storagePill(label, active, onclick, title) {
   const b = contractPill(label, active, onclick);
   if (title) b.title = title;
@@ -5977,6 +6072,14 @@ function storageMap(runs, used, windowBytes, ctx) {
   const wrap = el('div', {});
   const perCell = windowBytes / STORAGE_CELLS;
 
+  // Every run is readable from the readout, including the ones too small to
+  // draw a cell: they still have a legend chip and a table row to hover.
+  for (const run of runs) {
+    run.used = used;
+    run.cells = 0;
+    _storageRunByKey.set(String(run.key), run);
+  }
+
   const grid = el('div', {
     style: {
       display: 'grid', gridTemplateColumns: 'repeat(' + STORAGE_COLS + ', 1fr)',
@@ -6004,14 +6107,20 @@ function storageMap(runs, used, windowBytes, ctx) {
 
   const dim = _storage.focus !== null;
   for (const { run, n } of shown) {
+    // The run the map drew is what the readout reports as "cells", so the two
+    // agree about how much of the grid a group owns.
+    run.cells = n;
     const focused = !dim || String(run.key) === _storage.focus;
     const color = storageColor(run.key);
+    const title = storageShortKey(run.key) + '\n' + fmtSize(run.bytes) + ' (' + fmtNum(run.bytes) + ' bytes)' +
+      '\n' + storagePct(run.bytes, used) + ' of what is in use' +
+      '\n' + fmtGnotAmount(run.fee) + ' locked' +
+      (looksLikeAddress(String(run.key)) ? '\n' + run.key : '');
     for (let i = 0; i < n; i++) {
       const cell = el('div', {
-        className: 'storage-cell',
+        className: 'storage-cell' + (focused ? '' : ' is-dim'),
         style: {
-          width: '100%', paddingBottom: '100%', background: color,
-          opacity: focused ? '1' : '0.15', cursor: 'pointer',
+          width: '100%', paddingBottom: '100%', background: color, cursor: 'pointer',
         },
         onclick: () => {
           _storage.focus = _storage.focus === String(run.key) ? null : String(run.key);
@@ -6019,9 +6128,8 @@ function storageMap(runs, used, windowBytes, ctx) {
           loadStorage();
         },
       });
-      cell.title = run.key + '\n' + fmtSize(run.bytes) + ' (' + fmtNum(run.bytes) + ' bytes)' +
-        '\n' + storagePct(run.bytes, used) + ' of what is in use' +
-        '\n' + fmtGnotAmount(run.fee) + ' locked';
+      cell.title = title;
+      storageTag(cell, run.key);
       grid.appendChild(cell);
     }
   }
@@ -6034,6 +6142,10 @@ function storageMap(runs, used, windowBytes, ctx) {
     grid.appendChild(cell);
   }
   wrap.appendChild(grid);
+
+  _storageReadoutEl = el('div', { className: 'storage-readout' });
+  wrap.appendChild(_storageReadoutEl);
+  storageReadout(null);
 
   const free = Math.max(0, windowBytes - used);
   const note = el('div', { style: { fontSize: '11px', color: 'var(--fg2)', marginTop: '8px' } });
@@ -6083,8 +6195,10 @@ function storageLegend(runs, used) {
         outline: active ? '1px solid var(--fg)' : 'none', outlineOffset: '1px',
       },
     }));
+    entry.appendChild(storageKeyLabel(run.key));
     entry.appendChild(document.createTextNode(
-      storageShortKey(run.key) + ' ' + fmtSize(run.bytes) + ' (' + storagePct(run.bytes, used) + ')'));
+      ' ' + fmtSize(run.bytes) + ' (' + storagePct(run.bytes, used) + ')'));
+    storageTag(entry, run.key, 'storage-name');
     wrap.appendChild(entry);
   }
   if (_storage.focus !== null) {
@@ -6096,10 +6210,27 @@ function storageLegend(runs, used) {
   return wrap;
 }
 
+// The text form of a key. An address resolves through shortAddr, so a group
+// the site can name is named: @gnoswap, not g1ecsuj0…yvv6.
 function storageShortKey(key) {
   const s = String(key);
-  if (looksLikeAddress(s)) return truncAddr(s);
+  if (looksLikeAddress(s)) return shortAddr(s);
   return s.replace('gno.land/', '');
+}
+
+// The same key as an element, with its identicon. Wherever this site lists
+// addresses it shows the icon beside the text — that is how an account is
+// recognised before anyone reads forty bech32 characters — and the legend, the
+// readout and the map tooltip are listings of addresses whenever the grouping
+// is payer, deployer, or an address namespace.
+function storageKeyLabel(key) {
+  const s = String(key);
+  const span = el('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '4px' } });
+  const icon = identicon(s);
+  if (icon) span.appendChild(icon);
+  span.appendChild(document.createTextNode(storageShortKey(s)));
+  if (looksLikeAddress(s)) span.title = s;
+  return span;
 }
 
 // The key as a link wherever it names something with a page of its own.
@@ -6113,24 +6244,46 @@ function storageKeyEl(key, group, network) {
   return el('span', { style: { color: 'var(--fg2)' } }, s);
 }
 
+// Share of capacity used to be a column here and it was unreadable: at 300,000
+// to 1 every row rendered as 1.6e-5%, a column of exponents nobody can compare
+// at a glance and which says the same thing about all of them — "not much".
+// What a reader actually wants from a table sorted by size is how fast it adds
+// up, so the second percentage is the running total instead: gnoswap 51%, plus
+// gnoland 77%, and the concentration reads itself off the column. The capacity
+// figure is not lost, it moves into the share cell's tooltip, where a number
+// that needs a paragraph of context belongs.
 function storageTable(runs, used, capacity, network) {
   const g = STORAGE_GROUPINGS[_storage.group];
   const table = el('table');
+  const th = (label, title) => {
+    const cell = el('th', {}, label);
+    if (title) cell.title = title;
+    return cell;
+  };
   const head = el('tr', {},
-    el('th', {}, g.label),
-    el('th', {}, 'bytes'),
-    el('th', {}, 'share of used'),
-    el('th', {}, 'share of capacity'),
-    el('th', {}, 'locked'),
-    el('th', {}, g.from === 'payers' ? 'realms paid for' : 'packages'));
-  if (g.from !== 'payers') head.appendChild(el('th', {}, 'first claim'));
+    th(g.label),
+    th('bytes'),
+    th('share of used', 'this group as a share of the ' + fmtSize(used) + ' in use'),
+    th('cumulative', 'this row plus every larger one, as a share of what is in use'),
+    th('locked', 'GNOT held as a storage deposit, refundable when the bytes are freed'),
+    th(g.from === 'payers' ? 'realms paid for' : 'packages'));
+  if (g.from !== 'payers') head.appendChild(th('first claim'));
   table.appendChild(el('thead', {}, head));
+
+  const bar = frac => el('span', { className: 'storage-bar' },
+    el('i', { style: { width: (Math.max(0, Math.min(1, frac)) * 100).toFixed(2) + '%' } }));
 
   const body = el('tbody');
   const sorted = runs.slice().sort((a, b) => b.bytes - a.bytes);
+  let running = 0;
   for (const run of sorted.slice(0, 200)) {
+    // Signed, not clamped: a group that released more than it holds nets out
+    // below zero, and adding it as zero would leave the last row reading over
+    // 100% of what is in use. Summed as-is the column lands exactly on it.
+    running += run.bytes;
     const active = _storage.focus === String(run.key);
     const row = el('tr', { style: active ? { background: 'var(--bg3)' } : {} });
+    storageTag(row, run.key);
     const nameCell = el('td');
     nameCell.appendChild(el('span', {
       style: {
@@ -6141,8 +6294,16 @@ function storageTable(runs, used, capacity, network) {
     nameCell.appendChild(storageKeyEl(run.key, _storage.group, network));
     row.appendChild(nameCell);
     row.appendChild(el('td', {}, fmtSize(run.bytes)));
-    row.appendChild(el('td', {}, storagePct(run.bytes, used)));
-    row.appendChild(el('td', {}, capacity ? storagePct(run.bytes, capacity) : '-'));
+    const shareCell = el('td', {}, storagePct(run.bytes, used));
+    shareCell.appendChild(bar(used ? run.bytes / used : 0));
+    shareCell.title = capacity
+      ? fmtNum(run.bytes) + ' bytes, ' + storagePct(run.bytes, capacity) + ' of the ' +
+        fmtSize(capacity) + ' the chain could ever hold'
+      : fmtNum(run.bytes) + ' bytes';
+    row.appendChild(shareCell);
+    const cumCell = el('td', {}, storagePct(running, used));
+    cumCell.appendChild(bar(used ? running / used : 0));
+    row.appendChild(cumCell);
     row.appendChild(el('td', {}, fmtGnotAmount(run.fee)));
     row.appendChild(el('td', {}, fmtNum(run.members)));
     if (g.from !== 'payers') {
@@ -6217,6 +6378,13 @@ async function loadStorage() {
 
   await apiSWR('storage/map', (data) => {
     root.textContent = '';
+    // Every element the cross-highlight knows about has just been thrown away,
+    // and a stale index would hold the old nodes alive and light nothing.
+    _storageIndex = new Map();
+    _storageRunByKey = new Map();
+    _storageHover = null;
+    _storageReadoutEl = null;
+    root.classList.remove('hl-on');
     const cap = data.capacity || {};
     const capacity = storageCapacityNum(cap);
     const used = cap.used_bytes || 0;
@@ -10393,13 +10561,14 @@ const DASHBOARDS = [
             tooltip: {
               // Addresses and realm paths are attacker-controlled: the tooltip
               // must be a DOM node, never a string.
-              // An edge line names two addresses, so both are abbreviated:
-              // 83 characters of bech32 on one line is not a label. A node
+              // An edge line names two addresses, so both go through
+              // shortAddr: 83 characters of bech32 on one line is not a
+              // label, and a named account reads better than either. A node
               // line names one, and stays whole, because that is the value a
               // reader came to the tooltip to read.
               formatter: p => dashTooltipNode(
                 p.dataType === 'edge'
-                  ? [truncAddr(p.data.source) + ' \u2192 ' + truncAddr(p.data.target), fmtNum(p.data.value) + ' ugnot']
+                  ? [shortAddr(p.data.source) + ' \u2192 ' + shortAddr(p.data.target), fmtNum(p.data.value) + ' ugnot']
                   : [p.data.name, 'volume ' + fmtNum(p.data.value)]
               ),
             },
@@ -10455,7 +10624,7 @@ const DASHBOARDS = [
           return dashBase({
             tooltip: {
               formatter: p => dashTooltipNode([
-                truncAddr(p.data.source) + ' \u2192 ' + truncAddr(p.data.target),
+                shortAddr(p.data.source) + ' \u2192 ' + shortAddr(p.data.target),
                 fmtNum(p.data.value) + ' ugnot',
               ]),
             },
@@ -10466,13 +10635,14 @@ const DASHBOARDS = [
               links: Array.from(seen.values()).map(e => ({ source: e.from, target: e.to, value: e.value })),
               lineStyle: { color: 'gradient', curveness: 0.5 },
               itemStyle: { color: DASH_PAL[0], borderColor: '#2a2a2a' },
-              // Abbreviated with the same helper every other address on the
+              // Named where the site can name the account, abbreviated where
+              // it cannot, through the same helper every other address on the
               // site uses. At full length the labels are 40 characters each,
               // stacked at both edges of the diagram, and overlap into an
               // unreadable block: the node names are the one part of a sankey a
               // reader has to be able to read. The full value stays in the
               // tooltip.
-              label: { color: '#888', fontSize: 10, formatter: p => truncAddr(p.name) },
+              label: { color: '#888', fontSize: 10, formatter: p => shortAddr(p.name) },
             }],
           });
         },
@@ -10502,7 +10672,7 @@ const DASHBOARDS = [
               // truncating it would hide the part that identifies it.
               formatter: p => dashTooltipNode(
                 p.dataType === 'edge'
-                  ? [truncAddr(p.data.source) + ' \u2192 ' + p.data.target, fmtNum(p.data.value) + ' calls']
+                  ? [shortAddr(p.data.source) + ' \u2192 ' + p.data.target, fmtNum(p.data.value) + ' calls']
                   : [p.data.name, fmtNum(p.data.value) + ' calls']
               ),
             },
@@ -11521,13 +11691,14 @@ function contractTooltip(container) {
       tip.appendChild(row('kind', d.is_realm ? 'realm' : 'pure package'));
       tip.appendChild(row('calls', fmtNum(d.calls) + ' from ' + fmtNum(d.unique_callers) + ' addresses'));
       tip.appendChild(row('storage', fmtNum(d.storage_bytes) + ' bytes'));
-      // Same abbreviation as every other address on the site, with the
-      // identicon: a hover card is exactly where recognising an address at a
-      // glance matters, and this is the only place a bubble names its deployer.
+      // The account's own name when it has one, abbreviated when it does not,
+      // with the identicon: a hover card is exactly where recognising an
+      // address at a glance matters, and this is the only place a bubble names
+      // its deployer.
       const deployer = el('div', { style: { color: 'var(--fg2)', display: 'flex', alignItems: 'center', gap: '4px' } }, 'deployer: ');
       const icon = identicon(d.creator);
       if (icon) deployer.appendChild(icon);
-      deployer.append(truncAddr(d.creator));
+      deployer.append(shortAddr(d.creator));
       tip.appendChild(deployer);
       if (d.deployed_at) tip.appendChild(row('deployed', d.deployed_at.slice(0, 10)));
       if (d.parked) tip.appendChild(el('div', { style: { color: 'var(--accent2)' } }, 'parked: submitted, never enabled'));
@@ -11594,9 +11765,10 @@ function contractHierarchy(nodes, metric) {
     .sort((a, b) => b.value - a.value);
 }
 
-// A namespace label, abbreviated the way addresses are everywhere else on the
-// site. Half of mainnet's namespaces are a bare deployer address.
-function namespaceLabel(ns) { return ns.startsWith('g1') ? truncAddr(ns) : ns; }
+// A namespace label, resolved the way addresses are everywhere else on the
+// site: the account's name when it has one, abbreviated when it does not. Half
+// of mainnet's namespaces are a bare deployer address.
+function namespaceLabel(ns) { return ns.startsWith('g1') ? shortAddr(ns) : ns; }
 
 // ---------------------------------------------------------------------------
 // force: the original. Clusters emerge from the links rather than being drawn.
