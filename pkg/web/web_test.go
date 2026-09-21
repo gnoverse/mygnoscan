@@ -310,14 +310,20 @@ func between(t *testing.T, s, openTag, closeTag string) string {
 }
 
 // The icon sprite is a block of <symbol> definitions at the top of
-// index.html, referenced by <use href="#i-name">. Nothing links the two: an
-// orphaned symbol ships to every reader forever, and a reference to a symbol
-// that is not there renders as an empty 15px box with no error anywhere.
+// index.html, referenced two ways: <use href="#i-name"> in static markup, and
+// icon('name') from the script, which builds the same <use> at runtime.
+// Nothing links a symbol to either one: an orphaned symbol ships to every
+// reader forever, and a reference to a symbol that is not there renders as an
+// empty 15px box with no error anywhere.
 //
 // Both happen for the same reason, which is that the sprite is edited from
 // the other end of a 13,000-line file. Nesting the nav orphaned nine of them
 // in one commit: every icon that belonged to an entry which became a child,
 // since children are indented text and carry none.
+//
+// The icon('name') form is why the argument has to stay a string literal:
+// a computed name is invisible to this grep, and its symbol would then read
+// as an orphan and fail the build.
 func TestFrontendSpriteHasNoOrphansOrDanglingRefs(t *testing.T) {
 	index, err := Index()
 	if err != nil {
@@ -332,6 +338,9 @@ func TestFrontendSpriteHasNoOrphansOrDanglingRefs(t *testing.T) {
 	used := map[string]bool{}
 	for _, m := range regexp.MustCompile(`href="#(i-[a-z0-9-]+)"`).FindAllStringSubmatch(html, -1) {
 		used[m[1]] = true
+	}
+	for _, m := range regexp.MustCompile(`\bicon\('([a-z0-9-]+)'\)`).FindAllStringSubmatch(html, -1) {
+		used["i-"+m[1]] = true
 	}
 	if len(defined) == 0 || len(used) == 0 {
 		t.Fatalf("found %d symbols and %d references — the shape of the sprite changed", len(defined), len(used))
