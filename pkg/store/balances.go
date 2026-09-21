@@ -10,17 +10,30 @@ import (
 
 // Cached account balances, and the account population.
 //
-// Balances are the one figure on this site that cannot be synced and cannot be
-// derived. gno carries no balance in any indexed message, and computing one
-// from bank_sends as received-minus-sent would be wrong in a way a reader could
-// not see: it ignores gas fees, storage deposits, genesis allocations and every
-// transfer a realm makes through a banker rather than a BankMsgSend. A rich
-// list that is wrong at the top is worse than no rich list.
+// gno carries no balance in any indexed message, and computing one from
+// bank_sends as received-minus-sent is wrong in a way a reader cannot see: it
+// ignores gas fees, storage deposits, genesis allocations and every transfer a
+// realm makes through a banker rather than a BankMsgSend. A rich list that is
+// wrong at the top is worse than no rich list.
 //
 // So each row here is one live RPC read, swept in the background rather than on
 // the read path. The read path used to fan out one request per row at 20 at a
 // time, on every cold request, against a single node, which is the 7.8s that
 // the perf pass measured and explicitly left unfixed.
+//
+// This file used to open by calling a balance "the one figure on this site that
+// cannot be synced and cannot be derived". That is true of bank_sends and false
+// of the event stream, and the distinction matters enough to state rather than
+// leave as a flat claim a later reader would take at face value.
+//
+// The bank keeper emits a TransferEvent on every sendCoins, banker moves
+// included, and summing those legs reproduces the chain's own answer exactly
+// (indexer.CoinFlows, and the defi tab it feeds). What it cannot reproduce is an
+// address that *signs*: gas collection and the storage deposit both go through
+// SendCoinsUnrestricted, which emits nothing, so the sum is short by the gas
+// spend and a rich list built on it would still be wrong at the top. Neither
+// touches a realm's banker, which is why the derivation is offered for realms
+// and this sweep still exists for everyone else.
 
 // BalanceRow is one cached balance.
 type BalanceRow struct {
