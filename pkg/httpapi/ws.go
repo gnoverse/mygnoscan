@@ -88,6 +88,15 @@ func (f *liveFeed) broadcast(data []byte) {
 func (f *liveFeed) replay(ch chan []byte) {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
+	// The tip first, so the header shows a height before any block arrives.
+	// A cold feed has none yet and says nothing rather than claiming zero.
+	if f.lastBlock > 0 {
+		select {
+		case ch <- tipEvent(f.networkID, f.lastBlock):
+		default:
+			return
+		}
+	}
 	for _, data := range f.recent {
 		select {
 		case ch <- data:
@@ -187,6 +196,37 @@ func liveEvent(kind, networkID, field string, payload any) []byte {
 	return data
 }
 
+// tipEvent announces the height the feed is currently at, without carrying a
+// block with it.
+//
+// The HUD in the header shows the chain tip on every page, and its only source
+// is this feed. Without a tip event a browser that subscribes to a cold feed
+// shows a dash until the next block is minted, which on mainnet is up to 3.3s
+// of a header that reads as broken. The event is regenerated per subscriber
+// rather than stored, so it never enters the replay ring and can never be
+// mistaken for a block that was skipped.
+func tipEvent(networkID string, height int) []byte {
+	data, _ := json.Marshal(map[string]any{
+		"type":       "tip",
+		"network_id": networkID,
+		"payload":    map[string]any{"height": height},
+	})
+	return data
+}
+
+// broadcastTip fans a tip out without recording it in the replay ring.
+func (f *liveFeed) broadcastTip(height int) {
+	data := tipEvent(f.networkID, height)
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	for ch := range f.clients {
+		select {
+		case ch <- data:
+		default:
+		}
+	}
+}
+
 func (f *liveFeed) pollLoop() {
 	log.Printf("[%s] live feed: started polling", f.networkID)
 	for {
@@ -228,6 +268,11 @@ func (f *liveFeed) pollStep(parent context.Context) {
 		// the reset arm existed a rewound chain wedged the feed for good, since
 		// height could never again exceed a lastBlock from the old chain.
 		f.lastBlock = height
+		// Whoever subscribed to this cold feed got no tip on replay, and the
+		// next block is up to a block time away. Tell them where the chain is
+		// now. On a reset this is also how a browser learns the height went
+		// backwards instead of holding the old chain's number.
+		f.broadcastTip(height)
 	case height-f.lastBlock > maxLiveCatchup:
 		f.lastBlock = height - maxLiveCatchup
 	}
