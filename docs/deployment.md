@@ -14,6 +14,7 @@ One static binary and one SQLite file. No runtime dependencies.
 | `-rpc` | — | single network RPC URL, needed for account balances |
 | `-sync` | `true` | run the background sync |
 | `-block-history-days` | `90` | days of block history to backfill. `0` backfills the full chain; a negative value stores no blocks at all |
+| `-analytics-script` | — | URL of an analytics script to load in the frontend. Empty serves no third-party script at all |
 
 ## Configuration
 
@@ -97,6 +98,41 @@ network is not mistaken for the original), and any endpoint disagreeing with it
 is never selected — however healthy or far along it is. A fast, healthy, wrong
 chain is the worst member a pool can have: `gnoland-1` and `gnoland1` are one
 hyphen apart.
+
+## Analytics
+
+Off by default, and deliberately: the frontend is one file compiled into the
+binary and shared by every deployment, so a tag written into it would make
+everyone running mygnoscan report to one account. `-analytics-script <url>`
+adds a single `<script async src="…">` to the `<head>` at startup:
+
+```
+mygnoscan -analytics-script https://scripts.simpleanalyticscdn.com/latest.js
+```
+
+The URL must be an absolute `http(s)` URL; anything else is a startup error
+rather than a broken tag served to every reader. Startup logs the line
+`analytics: frontend loads <url>` when one is configured, and the page's ETag
+changes with it, so readers holding the previous build get the new document
+instead of a cached one.
+
+[Simple Analytics](https://www.simpleanalytics.com) is what the public instance
+uses. It sets no cookie and writes nothing to the device, so it needs no consent
+banner. Any provider shipping a single self-contained script drops in the same
+way.
+
+Two things to know before reading the numbers, both properties of the frontend
+rather than of the provider:
+
+- **A pageview is a `pushState`.** The script patches `pushState` and listens
+  for `popstate` and `hashchange` (verified against `latest.js` v11,
+  2026-09-21), which is exactly what `navigate()` calls. Tab switches inside a
+  realm page use `replaceState` and are correctly *not* counted as separate
+  views.
+- **The network is in the query string, and query strings are dropped.**
+  `/realms?network=mainnet` and `/realms?network=pearl` arrive as one page. Per
+  network figures need the provider's own parameter allow-list, not a code
+  change here.
 
 ## Choosing network IDs
 
