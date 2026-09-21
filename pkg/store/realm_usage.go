@@ -251,20 +251,26 @@ func (d *DB) RealmUsage(network, path string, f RealmUsageFilter) (*RealmUsage, 
 		COUNT(DISTINCT caller),
 		SUM(CASE WHEN success THEN 1 ELSE 0 END),
 		COUNT(DISTINCT CASE WHEN kind = 'call' THEN func_name END),
+		-- Counted in SQL rather than off the callers slice below, which is
+		-- capped: deriving it there would silently mean "returning, among the
+		-- top 500", and a realm with more callers than that is exactly the one
+		-- whose retention is worth knowing.
+		(SELECT COUNT(*) FROM (SELECT caller FROM act GROUP BY caller HAVING COUNT(*) > 1)),
 		(SELECT block_time FROM act ORDER BY block_height ASC LIMIT 1),
 		(SELECT block_time FROM act ORDER BY block_height DESC LIMIT 1)
 		FROM act`
-	var calls, runs, ok sql.NullInt64
+	var calls, runs, ok, returning sql.NullInt64
 	var firstTime, lastTime sql.NullString
 	// One set of arguments, not one per reference: the placeholders live in the
 	// CTE's text, which appears once however many times the main query names
 	// `act`.
 	if err := d.db.QueryRow(sum, srcArgs...).Scan(
 		&out.Summary.Messages, &calls, &runs, &out.Summary.Txs, &out.Summary.UniqueCallers,
-		&ok, &out.Summary.Functions, &firstTime, &lastTime,
+		&ok, &out.Summary.Functions, &returning, &firstTime, &lastTime,
 	); err != nil {
 		return nil, err
 	}
+	out.Summary.Returning = int(returning.Int64)
 	out.Summary.Calls = int(calls.Int64)
 	out.Summary.Runs = int(runs.Int64)
 	out.Summary.OK = int(ok.Int64)
@@ -343,26 +349,17 @@ func (d *DB) RealmUsage(network, path string, f RealmUsageFilter) (*RealmUsage, 
 		c.LastTime = last.String
 		c.GasUsed = gasUsed[c.Address]
 		c.GasFee = gasFee[c.Address]
-		if c.Messages > 1 {
-			out.Summary.Returning++
-		}
 		out.Callers = append(out.Callers, c)
 	}
 	cRows.Close()
 	if err := cRows.Err(); err != nil {
 		return nil, err
 	}
+	// One row over the cap was fetched precisely so this can tell "exactly at
+	// the cap" from "more than the cap" without a second COUNT.
 	if len(out.Callers) > callerLimit {
 		out.Callers = out.Callers[:callerLimit]
 		out.CallersTruncated = true
-		// Returning was counted off the over-fetched slice, so drop the one
-		// row that is not being returned back out of it.
-		out.Summary.Returning = 0
-		for _, c := range out.Callers {
-			if c.Messages > 1 {
-				out.Summary.Returning++
-			}
-		}
 	}
 
 	// Functions. MsgRuns are excluded: they have no function name, and a
