@@ -246,7 +246,7 @@ test('a window with nothing in it says so instead of drawing one lone dot', asyn
 // renderDepGraph's 800px fallback until something redraws it.
 test('opening deps from another tab redraws the graph at the real width', async ({ page }) => {
   await page.goto(`/realm/${HUB_ROUTE}`);
-  await page.locator('#realm-tabs .tab', { hasText: /^deps$/ }).click();
+  await page.locator('#realm-tabs .tab[data-tab="deps"]').click();
   await page.waitForSelector(GRAPH_SVG, { timeout: 20_000 });
 
   const { svgWidth, boxWidth } = await page.evaluate(() => {
@@ -268,8 +268,8 @@ test('coming back to deps does not restart the simulation', async ({ page }) => 
   await openGraph(page);
   await page.evaluate(() => { document.querySelector('#dep-graph > svg').dataset.mark = 'kept'; });
 
-  await page.locator('#realm-tabs .tab', { hasText: /^info$/ }).click();
-  await page.locator('#realm-tabs .tab', { hasText: /^deps$/ }).click();
+  await page.locator('#realm-tabs .tab[data-tab="info"]').click();
+  await page.locator('#realm-tabs .tab[data-tab="deps"]').click();
 
   const mark = await page.evaluate(() => document.querySelector('#dep-graph > svg').dataset.mark);
   expect(mark).toBe('kept');
