@@ -8941,6 +8941,17 @@ let _detailGen = 0;
 function destroyDetailCharts() {
   _detailCharts.forEach(c => c.destroy());
   _detailCharts = [];
+  disposeUsageTreemap();
+}
+
+// The usage treemap is ECharts, not Chart.js, so it disposes rather than
+// destroys and cannot live in _detailCharts. Same hazard either way: a detail
+// pass that rebuilds the container leaves the old instance holding a resize
+// observer and a canvas nobody can see.
+let _usageTreemapChart = null;
+function disposeUsageTreemap() {
+  if (_usageTreemapChart && !_usageTreemapChart.isDisposed()) _usageTreemapChart.dispose();
+  _usageTreemapChart = null;
 }
 
 // --- Realm usage: the calls tab -------------------------------------------
@@ -9086,6 +9097,184 @@ function okFailCell(ok, failed) {
   return span;
 }
 
+// --- The usage treemap -----------------------------------------------------
+//
+// The tables below say what this realm is used for; they do not show it. A
+// realm with one function taking 95% of its traffic and a realm with six
+// functions sharing it evenly are two sorted lists that read almost the same,
+// and one glance apart as areas.
+//
+// Drawn from `functions[]` and `callers[]`, which are aggregates over the whole
+// filtered history, not from `rows[]`. That is the difference between this and
+// the activity chart below it: one page of a busy realm's feed is a sample, and
+// a treemap of a sample presented as a treemap of a realm is worse than no
+// treemap, because nothing about it looks partial.
+//
+// Area is `messages`, never `txs`: a multicall is several MsgCalls inside one
+// signed transaction, so counting transactions would draw one bar for work that
+// happened five times. And never gas, on the function side: gas is attributed
+// once per distinct transaction, so there is no per-function figure to size by.
+let _usageTreemapBy = 'functions';
+let _usageResizeBound = false;
+
+// Three colours, because there are three states worth telling apart and a
+// continuous gradient between them cannot be read off a legend: everything
+// worked, some of it failed, none of it worked. The last is the interesting
+// one, and on a sorted table it is a column you have to go looking for.
+function usageCellColor(ok, failed) {
+  if (!failed) return DASH_PAL[0];
+  return ok ? DASH_PAL[3] : DASH_PAL[1];
+}
+
+function renderUsageTreemap(mount, host, detail, usage, gen, filtered) {
+  disposeUsageTreemap();
+  mount.textContent = '';
+  if (typeof echarts === 'undefined') return;
+
+  const funcs = (usage.functions || []).filter(f => f.calls > 0);
+  const callers = (usage.callers || []).filter(c => c.messages > 0);
+  // Nothing was called and nobody called it: the summary above already says so
+  // in words, and an empty box under it would only ask the reader to work out
+  // whether it failed to draw.
+  if (!funcs.length && !callers.length) return;
+
+  const by = (_usageTreemapBy === 'callers' && callers.length) || !funcs.length
+    ? 'callers' : 'functions';
+
+  const section = el('div', { className: 'usage-section' });
+  const head = el('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' } });
+  head.appendChild(el('div', { className: 'section-title', style: { margin: '0' } },
+    by === 'functions' ? 'what this realm is used for' : 'who uses it'));
+  for (const k of ['functions', 'callers']) {
+    const disabled = k === 'functions' ? !funcs.length : !callers.length;
+    const p = contractPill(k, by === k, () => {
+      if (disabled || by === k) return;
+      _usageTreemapBy = k;
+      renderUsageTreemap(mount, host, detail, usage, gen, filtered);
+    });
+    if (disabled) { p.style.opacity = '0.4'; p.style.cursor = 'default'; }
+    head.appendChild(p);
+  }
+  section.appendChild(head);
+
+  const items = by === 'functions'
+    ? funcs.map(f => ({
+      name: f.name,
+      value: f.calls,
+      itemStyle: { color: usageCellColor(f.ok, f.failed), borderColor: '#141414' },
+      _lines: [
+        f.name,
+        fmtNum(f.calls) + ' calls from ' + fmtNum(f.callers) + ' caller' + (f.callers === 1 ? '' : 's'),
+        f.failed ? fmtNum(f.failed) + ' failed, ' + fmtNum(f.ok) + ' succeeded' : 'none failed',
+      ],
+      _filter: ['func', f.name],
+    }))
+    : callers.map(c => ({
+      // shortAddr, because a treemap cell is not wide enough for 40 characters
+      // of bech32 and a named account reads better than either. The whole
+      // address stays in the tooltip.
+      name: shortAddr(c.address),
+      value: c.messages,
+      itemStyle: { color: usageCellColor(c.ok, c.failed), borderColor: '#141414' },
+      _lines: [
+        c.address,
+        fmtNum(c.messages) + ' messages in ' + fmtNum(c.txs) + ' transaction' + (c.txs === 1 ? '' : 's'),
+        fmtNum(c.calls) + ' calls, ' + fmtNum(c.runs) + ' runs, ' + fmtNum(c.funcs)
+          + ' function' + (c.funcs === 1 ? '' : 's') + ' touched',
+        c.failed ? fmtNum(c.failed) + ' failed, ' + fmtNum(c.ok) + ' succeeded' : 'none failed',
+      ],
+      _filter: ['caller', c.address],
+    }));
+
+  const box = el('div', { style: { height: '320px', width: '100%' } });
+  section.appendChild(box);
+
+  const total = items.reduce((a, i) => a + i.value, 0);
+  const unit = by === 'functions' ? 'calls' : 'messages';
+  const truncated = by === 'callers' && usage.callers_truncated;
+  section.appendChild(el('div', { className: 'usage-note' },
+    'area is ' + unit + ', ' + fmtNum(total) + ' in total'
+    + (truncated ? ', and the callers table is capped so the longest tail is not drawn' : '')
+    + '. teal succeeded throughout, amber failed some of the time, red never succeeded.'
+    + ' click a cell to narrow everything below to it.'));
+
+  mount.appendChild(section);
+
+  // What the realm offers and nobody has used. The treemap cannot carry these:
+  // their area is zero by definition, and drawing them at a minimum size would
+  // make the one encoding this chart has say something false.
+  //
+  // Unfiltered only. Under a 7d window or a caller filter, "never called" means
+  // "not in this slice", which is a much weaker claim than the words make, and
+  // the same trap the info tab's exported pills fell into.
+  if (by === 'functions' && !filtered) {
+    const used = new Set((usage.functions || []).map(f => f.name));
+    const unused = (detail.exported_funcs || []).filter(n => !used.has(n));
+    if (unused.length) {
+      const strip = el('div', { style: { marginTop: '10px' } });
+      strip.appendChild(el('div', { className: 'usage-note', style: { margin: '0 0 6px' } },
+        fmtNum(unused.length) + ' of ' + fmtNum((detail.exported_funcs || []).length)
+        + ' exported functions have never been called, so they have no area above'));
+      for (const name of unused) {
+        const p = el('span', { className: 'fnpill uncalled' }, name);
+        p.title = 'exported but never called, click to find it in the source';
+        p.onclick = () => navigate('/realm/' + detail.path.replace('gno.land/', '')
+          + '?tab=source&fn=' + encodeURIComponent(name));
+        strip.appendChild(p);
+      }
+      mount.appendChild(strip);
+    }
+  }
+
+  // SVG rather than the canvas every other chart here uses. A treemap is a
+  // dozen rectangles, not a series with thousands of points, so canvas buys
+  // nothing; and in SVG the cell labels are real text, which means they are
+  // selectable, they stay crisp at any zoom, and a browser test can assert on
+  // them instead of on a bitmap.
+  const chart = echarts.init(box, null, { renderer: 'svg' });
+  _usageTreemapChart = chart;
+  chart.setOption(dashBase({
+    tooltip: {
+      // A function name and an address are both on-chain content chosen by
+      // whoever deployed or signed, so the tooltip is a DOM node and never a
+      // string the browser would parse as markup.
+      formatter: p => dashTooltipNode((p.data && p.data._lines) || [String(p.name)]),
+    },
+    series: [{
+      type: 'treemap',
+      roam: false,
+      // One level, so there is nothing to drill into and a click can mean
+      // "filter by this" instead of "zoom into this".
+      nodeClick: false,
+      breadcrumb: { show: false },
+      width: '100%',
+      height: '100%',
+      top: 0, left: 0, right: 0, bottom: 0,
+      label: { color: '#141414', fontSize: 11, overflow: 'truncate' },
+      itemStyle: { borderWidth: 1, gapWidth: 1 },
+      data: items,
+    }],
+  }));
+  chart.on('click', (p) => {
+    const f = p.data && p.data._filter;
+    if (f) usageNarrow(host, detail, gen, f[0], f[1]);
+  });
+
+  // ECharts sizes to its container once and does not watch it, so a window
+  // resize leaves the canvas at the old width. Bound once for the life of the
+  // page rather than per render, which would stack a listener per repaint.
+  if (!_usageResizeBound) {
+    _usageResizeBound = true;
+    let timer = null;
+    window.addEventListener('resize', () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (_usageTreemapChart && !_usageTreemapChart.isDisposed()) _usageTreemapChart.resize();
+      }, 120);
+    });
+  }
+}
+
 function renderRealmUsage(host, detail, usage, gen) {
   host.textContent = '';
   const s = usage.summary || {};
@@ -9152,7 +9341,9 @@ function renderRealmUsage(host, detail, usage, gen) {
   // so the treemap has a stable place in the tab's order without its renderer
   // and this one both appending into the same container: an apiSWR render runs
   // twice, so "append wherever" is how you get two of everything.
-  host.appendChild(el('div', { id: 'usage-treemap' }));
+  const treemapMount = el('div', { id: 'usage-treemap' });
+  host.appendChild(treemapMount);
+  renderUsageTreemap(treemapMount, host, detail, usage, gen, filtered);
 
   // --- Activity chart ---
   //

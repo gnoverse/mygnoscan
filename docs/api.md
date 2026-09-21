@@ -218,6 +218,27 @@ genesis. An unrecognised `status` or `kind` is dropped rather than rejected:
 these arrive from links and bookmarks, and should degrade to "no filter" rather
 than to an error page over a perfectly readable realm.
 
+#### The treemap over those aggregates
+
+The calls tab draws `functions[]` and `callers[]` as a treemap above the tables,
+switchable between the two. It reads the same filtered aggregates, never
+`rows[]`: one page of a busy realm's feed is a sample, and a treemap of a sample
+presented as a treemap of a realm is worse than no treemap, because nothing
+about it looks partial.
+
+Area is `calls` on the function side and `messages` on the caller side, never
+`txs`, for the multicall reason above. Never gas either: gas is attributed once
+per distinct transaction, so there is no per-function figure to size a cell by.
+Colour is the three states a sorted column makes you go looking for: everything
+succeeded, some of it failed, none of it did.
+
+What a realm exports and nobody has ever called cannot be a cell, because its
+area is zero and drawing it at a minimum size would make the chart's one
+encoding say something false. Those sit beside the treemap as dimmed pills, and
+only when no filter is applied: under a window or a caller filter, "never
+called" means "not in this slice", which is a much weaker claim than the words
+make.
+
 ### Sync health versus chain liveness
 
 `by_network` answers "is this chain producing blocks". `sync` answers "are we
