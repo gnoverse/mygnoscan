@@ -270,6 +270,17 @@ transaction is not billed once per message.
 | `window=24h\|7d\|30d\|90d` | anything else, including `all`, means no bound. Rows with no `block_time` fall outside every window |
 | `limit`, `offset` | the feed only, `limit` capped at 500 |
 
+Cost: the aggregates are five grouped scans over the realm's whole call
+history, so they scale with the realm rather than with the page. Measured
+2026-09-22 on a Xeon D-1531: **24ms** for a typical realm (500 calls, 50
+callers), **2.3s** for one the size of the busiest on mainnet (50k calls, 5k
+callers). The response cache in front of it (30s TTL, stale-while-revalidate)
+means only the first reader after a sync pass pays that. `BenchmarkRealmUsage`
+in `pkg/store` is the guard: an earlier version answered "this caller's
+earliest timestamp" with a correlated subquery per caller group and took 151
+seconds at the larger size, which neither the unit tests nor the browser suite
+could see because both run against a fixture of single digits.
+
 **Filters apply to the aggregates, not only to the feed.** That is the point of
 the endpoint: `?func=Bid&window=7d` reporting 12 unique callers means twelve
 addresses bid in the last week, not twelve addresses touched the realm since
