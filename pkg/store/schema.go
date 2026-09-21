@@ -699,6 +699,34 @@ func initSchema(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_txs_block_time    ON transactions(network, block_time);
 		CREATE INDEX IF NOT EXISTS idx_blocks_time ON blocks(network, time);
 
+		-- Account balances, cached.
+		--
+		-- Not synced and not derivable: gno has no balance in any indexed
+		-- message, and deriving one from bank_sends would be wrong in a way
+		-- readers could not see, because it ignores gas fees, storage deposits,
+		-- genesis allocations and every transfer a realm makes through a banker
+		-- rather than a BankMsgSend.
+		--
+		-- So each row is one live bank/balances read, swept in the
+		-- background. amount is the raw coin string the chain returned, and
+		-- ugnot is it parsed for sorting: keeping both means the rich list can
+		-- ORDER BY without the display value ever having been through a lossy
+		-- conversion. height is the chain tip when it was read, which is what
+		-- dates the figure; a balance with no height was never successfully
+		-- fetched.
+		CREATE TABLE IF NOT EXISTS balances (
+			network    TEXT    NOT NULL,
+			address    TEXT    NOT NULL,
+			amount     TEXT    NOT NULL DEFAULT '',
+			ugnot      INTEGER NOT NULL DEFAULT 0,
+			height     INTEGER NOT NULL DEFAULT 0,
+			fetched_at TEXT    NOT NULL,
+			PRIMARY KEY (network, address)
+		) WITHOUT ROWID;
+
+		-- The rich list's only query: the top balances on one chain.
+		CREATE INDEX IF NOT EXISTS idx_balances_rank ON balances(network, ugnot DESC);
+
 		-- The gas view's "most expensive transactions" sorts by gas_used within a
 		-- network and keeps 20 rows. Without this the sort cannot be served from
 		-- an index, so the eight correlated subqueries in its select list are

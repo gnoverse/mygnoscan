@@ -374,6 +374,61 @@ labels this figure "recent" for the same reason.
 | `GET /api/address/{addr}` | activity for an address, **from local storage**: calls, deploys, runs, sends (both directions), with `total` covering its whole history and `limit`/`offset` paging the rows. `balance` comes from RPC and is present only when a single network is selected **and** that RPC has been confirmed to serve the same chain as the network's indexer — an unverified or mismatched RPC yields an empty balance rather than one from another chain. The indexer cannot serve this at chain scale — five address predicates over unindexed fields means a scan |
 | `GET /api/accounts` | most active accounts. `limit` (default 100, max 500), `offset`, and `sort` = `calls`, `deploys`, `runs`, `sends` or total activity. One row per `(address, network)`: the same key on two chains is two different actors, and each row carries its `network` |
 
+## Account balances
+
+| endpoint | description |
+|---|---|
+| `GET /api/accounts/rich` | addresses ranked by balance, with `coverage`. `limit` (default 100, max 500), `offset` (1-based). Single network, resolved rather than refused |
+| `GET /api/accounts/population` | `known`, `daily_active`, `weekly_active`, `monthly_active` |
+
+Balances are the one figure here that can be neither synced nor derived. gno
+carries no balance in any indexed message, and computing one from `bank_sends`
+as received-minus-sent would be wrong in a way a reader could not see: it
+ignores gas fees, storage deposits, genesis allocations and every transfer a
+realm makes through a banker rather than a `BankMsgSend`. A rich list that is
+wrong at the top is worse than no rich list.
+
+So each balance is one live `bank/balances` read, **swept into a local table in
+the background** rather than fetched on the read path. `/api/accounts` used to
+fan out one request per row, 20 at a time, on every cold request, against a
+single node, which is where its 7.8s came from. It is now a join.
+
+The sweep runs every 10 minutes, 400 addresses at a time at 8 concurrent
+requests, ordering never-fetched addresses first and then oldest-first, so a
+cold cache fills in over several passes and a warm one refreshes round-robin.
+It only asks endpoints that passed `VerifyRPCChains`: withholding a figure costs
+a blank, and trusting a mismatched one costs a number from another chain that
+nobody can see is wrong.
+
+### What the ranking actually covers
+
+`coverage` travels with every rich-list response and the page prints it:
+
+| field | meaning |
+|---|---|
+| `swept` | addresses with a cached balance |
+| `known` | addresses this instance has seen on chain, in any role |
+| `oldest_fetch`, `newest_fetch` | how old the figures are |
+
+This ranks what has been seen and swept, not a chain's accounts, and says so.
+Cosmos explorers can claim the stronger thing because Cosmos can enumerate
+accounts; gno offers no way to do that at any price.
+
+For the same reason `known` is labelled **"addresses seen"** rather than "total
+accounts" in the UI. It counts distinct addresses appearing in `calls`,
+`package_submissions`, `msg_runs` or either side of `bank_sends`. It is a real
+number; it is not the number of accounts that exist.
+
+`daily_active` and friends re-deduplicate from `active_addr_rollup` rather than
+summing it, because counts cannot be re-aggregated: an address active on three
+days of a week is one weekly active address, not three. An empty rollup (a fresh
+instance, before the first build) falls back to counting live rather than
+reporting a confident zero.
+
+An address with no cached balance is **absent** from the lookup, and rendered as
+unknown rather than as zero. Those are different claims and only one of them is
+safe to make about money.
+
 ## Aggregates
 
 | endpoint | description |
