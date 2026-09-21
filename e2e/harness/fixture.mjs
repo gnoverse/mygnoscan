@@ -187,10 +187,11 @@ export function seed(dbPath) {
     const usageCall = db.prepare(`INSERT OR REPLACE INTO calls
       (network, tx_hash, msg_index, block_height, block_time, caller, pkg_path, func_name, success)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-    pkg.run('alpha', USAGE_REALM, 'game', USAGE_CREATOR, 5000, blockTime(5000), 'usage-deploy', 1, 1);
+    addPackage('alpha', USAGE_REALM, USAGE_CREATOR, 5000, true, 'usage-deploy');
+    // Overwrites the generic body addPackage writes: the exported set is the
+    // point here, and Withdraw has to be in the source and in no call.
     file.run('alpha', USAGE_REALM, 'game.gno',
       'package game\n\n' + USAGE_EXPORTED.map(f => `func ${f}() {}`).join('\n') + '\n');
-    tx.run('alpha', 'usage-deploy', 5000, blockTime(5000), 100000, 200000, 1000);
     const [R1, R2, R3, RRUN] = Object.keys(USAGE_CALLERS);
     const usageRows = [
       // tx, msgIndex, height, caller, func, success
