@@ -583,8 +583,14 @@ func (d *DB) GetAnalytics(network string) (*Analytics, error) {
 		}
 	}
 
-	// Recent realms
-	recentQ := `SELECT network, path, name, creator, block_height, COALESCE(block_time, ''), tx_hash, is_realm, num_files FROM packages WHERE is_realm = 1` + pFilter + ` ORDER BY block_height DESC LIMIT 10`
+	// Recent realms.
+	//
+	// `p`-aliased because pFilter is `AND p.network = ...`, written for the two
+	// joined queries above. Unaliased this was `no such column: p.network`, the
+	// error went into a `_`, and the handler answered `recent_realms: null` on
+	// every network of every deployment. Renaming the alias needs all three
+	// changed together.
+	recentQ := `SELECT p.network, p.path, p.name, p.creator, p.block_height, COALESCE(p.block_time, ''), p.tx_hash, p.is_realm, p.num_files FROM packages p WHERE p.is_realm = 1` + pFilter + ` ORDER BY p.block_height DESC LIMIT 10`
 	rows6, _ := d.db.Query(recentQ)
 	if rows6 != nil {
 		defer rows6.Close()
