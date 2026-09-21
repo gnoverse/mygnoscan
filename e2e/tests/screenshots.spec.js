@@ -31,7 +31,10 @@ const PAGES = [
   ['contracts-packed', '/contracts?view=packed'],
   ['contracts-bundled', '/contracts?view=bundled&edges=imports&metric=importers&flow=0'],
   ['contracts-chord', '/contracts?view=chord&edges=imports'],
-  ['contracts-treemap', '/contracts?view=treemap&edges=none&metric=storage_bytes'],
+  // Sized by calls rather than storage: the fixture's storage figures are all
+  // zero, so a shot of that metric cannot show whether the cells print their
+  // value at all, which is half of what this view now draws.
+  ['contracts-treemap', '/contracts?view=treemap&edges=none&metric=calls'],
   ['apps', '/apps'],
   ['transactions', '/txs'],
   ['blocks', '/blocks'],

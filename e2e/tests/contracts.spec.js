@@ -330,13 +330,89 @@ test('clicking a legend entry isolates that namespace', async ({ page }) => {
   await openMap(page);
   const before = await bubbles(page).count();
 
-  await page.locator('#contract-map').getByText(/^common \(\d+\)$/).click();
+  // The entry carries the metric total it is ranked by, so it is no longer
+  // name and count alone.
+  await page.locator('#contract-map').getByText(/^common \(\d+\) · \S+$/).click();
   await page.waitForFunction(
     (n) => document.querySelectorAll('#contract-map svg circle').length < n,
     before, { timeout: 15_000 });
 
   expect(page.url()).toContain('ns=common');
   expect(await bubbles(page).count()).toBeLessThan(before);
+});
+
+// Hovers the biggest bubble under the metric on screen: the first ranking row
+// names it and the map carries the same data-hl key, so this lands on
+// something with area rather than on whichever one-pixel dot comes first in
+// the DOM and may have a neighbour on top of it.
+async function hoverTopBubble(page) {
+  const key = await page.locator('#contract-rankings [data-hl^="realm:"]').first()
+    .getAttribute('data-hl');
+  await page.locator(`#contract-map svg circle[data-hl="${key}"]`).first().hover({ force: true });
+}
+
+// --- the number the picture is drawn from -----------------------------------
+//
+// Six layouts size their shapes by one of six metrics, and none of them used
+// to print it. Sized by gas, which is the state the report arrived in, the
+// quantity behind every area on screen appeared nowhere on the page, not even
+// on hover: the hover card listed calls and storage only.
+
+test('the treemap prints the value under the name in the cells with room', async ({ page }) => {
+  const seen = watch(page);
+  await page.goto('/contracts?view=treemap&edges=none&metric=storage_bytes');
+  await page.waitForSelector('#contract-map svg [data-path]', { timeout: 20_000 });
+
+  const values = await page.locator('#contract-map svg text.val').allTextContents();
+  expect(values.length).toBeGreaterThan(0);
+  // Storage is the one metric carrying a unit, so this asserts the metric
+  // chose the formatting and not merely that some number was drawn.
+  expect(values.every(t => /^[\d.,]+ (B|KB|MB)$/.test(t.trim())), values.join(' | ')).toBe(true);
+
+  expect(seen.jsErrors).toEqual([]);
+  expect(unexpected(seen.consoleErrors)).toEqual([]);
+});
+
+test('the count line says what the areas add up to', async ({ page }) => {
+  await page.goto('/contracts?view=treemap&edges=none&metric=gas_used');
+  await page.waitForSelector('#contract-map svg [data-path]', { timeout: 20_000 });
+
+  // An area is a share of a whole, and "size = gas" without the whole makes
+  // the biggest cell on a quiet chain look like the biggest on a busy one.
+  await expect(page.locator('#contract-map').getByText(/size = gas .*total/)).toBeVisible();
+});
+
+test('the hover card carries every metric, and marks the one on screen', async ({ page }) => {
+  const seen = watch(page);
+  await openMap(page, '?metric=gas_used');
+  await waitForMapSettled(page);
+
+  await hoverTopBubble(page);
+  const tip = page.locator('#contract-map .map-tip');
+  await expect(tip).toBeVisible();
+  // The metric being drawn, the three the card never used to mention, and the
+  // marker that says which of them this picture is sized by.
+  for (const label of ['gas:', 'depended on by:', 'depends on:', 'storage:', 'calls:']) {
+    await expect(tip).toContainText(label);
+  }
+  await expect(tip).toContainText('· size');
+
+  expect(seen.jsErrors).toEqual([]);
+  expect(unexpected(seen.consoleErrors)).toEqual([]);
+});
+
+test('a windowed metric says so on the hover card', async ({ page }) => {
+  await openMap(page, '?metric=calls&window=30d');
+  await waitForMapSettled(page);
+
+  await hoverTopBubble(page);
+  const tip = page.locator('#contract-map .map-tip');
+  // Two of the six metrics move with the window and four do not, which is the
+  // difference the warning line above the map exists for. The card repeats it
+  // per row so a number read there cannot be mistaken for an all-time one.
+  await expect(tip).toContainText(/calls: [\d,]+ \(30d\)/);
+  const windowed = await tip.evaluate(el => (el.textContent.match(/\(30d\)/g) || []).length);
+  expect(windowed, 'calls and unique callers, and nothing else').toBe(2);
 });
 
 // The rankings must look like the rest of the explorer: the same address

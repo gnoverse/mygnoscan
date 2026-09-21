@@ -212,6 +212,15 @@ two endpoints, and switching view is a repaint, never a refetch:
 contract. `?flow=0` stops the particle animation on `orbit` and `bundled`, which
 is also what `prefers-reduced-motion` does.
 
+`?metric=` decides every area and every radius drawn, so the number behind it is
+printed wherever there is room for it: under the name in each treemap cell and
+each packed circle, beside the namespace on its band, as a total on the count
+line and on each legend entry, and on the hover card, which lists all six
+metrics and marks the one the picture is sized by. Storage is formatted as
+bytes, the rest compactly (`1.2k`, `4.3M`); the hover card is the exact form.
+Rows for `calls` and `unique callers` carry the window, because those are the
+two `?window=` moves.
+
 | endpoint | description |
 |---|---|
 | `GET /api/contracts/map` | every deployed package on one network, with `calls`, `unique_callers`, `gas_used`, `storage_bytes`, `importers`, `imports`, `namespace`, `creator`, `deployed_at` and `parked` on each node. `window` = `all` (default), `30d`, `7d`, `24h` narrows the call-derived metrics only, never the node set. Unknown windows are a 400 rather than a silent fall back to all time |
