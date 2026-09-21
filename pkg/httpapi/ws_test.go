@@ -1,6 +1,11 @@
 package httpapi
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -245,4 +250,320 @@ func TestStopIfIdle(t *testing.T) {
 	if !f.running {
 		t.Error("running was cleared while a client was still subscribed")
 	}
+}
+
+// stubSource is a liveSource whose tip can move between the height read and
+// the range fetched, the way a real indexer's does.
+type stubSource struct {
+	height    int
+	heightErr error
+	// ahead is how far past `height` the chain has moved by the time the range
+	// query runs. A bounded range must not return it.
+	ahead     int
+	blocksErr error
+	txHeights []int
+	txErr     error
+	ranges    [][2]int
+}
+
+func (s *stubSource) LatestBlockHeight(context.Context) (int, error) {
+	return s.height, s.heightErr
+}
+
+func (s *stubSource) GetBlocksInRange(_ context.Context, from, to int) ([]indexer.Block, error) {
+	s.ranges = append(s.ranges, [2]int{from, to})
+	if s.blocksErr != nil {
+		return nil, s.blocksErr
+	}
+	// The real query is `height > from-1 && height < to+1`, ordered ASC. The
+	// chain having moved on does not widen it.
+	var out []indexer.Block
+	for h := from; h <= to; h++ {
+		out = append(out, indexer.Block{Height: h})
+	}
+	return out, nil
+}
+
+func (s *stubSource) GetTransactionsFromHeight(_ context.Context, lastHeight *int) ([]indexer.Transaction, bool, error) {
+	if s.txErr != nil {
+		return nil, false, s.txErr
+	}
+	out := make([]indexer.Transaction, 0, len(s.txHeights))
+	for _, h := range s.txHeights { // the query orders heightAndIndex ASC
+		if lastHeight != nil && h <= *lastHeight {
+			continue
+		}
+		out = append(out, indexer.Transaction{BlockHeight: h, Hash: fmt.Sprintf("tx%d", h)})
+	}
+	return out, false, nil
+}
+
+// drainHeights reads everything buffered and returns the block heights in the
+// order a browser would receive them.
+func drainHeights(t *testing.T, ch chan []byte) []int {
+	t.Helper()
+	var out []int
+	for {
+		select {
+		case data := <-ch:
+			var ev struct {
+				Type    string `json:"type"`
+				Payload struct {
+					Data struct {
+						Blocks indexer.Block `json:"getBlocks"`
+					} `json:"data"`
+				} `json:"payload"`
+			}
+			if err := json.Unmarshal(data, &ev); err != nil {
+				t.Fatalf("undecodable event %q: %v", data, err)
+			}
+			if ev.Type == "block" {
+				out = append(out, ev.Payload.Data.Blocks.Height)
+			}
+		default:
+			return out
+		}
+	}
+}
+
+func feedWith(src liveSource) (*liveFeed, chan []byte) {
+	f := &liveFeed{clients: map[chan []byte]struct{}{}, indexer: src, networkID: "test"}
+	ch := make(chan []byte, 256)
+	f.clients[ch] = struct{}{}
+	return f, ch
+}
+
+func TestPollStep(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a batch goes out oldest first", func(t *testing.T) {
+		t.Parallel()
+		// The indexer answers height DESC and browsers prepend each event to
+		// the top of the list, so forwarding the batch in that order rendered
+		// every tick upside down: 215270..215273 came out as 215273 at the
+		// bottom of the group. This is the bug from the /blocks screenshot.
+		s := &stubSource{height: 104}
+		f, ch := feedWith(s)
+		f.lastBlock = 100
+
+		f.pollStep(context.Background())
+
+		got := drainHeights(t, ch)
+		want := []int{101, 102, 103, 104}
+		if !slices.Equal(got, want) {
+			t.Errorf("got %v, want %v; a prepending client renders this reversed", got, want)
+		}
+	})
+
+	t.Run("a tip that moves mid-poll does not leak a block into the next tick", func(t *testing.T) {
+		t.Parallel()
+		// The old poll asked for "the most recent N", and that helper re-read
+		// the tip itself, so its batch could run past the height the poll had
+		// just seen. Those extras went out, were not recorded as the new tip,
+		// and went out again. Caught live on pearl, where 595929 arrived in two
+		// consecutive ticks. A bounded range cannot do it.
+		s := &stubSource{height: 102, ahead: 1}
+		f, ch := feedWith(s)
+		f.lastBlock = 100
+
+		f.pollStep(context.Background())
+		if got, want := drainHeights(t, ch), []int{101, 102}; !slices.Equal(got, want) {
+			t.Fatalf("first tick got %v, want %v", got, want)
+		}
+		if want := [2]int{101, 102}; s.ranges[0] != want {
+			t.Errorf("asked for range %v, want %v", s.ranges[0], want)
+		}
+
+		s.height, s.ahead = 104, 0
+		f.pollStep(context.Background())
+		if got, want := drainHeights(t, ch), []int{103, 104}; !slices.Equal(got, want) {
+			t.Errorf("second tick got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("the first poll starts at the tip", func(t *testing.T) {
+		t.Parallel()
+		// Whatever is at the tip is already on the page from the initial load.
+		s := &stubSource{height: 500}
+		f, ch := feedWith(s)
+
+		f.pollStep(context.Background())
+
+		if got := drainHeights(t, ch); len(got) != 0 {
+			t.Errorf("first poll replayed %v", got)
+		}
+		if f.lastBlock != 500 {
+			t.Errorf("lastBlock = %d, want 500", f.lastBlock)
+		}
+	})
+
+	t.Run("a long idle gap is clamped", func(t *testing.T) {
+		t.Parallel()
+		// pollLoop exits when the last client leaves but keeps lastBlock, so
+		// the next browser restarts it against a stale tip. Unclamped that is
+		// one query for every block since, ~26k after a day idle.
+		s := &stubSource{height: 30000}
+		f, ch := feedWith(s)
+		f.lastBlock = 1
+
+		f.pollStep(context.Background())
+
+		got := drainHeights(t, ch)
+		if len(got) != maxLiveCatchup {
+			t.Errorf("replayed %d blocks, want the %d-block cap", len(got), maxLiveCatchup)
+		}
+		if len(got) > 0 && got[len(got)-1] != 30000 {
+			t.Errorf("last event %d, want the tip 30000", got[len(got)-1])
+		}
+		for _, r := range s.ranges {
+			if span := r[1] - r[0] + 1; span > maxLiveCatchup {
+				t.Errorf("asked the indexer for a %d-block range, past the cap", span)
+			}
+		}
+	})
+
+	t.Run("a chain reset re-arms the feed instead of wedging it", func(t *testing.T) {
+		t.Parallel()
+		// height > lastBlock can never hold again once the chain rewinds, so
+		// the feed used to go silent until the process restarted. Same class of
+		// bug as the edge rollups in #223.
+		s := &stubSource{height: 5}
+		f, ch := feedWith(s)
+		f.lastBlock = 9000
+
+		f.pollStep(context.Background())
+		if f.lastBlock != 5 {
+			t.Fatalf("lastBlock = %d after a reset to 5", f.lastBlock)
+		}
+
+		s.height = 7
+		f.pollStep(context.Background())
+		if got, want := drainHeights(t, ch), []int{6, 7}; !slices.Equal(got, want) {
+			t.Errorf("got %v, want %v; the feed stayed wedged on the old chain", got, want)
+		}
+	})
+
+	t.Run("a failed block fetch retries the span rather than skipping it", func(t *testing.T) {
+		t.Parallel()
+		s := &stubSource{height: 103, blocksErr: errors.New("indexer down")}
+		f, ch := feedWith(s)
+		f.lastBlock = 100
+
+		f.pollStep(context.Background())
+		if f.lastBlock != 100 {
+			t.Fatalf("lastBlock advanced to %d through a failed fetch, losing those blocks", f.lastBlock)
+		}
+
+		s.blocksErr = nil
+		f.pollStep(context.Background())
+		if got, want := drainHeights(t, ch), []int{101, 102, 103}; !slices.Equal(got, want) {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("txs are bounded by the blocks the tick announced", func(t *testing.T) {
+		t.Parallel()
+		// GetRecentTransactions is a third, even fresher read. A tx from a
+		// block the feed has not reached yet must wait for that block, or it
+		// goes out now and again when the block arrives.
+		s := &stubSource{height: 102, txHeights: []int{100, 101, 102, 104}}
+		f, ch := feedWith(s)
+		f.lastBlock = 100
+
+		f.pollStep(context.Background())
+
+		var hashes []string
+		for len(ch) > 0 {
+			var ev struct {
+				Type    string `json:"type"`
+				Payload struct {
+					Data struct {
+						Tx indexer.Transaction `json:"getTransactions"`
+					} `json:"data"`
+				} `json:"payload"`
+			}
+			if err := json.Unmarshal(<-ch, &ev); err != nil {
+				t.Fatal(err)
+			}
+			if ev.Type == "tx" {
+				hashes = append(hashes, ev.Payload.Data.Tx.Hash)
+			}
+		}
+		// 100 is not new, 104 is past the announced tip, and the pair that is
+		// left comes out oldest first like the blocks do.
+		if want := []string{"tx101", "tx102"}; !slices.Equal(hashes, want) {
+			t.Errorf("got %v, want %v", hashes, want)
+		}
+	})
+}
+
+// Live mode is switched on some time after the page loaded, and the blocks
+// minted in between belong to neither the static load nor the feed: the feed
+// only sends what comes next. That left a hole above the first live row, which
+// is what "I miss a first block when I click on live" looks like from outside.
+func TestNewClientGetsTheRecentTail(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a client subscribing to a warm feed gets what it missed", func(t *testing.T) {
+		t.Parallel()
+		s := &stubSource{height: 104}
+		f, first := feedWith(s)
+		f.lastBlock = 100
+		f.pollStep(context.Background())
+		drainHeights(t, first) // the client that was already there
+
+		late := make(chan []byte, 256)
+		f.register(late)
+		f.replay(late)
+
+		if got, want := drainHeights(t, late), []int{101, 102, 103, 104}; !slices.Equal(got, want) {
+			t.Errorf("got %v, want %v; the gap between page load and the click stays open", got, want)
+		}
+	})
+
+	t.Run("the tail is bounded", func(t *testing.T) {
+		t.Parallel()
+		f := newFeed()
+		for i := 1; i <= liveReplay*3; i++ {
+			f.broadcast(liveEvent("block", "test", "getBlocks", indexer.Block{Height: i}))
+		}
+
+		ch := make(chan []byte, 256)
+		f.replay(ch)
+
+		got := drainHeights(t, ch)
+		if len(got) != liveReplay {
+			t.Fatalf("replayed %d events, want the %d cap", len(got), liveReplay)
+		}
+		if got[len(got)-1] != liveReplay*3 {
+			t.Errorf("tail ends at %d, want the newest event %d", got[len(got)-1], liveReplay*3)
+		}
+	})
+
+	t.Run("a cold feed replays nothing", func(t *testing.T) {
+		t.Parallel()
+		ch := make(chan []byte, 4)
+		newFeed().replay(ch)
+		if len(ch) != 0 {
+			t.Errorf("a feed that has broadcast nothing replayed %d events", len(ch))
+		}
+	})
+
+	t.Run("a client whose buffer fills mid-replay does not block the subscribe", func(t *testing.T) {
+		t.Parallel()
+		f := newFeed()
+		for i := 1; i <= liveReplay; i++ {
+			f.broadcast(liveEvent("block", "test", "getBlocks", indexer.Block{Height: i}))
+		}
+
+		ch := make(chan []byte, 2) // smaller than the tail
+		done := make(chan struct{})
+		go func() { f.replay(ch); close(done) }()
+
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("replay blocked on a client that cannot take the whole tail")
+		}
+	})
 }
