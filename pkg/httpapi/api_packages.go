@@ -500,10 +500,10 @@ func (a *API) HandleStorage(w http.ResponseWriter, r *http.Request) {
 			// chain's own BytesDelta, which is already negative for an
 			// unlock. Subtracting it reported a realm as larger than it is,
 			// by twice everything ever freed from it.
-			"net_bytes":             totalBytesDeposit + totalBytesUnlock,
-			"total_fee_deposited":   totalFeeDeposit,
-			"total_fee_refunded":    totalFeeRefund,
-			"entries":               entries,
+			"net_bytes":           totalBytesDeposit + totalBytesUnlock,
+			"total_fee_deposited": totalFeeDeposit,
+			"total_fee_refunded":  totalFeeRefund,
+			"entries":             entries,
 		},
 		"gas": map[string]any{
 			"total_gas_used":   totalGasUsed,
