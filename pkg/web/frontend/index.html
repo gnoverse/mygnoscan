@@ -10945,7 +10945,13 @@ function renderDepGraph(imports, dependents, centerPath) {
   nodeArr.forEach(n => { n.isRealm = n.id.includes('/r/'); });
 
   if (nodeArr.length <= 1) {
-    container.appendChild(el('div', { style: { padding: '40px', textAlign: 'center', color: 'var(--fg2)' } },
+    // Collapse the box. The 600px floor is there to stop a force simulation
+    // from settling in a letterbox; an empty state does not need it, and since
+    // the lists moved below the graph it would be 600px of nothing between the
+    // reader and the only content on the tab — which on a realm with no
+    // dependencies at all is every reader.
+    container.style.minHeight = 'auto';
+    container.appendChild(el('div', { style: { padding: '24px', textAlign: 'center', color: 'var(--fg2)' } },
       _depGraph.window
         ? 'nothing in this dependency graph saw activity in the last ' + _depGraph.window
         : 'no dependencies to visualize'));
