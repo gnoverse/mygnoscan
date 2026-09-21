@@ -473,19 +473,64 @@ footer a:hover { color: var(--accent); }
    here is to be noticed on the day it is not green. */
 .health-chip { display: none; margin-left: 8px; font-size: 11px; font-weight: bold; cursor: pointer; white-space: nowrap; }
 .health-chip.show { display: inline-block; }
-/* Live mode */
-.live-btn { background: var(--bg2); border: 1px solid var(--border); color: var(--fg2); padding: 4px 10px; border-radius: 4px; font-family: var(--mono); font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 6px; }
-.live-btn:hover { border-color: var(--accent); }
-.live-btn.active { border-color: var(--green); color: var(--green); }
-.live-btn.connecting { border-color: var(--accent); color: var(--accent); }
-.live-btn.error { border-color: #e74c3c; color: #e74c3c; }
-.live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--fg2); }
-.live-btn.active .live-dot { background: var(--green); animation: livepulse 1s ease-in-out infinite; }
-.live-btn.connecting .live-dot { background: var(--accent); animation: livepulse 0.5s ease-in-out infinite; }
-.live-btn.error .live-dot { background: #e74c3c; }
+/* Live mode. The HUD lives in the sticky header, so the chain tip and the proof
+   that it is still moving stay on screen on every page and at every scroll
+   offset. Three parts, and each answers a different question: the dot says the
+   connection is up, the height says where the chain is, and the beat fills
+   between blocks so the thing is visibly alive in the seconds when no block has
+   arrived. A number that only changes every 3.3s cannot do that on its own:
+   frozen and working look identical. */
+.live-hud { background: var(--bg2); border: 1px solid var(--border); color: var(--fg2); padding: 3px 8px; border-radius: 4px; font-family: var(--mono); font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 7px; line-height: 1.3; transition: border-color 0.2s, background 0.35s; }
+.live-hud:hover { border-color: var(--accent); }
+.live-hud.active { border-color: var(--green); color: var(--green); }
+.live-hud.connecting { border-color: var(--accent); color: var(--accent); }
+.live-hud.stalled { border-color: var(--amber); color: var(--amber); }
+.live-hud.error { border-color: var(--red); color: var(--red); }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--fg2); flex-shrink: 0; transition: box-shadow 0.35s; }
+.live-hud.active .live-dot { background: var(--green); animation: livepulse 1s ease-in-out infinite; }
+.live-hud.connecting .live-dot { background: var(--accent); animation: livepulse 0.5s ease-in-out infinite; }
+.live-hud.stalled .live-dot { background: var(--amber); }
+.live-hud.error .live-dot { background: var(--red); }
+/* tabular-nums, or the whole header shifts sideways every time a digit with a
+   different width scrolls past. */
+.live-height { font-variant-numeric: tabular-nums; font-weight: bold; letter-spacing: 0.3px; }
+.live-beat { width: 26px; height: 4px; border-radius: 2px; background: var(--bg3); overflow: hidden; flex-shrink: 0; }
+.live-beat i { display: block; height: 100%; width: 0; background: currentColor; border-radius: 2px; opacity: 0.6; }
+/* The block train: one bar per recent block, newest on the right, taller where
+   the block carried more transactions. The same idiom as the per-validator
+   spark below, and it is the part that makes the header read as something
+   happening rather than something displayed. A bar slides in every block, and
+   the shape of the last minute of the chain is visible from any page. Empty
+   blocks stay as stubs on purpose: a chain ticking over with nothing in it is a
+   fact worth seeing, not one to hide. */
+.live-train { display: inline-flex; gap: 2px; align-items: flex-end; height: 12px; flex-shrink: 0; }
+.live-train i { display: block; width: 3px; min-height: 3px; border-radius: 1px; background: currentColor; opacity: 0.3; }
+.live-train i.txs { opacity: 0.85; }
+.live-train i.fresh { animation: livepush 0.3s ease-out; }
+@keyframes livepush { from { transform: translateX(4px) scaleY(0.2); opacity: 0; } to { transform: none; opacity: 1; } }
+/* The arrival flash. Short on purpose: at mainnet block time a longer one is
+   still fading when the next block lands, and a chip that never returns to rest
+   reads as a warning rather than a heartbeat. */
+.live-hud.tick { background: rgba(81, 207, 102, 0.16); }
+.live-hud.tick .live-dot { box-shadow: 0 0 0 4px rgba(81, 207, 102, 0.22); }
+.live-height.roll { animation: liveroll 0.3s ease-out; }
+@keyframes liveroll { from { transform: translateY(-5px); opacity: 0.25; } to { transform: none; opacity: 1; } }
 @keyframes livepulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 .live-new { animation: livefade 0.5s ease-out; }
 @keyframes livefade { from { background: rgba(78, 205, 196, 0.2); } to { background: transparent; } }
+/* Reduced motion, and it has to come after the rules above rather than next to
+   the other one near the top: these selectors have the same specificity as the
+   ones they override, so source order is the only thing deciding, and from up
+   there `animation: none` silently lost to the rule that follows it. The beat
+   is a continuous sweep and nothing but motion, so it goes entirely; the train
+   is data and only loses its slide-in. The height, the dot colour and the
+   tooltip carry the rest, and the stall check is on a timer rather than a
+   frame loop so the diagnosis survives too. */
+@media (prefers-reduced-motion: reduce) {
+  .live-beat { display: none; }
+  .live-hud .live-dot, .live-height.roll, .live-train i.fresh { animation: none; }
+  .live-hud.tick { background: var(--bg2); }
+}
 /* Per-validator recent-liveness sparkline: one bar per recent block, filled
    where that validator proposed it. */
 .spark { display: inline-flex; gap: 2px; align-items: flex-end; height: 14px; }
@@ -685,7 +730,7 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
     </div>
     <div id="search-results"></div>
     <span class="net-swatch" id="network-swatch" title=""></span><select class="network-select" id="network-select" onchange="onNetworkChange()"></select><a class="health-chip" id="health-chip" onclick="navigate('/sanity')" title=""></a>
-    <button class="live-btn" id="live-toggle" onclick="toggleLive()"><span class="live-dot"></span><span id="live-label"> live</span></button>
+    <button class="live-hud" id="live-toggle" onclick="toggleLive()"><span class="live-dot"></span><span class="live-height" id="live-height">live</span><span class="live-train" id="live-train" aria-hidden="true"></span><span class="live-beat" id="live-beat"><i></i></span></button>
   </div>
   <div id="refresh-bar" aria-hidden="true"></div>
   <div id="stale-chip" role="status" aria-live="polite"></div>
@@ -1866,6 +1911,7 @@ function onNetworkChange() {
   renderFooterIndexer();
   renderNetworkSwatch();
   refreshHealthChip();
+  relinkLive();
   // Namespace ownership is per chain, so it is reloaded rather than carried
   // across. Repaint when it lands: the switch itself does not wait on a network
   // round-trip, so the first paint may show paths without their owner's mark.
@@ -4805,9 +4851,15 @@ async function loadCoins() {
     container.appendChild(bar);
 
     const grid = el('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px', marginTop: '20px' } });
+    // minWidth 0 and its own scrollbar, for the same reason .section carries
+    // them: these rows are `white-space: nowrap`, so a grid column floors at
+    // the width of its widest row and pushes the whole page wider than the
+    // viewport instead. The leaderboards are sorted on one figure and print
+    // two, so the widest row is not the first one and the column got wider
+    // the moment the lists went from ten rows to fifty.
     const column = (title, rows, cols) => {
       if (!(rows || []).length) return;
-      const col = el('div');
+      const col = el('div', { style: { minWidth: 0, overflowX: 'auto' } });
       col.appendChild(el('div', { className: 'section-title' }, title));
       col.appendChild(bankMoverTable(rows, cols));
       grid.appendChild(col);
@@ -11842,24 +11894,41 @@ api('version').then(v => {
   } catch (_) {}
 }).catch(() => {});
 
-// --- Live mode (WebSocket subscription to tx-indexer) ---
-let _liveWs = null;
+// --- Live mode ---
+//
+// On by default. The whole point of an explorer is what the chain is doing now,
+// and a feed behind a button is a feed almost nobody sees: the reader has to
+// already suspect the page is stale to go looking for the control that would
+// prove it. Off is remembered, so switching it off is a decision that sticks.
 let _liveActive = false;
 let _liveTxCount = 0;
 let _liveBlockCount = 0;
 
-function setLiveState(state) { // 'off' | 'connecting' | 'active' | 'error'
+const LIVE_PREF_KEY = 'mygnoscan-live';
+
+function liveWanted() {
+  // Absent means on: a first-time reader gets the live page. Only an explicit
+  // 'off' turns it off, so a cleared localStorage cannot leave someone stuck
+  // with a frozen header and no idea why.
+  try { return localStorage.getItem(LIVE_PREF_KEY) !== 'off'; } catch (_) { return true; }
+}
+
+function setLiveWanted(on) {
+  try { localStorage.setItem(LIVE_PREF_KEY, on ? 'on' : 'off'); } catch (_) {}
+}
+
+function setLiveState(state) { // 'off' | 'connecting' | 'active' | 'stalled' | 'error'
   const btn = document.getElementById('live-toggle');
-  const label = document.getElementById('live-label');
-  btn.classList.remove('active', 'connecting', 'error');
-  if (state === 'active') { btn.classList.add('active'); if (label) label.textContent = ' live'; }
-  else if (state === 'connecting') { btn.classList.add('connecting'); if (label) label.textContent = ' connecting…'; }
-  else if (state === 'error') { btn.classList.add('error'); if (label) label.textContent = ' error'; }
-  else { if (label) label.textContent = ' live'; }
+  if (!btn) return;
+  btn.classList.remove('active', 'connecting', 'stalled', 'error');
+  if (state !== 'off') btn.classList.add(state);
+  _liveState = state;
+  renderLiveHud();
 }
 
 function toggleLive() {
   _liveActive = !_liveActive;
+  setLiveWanted(_liveActive);
   if (_liveActive) {
     setLiveState('connecting');
     startLive();
@@ -11869,20 +11938,19 @@ function toggleLive() {
   }
 }
 
-// Live mode via SSE — Go backend subscribes to tx-indexer WebSocket,
-// fans out to browsers via /api/live (Server-Sent Events).
-// Works over HTTP/2, no WebSocket upgrade needed from browser.
+// Live mode via SSE. The Go backend polls the tx-indexer and fans out over
+// /api/live (Server-Sent Events). Works over HTTP/2, no WebSocket upgrade
+// needed from the browser.
 let _liveSSE = null;
 
 function startLive() {
   stopLive();
-  _liveTxCount = 0;
-  _liveBlockCount = 0;
   setLiveState('connecting');
 
   _liveSSE = new EventSource('/api/live' + netSuffix(getNetwork()));
 
   _liveSSE.onopen = () => {
+    _liveSince = Date.now();
     setLiveState('active');
   };
 
@@ -11894,6 +11962,11 @@ function startLive() {
         onLiveTx(tx);
       } else if (msg.type === 'block' && msg.payload?.data?.getBlocks) {
         onLiveBlock(msg.payload.data.getBlocks, msg.network_id);
+      } else if (msg.type === 'tip' && msg.payload?.height > 0) {
+        // Where the chain is, with no block attached. Sent on subscribe and on
+        // a cold feed's first poll, so the header carries a real height from
+        // the first second rather than a dash until the next block is minted.
+        onLiveTip(msg.payload.height, msg.network_id);
       }
     } catch (e) {}
   };
@@ -11902,6 +11975,8 @@ function startLive() {
     // EventSource auto-reconnects. Show connecting state.
     if (_liveActive) setLiveState('connecting');
   };
+
+  startLiveBeat();
 }
 
 function stopLive() {
@@ -11909,7 +11984,274 @@ function stopLive() {
     _liveSSE.close();
     _liveSSE = null;
   }
+  stopLiveBeat();
 }
+
+// --- The header HUD ---
+//
+// It answers "is this page still telling me the truth" without the reader
+// having to ask. Three things, because one is not enough: the height (where the
+// chain is), the dot (is the connection up), and the beat, a meter that fills
+// over the time a block is expected to take and snaps back when one lands.
+//
+// The beat is the part that actually does the job. A height alone cannot
+// distinguish a chain at rest from a dead socket (both show a number that is
+// not moving), and at mainnet's 3.3s block time there is no moment where the
+// reader can tell which they are looking at. A meter that sweeps every frame
+// can only be doing that if the page is running, and its overflow is the stall
+// signal: past the expected interval it saturates and the chip goes amber with
+// the age in seconds, which is a real diagnosis rather than a spinner.
+let _liveState = 'off';
+let _liveBeatRAF = null;
+let _liveStallTimer = null;
+// Wall time of the last block, and of the moment this connection opened. Both,
+// because a feed that has connected and then received nothing is exactly the
+// case worth reporting: a chain wedged before the page loaded would otherwise
+// sit green forever behind a height that is real but frozen. The beat and the
+// stall check run from whichever is later, so silence counts from the moment
+// there was something to be silent about.
+let _liveLastBlockAt = 0;
+let _liveSince = 0;
+// Recent block-to-block gaps, wall clock at this browser. Measured rather than
+// hardcoded because the expected gap is not a constant: mainnet is ~3.3s, a
+// local gnodev mints on demand, and in all-networks mode the merged stream of
+// several chains arrives several times faster than any one of them.
+const _liveGaps = [];
+const LIVE_GAP_DEFAULT_MS = 5000;
+const LIVE_GAP_MIN_MS = 800;
+const LIVE_GAP_MAX_MS = 60000;
+// Past this multiple of the expected gap the feed is not slow, it is stopped.
+// Three block times of silence is already well outside normal jitter, and
+// saying so is the whole reason the HUD is worth having.
+const LIVE_STALL_FACTOR = 3;
+
+function liveExpectedGapMs() {
+  if (_liveGaps.length < 3) return LIVE_GAP_DEFAULT_MS;
+  // Median, not mean: one 40-second pause while a laptop was asleep would drag
+  // a mean far enough that a genuinely stalled chain still looks on schedule.
+  const sorted = _liveGaps.slice().sort((a, b) => a - b);
+  const mid = sorted[Math.floor(sorted.length / 2)];
+  return Math.min(LIVE_GAP_MAX_MS, Math.max(LIVE_GAP_MIN_MS, mid));
+}
+
+function liveOrigin() { return _liveLastBlockAt || _liveSince; }
+
+function noteLiveBlock() {
+  const now = Date.now();
+  // Only block-to-block gaps are block times. The connect-to-first-block gap is
+  // a fragment of one and would bias the estimate low, which would then read a
+  // normal interval as a stall.
+  if (_liveLastBlockAt) {
+    const gap = now - _liveLastBlockAt;
+    if (gap >= LIVE_GAP_MIN_MS) {
+      _liveGaps.push(gap);
+      if (_liveGaps.length > 12) _liveGaps.shift();
+    }
+  }
+  _liveLastBlockAt = now;
+}
+
+// The last LIVE_TRAIN blocks, as tx counts. Twelve is about a minute of
+// mainnet, which is long enough to show a lull or a burst and short enough to
+// fit in the header next to everything else.
+const LIVE_TRAIN = 12;
+const _liveTrain = [];
+
+// Log, not linear: one deploy block with forty transactions in it would flatten
+// every ordinary block to a stub and the strip would read as empty.
+function liveTrainHeight(txs) {
+  // An empty block is a dim 3px tick, not nothing. Most gno blocks carry no
+  // transactions at all, so a stub drawn in the background colour made the
+  // whole strip invisible on exactly the chain it is meant to describe: against
+  // mainnet and pearl it rendered as twelve bars nobody could see.
+  if (!txs) return 3;
+  return Math.max(4, Math.min(12, Math.round(4 + 8 * Math.log10(1 + txs) / Math.log10(21))));
+}
+
+function renderLiveTrain() {
+  const strip = document.getElementById('live-train');
+  if (!strip) return;
+  strip.textContent = '';
+  _liveTrain.forEach((txs, i) => {
+    const bar = el('i', { style: { height: liveTrainHeight(txs) + 'px' } });
+    if (txs > 0) bar.classList.add('txs');
+    if (i === _liveTrain.length - 1) bar.classList.add('fresh');
+    strip.appendChild(bar);
+  });
+}
+
+function liveTick() {
+  const btn = document.getElementById('live-toggle');
+  const height = document.getElementById('live-height');
+  if (!btn) return;
+  btn.classList.add('tick');
+  if (height) {
+    height.classList.remove('roll');
+    void height.offsetWidth; // reflow, or the animation does not restart
+    height.classList.add('roll');
+  }
+  setTimeout(() => btn.classList.remove('tick'), 320);
+}
+
+// Two clocks, because they do two different jobs. The sweep is per frame and
+// purely decorative, so prefers-reduced-motion removes it. The stall check is
+// information (the chain or the indexer stopped) and has to keep running
+// either way; once a second is plenty to notice three block times of silence.
+function startLiveBeat() {
+  if (_liveStallTimer === null) _liveStallTimer = setInterval(checkLiveStall, 1000);
+  if (_liveBeatRAF !== null || prefersReducedMotion()) return;
+  const step = () => {
+    renderLiveBeat();
+    _liveBeatRAF = requestAnimationFrame(step);
+  };
+  _liveBeatRAF = requestAnimationFrame(step);
+}
+
+function stopLiveBeat() {
+  if (_liveBeatRAF !== null) cancelAnimationFrame(_liveBeatRAF);
+  _liveBeatRAF = null;
+  if (_liveStallTimer !== null) clearInterval(_liveStallTimer);
+  _liveStallTimer = null;
+  const fill = document.querySelector('#live-beat i');
+  if (fill) fill.style.width = '0';
+}
+
+// renderLiveBeat runs every frame, so it touches exactly one style property.
+// Anything heavier here (a tooltip rebuild, a number format, a class toggle)
+// is 60 times a second for as long as the tab is open.
+function renderLiveBeat() {
+  const fill = document.querySelector('#live-beat i');
+  if (!fill) return;
+  const origin = liveOrigin();
+  if (!origin) { fill.style.width = '0'; return; }
+  const pct = ((Date.now() - origin) / liveExpectedGapMs()) * 100;
+  fill.style.width = Math.min(100, pct).toFixed(1) + '%';
+}
+
+function checkLiveStall() {
+  const origin = liveOrigin();
+  if (!origin) return;
+  const stalled = Date.now() - origin > liveExpectedGapMs() * LIVE_STALL_FACTOR;
+  if (stalled && _liveState === 'active') setLiveState('stalled');
+  else if (!stalled && _liveState === 'stalled') setLiveState('active');
+}
+
+// renderLiveHud paints the height and the tooltip. Called on an event and on a
+// state change, never per frame.
+function renderLiveHud() {
+  const el = document.getElementById('live-height');
+  if (!el) return;
+  const tip = liveDisplayTip();
+  const btn = document.getElementById('live-toggle');
+
+  if (_liveState === 'connecting' && !tip) el.textContent = 'connecting';
+  else if (tip) el.textContent = fmtNum(tip);
+  else el.textContent = 'live';
+
+  if (btn) btn.title = liveHudTitle(tip);
+}
+
+function liveDisplayTip() {
+  const net = getNetwork();
+  if (net && net !== 'all') return _liveTips[net] > 0 ? _liveTips[net] : 0;
+  // Across networks there is no single "current block". The highest keeps the
+  // number stable and monotonic; the per-chain tips go in the tooltip rather
+  // than flickering in the same slot.
+  const hs = Object.values(_liveTips).filter(h => h > 0);
+  return hs.length ? Math.max(...hs) : 0;
+}
+
+function liveHudTitle(tip) {
+  const lines = [];
+  if (_liveState === 'off') lines.push('live is off, click to follow the chain');
+  else if (_liveState === 'connecting') lines.push('connecting to the live feed…');
+  else if (_liveState === 'stalled') lines.push('no block for a while: the chain or the indexer may be stuck');
+  else lines.push('live, click to stop following');
+
+  const net = getNetwork();
+  const entries = Object.entries(_liveTips).filter(([, h]) => h > 0)
+    .sort((a, b) => a[0].localeCompare(b[0]));
+  if (net === 'all' && entries.length > 1) {
+    lines.push('');
+    for (const [n, h] of entries) lines.push(n + ': ' + fmtNum(h));
+  } else if (tip) {
+    lines.push('block ' + fmtNum(tip));
+  }
+
+  if (_liveState !== 'off') {
+    lines.push(_liveLastBlockAt
+      ? 'last block ' + ((Date.now() - _liveLastBlockAt) / 1000).toFixed(1) + 's ago'
+      : 'no block since connecting');
+  }
+  if (_liveBlockCount || _liveTxCount) {
+    lines.push(_liveBlockCount + ' blocks, ' + _liveTxCount + ' txs since this page loaded');
+    lines.push('the strip is the last ' + LIVE_TRAIN + ' blocks, taller means more transactions');
+  }
+  return lines.join('\n');
+}
+
+function onLiveTip(height, network) {
+  const net = network || getNetwork();
+  // A tip below what is already shown is a chain that reset, not a stale
+  // event, and the feed only sends one when it has restarted from the real
+  // head, so take it rather than clamping upward like the block path does.
+  if (_liveTips[net] !== height) {
+    _liveTips[net] = height;
+    renderLiveBlock();
+  }
+  renderLiveHud();
+}
+
+// The feed is only worth holding while someone is looking at it. With live on
+// by default every open tab would otherwise keep an SSE connection up and keep
+// the server's poll loop running against the indexer for that network, for
+// days, on a tab nobody has looked at since Tuesday. Dropping it on hide and
+// taking it back on show costs one reconnect, and the feed replays the tail it
+// broadcast in the meantime, so the rows lost while hidden come back anyway.
+function initLiveVisibility() {
+  document.addEventListener('visibilitychange', () => {
+    if (!_liveActive) return;
+    if (document.hidden) {
+      stopLive();
+      setLiveState('connecting');
+    } else {
+      startLive();
+    }
+  });
+}
+
+// relinkLive re-subscribes after a network switch. The SSE URL carries the
+// network, so without this the header keeps streaming the chain the reader just
+// left. The measured gap and the tips go with it: they describe the old chain,
+// and mainnet's 3.3s would make a faster testnet look stalled for a minute.
+function relinkLive() {
+  for (const k of Object.keys(_liveTips)) delete _liveTips[k];
+  _liveGaps.length = 0;
+  _liveTrain.length = 0;
+  renderLiveTrain();
+  // The counters are per chain, and the tooltip says "since this page loaded".
+  // Carrying mainnet's totals onto a testnet would make that sentence false.
+  _liveBlockCount = 0;
+  _liveTxCount = 0;
+  _liveSeenTx.clear();
+  _liveSeenTxOrder.length = 0;
+  _liveLastBlockAt = 0;
+  _liveSince = 0;
+  if (_liveActive) startLive();
+  else renderLiveHud();
+}
+
+function initLive() {
+  initLiveVisibility();
+  _liveActive = liveWanted();
+  if (_liveActive) {
+    setLiveState('connecting');
+    startLive();
+  } else {
+    setLiveState('off');
+  }
+}
+
 
 function liveIncrStat(id) {
   const el = document.getElementById(id);
@@ -11927,26 +12269,21 @@ function liveIncrStat(id) {
 // single shared counter written by whichever event arrived last just oscillates.
 const _liveTips = {};
 
+// renderLiveBlock updates the home page's block stat. The header HUD shows the
+// same number on every page and keeps its own tooltip; this is the copy that
+// only exists while the home view is on screen.
 function renderLiveBlock() {
   const blockEl = document.getElementById('stat-block');
   if (!blockEl) return;
-  const net = getNetwork();
+  const tip = liveDisplayTip();
+  if (!tip) return;
+  blockEl.textContent = fmtNum(tip);
 
-  if (net && net !== 'all') {
-    if (_liveTips[net] > 0) blockEl.textContent = fmtNum(_liveTips[net]);
-    return;
-  }
-
-  // Across networks there is no single "current block". Show the highest so the
-  // number is stable and monotonic, and put the real per-network tips in the
-  // tooltip rather than flickering between them.
   const entries = Object.entries(_liveTips).filter(([, h]) => h > 0);
-  if (!entries.length) return;
-  blockEl.textContent = fmtNum(Math.max(...entries.map(([, h]) => h)));
-  blockEl.title = entries
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([n, h]) => n + ': ' + fmtNum(h))
-    .join('\n');
+  blockEl.title = getNetwork() === 'all' && entries.length > 1
+    ? entries.sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([n, h]) => n + ': ' + fmtNum(h)).join('\n')
+    : '';
 }
 
 // --- Placing a live row in a list the page already loaded ---
@@ -12003,8 +12340,24 @@ function liveTagRow(tr, key, tsMs) {
   return tr;
 }
 
+// Hashes already counted, oldest first. The same replay that double-counts
+// blocks double-counts transactions, and a tx cannot be deduped by height the
+// way a block can: several share one. Bounded because this only has to cover a
+// reconnect's replay window, not the session.
+const _liveSeenTx = new Set();
+const _liveSeenTxOrder = [];
+
+function liveTxIsNew(hash) {
+  if (!hash) return true;
+  if (_liveSeenTx.has(hash)) return false;
+  _liveSeenTx.add(hash);
+  _liveSeenTxOrder.push(hash);
+  if (_liveSeenTxOrder.length > 400) _liveSeenTx.delete(_liveSeenTxOrder.shift());
+  return true;
+}
+
 function onLiveTx(tx) {
-  _liveTxCount++;
+  if (liveTxIsNew(tx.hash)) _liveTxCount++;
   // Track the tip per network; the display decides what to show.
   if (tx.block_height > 0) {
     const net = tx.network || getNetwork();
@@ -12059,20 +12412,39 @@ function onLiveTx(tx) {
     while (txsList.children.length > 60) txsList.removeChild(txsList.lastChild);
   }
 
-  // Update live counter in button label
-  const lbl = document.getElementById('live-label');
-  if (lbl) lbl.textContent = ' +' + _liveTxCount + 'tx ' + _liveBlockCount + 'blk';
+  renderLiveHud();
 }
 
 function onLiveBlock(block, network) {
-  _liveBlockCount++;
-  // Same per-network tracking as onLiveTx: block events arrive more often, so
-  // this was the main source of the flicker in all-networks mode.
-  if (block.height > 0) {
-    const net = network || getNetwork();
-    if (!(_liveTips[net] > block.height)) _liveTips[net] = block.height;
+  const net = network || getNetwork();
+
+  // A block is new to this browser only if it is above the tip already seen on
+  // its chain. The feed replays its recent tail to every new subscriber, and an
+  // EventSource reconnects on its own, so the same block legitimately arrives
+  // twice: measured against mainnet and pearl, two reconnects in 90 seconds
+  // turned 54 real blocks into 168 counted ones. Counting events rather than
+  // blocks also made the train shove sixteen bars in at once on a reconnect and
+  // flash the chip for blocks that were minted a minute earlier.
+  //
+  // The rows below are a separate question and deliberately not gated on this:
+  // a replayed block the page never painted still belongs in the table, and
+  // liveSlot's key is what keeps it from being drawn twice.
+  const fresh = block.height > 0 && !(_liveTips[net] >= block.height);
+
+  if (fresh) {
+    _liveBlockCount++;
+    _liveTips[net] = block.height;
+    // Only a block resets the beat. A tx arrives in the same frame as its block
+    // and would restart the sweep a second time for the same arrival, which
+    // reads as a stutter.
+    noteLiveBlock();
+    _liveTrain.push(block.num_txs || 0);
+    while (_liveTrain.length > LIVE_TRAIN) _liveTrain.shift();
+    renderLiveTrain();
+    liveTick();
     renderLiveBlock();
   }
+  renderLiveHud();
 
   // Add to the blocks page if active
   const blocksList = document.getElementById('blocks-list');
@@ -15558,6 +15930,13 @@ function renderContractRankings() {
 // --- Routing ---
 window.addEventListener('popstate', route);
 route();
+
+// Live mode starts here, at the bottom, and not in the --- Init --- block
+// above: it reads _liveTips and the rest of the live state, which are declared
+// further down the file and are in the temporal dead zone until this point.
+// Called from up there it throws a ReferenceError and the page renders once and
+// never moves again.
+initLive();
 </script>
 </body>
 </html>
