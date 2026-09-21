@@ -146,3 +146,24 @@ test('with no node configured the page says it cannot ask', async ({ page }) => 
   expect(seen.jsErrors, 'uncaught exceptions').toEqual([]);
   expect(unexpected(seen.failedRequests), 'failed requests').toEqual([]);
 });
+
+// The storage panel reads two series that measure different things, and only
+// one of them can see a release: bytes_added comes from package_files and
+// only ever grows, while storage_events is what the chain charged and
+// refunded. A "recovered" figure sourced from the wrong one would be a
+// constant zero that looked like a fact.
+//
+// The fixture releases 2 MiB on alpha (store-hub-free), at a timestamp 50-odd
+// days old, so this also pins the two halves of the empty state: the default
+// 30d window has nothing to draw and has to say so, and 90d finds it.
+test('the storage panel reports bytes recovered, and says when it has none', async ({ page }) => {
+  await page.goto('/sanity?network=alpha');
+  await settle(page);
+
+  const note = page.locator('#sanity-storage .section-sub');
+  await expect(note).toContainText('no storage events in this window');
+
+  await page.locator('#sanity-days-group button', { hasText: '90d' }).click();
+  await expect(note).toContainText('2.00 MB recovered in this window');
+  await expect(note).toContainText('what the chain charged and refunded');
+});
