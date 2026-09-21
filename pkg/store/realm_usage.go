@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"strconv"
 	"strings"
 )
 
@@ -219,6 +220,33 @@ func activitySource(network, path string, f RealmUsageFilter) (string, []any) {
 	return strings.Join(parts, "\nUNION ALL\n"), args
 }
 
+// heightTimeKey packs a row's height and timestamp into one sortable string,
+// so MIN() and MAX() over a group return the earliest and latest row's *time*
+// in the same pass that finds its height.
+//
+// This replaces a correlated subquery per caller ("the block_time of the row
+// with this caller's lowest height"), which reads fine and is quadratic: at
+// 50k calls from 5k callers one RealmUsage call took 151 seconds, because each
+// of the 5k groups rescanned the whole CTE twice. The packed key is one pass.
+//
+// Zero-padded to 12 digits so lexical order is numeric order. Block heights are
+// non-negative and nowhere near 10^12, and comparing the times directly would
+// not work: the indexer writes a variable number of sub-second digits, so
+// "…11.6Z" sorts after "…11.603Z".
+const heightTimeKey = `printf('%012d', block_height) || block_time`
+
+// splitHeightTimeKey unpacks what heightTimeKey packed.
+func splitHeightTimeKey(key string) (int, string) {
+	if len(key) < 12 {
+		return 0, ""
+	}
+	h, err := strconv.Atoi(key[:12])
+	if err != nil {
+		return 0, key[12:]
+	}
+	return h, key[12:]
+}
+
 // RealmUsage answers the calls tab: aggregates over the whole filtered
 // history, plus one page of the message feed.
 func (d *DB) RealmUsage(network, path string, f RealmUsageFilter) (*RealmUsage, error) {
@@ -237,7 +265,11 @@ func (d *DB) RealmUsage(network, path string, f RealmUsageFilter) (*RealmUsage, 
 
 	out := &RealmUsage{Path: path, Network: resolved}
 	src, srcArgs := activitySource(resolved, path, f)
-	with := "WITH act AS (\n" + src + "\n)\n"
+	// MATERIALIZED, not left to SQLite's judgement: every statement below names
+	// `act` more than once, and the MsgRun half of it is a LIKE over the
+	// script's source that no index can serve. Recomputing that per reference
+	// is a full scan of msg_runs each time.
+	with := "WITH act AS MATERIALIZED (\n" + src + "\n)\n"
 
 	// Summary. First and last are read by height rather than by MIN/MAX over
 	// the timestamp: the sub-second precision the indexer writes is not a
@@ -320,10 +352,8 @@ func (d *DB) RealmUsage(network, path string, f RealmUsageFilter) (*RealmUsage, 
 		COUNT(DISTINCT tx_hash),
 		SUM(CASE WHEN success THEN 1 ELSE 0 END),
 		COUNT(DISTINCT CASE WHEN kind = 'call' THEN func_name END),
-		MIN(block_height), MAX(block_height),
-		(SELECT block_time FROM act i WHERE i.caller = o.caller ORDER BY i.block_height ASC LIMIT 1),
-		(SELECT block_time FROM act i WHERE i.caller = o.caller ORDER BY i.block_height DESC LIMIT 1)
-		FROM act o GROUP BY caller
+		MIN(` + heightTimeKey + `), MAX(` + heightTimeKey + `)
+		FROM act GROUP BY caller
 		ORDER BY messages DESC, MAX(block_height) DESC
 		LIMIT ?`
 	cArgs := append(append([]any{}, srcArgs...), callerLimit+1)
@@ -336,17 +366,17 @@ func (d *DB) RealmUsage(network, path string, f RealmUsageFilter) (*RealmUsage, 
 		var nCalls, nRuns, nOK, nFuncs sql.NullInt64
 		var first, last sql.NullString
 		if err := cRows.Scan(&c.Address, &c.Messages, &nCalls, &nRuns, &c.Txs, &nOK, &nFuncs,
-			&c.FirstHeight, &c.LastHeight, &first, &last); err != nil {
+			&first, &last); err != nil {
 			cRows.Close()
 			return nil, err
 		}
+		c.FirstHeight, c.FirstTime = splitHeightTimeKey(first.String)
+		c.LastHeight, c.LastTime = splitHeightTimeKey(last.String)
 		c.Calls = int(nCalls.Int64)
 		c.Runs = int(nRuns.Int64)
 		c.OK = int(nOK.Int64)
 		c.Failed = c.Messages - c.OK
 		c.Funcs = int(nFuncs.Int64)
-		c.FirstTime = first.String
-		c.LastTime = last.String
 		c.GasUsed = gasUsed[c.Address]
 		c.GasFee = gasFee[c.Address]
 		out.Callers = append(out.Callers, c)
@@ -368,10 +398,8 @@ func (d *DB) RealmUsage(network, path string, f RealmUsageFilter) (*RealmUsage, 
 		COUNT(*) AS calls,
 		COUNT(DISTINCT caller),
 		SUM(CASE WHEN success THEN 1 ELSE 0 END),
-		MAX(block_height),
-		(SELECT block_time FROM act i WHERE i.kind = 'call' AND i.func_name = o.func_name
-		   ORDER BY i.block_height DESC LIMIT 1)
-		FROM act o WHERE kind = 'call' GROUP BY func_name ORDER BY calls DESC, func_name ASC`
+		MAX(` + heightTimeKey + `)
+		FROM act WHERE kind = 'call' GROUP BY func_name ORDER BY calls DESC, func_name ASC`
 	fRows, err := d.db.Query(fnQ, srcArgs...)
 	if err != nil {
 		return nil, err
@@ -380,13 +408,13 @@ func (d *DB) RealmUsage(network, path string, f RealmUsageFilter) (*RealmUsage, 
 		var fn RealmFunction
 		var nOK sql.NullInt64
 		var last sql.NullString
-		if err := fRows.Scan(&fn.Name, &fn.Calls, &fn.Callers, &nOK, &fn.LastHeight, &last); err != nil {
+		if err := fRows.Scan(&fn.Name, &fn.Calls, &fn.Callers, &nOK, &last); err != nil {
 			fRows.Close()
 			return nil, err
 		}
 		fn.OK = int(nOK.Int64)
 		fn.Failed = fn.Calls - fn.OK
-		fn.LastTime = last.String
+		fn.LastHeight, fn.LastTime = splitHeightTimeKey(last.String)
 		out.Functions = append(out.Functions, fn)
 	}
 	fRows.Close()
