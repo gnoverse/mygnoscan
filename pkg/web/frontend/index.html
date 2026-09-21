@@ -386,6 +386,7 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
       <a onclick="navigate('/realms')" id="nav-realms">realms</a>
       <a onclick="navigate('/packages')" id="nav-packages">packages</a>
       <a onclick="navigate('/contracts')" id="nav-contracts">contracts</a>
+      <a onclick="navigate('/apps')" id="nav-apps">apps</a>
       <a onclick="navigate('/txs')" id="nav-txs">txs</a>
       <a onclick="navigate('/blocks')" id="nav-blocks">blocks</a>
       <a onclick="navigate('/accounts')" id="nav-accounts">accounts</a>
@@ -504,6 +505,7 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
   <div class="view" id="view-params"><main><div id="params-content"></div></main></div>
   <div class="view" id="view-sanity"><main><div id="sanity-content"></div></main></div>
   <div class="view" id="view-contracts"><main><div id="contracts-content"></div></main></div>
+  <div class="view" id="view-apps"><main><div id="apps-content"></div></main></div>
   <div class="view" id="view-gas"><main><div id="gas-content"></div></main></div>
   <div class="view" id="view-dashboards"><main><div id="dashboards-content"></div></main></div>
   <div class="view" id="view-block-detail"><main><div id="block-detail-content"></div></main></div>
@@ -571,72 +573,14 @@ function parkedBadgeEl(status) {
   b.title = 'submitted but not yet callable — awaiting a package approver';
   return b;
 }
-// Curated address labels, global rather than per network: an address is the same
-// key everywhere, and a faucet on one testnet is the same operator on the next.
+// Address labels arrive whole from /api/labels: the curated registry
+// (pkg/registry/data/addresses.json) merged with what the chain proves, ranked
+// by provenance on the server.
 //
-// Only for names that cannot be derived. Anything provable from on-chain data —
-// namespace ownership in particular — comes from /api/labels instead, so it
-// stays right as the chains change instead of rotting here.
-//
-// A plain string is a name we can stand behind. An object with `why` is an
-// *inference* from behaviour: it renders with a marker and the reasoning in its
-// tooltip, so a reader can tell "this address deployed gno.land/r/gnoswap/*"
-// from "this address looks like a faucet". Guessing silently is how an explorer
-// loses the trust that makes it worth using.
-const KNOWN_ADDRS = {
-  'g1edq4dugw0sgat4zxcw9xardvuydqf6cgleuc8p': '@genesis_deployer',
-  'g1manfred47kzduec920z88wfr64ylksmdcedlf5': '@moul',
-  'g1m0rgan0rla00ygmdmp55f5m0unvsvknluyg2a4': '@morgan',
-  'g148583t5x66zs6p90ehad6l4qefeyaf54s69wql': '@faucet',
-  'g1ecsuj0q572jr0dhu29q9njtnmw03hyu7tyyvv6': '@jaekwon',
-
-  // Inferred from exclusive deployment of a reserved system namespace.
-  // gnomod.toml itself carries nothing beyond the creator address already in
-  // `packages.creator` (checked directly: `module`, `gno` version, and
-  // `[addpkg] creator` — no name/team field exists to read), so there is no
-  // manifest data to derive from; this is the same on-chain deploy history
-  // /api/labels already uses, just extended to reserved namespaces ("sys",
-  // "gov") that are not g1-address-owned and so fall outside its rule.
-  // Measured 2026-09-14 against mainnet.
-  'g1r929wt2qplfawe4lvqv9zuwfdcz4vxdun7qh8l': {
-    label: '@sys_deployer',
-    why: 'inferred: sole deployer of every gno.land/r/sys/* and p/sys/* package (validators, txfees, rewards, names, params, users)',
-  },
-  'g1g73v2anukg4ej7axwqpthsatzrxjsh0wk797da': {
-    label: '@gov_dao_deployer',
-    why: 'inferred: sole deployer of every gno.land/r/gov/dao/* package (loader, init, impl, memberstore)',
-  },
-  'g1g3lsfxhvaqgdv4ccemwpnms4fv6t3aq3p5z6u7': {
-    label: '@gnoland_deployer',
-    why: 'inferred: deployed gno.land/r/gnops/valopers (the validator registry) plus gnoland/coins and gnoland/blog — official gno.land realms, not a single user namespace',
-  },
-
-  // Inferred from activity shape. Measured 2026-08-28 against the live chains.
-  'g18qhq2fl54lszhmxeyqlvxnwjzc3xpu4nnakclp': {
-    label: '@faucet',
-    why: 'inferred: 3 683 sends to 953 addresses across three networks, never calls a realm, receives nothing',
-  },
-  'g1ve35g5rhcn9mlmqcp9pr085hsqe5x4dm8f23j7': {
-    label: '@test_token_faucet',
-    why: 'inferred: 464 582 calls, almost all Transfer on gnoswap test tokens (test_atom, test_btc, …)',
-  },
-  'g1v73cacldctfky0thu5xuuhmy5zs0mnd8vxyl2w': {
-    label: '@gnoswap_bot',
-    why: 'inferred: 7 189 uniform 500 000 ugnot sends plus router::ExactInSwapRoute — distributes and trades',
-  },
-  'g1vmmklhc7eyxgr3x8ll0yr5wupv8lkxv4xhd8l0': {
-    label: '@gnoswap_bot',
-    why: 'inferred: 6 410 sends to 6 123 addresses plus 6 135 router::ExactInSwapRoute calls',
-  },
-  'g1cywjkx44a92c2j0fgfjxa64pg9qjf0vn6p8qsm': {
-    label: '@gnoswap_bot',
-    why: 'inferred: 5 262 sends to 4 924 addresses plus 4 930 router::ExactInSwapRoute calls',
-  },
-  'g1uhsq7qat4l345hkw9f2g5wpm6pnncmrju9p5mu': {
-    label: '@gnoswap_bot',
-    why: 'inferred: 1 637 uniform 500 000 ugnot sends plus router::ExactInSwapRoute calls',
-  },
-};
+// They used to be two sources with the curated half hard-coded here as a const,
+// which meant contributing a name required editing this file and the two could
+// not be ranked against each other. Fifteen entries after months of use was the
+// symptom. Adding one is now a pull request against a JSON file.
 
 // Labels derived on the server from namespace ownership, fetched once per load.
 let _derivedAddrLabels = {};
@@ -690,16 +634,24 @@ async function loadProposerMonikers() {
 //
 // Curated entries win over derived ones: a hand-written name is a deliberate
 // override of whatever the data implies.
-function addrInfo(addr) {
-  const curated = KNOWN_ADDRS[addr];
-  if (typeof curated === 'string') return { label: curated, why: '', inferred: false };
-  // Every curated object entry is a behavioural inference; that is what the
-  // object form is for.
-  if (curated) return { label: curated.label, why: curated.why || '', inferred: true };
+// Provenance kinds, mirroring pkg/registry. Only two of the four ask a reader
+// to take something on trust, and those are the two that get marked.
+const LABEL_KIND_MARK = {
+  // A human vouched for it in a merged pull request, or the chain proves it.
+  curated: null,
+  derived: null,
+  // The subject said so: r/sys/users, a valoper moniker. Anyone may call
+  // UpdateDescription and claim any name, so a self-declared label is a claim
+  // rather than a fact.
+  declared: { mark: '\u2248', hint: 'self-declared: this name is what the address calls itself' },
+  // This repo's reading of behaviour, always carrying its evidence.
+  inferred: { mark: '?', hint: 'inferred from activity' },
+};
 
-  const derived = _derivedAddrLabels[addr];
-  if (derived) return { label: derived.label, why: derived.why || '', inferred: false };
-  return null;
+function addrInfo(addr) {
+  const l = _derivedAddrLabels[addr];
+  if (!l) return null;
+  return { label: l.label, why: l.why || '', kind: l.kind || '', mark: LABEL_KIND_MARK[l.kind] || null };
 }
 // proposerEl renders a block proposer.
 //
@@ -746,10 +698,9 @@ function truncAddr(addr) {
 }
 function shortAddr(addr) {
   if (!addr) return '';
-  // KNOWN_ADDRS[addr] is not always a string - an inferred entry is
-  // {label, why}, and returning that raw here used to concatenate into
-  // "[object Object]" wherever a caller did 'by ' + shortAddr(addr). Route
-  // through addrInfo, which already normalises both forms to a label.
+  // Route through addrInfo rather than reading the label map directly: an
+  // entry is an object, and returning it raw here used to concatenate into
+  // "[object Object]" wherever a caller did 'by ' + shortAddr(addr).
   const info = addrInfo(addr);
   return (info && info.label) || truncAddr(addr);
 }
@@ -906,9 +857,9 @@ function addrLinkImpl(addr, network, fallback) {
     // can be checked. Only an inferred one is marked, because only that one
     // asks the reader to take something on trust.
     if (info.why) a.title = addr + '\n' + info.why;
-    if (info.inferred) {
-      const mark = el('span', { className: 'addr-inferred' }, '?');
-      mark.title = info.why || 'inferred from activity';
+    if (info.mark) {
+      const mark = el('span', { className: 'addr-inferred' }, info.mark.mark);
+      mark.title = info.mark.hint + (info.why ? '\n' + info.why : '');
       span.appendChild(mark);
     }
     span.appendChild(el('span', { className: 'block-ctx' }, ' ' + fallback));
@@ -2475,6 +2426,7 @@ function route() {
   else if (path === '/realms') { view = 'realms'; }
   else if (path === '/packages') { view = 'packages'; }
   else if (path === '/contracts') { view = 'contracts'; }
+  else if (path === '/apps') { view = 'apps'; }
   else if (path === '/txs') { view = 'txs'; }
   else if (path === '/blocks') { view = 'blocks'; }
   else if (path === '/accounts') { view = 'accounts'; }
@@ -2518,6 +2470,7 @@ function route() {
     case 'realms': loadRealms(); break;
     case 'packages': enterPackages(urlPv); break;
     case 'contracts': loadContracts(); break;
+    case 'apps': loadApps(); break;
     case 'txs': loadTxs(); break;
     case 'blocks': loadBlocks(); break;
     case 'accounts': loadAccounts(); break;
@@ -5024,6 +4977,78 @@ async function loadParams() {
     await apiSWR('params', (data) => renderParams(container, data));
   } catch (err) {
     failBlock(container, err, loadParams);
+  }
+}
+
+// --- Apps: the curated directory ---------------------------------------------
+//
+// What the realm list cannot be. /realms ranks every deployed package by
+// traffic, which answers "what is busy" and never "what is this for". This is
+// six sentences a human wrote, from pkg/registry/data/apps.json.
+//
+// Network-independent on purpose: what an app is for does not change between
+// chains even where the deployment does. Whether it is deployed on the network
+// you have selected is a question the realm page answers, and every row links
+// through to it.
+async function loadApps() {
+  const container = clear('apps-content');
+  skeletonBlock(container);
+  try {
+    await apiSWR('registry/apps', (data) => renderApps(container, data));
+  } catch (err) {
+    failBlock(container, err, loadApps);
+  }
+}
+
+function renderApps(container, data) {
+  container.textContent = '';
+  const apps = data.apps || [];
+
+  const intro = el('div', { className: 'section-sub' });
+  intro.append('a curated directory: what these realms are for, which no amount of on-chain data says. '
+    + 'entries are a pull request against ');
+  intro.appendChild(el('span', {}, 'pkg/registry/data/apps.json'));
+  intro.append('.');
+  container.appendChild(intro);
+
+  if (!apps.length) {
+    container.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '12px' } }, 'no apps listed yet'));
+    return;
+  }
+
+  const byCategory = new Map();
+  for (const app of apps) {
+    if (!byCategory.has(app.category)) byCategory.set(app.category, []);
+    byCategory.get(app.category).push(app);
+  }
+
+  for (const [category, entries] of byCategory) {
+    const section = el('div', { className: 'section', style: { marginTop: '24px' } });
+    section.appendChild(el('div', { className: 'section-title' }, category));
+    const tbody = el('tbody');
+    for (const app of entries) {
+      const nameCell = el('td', { style: { verticalAlign: 'top' } },
+        el('div', { style: { fontWeight: 'bold' } }, app.name));
+      // The path is the link, because it is the thing that is actually on
+      // chain: the name is ours, the path is the chain's.
+      const pathCell = el('td', { style: { verticalAlign: 'top' } },
+        link(app.path, () => navigate('/realm/' + app.path.replace('gno.land/', '') + netSuffix())));
+      const descCell = el('td', { style: { verticalAlign: 'top' } }, el('div', {
+        style: {
+          color: 'var(--fg2)', fontSize: '12px', maxWidth: '520px',
+          whiteSpace: 'normal', wordBreak: 'normal', lineHeight: '1.5',
+        },
+      }, app.description || ''));
+      if (app.url) {
+        const ext = el('a', { href: app.url, target: '_blank', rel: 'noopener noreferrer' }, app.url);
+        descCell.appendChild(el('div', { style: { marginTop: '4px', fontSize: '11px' } }, ext));
+      }
+      tbody.appendChild(el('tr', {}, nameCell, pathCell, descCell));
+    }
+    section.appendChild(el('table', {},
+      el('thead', {}, el('tr', {}, el('th', {}, 'name'), el('th', {}, 'realm'), el('th', {}, 'what it is'))),
+      tbody));
+    container.appendChild(section);
   }
 }
 
