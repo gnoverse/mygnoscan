@@ -445,7 +445,10 @@ tr.total-row td { font-weight: bold; color: var(--accent); }
 .usage-section { margin-top: 24px; }
 /* "only" is a filter, the address beside it is a link to another page. They do
    different things and must not look like one target. */
-.usage-only { background: none; border: 1px solid var(--border); color: var(--fg2); border-radius: 3px; font-family: var(--mono); font-size: 10px; padding: 0 5px; margin-left: 6px; cursor: pointer; opacity: 0; }
+/* Dimmed rather than hidden: an affordance nobody can see until they happen to
+   hover the right row is one nobody finds, and this is the control the section
+   headings point at. */
+.usage-only { background: none; border: 1px solid var(--border); color: var(--fg2); border-radius: 3px; font-family: var(--mono); font-size: 10px; padding: 0 5px; margin-left: 6px; cursor: pointer; opacity: 0.45; }
 tr:hover .usage-only, .usage-row-on .usage-only { opacity: 1; }
 .usage-only:hover { color: var(--accent); border-color: var(--accent); }
 .usage-row-on { background: rgba(78,205,196,0.08); }
