@@ -60,7 +60,16 @@ header .container { display: flex; align-items: center; gap: 16px; flex-wrap: wr
    icon is what survives the collapsed width — the one thing a 52px rail can
    still show.
    `nav` and the `#nav-<view>` ids are kept exactly as they were: route()
-   drives the active class off them, and the e2e suite walks them. */
+   drives the active class off them, and the e2e suite walks them.
+
+   Nineteen flat entries later it needed a second axis. Six of them are a
+   section landing page (gas, govdao, contracts, blocks, home) and the rest
+   are views *of* that section, which the flat list said nothing about: a
+   reader looking for the parameter table had to know it was called "params"
+   and that it had nothing to do with "sanity" two rows below. So sections
+   nest, expanded by default, and each section's landing page repeats its
+   children as a pill strip (.pagenav) — which is also what keeps them
+   reachable when the rail is collapsed to icons and the children are gone. */
 body { padding-left: var(--rail-w); }
 .rail { position: fixed; left: 0; top: 0; bottom: 0; width: var(--rail-w); z-index: 110;
   background: var(--bg2); border-right: 1px solid var(--border);
@@ -82,6 +91,28 @@ body { padding-left: var(--rail-w); }
   width: 5px; height: 5px; border-radius: 50%; background: var(--accent);
   box-shadow: 0 0 0 2px var(--bg2); }
 html.rail-collapsed .rail nav a.has-watch::after { left: calc(50% + 4px); }
+
+/* Sections. The children are a plain indented list under the parent, with
+   the guide line doing the work a second icon column would do badly at
+   12.5px. The twisty folds one section away; the section you are currently
+   in is always open regardless (see applyNavGroups), because a rail that
+   hides the page you are on is worse than one that ignores a preference. */
+.rail nav .nav-kids { display: flex; flex-direction: column; gap: 1px;
+  margin: 1px 0 4px 21px; padding-left: 4px; border-left: 1px solid var(--border); }
+.rail nav .nav-kids a { padding: 4px 8px; font-size: 12px; }
+.nav-group.closed .nav-kids { display: none; }
+.nav-twisty { margin-left: auto; font-size: 8px; line-height: 1; color: var(--fg2);
+  padding: 3px; border-radius: 3px; transition: transform 0.12s; }
+.nav-twisty:hover { color: var(--fg); background: var(--bg); }
+.nav-group.closed .nav-twisty { transform: rotate(-90deg); }
+/* A parent whose child is the current page. Muted while the labels are
+   visible — the child row already carries the accent, and two accents in a
+   column read as two selections — and promoted to the full active styling
+   once the rail is collapsed and the child row is gone. */
+.rail nav a.in-section { color: var(--fg); }
+html.rail-collapsed .rail nav .nav-kids, html.rail-collapsed .nav-twisty { display: none; }
+html.rail-collapsed .rail nav a.in-section { color: var(--accent); background: var(--bg3);
+  border-left-color: var(--accent); }
 .rail-foot { margin-top: auto; padding: 8px 6px 12px; }
 .rail-toggle { display: flex; align-items: center; gap: 10px; width: 100%; background: none;
   border: none; color: var(--fg2); font-family: var(--mono); font-size: 12.5px; cursor: pointer;
@@ -208,6 +239,37 @@ tr { white-space: nowrap; }
 .dep-chip { display: inline-flex; align-items: center; gap: 6px; background: var(--bg2); border: 1px solid var(--border);
             border-radius: 4px; padding: 3px 8px; font-size: 12px; margin: 0 6px 6px 0; font-family: var(--mono); }
 .dep-chip a { font-size: 11px; }
+/* The section strip: the same children the rail nests under a section, as
+   pills at the top of every page in it. Deliberately not .tabs — several of
+   these pages already carry a .tabs row of their own (packages has all/inert,
+   accounts has activity/balances) and two identical underline rows stacked
+   would read as one control with eight options. Real hrefs, so the middle
+   button and "copy link address" work the way they do everywhere else. */
+.pagenav { display: flex; gap: 5px; flex-wrap: wrap; align-items: center;
+  margin: 0 0 18px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.pagenav a { padding: 3px 11px; border-radius: 999px; font-size: 12px; color: var(--fg2);
+  border: 1px solid var(--border); background: var(--bg2); white-space: nowrap; }
+.pagenav a:hover { color: var(--fg); border-color: var(--fg2); text-decoration: none; }
+.pagenav a.active { color: var(--bg); background: var(--accent); border-color: var(--accent); font-weight: 600; }
+html.embed .pagenav { display: none; }
+
+/* Big numbers. A summary page's job is to be read across the room and then
+   left; the .stats-bar chips are for a page whose reader wants nine figures
+   at once, and /gas had grown to exactly that. Four numbers at 28px say more
+   than nine at 15px, and each one links to the page that breaks it down. */
+.bignums { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px; margin: 4px 0 22px; }
+.bignum { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 12px 14px; display: flex; flex-direction: column; gap: 2px; }
+.bignum .bn-label { font-size: 11px; color: var(--fg2); text-transform: uppercase; letter-spacing: 0.8px; }
+.bignum .bn-value { font-size: 26px; line-height: 1.15; color: var(--fg); font-variant-numeric: tabular-nums; }
+.bignum .bn-sub { font-size: 11px; color: var(--fg2); }
+.bignum.bn-link { cursor: pointer; }
+.bignum.bn-link:hover { border-color: var(--accent); }
+.bignum.bn-link:hover .bn-value { color: var(--accent); }
+/* "and the rest of this list is on its own page", under a preview table. */
+.more-link { font-size: 12px; margin: 6px 0 20px; }
+
 .tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
 .tab { padding: 8px 16px; cursor: pointer; color: var(--fg2); font-size: 13px; border-bottom: 2px solid transparent; margin-bottom: -1px; }
 .tab:hover { color: var(--fg); }
@@ -475,6 +537,8 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
   .rail .rail-label { position: absolute; width: 1px; height: 1px; overflow: hidden;
     clip-path: inset(50%); white-space: nowrap; }
   .rail nav a, .rail-toggle { justify-content: center; padding: 6px 0; }
+  .rail nav .nav-kids, .nav-twisty { display: none; }
+  .rail nav a.in-section { color: var(--accent); background: var(--bg3); border-left-color: var(--accent); }
   .rail-top { justify-content: center; padding: 12px 0 10px; }
   .rail-foot { display: none; }
 }
@@ -505,26 +569,58 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
 </defs></svg>
 <aside class="rail">
   <div class="rail-top"><span class="logo" onclick="navigate('/')">m<span class="rail-label">ygnoscan</span></span></div>
+  <!-- Kept in lockstep with the NAV table in the script below, which drives
+       the .pagenav strips and route()'s active-state bookkeeping off the same
+       sections. TestRailMatchesNavTable fails the build if the two drift.
+       Static rather than generated because the two CDN <script> tags at the
+       bottom of this file are render-blocking: building the rail in JS would
+       make the whole navigation hostage to cdn.jsdelivr.net being up (#214). -->
   <nav>
-      <a onclick="navigate('/')" id="nav-home" class="active" title="home"><svg aria-hidden="true"><use href="#i-home"/></svg><span class="rail-label">home</span></a>
-      <a onclick="navigate('/watch')" id="nav-watch" title="watch"><svg aria-hidden="true"><use href="#i-eye"/></svg><span class="rail-label">watch</span></a>
-      <a onclick="navigate('/realms')" id="nav-realms" title="realms"><svg aria-hidden="true"><use href="#i-layers"/></svg><span class="rail-label">realms</span></a>
-      <a onclick="navigate('/packages')" id="nav-packages" title="packages"><svg aria-hidden="true"><use href="#i-box"/></svg><span class="rail-label">packages</span></a>
-      <a onclick="navigate('/contracts')" id="nav-contracts" title="contracts"><svg aria-hidden="true"><use href="#i-bubbles"/></svg><span class="rail-label">contracts</span></a>
-      <a onclick="navigate('/apps')" id="nav-apps" title="apps"><svg aria-hidden="true"><use href="#i-apps"/></svg><span class="rail-label">apps</span></a>
-      <a onclick="navigate('/txs')" id="nav-txs" title="txs"><svg aria-hidden="true"><use href="#i-swap"/></svg><span class="rail-label">txs</span></a>
-      <a onclick="navigate('/blocks')" id="nav-blocks" title="blocks"><svg aria-hidden="true"><use href="#i-blocks"/></svg><span class="rail-label">blocks</span></a>
+      <div class="nav-group" data-group="home">
+        <a onclick="navigate('/')" id="nav-home" class="active" title="home, analytics, dashboards"><svg aria-hidden="true"><use href="#i-home"/></svg><span class="rail-label">home</span><span class="nav-twisty" onclick="toggleNavGroup(event, 'home')" aria-hidden="true">&#9660;</span></a>
+        <div class="nav-kids">
+          <a onclick="navigate('/analytics')" id="nav-analytics" title="analytics"><span class="rail-label">analytics</span></a>
+          <a onclick="navigate('/dashboards')" id="nav-dashboards" title="dashboards"><span class="rail-label">dashboards</span></a>
+        </div>
+      </div>
+      <div class="nav-group" data-group="contracts">
+        <a onclick="navigate('/contracts')" id="nav-contracts" title="contracts map, realms, packages, apps"><svg aria-hidden="true"><use href="#i-bubbles"/></svg><span class="rail-label">contracts</span><span class="nav-twisty" onclick="toggleNavGroup(event, 'contracts')" aria-hidden="true">&#9660;</span></a>
+        <div class="nav-kids">
+          <a onclick="navigate('/realms')" id="nav-realms" title="realms"><span class="rail-label">realms</span></a>
+          <a onclick="navigate('/packages')" id="nav-packages" title="packages"><span class="rail-label">packages</span></a>
+          <a onclick="navigate('/apps')" id="nav-apps" title="apps"><span class="rail-label">apps</span></a>
+        </div>
+      </div>
+      <div class="nav-group" data-group="blocks">
+        <a onclick="navigate('/blocks')" id="nav-blocks" title="blocks, transactions, events"><svg aria-hidden="true"><use href="#i-blocks"/></svg><span class="rail-label">blocks</span><span class="nav-twisty" onclick="toggleNavGroup(event, 'blocks')" aria-hidden="true">&#9660;</span></a>
+        <div class="nav-kids">
+          <a onclick="navigate('/txs')" id="nav-txs" title="transactions"><span class="rail-label">txs</span></a>
+          <a onclick="navigate('/events')" id="nav-events" title="events"><span class="rail-label">events</span></a>
+        </div>
+      </div>
       <a onclick="navigate('/accounts')" id="nav-accounts" title="accounts"><svg aria-hidden="true"><use href="#i-users"/></svg><span class="rail-label">accounts</span></a>
       <a onclick="navigate('/tokens')" id="nav-tokens" title="tokens"><svg aria-hidden="true"><use href="#i-coin"/></svg><span class="rail-label">tokens</span></a>
-      <a onclick="navigate('/storage')" id="nav-storage" title="storage"><svg aria-hidden="true"><use href="#i-disk"/></svg><span class="rail-label">storage</span></a>
+      <div class="nav-group" data-group="gas">
+        <a onclick="navigate('/gas')" id="nav-gas" title="gas summary, by realm, by user, top txs, storage"><svg aria-hidden="true"><use href="#i-gauge"/></svg><span class="rail-label">gas</span><span class="nav-twisty" onclick="toggleNavGroup(event, 'gas')" aria-hidden="true">&#9660;</span></a>
+        <div class="nav-kids">
+          <a onclick="navigate('/gas/realms')" id="nav-gas-realms" title="gas by realm"><span class="rail-label">by realm</span></a>
+          <a onclick="navigate('/gas/users')" id="nav-gas-users" title="gas by user"><span class="rail-label">by user</span></a>
+          <a onclick="navigate('/gas/txs')" id="nav-gas-txs" title="the most expensive transactions"><span class="rail-label">top txs</span></a>
+          <a onclick="navigate('/storage')" id="nav-storage" title="storage"><span class="rail-label">storage</span></a>
+        </div>
+      </div>
+      <div class="nav-group" data-group="govdao">
+        <a onclick="navigate('/govdao')" id="nav-govdao" title="govdao overview, proposals, voters, options, params"><svg aria-hidden="true"><use href="#i-gavel"/></svg><span class="rail-label">govdao</span><span class="nav-twisty" onclick="toggleNavGroup(event, 'govdao')" aria-hidden="true">&#9660;</span></a>
+        <div class="nav-kids">
+          <a onclick="navigate('/govdao/proposals')" id="nav-govdao-proposals" title="every proposal"><span class="rail-label">proposals</span></a>
+          <a onclick="navigate('/govdao/voters')" id="nav-govdao-voters" title="who votes, and who does not"><span class="rail-label">voters</span></a>
+          <a onclick="navigate('/govdao/options')" id="nav-govdao-options" title="what govdao can be asked to execute"><span class="rail-label">options</span></a>
+          <a onclick="navigate('/govdao/params')" id="nav-params" title="chain parameters"><span class="rail-label">params</span></a>
+        </div>
+      </div>
       <a onclick="navigate('/validators')" id="nav-validators" title="validators"><svg aria-hidden="true"><use href="#i-shield"/></svg><span class="rail-label">validators</span></a>
-      <a onclick="navigate('/govdao')" id="nav-govdao" title="govdao"><svg aria-hidden="true"><use href="#i-gavel"/></svg><span class="rail-label">govdao</span></a>
-      <a onclick="navigate('/gas')" id="nav-gas" title="gas"><svg aria-hidden="true"><use href="#i-gauge"/></svg><span class="rail-label">gas</span></a>
-      <a onclick="navigate('/analytics')" id="nav-analytics" title="analytics"><svg aria-hidden="true"><use href="#i-chart"/></svg><span class="rail-label">analytics</span></a>
-      <a onclick="navigate('/dashboards')" id="nav-dashboards" title="dashboards"><svg aria-hidden="true"><use href="#i-grid"/></svg><span class="rail-label">dashboards</span></a>
-      <a onclick="navigate('/params')" id="nav-params" title="params"><svg aria-hidden="true"><use href="#i-sliders"/></svg><span class="rail-label">params</span></a>
+      <a onclick="navigate('/watch')" id="nav-watch" title="watch"><svg aria-hidden="true"><use href="#i-eye"/></svg><span class="rail-label">watch</span></a>
       <a onclick="navigate('/sanity')" id="nav-sanity" title="sanity"><svg aria-hidden="true"><use href="#i-pulse"/></svg><span class="rail-label">sanity</span></a>
-      <a onclick="navigate('/events')" id="nav-events" title="events"><svg aria-hidden="true"><use href="#i-bolt"/></svg><span class="rail-label">events</span></a>
   </nav>
   <div class="rail-foot">
     <button class="rail-toggle" id="rail-toggle" onclick="toggleRail()" aria-label="collapse the navigation"><svg aria-hidden="true"><use href="#i-collapse"/></svg><span class="rail-label">collapse</span></button>
@@ -650,6 +746,12 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
   <div class="view" id="view-contracts"><main><div id="contracts-content"></div></main></div>
   <div class="view" id="view-apps"><main><div id="apps-content"></div></main></div>
   <div class="view" id="view-gas"><main><div id="gas-content"></div></main></div>
+  <div class="view" id="view-gas-realms"><main><div id="gas-realms-content"></div></main></div>
+  <div class="view" id="view-gas-users"><main><div id="gas-users-content"></div></main></div>
+  <div class="view" id="view-gas-txs"><main><div id="gas-txs-content"></div></main></div>
+  <div class="view" id="view-govdao-proposals"><main><div id="govdao-proposals-content"></div></main></div>
+  <div class="view" id="view-govdao-voters"><main><div id="govdao-voters-content"></div></main></div>
+  <div class="view" id="view-govdao-options"><main><div id="govdao-options-content"></div></main></div>
   <div class="view" id="view-storage"><main><div id="storage-content"></div></main></div>
   <div class="view" id="view-dashboards"><main><div id="dashboards-content"></div></main></div>
   <div class="view" id="view-block-detail"><main><div id="block-detail-content"></div></main></div>
@@ -2559,6 +2661,121 @@ function failRows(tbody, cols, err, retry) {
 }
 
 // --- Navigation (History API) ---
+
+// NAV is the rail, as data. The rail itself is static HTML (see the comment
+// on <nav>), so this exists for the two things markup cannot do: build each
+// section's .pagenav strip, and tell route() which parent to light up when a
+// child page is open. `own` is what the parent's own pill says inside that
+// strip, where "gas" next to "by realm" would not tell you it is the summary.
+//
+// One entry per `#nav-<id>` in the rail, in the same order.
+// TestRailMatchesNavTable compares the two and fails the build on a drift,
+// because the failure is otherwise silent: a section whose child is missing
+// here still renders, just without its strip.
+const NAV = [
+  { id: 'home', label: 'home', path: '/', own: 'overview', children: [
+    { id: 'analytics', label: 'analytics', path: '/analytics' },
+    { id: 'dashboards', label: 'dashboards', path: '/dashboards' },
+  ] },
+  { id: 'contracts', label: 'contracts', path: '/contracts', own: 'map', children: [
+    { id: 'realms', label: 'realms', path: '/realms' },
+    { id: 'packages', label: 'packages', path: '/packages' },
+    { id: 'apps', label: 'apps', path: '/apps' },
+  ] },
+  { id: 'blocks', label: 'blocks', path: '/blocks', own: 'blocks', children: [
+    { id: 'txs', label: 'txs', path: '/txs' },
+    { id: 'events', label: 'events', path: '/events' },
+  ] },
+  { id: 'accounts', label: 'accounts', path: '/accounts' },
+  { id: 'tokens', label: 'tokens', path: '/tokens' },
+  { id: 'gas', label: 'gas', path: '/gas', own: 'summary', children: [
+    { id: 'gas-realms', label: 'by realm', path: '/gas/realms' },
+    { id: 'gas-users', label: 'by user', path: '/gas/users' },
+    { id: 'gas-txs', label: 'top txs', path: '/gas/txs' },
+    { id: 'storage', label: 'storage', path: '/storage' },
+  ] },
+  { id: 'govdao', label: 'govdao', path: '/govdao', own: 'overview', children: [
+    { id: 'govdao-proposals', label: 'proposals', path: '/govdao/proposals' },
+    { id: 'govdao-voters', label: 'voters', path: '/govdao/voters' },
+    { id: 'govdao-options', label: 'options', path: '/govdao/options' },
+    { id: 'params', label: 'params', path: '/govdao/params' },
+  ] },
+  { id: 'validators', label: 'validators', path: '/validators' },
+  { id: 'watch', label: 'watch', path: '/watch' },
+  { id: 'sanity', label: 'sanity', path: '/sanity' },
+];
+
+// view id -> the section it belongs to, parents included (a section is in
+// itself, which is what makes pageNav('gas') and pageNav('storage') the same
+// strip). Detail views are absent and get no strip.
+const NAV_SECTION = {};
+for (const s of NAV) {
+  if (!s.children) continue;
+  NAV_SECTION[s.id] = s;
+  for (const c of s.children) NAV_SECTION[c.id] = s;
+}
+
+// Sections the reader has folded away by hand. The section they are
+// currently in is forced open on top of this (applyNavGroups), so a stored
+// preference can never hide the page being looked at.
+let _navClosed = new Set();
+try {
+  _navClosed = new Set(JSON.parse(localStorage.getItem('mygnoscan-nav-closed') || '[]'));
+} catch (e) { /* denied or malformed storage just means every section is open */ }
+
+function toggleNavGroup(ev, id) {
+  // The twisty lives inside the parent's <a>, which navigates. Folding a
+  // section is not a request to go there.
+  ev.stopPropagation();
+  ev.preventDefault();
+  if (_navClosed.has(id)) _navClosed.delete(id); else _navClosed.add(id);
+  try { localStorage.setItem('mygnoscan-nav-closed', JSON.stringify([..._navClosed])); } catch (e) { /* not persisting is fine */ }
+  applyNavGroups(currentNavSection());
+}
+
+function currentNavSection() {
+  const active = document.querySelector('.rail nav a.active, .rail nav a.in-section');
+  if (!active) return null;
+  const s = NAV_SECTION[active.id.replace(/^nav-/, '')];
+  return s ? s.id : null;
+}
+
+function applyNavGroups(openID) {
+  document.querySelectorAll('.rail nav .nav-group').forEach(g => {
+    g.classList.toggle('closed', _navClosed.has(g.dataset.group) && g.dataset.group !== openID);
+  });
+}
+
+// pageNav builds the section strip for a view, or returns null when the view
+// is not in a section (every detail page). route() mounts it; no loader has
+// to know it exists.
+function pageNav(view) {
+  const section = NAV_SECTION[view];
+  if (!section) return null;
+  const bar = el('div', { className: 'pagenav' });
+  const add = (id, label, path) => {
+    const a = el('a', { href: path, className: id === view ? 'active' : '' }, label);
+    a.addEventListener('click', (e) => { e.preventDefault(); navigate(path); });
+    bar.appendChild(a);
+  };
+  add(section.id, section.own || section.label, section.path);
+  for (const c of section.children) add(c.id, c.label, c.path);
+  return bar;
+}
+
+// mountPageNav puts the strip at the top of the active view's <main>, above
+// whatever that view's loader builds. Doing it here rather than in each
+// loader is what keeps it on the eight views whose markup is static HTML and
+// whose loaders only ever clear a nested div.
+function mountPageNav(view) {
+  const main = document.querySelector('#view-' + view + ' main');
+  if (!main) return;
+  const existing = main.querySelector(':scope > .pagenav');
+  if (existing) existing.remove();
+  const bar = pageNav(view);
+  if (bar) main.insertBefore(bar, main.firstChild);
+}
+
 function navigate(path, replace) {
   if (replace) history.replaceState(null, '', path);
   else history.pushState(null, '', path);
@@ -2572,7 +2789,7 @@ function route() {
   renderWatchBadge();
   const path = window.location.pathname;
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-  document.querySelectorAll('nav a').forEach(a => a.classList.remove('active'));
+  document.querySelectorAll('nav a').forEach(a => a.classList.remove('active', 'in-section'));
   const urlNetwork = new URLSearchParams(window.location.search).get('network');
   if (urlNetwork) {
     setNetwork(urlNetwork);
@@ -2593,12 +2810,25 @@ function route() {
   else if (path === '/validators') { view = 'validators'; }
   else if (path.startsWith('/validator/')) { view = 'validator-detail'; data = path.slice(11); }
   else if (path === '/govdao') { view = 'govdao'; }
+  // Before the /govdao/<id> prefix below, or parseInt('proposals') sends
+  // every named subpage to the proposal-not-found page.
+  else if (path === '/govdao/proposals') { view = 'govdao-proposals'; }
+  else if (path === '/govdao/voters') { view = 'govdao-voters'; }
+  else if (path === '/govdao/options') { view = 'govdao-options'; }
   else if (path === '/events') { view = 'events'; }
   else if (path === '/gas') { view = 'gas'; }
+  else if (path === '/gas/realms') { view = 'gas-realms'; }
+  else if (path === '/gas/users') { view = 'gas-users'; }
+  else if (path === '/gas/txs') { view = 'gas-txs'; }
   else if (path === '/storage') { view = 'storage'; }
   else if (path === '/analytics') { view = 'analytics'; }
   else if (path === '/dashboards') { view = 'dashboards'; }
-  else if (path === '/params') { view = 'params'; }
+  // /params is where this page shipped and what is linked from elsewhere;
+  // /govdao/params is where it now lives in the nav, because every value on
+  // it is one only a gov/dao proposal can change. Both resolve, neither
+  // redirects: a redirect would rewrite a reader's URL under them for no
+  // gain, and an old bookmark is not a mistake to correct.
+  else if (path === '/params' || path === '/govdao/params') { view = 'params'; }
   else if (path === '/sanity') { view = 'sanity'; }
   else if (path === '/watch') { view = 'watch'; }
   else if (path.startsWith('/block/')) { view = 'block-detail'; data = parseInt(path.slice(7)); }
@@ -2614,6 +2844,16 @@ function route() {
   if (ve) ve.classList.add('active');
   const nav = document.getElementById('nav-' + view);
   if (nav) nav.classList.add('active');
+  // A child page lights its parent too. Muted while the rail is wide (the
+  // child row already carries the accent), and the only thing left to show
+  // where you are once the rail is collapsed and the children are hidden.
+  const section = NAV_SECTION[view];
+  if (section && section.id !== view) {
+    const parent = document.getElementById('nav-' + section.id);
+    if (parent) parent.classList.add('in-section');
+  }
+  applyNavGroups(section ? section.id : null);
+  mountPageNav(view);
 
   const subbar = document.getElementById('sanity-subbar');
   if (subbar) {
@@ -2640,9 +2880,15 @@ function route() {
     case 'validators': loadValidators(); break;
     case 'validator-detail': loadValidatorDetail(data); break;
     case 'govdao': loadGovDAO(); break;
+    case 'govdao-proposals': loadGovDAOProposals(); break;
+    case 'govdao-voters': loadGovDAOVoters(); break;
+    case 'govdao-options': loadGovDAOOptions(); break;
     case 'govdao-detail': loadGovDAODetail(data); break;
     case 'events': loadEvents(); break;
     case 'gas': loadGas(); break;
+    case 'gas-realms': loadGasRealms(); break;
+    case 'gas-users': loadGasUsers(); break;
+    case 'gas-txs': loadGasTxs(); break;
     case 'storage': loadStorage(); break;
     case 'analytics': loadAnalytics(); break;
     case 'dashboards': loadDashboards(); break;
@@ -6446,152 +6692,273 @@ async function loadStorage() {
   });
 }
 
-async function loadGas() {
-  const container = clear('gas-content');
+// --- Gas -------------------------------------------------------------------
+//
+// One payload, four pages. /api/gas answers with the all-time totals plus
+// three top-N lists, and the summary and each list page read that same
+// payload — the summary at the default 20 rows, the list pages at 100. It
+// was a single page until it carried nine stat chips, two charts and three
+// long tables stacked: the figure anyone actually opens it for (what the
+// chain has spent, and whether that is going up) was below the fold on a
+// laptop, under a table of the twenty busiest realms.
+
+// bigNum builds one tile of a .bignums row. `to` makes the tile a link to
+// the page that breaks the number down, which is what lets the summary stop
+// at four figures instead of nine.
+function bigNum(label, value, opts) {
+  const o = opts || {};
+  const tile = el('div', { className: 'bignum' + (o.to ? ' bn-link' : '') },
+    el('span', { className: 'bn-label' }, label),
+    el('span', { className: 'bn-value' }, value));
+  if (o.sub) tile.appendChild(el('span', { className: 'bn-sub' }, o.sub));
+  if (o.title) tile.title = o.title;
+  if (o.to) tile.addEventListener('click', () => navigate(o.to));
+  return tile;
+}
+
+// fmtCompact is for the 26px tiles only. 1,333,000,221,686,563 is unreadable
+// at that size and wraps the tile; "1.33P" is not, and every caller puts the
+// exact figure in the tile's title so nothing is actually lost.
+function fmtCompact(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return String(n);
+  const abs = Math.abs(v);
+  const units = [[1e15, 'P'], [1e12, 'T'], [1e9, 'B'], [1e6, 'M'], [1e3, 'k']];
+  for (const [scale, suffix] of units) {
+    if (abs >= scale) {
+      const s = v / scale;
+      return (Math.abs(s) >= 100 ? s.toFixed(0) : Math.abs(s) >= 10 ? s.toFixed(1) : s.toFixed(2)) + suffix;
+    }
+  }
+  return fmtNum(v);
+}
+
+// moreLink is the "see all 100 →" under a preview table.
+function moreLink(text, path) {
+  const wrap = el('div', { className: 'more-link' });
+  wrap.appendChild(link(text + ' →', () => navigate(path)));
+  return wrap;
+}
+
+// gasFreshness says how old these figures are. They come from rollups
+// rebuilt on a timer, and presenting precomputed numbers as live is how a
+// page quietly stops being trustworthy.
+function gasFreshness(data) {
+  if (!data.computed_at) return null;
+  const note = el('div', { className: 'section-sub' });
+  note.append('gas totals as of ');
+  note.appendChild(timeEl(data.computed_at));
+  note.append(' · rebuilt every few minutes');
+  return note;
+}
+
+// gasRealmPathEl renders whatever the realm attribution produced. MsgRun has
+// no realm, so GetGasStats buckets those runs under "MsgRun by g1…" and this
+// is the one place that string is turned back into a badge and an address.
+function gasRealmPathEl(path) {
+  const run = String(path || '').match(/^MsgRun by (g1[a-z0-9]+)$/);
+  if (!run) return realmPathEl(path);
+  const s = el('span');
+  s.appendChild(badge('ok', 'MsgRun'));
+  s.append(' by ');
+  s.appendChild(addrLink(run[1]));
+  return s;
+}
+
+function gasRealmsTable(realms) {
+  const tbl = el('table');
+  tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'realm'), el('th', {}, 'gas used'), el('th', {}, 'fees (ugnot)'), el('th', {}, 'txs'), el('th', {}, 'avg gas/tx'))));
+  const body = el('tbody');
+  for (const r of (realms || [])) {
+    const avg = r.tx_count > 0 ? Math.floor(r.gas / r.tx_count) : 0;
+    body.appendChild(el('tr', {},
+      el('td', {}, gasRealmPathEl(r.path)),
+      el('td', {}, fmtNum(r.gas)),
+      el('td', {}, fmtNum(r.fees)),
+      el('td', {}, fmtNum(r.tx_count)),
+      el('td', {}, fmtNum(avg))
+    ));
+  }
+  tbl.appendChild(body);
+  return tbl;
+}
+
+function gasCallersTable(callers) {
+  const tbl = el('table');
+  tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'address'), el('th', {}, 'gas used'), el('th', {}, 'fees (ugnot)'), el('th', {}, 'txs'), el('th', {}, 'avg gas/tx'))));
+  const body = el('tbody');
+  for (const c of (callers || [])) {
+    const avg = c.tx_count > 0 ? Math.floor(c.gas / c.tx_count) : 0;
+    body.appendChild(el('tr', {},
+      el('td', {}, addrLink(c.address)),
+      el('td', {}, fmtNum(c.gas)),
+      el('td', {}, fmtNum(c.fees)),
+      el('td', {}, fmtNum(c.tx_count)),
+      el('td', {}, fmtNum(avg))
+    ));
+  }
+  tbl.appendChild(body);
+  return tbl;
+}
+
+function gasTxsTable(txs) {
+  const tbl = el('table');
+  tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'tx'), el('th', {}, 'type'), el('th', {}, 'detail'), el('th', {}, 'gas used'), el('th', {}, 'efficiency'), el('th', {}, 'fee'), el('th', {}, 'status'))));
+  const body = el('tbody');
+  for (const t of (txs || [])) {
+    const pct = t.gas_wanted > 0 ? (t.gas_used / t.gas_wanted * 100).toFixed(0) + '%' : '-';
+    let detailEl;
+    if (t.detail) {
+      detailEl = /^MsgRun by g1[a-z0-9]+$/.test(t.detail)
+        ? gasRealmPathEl(t.detail)
+        : realmPathEl(t.detail.includes('::') ? 'gno.land/' + t.detail.split('::')[0].replace('gno.land/', '') : t.detail);
+    } else {
+      detailEl = el('span', {}, '-');
+    }
+    body.appendChild(el('tr', {},
+      el('td', {}, txLink(t.hash, t.block_height)),
+      el('td', {}, typeBadge(t.type)),
+      el('td', {}, detailEl),
+      el('td', {}, fmtNum(t.gas_used)),
+      el('td', {}, pct),
+      el('td', {}, fmtNum(t.fee) + ' ugnot'),
+      el('td', {}, statusBadge(t.success))
+    ));
+  }
+  tbl.appendChild(body);
+  return tbl;
+}
+
+// gasChartsSection is the gas-over-time pair with its own day and
+// granularity buttons. Only the summary draws it: repeating it on three list
+// pages would mean three more Chart instances to destroy and nothing new to
+// read.
+function gasChartsSection() {
+  const section = el('div', { className: 'section', style: { marginTop: '8px' } });
+  const header = el('div', { style: { display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '16px', paddingBottom: '8px', borderBottom: '1px solid var(--border)' } });
+  header.appendChild(el('span', { style: { fontSize: '14px', color: 'var(--fg2)', textTransform: 'uppercase', letterSpacing: '1px', marginRight: '4px' } }, 'gas usage over time'));
+
+  const charts = el('div');
+  const buttonRow = (values, current, apply, fmt) => {
+    const group = el('div', { style: { display: 'flex', gap: '4px' } });
+    for (const v of values) {
+      const btn = el('button', { className: 'pager-btn' + (current() === v ? ' active' : ''), style: { padding: '3px 10px', fontSize: '12px' } }, fmt(v));
+      btn.addEventListener('click', () => {
+        apply(v);
+        group.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        renderGasCharts(charts);
+      });
+      group.appendChild(btn);
+    }
+    return group;
+  };
+  header.appendChild(buttonRow([7, 30, 90], () => _tsDays, v => { _tsDays = v; }, v => v + 'd'));
+  header.appendChild(buttonRow(['daily', 'weekly'], () => _tsGranularity, v => { _tsGranularity = v; }, v => v));
+
+  section.appendChild(header);
+  section.appendChild(charts);
+  renderGasCharts(charts);
+  return section;
+}
+
+// gasPage is the shape all four pages share: one apiSWR over /api/gas,
+// a freshness note, and then whatever `render` puts under it. Every render
+// runs up to twice and rebuilds from scratch, per apiSWR's two rules.
+function gasPage(containerID, limit, render) {
+  const container = clear(containerID);
   skeletonBlock(container);
-  try {
-    await apiSWR('gas', (data, swrMeta) => {
-      container.textContent = '';
-      // Say how fresh these are. They come from rollups rebuilt on a timer, and
-      // presenting precomputed numbers as live is how a page quietly stops being
-      // trustworthy.
-      if (data.computed_at) {
-        const note = el('div', { className: 'section-sub' });
-        note.append('totals and per-realm/per-user gas as of ');
-        note.appendChild(timeEl(data.computed_at));
-        note.append(' \u00b7 rebuilt every few minutes');
-        container.appendChild(note);
-      }
-      // Stats
-      const statsBar = el('div', { className: 'stats-bar' });
-      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total txs'), el('span', { className: 'value' }, fmtNum(data.total_txs))));
-      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'gas used'), el('span', { className: 'value' }, fmtNum(data.total_gas_used))));
-      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'gas wanted'), el('span', { className: 'value' }, fmtNum(data.total_gas_wanted))));
-      const eff = data.total_gas_wanted > 0 ? (data.total_gas_used / data.total_gas_wanted * 100).toFixed(1) + '%' : '-';
-      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'efficiency'), el('span', { className: 'value' }, eff)));
-      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total fees'), el('span', { className: 'value' }, fmtNum(data.total_fees) + ' ugnot')));
-      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'avg gas/tx'), el('span', { className: 'value' }, fmtNum(data.avg_gas_per_tx))));
-      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'success'), el('span', { className: 'value' }, fmtNum(data.success_count))));
-      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'failed'), el('span', { className: 'value' }, fmtNum(data.fail_count))));
-      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total source'), el('span', { className: 'value' }, fmtNum(data.total_source_bytes) + ' bytes')));
-      container.appendChild(statsBar);
+  return apiSWR('gas' + (limit ? '?limit=' + limit : ''), (data) => {
+    container.textContent = '';
+    const note = gasFreshness(data);
+    if (note) container.appendChild(note);
+    render(container, data);
+  }).catch(err => { failBlock(container, err, () => gasPage(containerID, limit, render)); });
+}
 
-      // Gas time-series chart
-      const gasSection = el('div', { className: 'section', style: { marginTop: '24px' } });
-      const gasHeader = el('div', { style: { display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '16px', paddingBottom: '8px', borderBottom: '1px solid var(--border)' } });
-      gasHeader.appendChild(el('span', { style: { fontSize: '14px', color: 'var(--fg2)', textTransform: 'uppercase', letterSpacing: '1px', marginRight: '4px' } }, 'gas usage over time'));
+async function loadGas() {
+  await gasPage('gas-content', 0, (container, data) => {
+    const eff = data.total_gas_wanted > 0 ? (data.total_gas_used / data.total_gas_wanted * 100).toFixed(1) + '%' : '-';
+    const failRate = data.total_txs > 0 ? (data.fail_count / data.total_txs * 100).toFixed(1) + '%' : '-';
 
-      const gasDaysGroup = el('div', { style: { display: 'flex', gap: '4px' } });
-      for (const d of [7, 30, 90]) {
-        const btn = el('button', { className: 'pager-btn' + (_tsDays === d ? ' active' : ''), style: { padding: '3px 10px', fontSize: '12px' } }, d + 'd');
-        btn.addEventListener('click', () => {
-          _tsDays = d;
-          gasDaysGroup.querySelectorAll('button').forEach(b => b.classList.remove('active'));
-          btn.classList.add('active');
-          renderGasCharts(gasChartsDiv);
-        });
-        gasDaysGroup.appendChild(btn);
-      }
-      gasHeader.appendChild(gasDaysGroup);
+    const nums = el('div', { className: 'bignums' });
+    nums.appendChild(bigNum('gas used', fmtCompact(data.total_gas_used), {
+      title: fmtNum(data.total_gas_used) + ' gas, all time',
+      sub: fmtCompact(data.avg_gas_per_tx) + ' per tx',
+      to: '/gas/realms',
+    }));
+    nums.appendChild(bigNum('fees paid', fmtCompact(data.total_fees), {
+      title: fmtNum(data.total_fees) + ' ugnot',
+      sub: 'ugnot',
+      to: '/gas/users',
+    }));
+    nums.appendChild(bigNum('transactions', fmtCompact(data.total_txs), {
+      title: fmtNum(data.total_txs) + ' transactions',
+      sub: fmtNum(data.fail_count) + ' failed (' + failRate + ')',
+      to: '/txs',
+    }));
+    nums.appendChild(bigNum('efficiency', eff, {
+      title: fmtNum(data.total_gas_used) + ' used of ' + fmtNum(data.total_gas_wanted) + ' wanted',
+      sub: 'used of wanted',
+      to: '/gas/txs',
+    }));
+    container.appendChild(nums);
 
-      const gasGranGroup = el('div', { style: { display: 'flex', gap: '4px' } });
-      for (const g of ['daily', 'weekly']) {
-        const btn = el('button', { className: 'pager-btn' + (_tsGranularity === g ? ' active' : ''), style: { padding: '3px 10px', fontSize: '12px' } }, g);
-        btn.addEventListener('click', () => {
-          _tsGranularity = g;
-          gasGranGroup.querySelectorAll('button').forEach(b => b.classList.remove('active'));
-          btn.classList.add('active');
-          renderGasCharts(gasChartsDiv);
-        });
-        gasGranGroup.appendChild(btn);
-      }
-      gasHeader.appendChild(gasGranGroup);
-      gasSection.appendChild(gasHeader);
+    container.appendChild(gasChartsSection());
 
-      const gasChartsDiv = el('div');
-      gasSection.appendChild(gasChartsDiv);
-      container.appendChild(gasSection);
-      renderGasCharts(gasChartsDiv);
+    // Five rows of each list, as a taste of what the dedicated page holds.
+    // Five is deliberate: enough to see the shape of the distribution, few
+    // enough that all three fit on one screen with the charts.
+    const preview = (title, rows, table, path) => {
+      container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, title));
+      container.appendChild(table(rows.slice(0, 5)));
+      // Not "all N": this payload holds 20 rows because that is what the
+      // summary asked for, and saying "all 20" about a chain with thousands
+      // of realms would be a number the page invented.
+      container.appendChild(moreLink('the top ' + GAS_LIST_ROWS, path));
+    };
+    preview('top realms by gas', data.top_realms || [], gasRealmsTable, '/gas/realms');
+    preview('top users by gas', data.top_callers || [], gasCallersTable, '/gas/users');
+    preview('most expensive transactions', data.top_txs || [], gasTxsTable, '/gas/txs');
+  });
+}
 
-      // Top realms by gas — chart first for the shape, table under it for figures.
-      container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'top realms by gas usage'));
-      const realmChartDiv = el('div', { style: { marginBottom: '16px' } });
-      container.appendChild(realmChartDiv);
-      renderTopRealmsChart(realmChartDiv, data.top_realms);
-      const rtbl = el('table');
-      rtbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'realm'), el('th', {}, 'gas used'), el('th', {}, 'fees (ugnot)'), el('th', {}, 'txs'), el('th', {}, 'avg gas/tx'))));
-      const rbody = el('tbody');
-      for (const r of (data.top_realms || [])) {
-        const avg = r.tx_count > 0 ? Math.floor(r.gas / r.tx_count) : 0;
-        // Handle "MsgRun by g1..." entries
-        let pathEl;
-        const runMatch = r.path.match(/^MsgRun by (g1[a-z0-9]+)$/);
-        if (runMatch) {
-          const s = el('span');
-          s.appendChild(badge('ok', 'MsgRun'));
-          s.append(' by ');
-          s.appendChild(addrLink(runMatch[1]));
-          pathEl = s;
-        } else {
-          pathEl = realmPathEl(r.path);
-        }
-        rbody.appendChild(el('tr', {},
-          el('td', {}, pathEl),
-          el('td', {}, fmtNum(r.gas)),
-          el('td', {}, fmtNum(r.fees)),
-          el('td', {}, fmtNum(r.tx_count)),
-          el('td', {}, fmtNum(avg))
-        ));
-      }
-      rtbl.appendChild(rbody); container.appendChild(rtbl);
+// The three list pages. 100 rows rather than the summary's 20, from the same
+// endpoint and the same rollups, so nothing here can disagree with the
+// numbers above it.
+const GAS_LIST_ROWS = 100;
 
-      // Top callers by gas — same shape as the realm table, attributed to
-      // whoever paid instead of what was touched.
-      container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'top users by gas usage'));
-      const ctbl = el('table');
-      ctbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'address'), el('th', {}, 'gas used'), el('th', {}, 'fees (ugnot)'), el('th', {}, 'txs'), el('th', {}, 'avg gas/tx'))));
-      const cbody = el('tbody');
-      for (const c of (data.top_callers || [])) {
-        const avg = c.tx_count > 0 ? Math.floor(c.gas / c.tx_count) : 0;
-        cbody.appendChild(el('tr', {},
-          el('td', {}, addrLink(c.address)),
-          el('td', {}, fmtNum(c.gas)),
-          el('td', {}, fmtNum(c.fees)),
-          el('td', {}, fmtNum(c.tx_count)),
-          el('td', {}, fmtNum(avg))
-        ));
-      }
-      ctbl.appendChild(cbody); container.appendChild(ctbl);
+async function loadGasRealms() {
+  await gasPage('gas-realms-content', GAS_LIST_ROWS, (container, data) => {
+    container.appendChild(el('div', { className: 'section-title' }, 'gas by realm'));
+    container.appendChild(el('div', { className: 'section-sub' },
+      'every transaction\'s gas charged to the package it touched. a MsgRun touches no package, ' +
+      'so those are grouped under whoever ran them instead of appearing as one row each.'));
+    const chart = el('div', { style: { marginBottom: '16px' } });
+    container.appendChild(chart);
+    renderTopRealmsChart(chart, (data.top_realms || []).slice(0, 20));
+    container.appendChild(gasRealmsTable(data.top_realms));
+  });
+}
 
-      // Top txs by gas
-      container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'top transactions by gas'));
-      const ttbl = el('table');
-      ttbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'tx'), el('th', {}, 'type'), el('th', {}, 'detail'), el('th', {}, 'gas used'), el('th', {}, 'efficiency'), el('th', {}, 'fee'), el('th', {}, 'status'))));
-      const tbody = el('tbody');
-      for (const t of (data.top_txs || [])) {
-        const pct = t.gas_wanted > 0 ? (t.gas_used / t.gas_wanted * 100).toFixed(0) + '%' : '-';
-        let detailEl;
-        const rm = t.detail?.match(/^MsgRun by (g1[a-z0-9]+)$/);
-        if (rm) {
-          const s = el('span'); s.appendChild(badge('ok', 'MsgRun')); s.append(' by '); s.appendChild(addrLink(rm[1])); detailEl = s;
-        } else if (t.detail) {
-          detailEl = realmPathEl(t.detail.includes('::') ? 'gno.land/' + t.detail.split('::')[0].replace('gno.land/','') : t.detail);
-        } else {
-          detailEl = el('span', {}, '-');
-        }
-        tbody.appendChild(el('tr', {},
-          el('td', {}, txLink(t.hash, t.block_height)),
-          el('td', {}, typeBadge(t.type)),
-          el('td', {}, detailEl),
-          el('td', {}, fmtNum(t.gas_used)),
-          el('td', {}, pct),
-          el('td', {}, fmtNum(t.fee) + ' ugnot'),
-          el('td', {}, statusBadge(t.success))
-        ));
-      }
-      ttbl.appendChild(tbody); container.appendChild(ttbl);
-    });
-  } catch (err) { container.textContent = ''; container.appendChild(el('p', { style: { color: 'var(--red)' } }, 'Error: ' + err.message)); }
+async function loadGasUsers() {
+  await gasPage('gas-users-content', GAS_LIST_ROWS, (container, data) => {
+    container.appendChild(el('div', { className: 'section-title' }, 'gas by user'));
+    container.appendChild(el('div', { className: 'section-sub' },
+      'the same gas, attributed to whoever signed for it rather than to what it touched. ' +
+      'plain transfers count here and not on the realm list: a send touches no realm, but its sender still paid.'));
+    container.appendChild(gasCallersTable(data.top_callers));
+  });
+}
+
+async function loadGasTxs() {
+  await gasPage('gas-txs-content', GAS_LIST_ROWS, (container, data) => {
+    container.appendChild(el('div', { className: 'section-title' }, 'most expensive transactions'));
+    container.appendChild(el('div', { className: 'section-sub' },
+      'ranked by gas actually burned. efficiency is used against wanted: a low figure means the ' +
+      'signer over-reserved, which costs nothing extra but does say the gas estimate was a guess.'));
+    container.appendChild(gasTxsTable(data.top_txs));
+  });
 }
 
 let _eventsCache = null;
@@ -6851,6 +7218,66 @@ function renderGovDAOTierChart(container, tierStats) {
   }));
 }
 
+// --- GovDAO ----------------------------------------------------------------
+//
+// Four pages over two endpoints. /api/govdao/overview is the expensive one —
+// gov/dao's own Render() over RPC, ~1.8s cold — and every page here reads
+// that same cached payload, so moving between them costs nothing after the
+// first. /govdao is the overview: what is being voted on right now, in four
+// numbers and one short table. Everything that used to sit under it on the
+// same scroll (the full proposal list, the member roster) is its own page,
+// because the two questions "is anything happening" and "who has been
+// voting" want completely different layouts and only one of them is
+// urgent.
+
+// A proposal is open when gov/dao has printed no decision marker for it.
+// Deliberately expressed as "not decided" rather than as a list of statuses
+// that mean open: gov/dao can add a status, and a new one must read as
+// something to look at rather than silently vanish from the overview.
+function govDAOIsOpen(p) {
+  const s = (p.status || '').toUpperCase();
+  return s !== 'ACCEPTED' && s !== 'REJECTED' && s !== 'DENIED';
+}
+
+function govDAOSorted(overview) {
+  return (overview.proposals || []).slice().sort((a, b) => b.id - a.id);
+}
+
+// govDAOProposalsTable is the proposal list, shared by the overview (cut to
+// the open ones) and by /govdao/proposals (all of them).
+function govDAOProposalsTable(proposals) {
+  const tbl = el('table');
+  tbl.appendChild(el('thead', {}, el('tr', {},
+    el('th', {}, 'id'), el('th', {}, 'title'), el('th', {}, 'author'), el('th', {}, 'status'),
+    el('th', {}, 'checks'), el('th', {}, 'votes'), el('th', {}, 'tiers'), el('th', {}, 'created'), el('th', {}, 'last activity')
+  )));
+  const body = el('tbody');
+  if (!proposals.length) {
+    body.appendChild(el('tr', {}, el('td', { colspan: '9', style: { color: 'var(--fg2)' } }, 'no proposals found')));
+  }
+  for (const p of proposals) {
+    const goToProposal = () => navigate('/govdao/' + p.id);
+    body.appendChild(el('tr', { style: { cursor: 'pointer' }, onclick: goToProposal },
+      el('td', {}, link('#' + p.id, goToProposal)),
+      el('td', {}, p.title || ''),
+      el('td', {}, gnoUserEl(p.author, p.author_address)),
+      el('td', {}, govDAOStatusBadge(p.status)),
+      el('td', {}, auditSummaryEl(p)),
+      el('td', {}, voteBar(p.yes_percent || 0, p.no_percent || 0, p.abstain_percent || 0)),
+      el('td', {}, (p.tiers || []).join(', ')),
+      el('td', {}, p.created_height ? blockWithAge(p.created_height, p.created_time) : el('span', { style: { color: 'var(--fg2)' } }, '–')),
+      el('td', {}, p.last_activity_height ? blockWithAge(p.last_activity_height, p.last_activity_time) : el('span', { style: { color: 'var(--fg2)' } }, '–'))
+    ));
+  }
+  tbl.appendChild(body);
+  return tbl;
+}
+
+function govDAOErrorsNote(container, errors) {
+  if (!(errors || []).length) return;
+  container.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '12px', marginTop: '12px' } }, 'note: ' + errors.join('; ')));
+}
+
 async function loadGovDAO() {
   const container = clear('govdao-content');
   // Two sections, two independent loads. The recent-activity table comes from
@@ -6873,96 +7300,89 @@ async function loadGovDAO() {
   skeletonBlock(head);
   skeletonBlock(activity);
 
-  apiSWR('govdao/overview', (overview, meta) => renderGovDAOOverview(head, overview, meta))
+  apiSWR('govdao/overview', (overview, meta) => renderGovDAOSummary(head, overview, meta))
     .catch(err => { console.error(err); failBlock(head, err, loadGovDAO); });
   apiSWR('govdao', (calls, meta) => renderGovDAOActivity(activity, calls, meta))
     .catch(err => { console.error(err); failBlock(activity, err, loadGovDAO); });
 }
 
-// renderGovDAOOverview draws the members/tiers/proposals half. Synchronous and
-// total — see apiSWR's two rules — because it runs once on cached data and
-// again on fresh.
-function renderGovDAOOverview(container, overview, meta) {
+// renderGovDAOSummary draws the overview's own half: four numbers, whatever
+// is still open, and the tier split. Synchronous and total — see apiSWR's
+// two rules — because it runs once on cached data and again on fresh.
+function renderGovDAOSummary(container, overview, meta) {
   container.textContent = '';
 
-  const proposals = (overview.proposals || []).slice().sort((a, b) => b.id - a.id);
+  const proposals = govDAOSorted(overview);
+  const open = proposals.filter(govDAOIsOpen);
   const members = overview.members || [];
   const tierStats = overview.tier_stats || [];
   const totalPower = tierStats.reduce((s, t) => s + t.power, 0);
+  const accepted = proposals.filter(p => (p.status || '').toUpperCase() === 'ACCEPTED').length;
 
-  const statsBar = el('div', { className: 'stats-bar' });
-  statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'proposals'), el('span', { className: 'value' }, fmtNum(proposals.length))));
-  statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'accepted'), el('span', { className: 'value' }, fmtNum(proposals.filter(p => (p.status || '').toUpperCase() === 'ACCEPTED').length))));
-  statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'members'), el('span', { className: 'value' }, fmtNum(members.length))));
-  statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'voting power'), el('span', { className: 'value' }, fmtNum(totalPower))));
-  container.appendChild(statsBar);
+  const nums = el('div', { className: 'bignums' });
+  nums.appendChild(bigNum('open now', fmtNum(open.length), {
+    sub: open.length ? 'awaiting a decision' : 'nothing to vote on',
+    to: '/govdao/proposals',
+  }));
+  nums.appendChild(bigNum('proposals', fmtNum(proposals.length), {
+    sub: fmtNum(accepted) + ' accepted',
+    to: '/govdao/proposals',
+  }));
+  nums.appendChild(bigNum('members', fmtNum(members.length), {
+    sub: tierStats.length + ' tier' + (tierStats.length === 1 ? '' : 's'),
+    to: '/govdao/voters',
+  }));
+  nums.appendChild(bigNum('voting power', fmtNum(totalPower), {
+    sub: 'total across every tier',
+    to: '/govdao/voters',
+  }));
+  container.appendChild(nums);
 
-  // Members & tiers
-  container.appendChild(el('div', { className: 'section-title' }, 'members & tiers'));
-  const tierRow = el('div', { style: { display: 'flex', gap: '24px', flexWrap: 'wrap', alignItems: 'flex-start', marginBottom: '12px' } });
-  const chartDiv = el('div');
-  renderGovDAOTierChart(chartDiv, tierStats);
-  if (chartDiv.childNodes.length) tierRow.appendChild(chartDiv);
-  const tierTbl = el('table', { style: { maxWidth: '360px' } });
-  tierTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'tier'), el('th', {}, 'members'), el('th', {}, 'power'), el('th', {}, 'share'))));
-  const tierBody = el('tbody');
-  for (const t of tierStats) {
-    tierBody.appendChild(el('tr', {},
+  // What is actually being decided right now, in full, above everything
+  // else. The complete list, including everything already settled, is one
+  // click away and is not what someone opening /govdao came for.
+  container.appendChild(el('div', { className: 'section-title' }, 'open proposals'));
+  if (open.length) {
+    container.appendChild(govDAOProposalsTable(open));
+  } else {
+    container.appendChild(el('div', { className: 'section-sub' },
+      'nothing is open for a vote. every proposal gov/dao lists has been decided.'));
+  }
+  if (proposals.length) {
+    container.appendChild(moreLink('all ' + fmtNum(proposals.length) + ' proposals, decided and open', '/govdao/proposals'));
+  }
+
+  // Skipped rather than drawn empty. A tier table with a header and no rows
+  // reads as a rendering failure, and on a chain gov/dao has not been seeded
+  // on that is exactly the wrong thing to say.
+  if (tierStats.length) {
+    container.appendChild(el('div', { className: 'section-title', style: { marginTop: '20px' } }, 'voting power by tier'));
+    const tierRow = el('div', { style: { display: 'flex', gap: '24px', flexWrap: 'wrap', alignItems: 'flex-start', marginBottom: '8px' } });
+    const chartDiv = el('div');
+    renderGovDAOTierChart(chartDiv, tierStats);
+    if (chartDiv.childNodes.length) tierRow.appendChild(chartDiv);
+    tierRow.appendChild(govDAOTierTable(tierStats, totalPower));
+    container.appendChild(tierRow);
+    container.appendChild(moreLink('who holds it, and who votes with it', '/govdao/voters'));
+  }
+
+  govDAOErrorsNote(container, overview.errors);
+}
+
+function govDAOTierTable(tierStats, totalPower) {
+  const tbl = el('table', { style: { maxWidth: '360px' } });
+  tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'tier'), el('th', {}, 'members'), el('th', {}, 'power'), el('th', {}, 'share'))));
+  const body = el('tbody');
+  for (const t of (tierStats || [])) {
+    body.appendChild(el('tr', {},
       el('td', {}, badge('realm', t.tier)),
       el('td', {}, fmtNum(t.members)),
       el('td', {}, fmtNum(t.power)),
       el('td', {}, totalPower ? (t.power / totalPower * 100).toFixed(1) + '%' : '–')
     ));
   }
-  tierTbl.appendChild(tierBody);
-  tierRow.appendChild(tierTbl);
-  container.appendChild(tierRow);
-
-  if (members.length) {
-    const membersDetails = el('details', { style: { marginBottom: '8px' } });
-    membersDetails.appendChild(el('summary', { style: { cursor: 'pointer', color: 'var(--fg2)', fontSize: '13px' } }, 'all ' + members.length + ' members'));
-    const mTbl = el('table');
-    mTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'address'), el('th', {}, 'tier'))));
-    const mBody = el('tbody');
-    for (const m of members) {
-      mBody.appendChild(el('tr', {}, el('td', {}, addrLink(m.address)), el('td', {}, badge('realm', m.tier))));
-    }
-    mTbl.appendChild(mBody);
-    membersDetails.appendChild(mTbl);
-    container.appendChild(membersDetails);
-  }
-
-  // Proposals
-  container.appendChild(el('div', { className: 'section-title', style: { marginTop: '20px' } }, 'proposals'));
-  const pTbl = el('table');
-  pTbl.appendChild(el('thead', {}, el('tr', {},
-    el('th', {}, 'id'), el('th', {}, 'title'), el('th', {}, 'author'), el('th', {}, 'status'),
-    el('th', {}, 'checks'), el('th', {}, 'votes'), el('th', {}, 'tiers'), el('th', {}, 'created'), el('th', {}, 'last activity')
-  )));
-  const pBody = el('tbody');
-  if (!proposals.length) {
-    pBody.appendChild(el('tr', {}, el('td', { colspan: '9', style: { color: 'var(--fg2)' } }, 'no proposals found')));
-  }
-  for (const p of proposals) {
-    const goToProposal = () => navigate('/govdao/' + p.id);
-    pBody.appendChild(el('tr', { style: { cursor: 'pointer' }, onclick: goToProposal },
-      el('td', {}, link('#' + p.id, goToProposal)),
-      el('td', {}, p.title || ''),
-      el('td', {}, gnoUserEl(p.author, p.author_address)),
-      el('td', {}, govDAOStatusBadge(p.status)),
-      el('td', {}, auditSummaryEl(p)),
-      el('td', {}, voteBar(p.yes_percent || 0, p.no_percent || 0, p.abstain_percent || 0)),
-      el('td', {}, (p.tiers || []).join(', ')),
-      el('td', {}, p.created_height ? blockWithAge(p.created_height, p.created_time) : el('span', { style: { color: 'var(--fg2)' } }, '–')),
-      el('td', {}, p.last_activity_height ? blockWithAge(p.last_activity_height, p.last_activity_time) : el('span', { style: { color: 'var(--fg2)' } }, '–'))
-    ));
-  }
-  pTbl.appendChild(pBody);
-  container.appendChild(pTbl);
-
-  if ((overview.errors || []).length) {
-    container.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '12px', marginTop: '12px' } }, 'note: ' + overview.errors.join('; ')));
-  }
+  tbl.appendChild(body);
+  return tbl;
 }
 
 function renderGovDAOActivity(container, calls, meta) {
@@ -6972,11 +7392,12 @@ function renderGovDAOActivity(container, calls, meta) {
   // than the proposals table above, and the one place a call gov/dao
   // received that this page cannot otherwise place (an unrecognized
   // function, say) is still visible.
+  const rows = (calls || []).slice(0, 15);
   container.appendChild(el('div', { className: 'section-title', style: { marginTop: '20px' } }, 'recent on-chain activity'));
   const aTbl = el('table');
   aTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'tx'), el('th', {}, 'caller'), el('th', {}, 'function'), el('th', {}, 'status'), el('th', {}, 'block'))));
   const aBody = el('tbody');
-  for (const c of (calls || []).slice(0, 50)) {
+  for (const c of rows) {
     aBody.appendChild(el('tr', {},
       el('td', {}, txLink(c.hash, c.block_height, null, { showBlock: false })),
       el('td', {}, addrLink(c.caller)),
@@ -6985,12 +7406,217 @@ function renderGovDAOActivity(container, calls, meta) {
       el('td', {}, blockWithAge(c.block_height, c.block_time))
     ));
   }
-  if (!(calls || []).length) {
+  if (!rows.length) {
     aBody.appendChild(el('tr', {}, el('td', { colspan: '5', style: { color: 'var(--fg2)' } }, 'no activity found')));
   }
   aTbl.appendChild(aBody);
   container.appendChild(aTbl);
+}
 
+// --- /govdao/proposals -----------------------------------------------------
+
+// Which statuses the list is filtered to. Module-level so the choice
+// survives the second apiSWR render, which rebuilds the whole container.
+let _govDAOFilter = 'all';
+
+async function loadGovDAOProposals() {
+  const container = clear('govdao-proposals-content');
+  skeletonBlock(container);
+  await apiSWR('govdao/overview', (overview) => {
+    container.textContent = '';
+    const proposals = govDAOSorted(overview);
+    const counts = {
+      all: proposals.length,
+      open: proposals.filter(govDAOIsOpen).length,
+      accepted: proposals.filter(p => (p.status || '').toUpperCase() === 'ACCEPTED').length,
+      rejected: proposals.filter(p => ['REJECTED', 'DENIED'].includes((p.status || '').toUpperCase())).length,
+    };
+    const match = {
+      all: () => true,
+      open: govDAOIsOpen,
+      accepted: p => (p.status || '').toUpperCase() === 'ACCEPTED',
+      rejected: p => ['REJECTED', 'DENIED'].includes((p.status || '').toUpperCase()),
+    };
+
+    container.appendChild(el('div', { className: 'section-title' }, 'proposals'));
+    container.appendChild(el('div', { className: 'section-sub' },
+      'every proposal gov/dao has ever listed, newest first. "checks" is the same automated audit ' +
+      'the proposal page runs, so an inconsistency is visible from here rather than only to whoever opens it.'));
+
+    // Pills and table are redrawn together on every filter change: a pill's
+    // own styling is set at construction (contractPill), so toggling a class
+    // on it afterwards would leave the inline colours saying something else.
+    const panel = el('div');
+    const draw = () => {
+      panel.textContent = '';
+      const pills = el('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap', padding: '4px 0 12px' } });
+      for (const k of ['all', 'open', 'accepted', 'rejected']) {
+        pills.appendChild(contractPill(k + ' (' + counts[k] + ')', _govDAOFilter === k, () => {
+          _govDAOFilter = k;
+          draw();
+        }));
+      }
+      panel.appendChild(pills);
+      panel.appendChild(govDAOProposalsTable(proposals.filter(match[_govDAOFilter])));
+    };
+    draw();
+    container.appendChild(panel);
+    govDAOErrorsNote(container, overview.errors);
+  }).catch(err => failBlock(container, err, loadGovDAOProposals));
+}
+
+// --- /govdao/voters --------------------------------------------------------
+
+async function loadGovDAOVoters() {
+  const container = clear('govdao-voters-content');
+  skeletonBlock(container);
+  await apiSWR('govdao/voters', (data) => {
+    container.textContent = '';
+    const voters = data.voters || [];
+    const members = voters.filter(v => v.member);
+    const silent = members.filter(v => !v.cast);
+    const turnout = data.proposals && members.length
+      ? (data.total_cast / (data.proposals * members.length) * 100).toFixed(1) + '%'
+      : '–';
+
+    container.appendChild(el('div', { className: 'section-title' }, 'voters'));
+    container.appendChild(el('div', { className: 'section-sub' },
+      'gov/dao publishes the member roster and each proposal\'s votes as separate renders, and never ' +
+      'joins them: the roster has addresses and no votes, the votes have usernames and no notion of who ' +
+      'could have voted. this is that join, over the last ' + fmtNum(data.proposals) + ' proposal' +
+      (data.proposals === 1 ? '' : 's') + ' — which is what makes "never voted" a row you can read rather than an absence.'));
+
+    const nums = el('div', { className: 'bignums' });
+    nums.appendChild(bigNum('members', fmtNum(members.length), { sub: 'in the memberstore now' }));
+    nums.appendChild(bigNum('votes cast', fmtNum(data.total_cast), { sub: 'across ' + fmtNum(data.proposals) + ' proposals' }));
+    nums.appendChild(bigNum('turnout', turnout, { sub: 'of every vote that could have been cast' }));
+    nums.appendChild(bigNum('never voted', fmtNum(silent.length), { sub: 'members with no vote on record' }));
+    container.appendChild(nums);
+
+    const tbl = el('table');
+    tbl.appendChild(el('thead', {}, el('tr', {},
+      el('th', {}, 'voter'), el('th', {}, 'tier'), el('th', {}, 'yes'), el('th', {}, 'no'),
+      el('th', {}, 'abstain'), el('th', {}, 'cast'), el('th', {}, 'turnout'),
+      el('th', {}, 'authored'), el('th', {}, 'last vote'))));
+    const body = el('tbody');
+    if (!voters.length) {
+      body.appendChild(el('tr', {}, el('td', { colspan: '9', style: { color: 'var(--fg2)' } }, 'no voters found')));
+    }
+    for (const v of voters) {
+      const rate = data.proposals ? (v.cast / data.proposals * 100).toFixed(0) + '%' : '–';
+      const dim = { style: { color: 'var(--fg2)' } };
+      body.appendChild(el('tr', {},
+        el('td', {}, govDAOVoterEl(v)),
+        el('td', {}, v.tier ? badge('realm', v.tier) : el('span', dim, '–')),
+        el('td', v.yes ? {} : dim, fmtNum(v.yes)),
+        el('td', v.no ? {} : dim, fmtNum(v.no)),
+        el('td', v.abstain ? {} : dim, fmtNum(v.abstain)),
+        el('td', v.cast ? {} : dim, fmtNum(v.cast)),
+        el('td', v.cast ? {} : dim, rate),
+        el('td', v.authored ? {} : dim, fmtNum(v.authored)),
+        el('td', {}, v.last_voted ? link('#' + v.last_voted, () => navigate('/govdao/' + v.last_voted)) : el('span', dim, '–'))
+      ));
+    }
+    tbl.appendChild(body);
+    container.appendChild(tbl);
+    govDAOErrorsNote(container, data.errors);
+  }).catch(err => failBlock(container, err, loadGovDAOVoters));
+}
+
+// govDAOVoterEl names a row. A member carries a badge; someone who voted and
+// is no longer in the memberstore is marked "past", because a roster that
+// showed them identically would overstate the current electorate.
+function govDAOVoterEl(v) {
+  const wrap = el('span', { style: { display: 'inline-flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' } });
+  if (!v.address) {
+    wrap.appendChild(el('span', { title: 'r/sys/users does not resolve this name to an address' }, '@' + v.user));
+  } else {
+    const a = addrLink(v.address);
+    wrap.appendChild(a);
+    // addrLink resolves its own label, and for a registered user that label
+    // is already the @handle. Appending it unconditionally printed "@moul
+    // g1manfre…dlf5 @moul".
+    if (v.user && !a.textContent.includes(v.user)) {
+      wrap.appendChild(el('span', { style: { color: 'var(--fg2)', fontSize: '11px' } }, '@' + v.user));
+    }
+  }
+  if (!v.member) {
+    const b = badge('run', 'past');
+    b.title = 'voted, but is not in the memberstore now';
+    wrap.appendChild(b);
+  }
+  return wrap;
+}
+
+// --- /govdao/options -------------------------------------------------------
+
+// The realm a proposal executes is the whole of what governance can be asked
+// to do, and nothing lists them: gov/dao knows the executor of a proposal
+// someone already wrote, and the import graph knows which realms are wired
+// to governance at all. Neither alone answers "what can I propose". This is
+// both, in one table.
+async function loadGovDAOOptions() {
+  const container = clear('govdao-options-content');
+  skeletonBlock(container);
+  await apiSWR(['govdao/overview', 'deps/r/gov/dao?dir=dependents'], ([overview, graph]) => {
+    container.textContent = '';
+    const proposals = govDAOSorted(overview);
+
+    // Executors governance has actually run, newest proposal first.
+    const used = new Map();
+    for (const p of proposals) {
+      const path = p.executor_pkg_path;
+      if (!path) continue;
+      const rec = used.get(path) || { path, count: 0, last: 0 };
+      rec.count++;
+      rec.last = Math.max(rec.last, p.id);
+      used.set(path, rec);
+    }
+
+    // Realms wired to governance: the direct importers of r/gov/dao. A
+    // proposal factory has to import it to build a ProposalRequest, so this
+    // is the candidate set. Only the direct edge — the reverse graph is
+    // recursive, and a realm importing a realm that imports gov/dao is not
+    // itself a proposal option.
+    const wired = (graph && graph['gno.land/r/gov/dao']) || [];
+    for (const path of wired) if (!used.has(path)) used.set(path, { path, count: 0, last: 0 });
+
+    const rows = [...used.values()].sort((a, b) => b.count - a.count || b.last - a.last || a.path.localeCompare(b.path));
+
+    container.appendChild(el('div', { className: 'section-title' }, 'proposal options'));
+    container.appendChild(el('div', { className: 'section-sub' },
+      'a proposal carries an executor: a realm whose function runs if the vote passes. this is every ' +
+      'realm that either has been one, or imports gno.land/r/gov/dao and so could be one. ' +
+      'it is what this explorer can see rather than a guarantee: a realm still parked as inert, or one ' +
+      'this chain has not indexed the source of, will not appear here.'));
+
+    const nums = el('div', { className: 'bignums' });
+    nums.appendChild(bigNum('options', fmtNum(rows.length), { sub: 'realms wired to governance' }));
+    nums.appendChild(bigNum('ever used', fmtNum([...used.values()].filter(r => r.count).length), { sub: 'as a proposal executor' }));
+    nums.appendChild(bigNum('proposals', fmtNum(proposals.length), { sub: 'run through them', to: '/govdao/proposals' }));
+    container.appendChild(nums);
+
+    const tbl = el('table');
+    tbl.appendChild(el('thead', {}, el('tr', {},
+      el('th', {}, 'realm'), el('th', {}, 'status'), el('th', {}, 'proposals'), el('th', {}, 'last used'))));
+    const body = el('tbody');
+    if (!rows.length) {
+      body.appendChild(el('tr', {}, el('td', { colspan: '4', style: { color: 'var(--fg2)' } },
+        'nothing found. this chain has either no indexed source for the realms that import gov/dao, or no proposals yet.')));
+    }
+    for (const r of rows) {
+      const dim = { style: { color: 'var(--fg2)' } };
+      body.appendChild(el('tr', {},
+        el('td', {}, realmPathEl(r.path)),
+        el('td', {}, r.count ? badge('ok', 'used') : badge('realm', 'wired')),
+        el('td', r.count ? {} : dim, fmtNum(r.count)),
+        el('td', {}, r.last ? link('#' + r.last, () => navigate('/govdao/' + r.last)) : el('span', dim, '–'))
+      ));
+    }
+    tbl.appendChild(body);
+    container.appendChild(tbl);
+    govDAOErrorsNote(container, overview.errors);
+  }).catch(err => failBlock(container, err, loadGovDAOOptions));
 }
 
 // --- Proposal verification, timeline, parameter diff, dependencies --------

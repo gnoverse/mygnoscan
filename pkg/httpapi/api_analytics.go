@@ -37,13 +37,34 @@ func (a *API) HandleStats(w http.ResponseWriter, r *http.Request) {
 	JSONResponse(w, stats)
 }
 
+// How many rows each of /api/gas's three top-N lists carries. /gas is a
+// summary and wants a handful; the /gas/realms, /gas/users and /gas/txs
+// pages are the full lists and ask for more.
+//
+// gasTopNMax is a cap rather than a suggestion: topN is a LIMIT on three
+// separate aggregates, each a sort over every transaction the chain has ever
+// carried, so an unbounded one is a full table scan any caller can ask for
+// in a query string. 200 is more rows than any page here draws.
+const (
+	gasTopNDefault = 20
+	gasTopNMax     = 200
+)
+
+func gasTopN(r *http.Request) int {
+	v, err := strconv.Atoi(r.URL.Query().Get("limit"))
+	if err != nil || v <= 0 {
+		return gasTopNDefault
+	}
+	return min(v, gasTopNMax)
+}
+
 func (a *API) HandleGas(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
 
 	// Computed from stored transactions rather than by downloading the chain:
 	// the numbers here are presented as all-time totals, so they cannot be
 	// approximated from a recent window.
-	stats, err := a.db.GetGasStats(network, 20)
+	stats, err := a.db.GetGasStats(network, gasTopN(r))
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return

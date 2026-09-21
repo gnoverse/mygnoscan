@@ -473,6 +473,7 @@ func (a *API) enrichGovDAOProposals(ctx context.Context, network, rpcURL string,
 			p.YesPercent = detail.YesPercent
 			p.NoPercent = detail.NoPercent
 			p.AbstainPercent = detail.AbstainPercent
+			p.ExecutorPkgPath = detail.ExecutorPkgPath
 			p.AuthorAddress = resolveGnoUsernameCached(ctx, rpcURL, p.Author)
 			if !audit[p.ID] {
 				return
@@ -891,6 +892,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/govdao", a.HandleGovDAO)
 	mux.HandleFunc("GET /api/govdao/overview", a.HandleGovDAOOverview)
 	mux.HandleFunc("GET /api/govdao/proposals/{id}", a.HandleGovDAOProposal)
+	mux.HandleFunc("GET /api/govdao/voters", a.HandleGovDAOVoters)
 	mux.HandleFunc("GET /api/params", a.HandleParameters)
 	mux.HandleFunc("GET /api/health/heartbeat", a.HandleHeartbeat)
 	mux.HandleFunc("GET /api/registry/apps", a.HandleApps)
