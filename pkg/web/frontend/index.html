@@ -3724,13 +3724,13 @@ async function loadHome() {
       for (const tx of (txsData?.items || [])) {
         const msg = tx.messages?.[0];
         const when = tx.block_time ? timeEl(tx.block_time) : blockTime[tx.block_height] ? timeEl(blockTime[tx.block_height]) : (tx.block_height === 0 ? 'genesis' : '');
-        txBody.appendChild(netRow(tx.network,
+        txBody.appendChild(liveTagRow(netRow(tx.network,
           el('td', {}, blockLink(tx.block_height, tx.network)),
           el('td', {}, typeBadge(msg?.value?.__typename, msg)),
           el('td', {}, txDetailEl(msg)),
           el('td', {}, statusBadge(tx.success)),
           el('td', { style: { color: 'var(--fg2)', fontSize: '12px' } }, when)
-        ));
+        ), liveRowKey(tx.network, tx.hash), Date.parse(tx.block_time) || 0));
       }
     });
   } catch (err) {
@@ -4156,14 +4156,14 @@ function renderTxRows(data) {
     const msg = tx.messages?.[0];
     const type = msg ? typeBadge(msg?.value?.__typename, msg) : typeBadge(tx.type);
     const detail = msg ? txDetailEl(msg) : storedTxDetail(tx);
-    list.appendChild(netRow(tx.network,
+    list.appendChild(liveTagRow(netRow(tx.network,
       el('td', {}, txLink(tx.hash, tx.block_height, tx.network, { showBlock: false })),
       el('td', {}, signerCell(tx, tx.network)),
       el('td', {}, blockLink(tx.block_height, tx.network)),
       el('td', {}, type),
       el('td', {}, detail),
       el('td', {}, statusBadge(tx.success))
-    ));
+    ), liveRowKey(tx.network, tx.hash), Date.parse(tx.block_time) || 0));
   }
 
   // `total` is the size of the window the indexer searched, not the chain's
@@ -4218,13 +4218,15 @@ function renderBlockRows() {
   for (const b of (_blocksCache || [])) {
     if (_blocksWithTxsOnly && b.num_txs === 0) continue;
     count++;
-    tbody.appendChild(netRow(b.network,
+    // data-live-key / data-live-ts are what let a live event tell whether this
+    // block is already on the page, and where a newer one belongs.
+    tbody.appendChild(liveTagRow(netRow(b.network,
       el('td', {}, blockLink(b.height, b.network)),
       el('td', {}, timeEl(b.time)),
       el('td', { style: b.num_txs === 0 ? { color: 'var(--fg2)' } : {} }, String(b.num_txs)),
       el('td', { className: 'truncate' }, proposerEl(b.proposer_address_raw)),
       el('td', { className: 'truncate' }, b.hash)
-    ));
+    ), liveRowKey(b.network, b.height), Date.parse(b.time) || 0));
   }
   if (count === 0) {
     tbody.appendChild(el('tr', {}, el('td', { colspan: '5', style: { color: 'var(--fg2)', textAlign: 'center', padding: '20px' } }, 'no blocks matching filter')));
@@ -11489,6 +11491,60 @@ function renderLiveBlock() {
     .join('\n');
 }
 
+// --- Placing a live row in a list the page already loaded ---
+//
+// The feed's tip is server-global: it has nothing to do with the tip this
+// particular browser painted on load, so the static rows and the first live
+// events overlap and the same block used to be drawn twice. Every row carries
+// its identity in data-live-key, and an event whose key is already on the page
+// is dropped.
+function liveRowKey(network, id) {
+  // Only all-networks mode needs the network in the identity, and only there
+  // can two chains share a height. In single-network mode the API does not
+  // stamp a network on the rows at all (it is added by the fan-out path only),
+  // so including it here would make every live row look new and duplicate the
+  // page's own.
+  return (getNetwork() === 'all' ? (network || '') : '') + '#' + id;
+}
+
+// liveSlot answers both questions in one pass over the rows: is this already
+// here, and which row does it belong above.
+//
+// Position comes from the timestamp, not the height. In all-networks mode the
+// list is a time-ordered merge of chains sitting at wildly different heights
+// (HandleBlocks' fan-out sorts by time), so "newest" is not "highest" and
+// prepending puts a pearl block above a mainnet one that is newer.
+function liveSlot(tbody, key, tsMs) {
+  let before = null;
+  for (const row of tbody.children) {
+    if (row.dataset.liveKey === key) return { dup: true, before: null };
+    if (before === null) {
+      const t = Number(row.dataset.liveTs);
+      if (Number.isFinite(t) && t <= tsMs) before = row;
+    }
+  }
+  return { dup: false, before };
+}
+
+// liveInsertRow inserts at `before`, or drops the row when it is older than
+// everything shown and the list is already full.
+//
+// The cap never shrinks the list: /blocks loads 500 rows, and a fixed ceiling
+// of 60 meant the first live event threw 440 of them away.
+function liveInsertRow(tbody, tr, before, minCap) {
+  const cap = Math.max(minCap, tbody.children.length);
+  if (!before && tbody.children.length >= cap) return false;
+  tbody.insertBefore(tr, before);
+  while (tbody.children.length > cap) tbody.removeChild(tbody.lastChild);
+  return true;
+}
+
+function liveTagRow(tr, key, tsMs) {
+  tr.dataset.liveKey = key;
+  tr.dataset.liveTs = String(tsMs);
+  return tr;
+}
+
 function onLiveTx(tx) {
   _liveTxCount++;
   // Track the tip per network; the display decides what to show.
@@ -11506,9 +11562,13 @@ function onLiveTx(tx) {
   else if (typename === 'MsgRun') liveIncrStat('stat-runs');
   else if (typename === 'BankMsgSend') liveIncrStat('stat-sends');
 
-  // Prepend to home recent-txs if on home page
+  // Prepend to home recent-txs if on home page. A plain prepend is right here:
+  // the feed sends each batch oldest first, so the newest ends up on top. The
+  // hash key is what stops a tx the page already loaded from showing twice.
+  const txKey = liveRowKey(tx.network, tx.hash);
   const tbody = document.getElementById('recent-txs');
-  if (tbody && document.getElementById('view-home')?.classList.contains('active')) {
+  if (tbody && document.getElementById('view-home')?.classList.contains('active')
+      && !liveSlot(tbody, txKey, Infinity).dup) {
     const msg = tx.messages?.[0];
     const tr = el('tr', { className: 'live-new' },
       el('td', {}, blockLink(tx.block_height, tx.network)),
@@ -11517,6 +11577,7 @@ function onLiveTx(tx) {
       el('td', {}, statusBadge(tx.success)),
       el('td', { style: { color: 'var(--fg2)', fontSize: '12px' } }, timeEl(new Date().toISOString()))
     );
+    liveTagRow(tr, txKey, Date.now());
     tbody.insertBefore(tr, tbody.firstChild);
     // Keep max 30 rows
     while (tbody.children.length > 30) tbody.removeChild(tbody.lastChild);
@@ -11524,7 +11585,8 @@ function onLiveTx(tx) {
 
   // Prepend to txs page if active
   const txsList = document.getElementById('txs-list');
-  if (txsList && document.getElementById('view-txs')?.classList.contains('active')) {
+  if (txsList && document.getElementById('view-txs')?.classList.contains('active')
+      && !liveSlot(txsList, txKey, Infinity).dup) {
     const msg = tx.messages?.[0];
     const tr = el('tr', { className: 'live-new' },
       el('td', {}, txLink(tx.hash, tx.block_height, tx.network, { showBlock: false })),
@@ -11534,6 +11596,7 @@ function onLiveTx(tx) {
       el('td', {}, txDetailEl(msg)),
       el('td', {}, statusBadge(tx.success))
     );
+    liveTagRow(tr, txKey, Date.now());
     txsList.insertBefore(tr, txsList.firstChild);
     while (txsList.children.length > 60) txsList.removeChild(txsList.lastChild);
   }
@@ -11553,19 +11616,49 @@ function onLiveBlock(block, network) {
     renderLiveBlock();
   }
 
-  // Prepend to blocks page if active
+  // Add to the blocks page if active
   const blocksList = document.getElementById('blocks-list');
-  if (blocksList && document.getElementById('view-blocks')?.classList.contains('active')) {
-    const tr = el('tr', { className: 'live-new' },
-      el('td', {}, blockLink(block.height, network)),
-      el('td', {}, timeEl(block.time || new Date().toISOString())),
-      el('td', { style: block.num_txs === 0 ? { color: 'var(--fg2)' } : {} }, String(block.num_txs || 0)),
-      el('td', { className: 'truncate' }, proposerEl(block.proposer_address_raw)),
-      el('td', { className: 'truncate' }, block.hash || '-')
-    );
-    blocksList.insertBefore(tr, blocksList.firstChild);
-    while (blocksList.children.length > 60) blocksList.removeChild(blocksList.lastChild);
+  if (!blocksList || !document.getElementById('view-blocks')?.classList.contains('active')) return;
+
+  const key = liveRowKey(network, block.height);
+  const ts = Date.parse(block.time) || Date.now();
+
+  // The cache first, and the row from it. renderBlockRows rebuilds the table
+  // from _blocksCache whenever the filter checkbox moves, so a live block that
+  // never reached the cache disappeared the moment it was ticked. Splice by
+  // time, which is the order the cache is already in (HandleBlocks merges the
+  // networks that way).
+  if (Array.isArray(_blocksCache)) {
+    if (_blocksCache.some(b => liveRowKey(b.network, b.height) === key)) return;
+    const at = _blocksCache.findIndex(b => (Date.parse(b.time) || 0) <= ts);
+    _blocksCache.splice(at === -1 ? _blocksCache.length : at, 0,
+      Object.assign({ network: network }, block));
   }
+
+  // A live row is a row: the filter applies to it too.
+  if (_blocksWithTxsOnly && !(block.num_txs > 0)) return;
+
+  const slot = liveSlot(blocksList, key, ts);
+  if (slot.dup) return;
+
+  // netRow, not a bare tr, or a live row is the only one on the page missing
+  // its network dot in all-networks mode.
+  const tr = netRow(network,
+    el('td', {}, blockLink(block.height, network)),
+    el('td', {}, timeEl(block.time || new Date().toISOString())),
+    el('td', { style: block.num_txs === 0 ? { color: 'var(--fg2)' } : {} }, String(block.num_txs || 0)),
+    el('td', { className: 'truncate' }, proposerEl(block.proposer_address_raw)),
+    el('td', { className: 'truncate' }, block.hash || '-')
+  );
+  tr.classList.add('live-new');
+  liveTagRow(tr, key, ts);
+
+  // Drop the "no blocks matching filter" placeholder: it has no live key, so
+  // the insert would otherwise land underneath it.
+  const only = blocksList.children.length === 1 ? blocksList.firstElementChild : null;
+  if (only && only.dataset.liveKey === undefined) blocksList.removeChild(only);
+
+  liveInsertRow(blocksList, tr, slot.before, 60);
 }
 
 // --- Dashboards ---
