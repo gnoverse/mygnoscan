@@ -697,7 +697,7 @@ host application can iframe one piece of content rather than a whole
 page-in-a-page:
 
 ```html
-<iframe src="https://mygnoscan.example/realm/r/demo/boards?tab=graph&embed=1"
+<iframe src="https://mygnoscan.example/realm/r/demo/boards?tab=deps&embed=1"
         width="800" height="600" style="border:0"></iframe>
 ```
 

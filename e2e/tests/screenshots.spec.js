@@ -68,7 +68,7 @@ const PAGES = [
   ['storage', '/storage?network=alpha&group=namespace'],
   ['storage-payer', '/storage?network=alpha&group=payer&order=size'],
   ['realm-detail', `/realm/${HUB_ROUTE}`],
-  ['realm-graph', `/realm/${HUB_ROUTE}?tab=graph`],
+  ['realm-deps', `/realm/${HUB_ROUTE}?tab=deps`],
   ['realm-source', `/realm/${HUB_ROUTE}?tab=source`],
   // The three tabs that carry a chart. Pinned to a network because the
   // storage tab refuses the all-chains case by design, and a shot of that
@@ -97,7 +97,7 @@ test.describe('screenshots', () => {
       await settle(page);
       // The dependency graph runs a force simulation that keeps moving after
       // the network goes quiet, so settle() is not enough for that one page.
-      if (path.includes('tab=graph')) {
+      if (path.includes('tab=deps')) {
         await page.waitForTimeout(2500);
       }
       await page.screenshot({ path: join(OUT, `${name}.png`), fullPage: true });

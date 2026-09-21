@@ -71,7 +71,7 @@ for (const [name, path] of ROUTES) {
 
 // The realm page's tabs are separate render paths behind one route, and a
 // broken one is invisible until someone clicks it.
-const TABS = ['info', 'source', 'calls', 'events', 'storage', 'deps', 'graph'];
+const TABS = ['info', 'source', 'calls', 'events', 'storage', 'deps'];
 
 for (const tab of TABS) {
   test(`realm ${tab} tab renders without errors`, async ({ page }) => {
@@ -86,6 +86,37 @@ for (const tab of TABS) {
     await expect(page.locator(`#tab-${tab}`)).toBeVisible();
   });
 }
+
+// `deps` absorbed the old standalone `graph` tab. Links to ?tab=graph predate
+// the merge and are the kind of thing people paste into issues, so the
+// fallback that catches an unknown tab must not catch this one and drop the
+// reader on `info` with no sign anything was asked for.
+test('a pre-merge ?tab=graph link lands on deps, graph and all', async ({ page }) => {
+  const seen = watch(page);
+
+  await page.goto(`/realm/${HUB_ROUTE}?tab=graph`);
+  await settle(page);
+
+  await expect(page.locator('#tab-deps')).toBeVisible();
+  await expect(page.locator('#dep-graph > svg')).toBeVisible();
+  await expect(page.locator('#tab-deps')).toContainText('imports (what this uses)');
+
+  expect(seen.jsErrors).toEqual([]);
+});
+
+// Order is the point of the merge: the picture first, the two lists under it.
+// A DOM that carries both but stacks them the other way round passes every
+// visibility assertion above.
+test('the deps tab draws the graph above the two lists', async ({ page }) => {
+  await page.goto(`/realm/${HUB_ROUTE}?tab=deps`);
+  await settle(page);
+  await page.waitForSelector('#dep-graph > svg', { timeout: 20_000 });
+
+  const graphTop = await page.locator('#dep-graph').evaluate(n => n.getBoundingClientRect().top);
+  const listsTop = await page.locator('#tab-deps .section-title').first()
+    .evaluate(n => n.getBoundingClientRect().top);
+  expect(graphTop).toBeLessThan(listsTop);
+});
 
 test('the realm list pages and every row carries its network', async ({ page }) => {
   const seen = watch(page);

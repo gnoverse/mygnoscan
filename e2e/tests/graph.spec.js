@@ -8,7 +8,7 @@ import { watch } from './helpers.js';
 // perfect and D3 can still draw an empty box.
 
 async function openGraph(page) {
-  await page.goto(`/realm/${HUB_ROUTE}?tab=graph`);
+  await page.goto(`/realm/${HUB_ROUTE}?tab=deps`);
   await page.waitForSelector('#dep-graph > svg', { timeout: 20_000 });
 
   // The force simulation has to cool before any position means anything, and it
