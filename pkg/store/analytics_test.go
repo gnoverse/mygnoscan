@@ -799,3 +799,47 @@ func TestRealmShareRejectsAnUnknownMetric(t *testing.T) {
 		t.Error("an unknown metric was accepted; it would silently return an empty chart")
 	}
 }
+
+// RecentRealms answered `null` on every network of every deployment, because
+// its query was the one place pFilter (`AND p.network = ...`) was pasted onto
+// an unaliased `FROM packages`. SQLite rejected it with `no such column:
+// p.network`, the error went into a blank, and the handler reported an empty
+// list rather than a failure. Table-driven over the scopes, because the bug was
+// invisible in all three.
+func TestAnalyticsRecentRealms(t *testing.T) {
+	db := NewTestDB(t)
+	db.SetConfiguredNetworks([]config.NetworkConfig{{ID: "busy"}, {ID: "quiet"}, {ID: "empty"}})
+	seedSharedRealm(t, db)
+
+	for _, tc := range []struct {
+		name    string
+		network string
+		want    int
+	}{
+		{"one chain", "busy", 1},
+		{"the other chain", "quiet", 1},
+		{"all chains", "", 2},
+		{"a chain with nothing on it", "empty", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, err := db.GetAnalytics(tc.network)
+			if err != nil {
+				t.Fatalf("GetAnalytics(%q): %v", tc.network, err)
+			}
+			if len(a.RecentRealms) != tc.want {
+				t.Fatalf("recent realms = %d, want %d: %+v", len(a.RecentRealms), tc.want, a.RecentRealms)
+			}
+			for _, r := range a.RecentRealms {
+				if tc.network != "" && r.Network != tc.network {
+					t.Errorf("%s is from %q, which is not the selected chain", r.Path, r.Network)
+				}
+				// The time is what dates the height in the UI. A row that
+				// carries a height and no time renders an undated block.
+				if r.BlockHeight == 0 || r.BlockTime == "" {
+					t.Errorf("%s has height %d and time %q; both are needed to draw a dated block",
+						r.Path, r.BlockHeight, r.BlockTime)
+				}
+			}
+		})
+	}
+}
