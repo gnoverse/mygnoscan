@@ -450,6 +450,15 @@ func decodeParamChanges(call ProposalRequestCall) []ProposalParamChange {
 		case spec.argIndex == 0:
 			pc.Values = spec.constVal
 		case spec.argIndex == -1:
+			// Args[0] is the `cur realm` receiver every constructor takes, so
+			// the values start at 1. A call parsed with no arguments at all
+			// has no element 0 either, and slicing past the end of it panics.
+			// A bare `Propose...Request()` is not valid Gno, but the source
+			// scan here is a regex over submitted text, and it matches one
+			// written inside a comment just as happily.
+			if len(call.Args) < 2 {
+				continue
+			}
 			for _, a := range call.Args[1:] {
 				pc.Values = append(pc.Values, unwrapLiteral(a))
 			}
