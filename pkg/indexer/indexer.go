@@ -561,6 +561,41 @@ func (c *Client) LatestBlockHeight(ctx context.Context) (int, error) {
 	return result.LatestBlockHeight, err
 }
 
+// Supply is the chain's money, which is also its storage capacity.
+//
+// Every byte of realm state locks StoragePrice ugnot, so total/price is the
+// hard ceiling on how much the chain can ever hold. The monorepo does the same
+// sum in a comment: "1.333B GNOT == 13.33TB"
+// (gno.land/pkg/sdk/vm/params.go, storagePriceDefault).
+//
+// The amounts are strings because they do not fit a JSON number safely: total
+// is 1.333e15 ugnot, past 2^53 once a testnet mints more, and the indexer
+// serves them as strings for that reason.
+type Supply struct {
+	Denom     string `json:"denom"`
+	Height    int    `json:"height"`
+	Total     string `json:"total"`
+	Locked    string `json:"locked"`
+	Spendable string `json:"spendable"`
+}
+
+// GetSupply reads the total, locked and spendable amounts for a denom.
+func (c *Client) GetSupply(ctx context.Context, denom string) (*Supply, error) {
+	var result struct {
+		GetSupply *Supply `json:"getSupply"`
+	}
+	err := c.query(ctx,
+		`query($denom: String!) { getSupply(denom: $denom) { denom height total locked spendable } }`,
+		map[string]any{"denom": denom}, &result)
+	if err != nil {
+		return nil, err
+	}
+	if result.GetSupply == nil {
+		return nil, fmt.Errorf("indexer returned no supply for %q", denom)
+	}
+	return result.GetSupply, nil
+}
+
 type Transaction struct {
 	Index       int         `json:"index"`
 	Hash        string      `json:"hash"`

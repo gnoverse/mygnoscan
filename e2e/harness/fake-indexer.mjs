@@ -24,6 +24,16 @@ export const PROPOSERS = ['g1val0000000000000000000000000000000', 'g1val11111111
 const CHAIN_LENGTH = 40;
 const TIP = 1000 + CHAIN_LENGTH - 1;
 
+// A money supply, so /storage has a denominator.
+//
+// Picked to make the *capacity* round rather than the supply, because capacity
+// is what the page displays and what the assertions read: 10,737,418.24 GNOT at
+// the default 100 ugnot/byte is exactly 100 GiB. A round figure in GNOT would
+// have produced 93.1 GB on screen, which is the kind of number a reader of the
+// test cannot check.
+export const SUPPLY_CAPACITY_BYTES = 100 * 1024 * 1024 * 1024;
+export const SUPPLY_UGNOT = String(SUPPLY_CAPACITY_BYTES * 100);
+
 function blocks() {
   // Newest first, the order the real indexer returns for this query and the
   // order the frontend's sparkline relies on when it reverses for display.
@@ -64,6 +74,13 @@ export function startFakeIndexer() {
         data = { getBlocks: blocks() };
       } else if (query.includes('getTransactions')) {
         data = { getTransactions: [] };
+      } else if (query.includes('getSupply')) {
+        data = {
+          getSupply: {
+            denom: 'ugnot', height: TIP, total: SUPPLY_UGNOT,
+            locked: '9000000000000', spendable: '1000000000000',
+          },
+        };
       }
 
       res.writeHead(200, { 'content-type': 'application/json' });

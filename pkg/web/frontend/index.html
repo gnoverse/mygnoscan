@@ -16,6 +16,14 @@
       document.documentElement.classList.add('embed');
     }
   } catch (e) { /* a malformed query string is not a reason to fail to render */ }
+  // The nav rail's collapsed state, applied here for the same reason: doing it
+  // from the app's own startup would paint a 172px rail and then snap it to
+  // 52px, shifting every page a reader has ever collapsed it on.
+  try {
+    if (localStorage.getItem('mygnoscan-rail') === 'collapsed') {
+      document.documentElement.classList.add('rail-collapsed');
+    }
+  } catch (e) { /* storage can be denied outright; the rail just opens wide */ }
 })();
 </script>
 <!-- Inlined as a data URI so the tab icon costs no extra request and the
@@ -32,6 +40,7 @@
   --green: #51cf66; --red: #ff6b6b; --amber: #ffd93d;
   --border: #2a2a2a;
   --mono: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  --rail-w: 172px; --rail-w-collapsed: 52px;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: var(--mono); background: var(--bg); color: var(--fg); font-size: 14px; line-height: 1.6; }
@@ -42,9 +51,55 @@ header { border-bottom: 1px solid var(--border); padding: 12px 0; position: stic
 #sanity-subbar { display: none; position: sticky; z-index: 90; background: var(--bg); border-bottom: 1px solid var(--border); padding: 6px 0; }
 header .container { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
 .logo { font-size: 18px; font-weight: bold; color: var(--accent); cursor: pointer; }
-nav { display: flex; gap: 12px; flex-wrap: wrap; }
-nav a { color: var(--fg2); font-size: 13px; cursor: pointer; }
-nav a:hover, nav a.active { color: var(--accent); text-decoration: none; }
+
+/* The nav rail.
+   It was a horizontal bar in the header and had reached eighteen entries,
+   which on any window narrower than a desktop wrapped to three rows of
+   look-alike words and pushed the content down by that much on every page.
+   A vertical rail gives each entry a fixed place a reader can learn, and the
+   icon is what survives the collapsed width — the one thing a 52px rail can
+   still show.
+   `nav` and the `#nav-<view>` ids are kept exactly as they were: route()
+   drives the active class off them, and the e2e suite walks them. */
+body { padding-left: var(--rail-w); }
+.rail { position: fixed; left: 0; top: 0; bottom: 0; width: var(--rail-w); z-index: 110;
+  background: var(--bg2); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden; }
+.rail::-webkit-scrollbar { width: 6px; }
+.rail::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+.rail-top { display: flex; align-items: center; gap: 8px; padding: 12px 14px 10px; }
+.rail-top .logo { font-size: 15px; white-space: nowrap; overflow: hidden; }
+.rail nav { display: flex; flex-direction: column; gap: 1px; padding: 0 6px 8px; }
+.rail nav a { display: flex; align-items: center; gap: 10px; color: var(--fg2); font-size: 12.5px;
+  cursor: pointer; padding: 5px 8px; border-radius: 4px; white-space: nowrap;
+  border-left: 2px solid transparent; }
+.rail nav a:hover { color: var(--fg); background: var(--bg3); text-decoration: none; }
+.rail nav a.active { color: var(--accent); background: var(--bg3); border-left-color: var(--accent); }
+.rail nav a svg { width: 15px; height: 15px; flex: 0 0 15px; stroke: currentColor; fill: none;
+  stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.rail nav a { position: relative; }
+.rail nav a.has-watch::after { content: ''; position: absolute; left: 17px; top: 5px;
+  width: 5px; height: 5px; border-radius: 50%; background: var(--accent);
+  box-shadow: 0 0 0 2px var(--bg2); }
+html.rail-collapsed .rail nav a.has-watch::after { left: calc(50% + 4px); }
+.rail-foot { margin-top: auto; padding: 8px 6px 12px; }
+.rail-toggle { display: flex; align-items: center; gap: 10px; width: 100%; background: none;
+  border: none; color: var(--fg2); font-family: var(--mono); font-size: 12.5px; cursor: pointer;
+  padding: 5px 8px; border-radius: 4px; }
+.rail-toggle:hover { color: var(--fg); background: var(--bg3); }
+.rail-toggle svg { width: 15px; height: 15px; flex: 0 0 15px; stroke: currentColor; fill: none;
+  stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+
+/* Collapsed: icons only. The label is still in the DOM for the accessibility
+   tree and for the e2e suite's text selectors, just not painted — hiding it
+   with display:none would take it out of both. */
+html.rail-collapsed body { padding-left: var(--rail-w-collapsed); }
+html.rail-collapsed .rail { width: var(--rail-w-collapsed); }
+html.rail-collapsed .rail .rail-label { position: absolute; width: 1px; height: 1px;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+html.rail-collapsed .rail nav a, html.rail-collapsed .rail-toggle { justify-content: center; padding: 6px 0; }
+html.rail-collapsed .rail-top { justify-content: center; padding: 12px 0 10px; }
+html.rail-collapsed .rail-toggle svg { transform: scaleX(-1); }
 .search-box { margin-left: auto; position: relative; }
 .search-box input { background: var(--bg2); border: 1px solid var(--border); color: var(--fg); padding: 6px 30px 6px 12px; border-radius: 4px; font-family: var(--mono); font-size: 13px; width: 240px; outline: none; transition: box-shadow 0.15s, border-color 0.15s, width 0.15s; }
 /* A visible glow, not just the border-color swap it had before — the box
@@ -365,7 +420,19 @@ footer a:hover { color: var(--accent); }
    content instead of a whole page-in-a-page.
    Class on <html> rather than <body> so it applies before first paint and the
    header never flashes in an iframe. */
-html.embed header, html.embed footer, html.embed #sanity-subbar { display: none !important; }
+/* Block map cells. Square by padding-bottom rather than by aspect-ratio so
+   the grid keeps its shape in the older browsers the rest of this file still
+   works in, and a hover that only brightens (no size change) so 1536 cells
+   cannot reflow the page under the cursor. */
+.storage-cell { transition: opacity 0.1s, filter 0.1s; }
+.storage-cell:hover { filter: brightness(1.45); opacity: 1 !important; }
+.storage-cell-free:hover { filter: none; background: var(--border) !important; }
+
+html.embed header, html.embed footer, html.embed #sanity-subbar,
+html.embed .rail { display: none !important; }
+/* The rail is chrome too, and an iframe that kept 172px of it would be
+   showing a page-in-a-page, which is the thing embed mode exists to avoid. */
+html.embed body { padding-left: 0; }
 html.embed body { background: transparent; }
 html.embed .container { padding-top: 0; padding-bottom: 0; max-width: none; }
 /* Highlight on hover (addresses, tx hashes, event types, etc) */
@@ -373,33 +440,74 @@ html.embed .container { padding-top: 0; padding-bottom: 0; max-width: none; }
 /* The same highlight on a map bubble. outline and background are no-ops on an
    SVG shape, so it is drawn as a stroke instead. */
 circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1; stroke-dasharray: none; }
-@media (max-width: 768px) { .stats-bar { gap: 12px; } .stat .value { font-size: 16px; } .search-box input { width: 160px; } nav { gap: 8px; } }
+@media (max-width: 768px) { .stats-bar { gap: 12px; } .stat .value { font-size: 16px; } .search-box input { width: 160px; } }
+/* Below this the labels cost more than they are worth: the rail would be a
+   fifth of a phone screen, permanently. Collapsing by media query rather than
+   by script keeps it right on first paint, and the stored preference only
+   applies where there is room to honour it. */
+@media (max-width: 900px) {
+  body { padding-left: var(--rail-w-collapsed); }
+  .rail { width: var(--rail-w-collapsed); }
+  .rail .rail-label { position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip-path: inset(50%); white-space: nowrap; }
+  .rail nav a, .rail-toggle { justify-content: center; padding: 6px 0; }
+  .rail-top { justify-content: center; padding: 12px 0 10px; }
+  .rail-foot { display: none; }
+}
 </style>
 </head>
 <body>
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true"><defs>
+<symbol id="i-home" viewBox="0 0 16 16"><path d="M2 6.5 8 2l6 4.5V13a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z"/><path d="M6.2 14V9.3h3.6V14"/></symbol>
+<symbol id="i-eye" viewBox="0 0 16 16"><path d="M1 8s2.6-4.3 7-4.3S15 8 15 8s-2.6 4.3-7 4.3S1 8 1 8z"/><circle cx="8" cy="8" r="1.9"/></symbol>
+<symbol id="i-layers" viewBox="0 0 16 16"><path d="M8 1.6 14.6 5 8 8.4 1.4 5z"/><path d="m1.4 8 6.6 3.4L14.6 8"/><path d="m1.4 11 6.6 3.4L14.6 11"/></symbol>
+<symbol id="i-box" viewBox="0 0 16 16"><path d="M14 4.8v6.4a1 1 0 0 1-.55.9l-5 2.4a1 1 0 0 1-.9 0l-5-2.4a1 1 0 0 1-.55-.9V4.8"/><path d="M1.6 4.8 8 1.7l6.4 3.1L8 7.9z"/><path d="M8 7.9v6.7"/></symbol>
+<symbol id="i-bubbles" viewBox="0 0 16 16"><circle cx="5" cy="5.4" r="3.1"/><circle cx="11.9" cy="4.6" r="1.9"/><circle cx="10.4" cy="11.4" r="3.1"/><circle cx="3.4" cy="12" r="1.7"/></symbol>
+<symbol id="i-swap" viewBox="0 0 16 16"><path d="M2.4 5.4h11"/><path d="m10.6 2.6 2.8 2.8-2.8 2.8"/><path d="M13.6 10.6h-11"/><path d="m5.4 7.8-2.8 2.8 2.8 2.8"/></symbol>
+<symbol id="i-blocks" viewBox="0 0 16 16"><rect x="1.8" y="1.8" width="5.4" height="5.4" rx="1"/><rect x="8.8" y="1.8" width="5.4" height="5.4" rx="1"/><rect x="1.8" y="8.8" width="5.4" height="5.4" rx="1"/><rect x="8.8" y="8.8" width="5.4" height="5.4" rx="1"/></symbol>
+<symbol id="i-users" viewBox="0 0 16 16"><circle cx="6.2" cy="5" r="2.6"/><path d="M1.6 13.6c0-2.4 2.1-3.9 4.6-3.9s4.6 1.5 4.6 3.9"/><path d="M11 3a2.6 2.6 0 0 1 0 5"/><path d="M12.2 10.2c1.4.5 2.2 1.7 2.2 3.4"/></symbol>
+<symbol id="i-coin" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.4v7.2"/><path d="M10 6.1a2.2 2.2 0 0 0-2-1.1c-1.2 0-2 .7-2 1.7s.8 1.4 2 1.7 2 .7 2 1.7-.8 1.6-2 1.6a2.2 2.2 0 0 1-2-1.1"/></symbol>
+<symbol id="i-disk" viewBox="0 0 16 16"><ellipse cx="8" cy="3.8" rx="5.6" ry="2.1"/><path d="M2.4 3.8v8.4c0 1.2 2.5 2.1 5.6 2.1s5.6-.9 5.6-2.1V3.8"/><path d="M2.4 8c0 1.2 2.5 2.1 5.6 2.1s5.6-.9 5.6-2.1"/></symbol>
+<symbol id="i-shield" viewBox="0 0 16 16"><path d="M8 1.6 13.4 4v4.2c0 3-2.3 5.2-5.4 6.2-3.1-1-5.4-3.2-5.4-6.2V4z"/><path d="m5.7 8 1.7 1.7 3.1-3.4"/></symbol>
+<symbol id="i-gavel" viewBox="0 0 16 16"><path d="M2 14.2h8"/><path d="M6 11.4V6.6"/><path d="M2.6 6.6h6.8"/><path d="M11 1.8 14.4 5.2"/><path d="m9.3 5.2 3.4-3.4"/><path d="M6 6.6 12.7 5.2"/></symbol>
+<symbol id="i-gauge" viewBox="0 0 16 16"><path d="M2 12a6.6 6.6 0 1 1 12 0"/><path d="m8 12 3-4.4"/><circle cx="8" cy="12" r="1"/></symbol>
+<symbol id="i-chart" viewBox="0 0 16 16"><path d="M2 2v12h12"/><path d="m4.4 10.6 2.8-3.4 2.4 2 3.2-4.4"/></symbol>
+<symbol id="i-grid" viewBox="0 0 16 16"><rect x="1.8" y="1.8" width="5.4" height="3.6" rx="1"/><rect x="8.8" y="1.8" width="5.4" height="7" rx="1"/><rect x="1.8" y="7.2" width="5.4" height="7" rx="1"/><rect x="8.8" y="10.6" width="5.4" height="3.6" rx="1"/></symbol>
+<symbol id="i-sliders" viewBox="0 0 16 16"><path d="M2 4.4h12"/><path d="M2 11.6h12"/><circle cx="5.6" cy="4.4" r="1.7"/><circle cx="10.4" cy="11.6" r="1.7"/></symbol>
+<symbol id="i-pulse" viewBox="0 0 16 16"><path d="M1.4 8h3l1.6-4.4 2.8 9L10.9 8h3.7"/></symbol>
+<symbol id="i-bolt" viewBox="0 0 16 16"><path d="M9 1.4 3.2 9.2h4l-.9 5.4L13 6.8H8.6z"/></symbol>
+<symbol id="i-apps" viewBox="0 0 16 16"><rect x="1.8" y="1.8" width="5" height="5" rx="1.4"/><rect x="9.2" y="1.8" width="5" height="5" rx="1.4"/><rect x="1.8" y="9.2" width="5" height="5" rx="1.4"/><path d="M11.7 9.6v4.6"/><path d="M9.4 11.9h4.6"/></symbol>
+<symbol id="i-collapse" viewBox="0 0 16 16"><path d="M9.6 3.4 5 8l4.6 4.6"/><path d="M13.2 2.4v11.2"/></symbol>
+</defs></svg>
+<aside class="rail">
+  <div class="rail-top"><span class="logo" onclick="navigate('/')">m<span class="rail-label">ygnoscan</span></span></div>
+  <nav>
+      <a onclick="navigate('/')" id="nav-home" class="active" title="home"><svg aria-hidden="true"><use href="#i-home"/></svg><span class="rail-label">home</span></a>
+      <a onclick="navigate('/watch')" id="nav-watch" title="watch"><svg aria-hidden="true"><use href="#i-eye"/></svg><span class="rail-label">watch</span></a>
+      <a onclick="navigate('/realms')" id="nav-realms" title="realms"><svg aria-hidden="true"><use href="#i-layers"/></svg><span class="rail-label">realms</span></a>
+      <a onclick="navigate('/packages')" id="nav-packages" title="packages"><svg aria-hidden="true"><use href="#i-box"/></svg><span class="rail-label">packages</span></a>
+      <a onclick="navigate('/contracts')" id="nav-contracts" title="contracts"><svg aria-hidden="true"><use href="#i-bubbles"/></svg><span class="rail-label">contracts</span></a>
+      <a onclick="navigate('/apps')" id="nav-apps" title="apps"><svg aria-hidden="true"><use href="#i-apps"/></svg><span class="rail-label">apps</span></a>
+      <a onclick="navigate('/txs')" id="nav-txs" title="txs"><svg aria-hidden="true"><use href="#i-swap"/></svg><span class="rail-label">txs</span></a>
+      <a onclick="navigate('/blocks')" id="nav-blocks" title="blocks"><svg aria-hidden="true"><use href="#i-blocks"/></svg><span class="rail-label">blocks</span></a>
+      <a onclick="navigate('/accounts')" id="nav-accounts" title="accounts"><svg aria-hidden="true"><use href="#i-users"/></svg><span class="rail-label">accounts</span></a>
+      <a onclick="navigate('/tokens')" id="nav-tokens" title="tokens"><svg aria-hidden="true"><use href="#i-coin"/></svg><span class="rail-label">tokens</span></a>
+      <a onclick="navigate('/storage')" id="nav-storage" title="storage"><svg aria-hidden="true"><use href="#i-disk"/></svg><span class="rail-label">storage</span></a>
+      <a onclick="navigate('/validators')" id="nav-validators" title="validators"><svg aria-hidden="true"><use href="#i-shield"/></svg><span class="rail-label">validators</span></a>
+      <a onclick="navigate('/govdao')" id="nav-govdao" title="govdao"><svg aria-hidden="true"><use href="#i-gavel"/></svg><span class="rail-label">govdao</span></a>
+      <a onclick="navigate('/gas')" id="nav-gas" title="gas"><svg aria-hidden="true"><use href="#i-gauge"/></svg><span class="rail-label">gas</span></a>
+      <a onclick="navigate('/analytics')" id="nav-analytics" title="analytics"><svg aria-hidden="true"><use href="#i-chart"/></svg><span class="rail-label">analytics</span></a>
+      <a onclick="navigate('/dashboards')" id="nav-dashboards" title="dashboards"><svg aria-hidden="true"><use href="#i-grid"/></svg><span class="rail-label">dashboards</span></a>
+      <a onclick="navigate('/params')" id="nav-params" title="params"><svg aria-hidden="true"><use href="#i-sliders"/></svg><span class="rail-label">params</span></a>
+      <a onclick="navigate('/sanity')" id="nav-sanity" title="sanity"><svg aria-hidden="true"><use href="#i-pulse"/></svg><span class="rail-label">sanity</span></a>
+      <a onclick="navigate('/events')" id="nav-events" title="events"><svg aria-hidden="true"><use href="#i-bolt"/></svg><span class="rail-label">events</span></a>
+  </nav>
+  <div class="rail-foot">
+    <button class="rail-toggle" id="rail-toggle" onclick="toggleRail()" aria-label="collapse the navigation"><svg aria-hidden="true"><use href="#i-collapse"/></svg><span class="rail-label">collapse</span></button>
+  </div>
+</aside>
 <header>
   <div class="container">
-    <span class="logo" onclick="navigate('/')">mygnoscan</span>
-    <nav>
-      <a onclick="navigate('/')" id="nav-home" class="active">home</a>
-      <a onclick="navigate('/watch')" id="nav-watch">watch</a>
-      <a onclick="navigate('/realms')" id="nav-realms">realms</a>
-      <a onclick="navigate('/packages')" id="nav-packages">packages</a>
-      <a onclick="navigate('/contracts')" id="nav-contracts">contracts</a>
-      <a onclick="navigate('/apps')" id="nav-apps">apps</a>
-      <a onclick="navigate('/txs')" id="nav-txs">txs</a>
-      <a onclick="navigate('/blocks')" id="nav-blocks">blocks</a>
-      <a onclick="navigate('/accounts')" id="nav-accounts">accounts</a>
-      <a onclick="navigate('/tokens')" id="nav-tokens">tokens</a>
-      <a onclick="navigate('/validators')" id="nav-validators">validators</a>
-      <a onclick="navigate('/govdao')" id="nav-govdao">govdao</a>
-      <a onclick="navigate('/gas')" id="nav-gas">gas</a>
-      <a onclick="navigate('/analytics')" id="nav-analytics">analytics</a>
-      <a onclick="navigate('/dashboards')" id="nav-dashboards">dashboards</a>
-      <a onclick="navigate('/params')" id="nav-params">params</a>
-      <a onclick="navigate('/sanity')" id="nav-sanity">sanity</a>
-      <a onclick="navigate('/events')" id="nav-events">events</a>
-    </nav>
     <div class="search-box">
       <input type="text" id="search-input" placeholder="search...">
       <span class="kbd-hint" aria-hidden="true">/</span>
@@ -507,6 +615,7 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
   <div class="view" id="view-contracts"><main><div id="contracts-content"></div></main></div>
   <div class="view" id="view-apps"><main><div id="apps-content"></div></main></div>
   <div class="view" id="view-gas"><main><div id="gas-content"></div></main></div>
+  <div class="view" id="view-storage"><main><div id="storage-content"></div></main></div>
   <div class="view" id="view-dashboards"><main><div id="dashboards-content"></div></main></div>
   <div class="view" id="view-block-detail"><main><div id="block-detail-content"></div></main></div>
   <div class="view" id="view-events"><main>
@@ -2187,7 +2296,14 @@ function renderWatchBadge() {
   const link = document.getElementById('nav-watch');
   if (!link) return;
   const n = watchCount();
-  link.textContent = n ? 'watch (' + n + ')' : 'watch';
+  // Into the label span, not the link: the link also holds the rail's icon,
+  // and assigning textContent to the link wipes it.
+  const label = link.querySelector('.rail-label');
+  if (label) label.textContent = n ? 'watch (' + n + ')' : 'watch';
+  // The count lives in the label, which a collapsed rail hides. A dot on the
+  // icon is what is left to say the list is not empty.
+  link.classList.toggle('has-watch', n > 0);
+  link.title = n ? n + ' watched' : 'watch';
 }
 
 async function loadWatchlist() {
@@ -2435,6 +2551,7 @@ function route() {
   else if (path === '/govdao') { view = 'govdao'; }
   else if (path === '/events') { view = 'events'; }
   else if (path === '/gas') { view = 'gas'; }
+  else if (path === '/storage') { view = 'storage'; }
   else if (path === '/analytics') { view = 'analytics'; }
   else if (path === '/dashboards') { view = 'dashboards'; }
   else if (path === '/params') { view = 'params'; }
@@ -2480,6 +2597,7 @@ function route() {
     case 'govdao-detail': loadGovDAODetail(data); break;
     case 'events': loadEvents(); break;
     case 'gas': loadGas(); break;
+    case 'storage': loadStorage(); break;
     case 'analytics': loadAnalytics(); break;
     case 'dashboards': loadDashboards(); break;
     case 'params': loadParams(); break;
@@ -5193,6 +5311,578 @@ async function loadSanity() {
     renderStorageChart(storageChartsDiv, _storageRealm);
 
   } catch (err) { container.textContent = ''; container.appendChild(el('p', { style: { color: 'var(--red)' } }, 'Error: ' + err.message)); }
+}
+
+// --- /storage: the chain as a disk -------------------------------------------
+//
+// gno.land locks a refundable deposit of `vm:p:storage_price` ugnot for every
+// byte of realm state, so the chain has an arithmetic capacity and not a
+// metaphorical one: total supply divided by the price. The monorepo does the
+// same sum in a comment beside the default price, "1.333B GNOT == 13.33TB".
+//
+// That makes the defragmenter reading literal. Every realm holds a run of
+// blocks it paid for, the runs were claimed in a known order, and what is left
+// is genuinely free. The page is built around three readings of the same rows:
+// how full the disk is, who holds the blocks, and when they took them.
+//
+// The awkward, and interesting, fact the page has to tell honestly: used is
+// about a three-hundred-thousandth of capacity. A bar drawn to scale would be a
+// third of a pixel. So the whole-disk view is a log ruler, which can show six
+// orders of magnitude at once, and the block map is an explicit zoom into the
+// used region with its window size stated on it. Neither pretends the chain is
+// fuller than it is.
+
+const STORAGE_COLS = 64;
+const STORAGE_ROWS = 24;
+const STORAGE_CELLS = STORAGE_COLS * STORAGE_ROWS;
+
+// How the rows are folded into coloured runs. Every one of these is a different
+// question about the same bytes, and the answers genuinely differ: a realm
+// anyone can write to is deployed by one account and paid for by hundreds.
+const STORAGE_GROUPINGS = {
+  namespace: {
+    label: 'namespace',
+    hint: 'bytes held under each r/<name> or p/<name>, address namespaces kept whole',
+    from: 'cells',
+    key: c => c.namespace || '(none)',
+  },
+  realm: {
+    label: 'realm',
+    hint: 'one run per deployed package path',
+    from: 'cells',
+    key: c => c.pkg_path,
+  },
+  deployer: {
+    label: 'deployer',
+    hint: 'who deployed the realm holding the bytes, which is not always who paid for them',
+    from: 'cells',
+    key: c => c.deployer || '(unknown)',
+  },
+  payer: {
+    label: 'payer',
+    hint: 'who the chain actually charged: processStorageDeposit bills the message caller, not the realm',
+    from: 'payers',
+    key: p => p.address || '(unattributed)',
+  },
+};
+
+// Round window sizes for the block map, smallest first. Powers of 1024 with a
+// half step, so the auto choice is never more than ~2x larger than the data it
+// has to hold and the "1 cell = " figure stays a round number.
+const STORAGE_WINDOWS = (() => {
+  const out = [];
+  for (let e = 10; e <= 50; e += 10) {
+    out.push(Math.pow(1024, e / 10), Math.pow(1024, e / 10) * 8, Math.pow(1024, e / 10) * 64);
+  }
+  return out.sort((a, b) => a - b);
+})();
+
+let _storage = { group: 'namespace', window: 'auto', order: 'alloc', focus: null };
+
+function fmtSize(n) {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+  let v = Number(n), i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  const digits = v >= 100 || i === 0 ? 0 : v >= 10 ? 1 : 2;
+  return v.toFixed(digits) + ' ' + units[i];
+}
+
+// Capacity arrives as a decimal string because it does not fit a JSON number
+// safely. Number() is fine to *display* it (13.33e12 is well inside 2^53) but
+// the string is what the server computed, so parse once and keep both.
+function storageCapacityNum(cap) {
+  if (!cap || !cap.capacity_bytes) return 0;
+  const n = Number(cap.capacity_bytes);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function storagePct(part, whole) {
+  if (!whole) return '';
+  const p = (part / whole) * 100;
+  if (p === 0) return '0%';
+  if (p >= 10) return p.toFixed(0) + '%';
+  if (p >= 0.1) return p.toFixed(1) + '%';
+  if (p >= 0.0001) return p.toFixed(4) + '%';
+  return p.toExponential(1) + '%';
+}
+
+// A group's colour is derived from its name, never from its position, so a
+// namespace keeps its colour when the sort changes or a bigger one appears
+// above it. Same hash the contracts map uses, for the same reason and so the
+// two pages agree about who is who.
+function storageColor(key) { return namespaceColor(String(key)); }
+
+function storagePill(label, active, onclick, title) {
+  const b = contractPill(label, active, onclick);
+  if (title) b.title = title;
+  return b;
+}
+
+function storageControls() {
+  const bar = el('div', {
+    style: {
+      display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'center',
+      padding: '10px 0 14px',
+    },
+  });
+
+  bar.appendChild(contractControlGroup('group by', Object.entries(STORAGE_GROUPINGS).map(
+    ([k, g]) => storagePill(g.label, _storage.group === k, () => {
+      _storage.group = k;
+      _storage.focus = null;
+      storageSyncURL();
+      loadStorage();
+    }, g.hint))));
+
+  bar.appendChild(contractControlGroup('order', [
+    storagePill('allocation', _storage.order === 'alloc', () => {
+      _storage.order = 'alloc'; storageSyncURL(); loadStorage();
+    }, 'runs laid out in the order their owners first took space, oldest first'),
+    storagePill('size', _storage.order === 'size', () => {
+      _storage.order = 'size'; storageSyncURL(); loadStorage();
+    }, 'largest run first'),
+  ]));
+
+  const windows = [['auto', 'auto']].concat(
+    STORAGE_WINDOWS.filter(w => w >= 1024 * 1024 && w <= Math.pow(1024, 4) * 64)
+      .map(w => [String(w), fmtSize(w)]));
+  bar.appendChild(contractControlGroup('window', windows.map(
+    ([v, label]) => storagePill(label, String(_storage.window) === v, () => {
+      _storage.window = v === 'auto' ? 'auto' : Number(v);
+      storageSyncURL();
+      loadStorage();
+    }, v === 'auto' ? 'the smallest round size that holds what is in use' : 'draw ' + label + ' of the disk'))));
+
+  return bar;
+}
+
+function storageSyncURL() {
+  if (window.location.pathname !== '/storage') return;
+  const q = new URLSearchParams(window.location.search);
+  q.set('group', _storage.group);
+  if (_storage.order !== 'alloc') q.set('order', _storage.order); else q.delete('order');
+  if (_storage.window !== 'auto') q.set('window', String(_storage.window)); else q.delete('window');
+  if (_storage.focus) q.set('focus', _storage.focus); else q.delete('focus');
+  history.replaceState({}, '', window.location.pathname + '?' + q.toString());
+}
+
+function storageStateFromURL() {
+  const q = new URLSearchParams(window.location.search);
+  if (STORAGE_GROUPINGS[q.get('group')]) _storage.group = q.get('group');
+  if (q.get('order') === 'size' || q.get('order') === 'alloc') _storage.order = q.get('order');
+  const w = q.get('window');
+  if (w === 'auto') _storage.window = 'auto';
+  else if (w && Number(w) > 0) _storage.window = Number(w);
+  if (q.has('focus')) _storage.focus = q.get('focus');
+}
+
+// storageRuns folds the server's rows into the runs the map draws.
+//
+// Negative totals are possible and are not a bug: bytes_delta is signed, so a
+// realm that released more than it holds today nets out below zero. They are
+// dropped from the map rather than drawn, because a run of negative blocks is
+// not a thing a disk has, and kept in the table where the number can be read.
+function storageRuns(data, groupKey) {
+  const g = STORAGE_GROUPINGS[groupKey];
+  const rows = g.from === 'payers' ? (data.payers || []) : (data.cells || []);
+  const by = new Map();
+  for (const r of rows) {
+    const key = g.key(r);
+    let run = by.get(key);
+    if (!run) {
+      run = { key, bytes: 0, fee: 0, members: 0, first: Infinity, last: 0, sample: r };
+      by.set(key, run);
+    }
+    run.bytes += r.bytes || 0;
+    run.fee += r.fee || 0;
+    run.members += g.from === 'payers' ? (r.realms || 0) : 1;
+    if (r.first_height) run.first = Math.min(run.first, r.first_height);
+    if (r.last_height) run.last = Math.max(run.last, r.last_height);
+  }
+  const runs = [...by.values()];
+  // Allocation order needs a height, and the payer rows do not carry one: the
+  // server aggregates them per account, not per event. Fall back to size there
+  // rather than laying them out in an order that means nothing.
+  const haveHeights = runs.some(r => Number.isFinite(r.first));
+  if (_storage.order === 'alloc' && haveHeights) {
+    runs.sort((a, b) => (a.first === b.first ? b.bytes - a.bytes : a.first - b.first));
+  } else {
+    runs.sort((a, b) => b.bytes - a.bytes || String(a.key).localeCompare(String(b.key)));
+  }
+  return { runs, ordered: _storage.order === 'alloc' && haveHeights };
+}
+
+// storageWindow picks the denominator the block map is drawn against.
+function storageWindow(used, capacity) {
+  if (_storage.window !== 'auto') return _storage.window;
+  const need = used * 1.15;
+  for (const w of STORAGE_WINDOWS) if (w >= need) return w;
+  return capacity || Math.max(need, 1);
+}
+
+// The log ruler: the only view that can show used and capacity at once.
+//
+// A linear bar is the obvious thing and it is useless here — 47 MB against
+// 13.33 TB is a third of a pixel on a 1000px bar, so the honest drawing and the
+// broken one look identical. Six decades on a log axis fit, and the ticks are
+// labelled so nobody reads the fill as "a third full".
+function storageRuler(used, capacity) {
+  const wrap = el('div', { style: { padding: '4px 0 18px' } });
+  if (!capacity) {
+    wrap.appendChild(el('div', { style: { color: 'var(--fg2)', fontSize: '12px' } },
+      'capacity unknown, so there is nothing to measure the used bytes against.'));
+    return wrap;
+  }
+
+  const lo = 1024 * 1024; // 1 MB: below this the axis is all empty decades
+  const pos = v => {
+    if (v <= lo) return 0;
+    return Math.min(1, Math.log(v / lo) / Math.log(capacity / lo));
+  };
+
+  const track = el('div', {
+    style: {
+      position: 'relative', height: '26px', background: 'var(--bg3)',
+      border: '1px solid var(--border)', borderRadius: '3px', overflow: 'hidden',
+    },
+  });
+  track.appendChild(el('div', {
+    style: {
+      position: 'absolute', left: '0', top: '0', bottom: '0',
+      width: (pos(used) * 100).toFixed(3) + '%',
+      background: 'linear-gradient(90deg, rgba(78,205,196,0.25), var(--accent))',
+    },
+  }));
+
+  const decades = [];
+  for (let v = lo; v <= capacity; v *= 1024) decades.push(v);
+  if (decades[decades.length - 1] !== capacity) decades.push(capacity);
+  for (const v of decades) {
+    const isEnd = v === capacity;
+    track.appendChild(el('div', {
+      style: {
+        position: 'absolute', top: '0', bottom: '0', left: (pos(v) * 100).toFixed(3) + '%',
+        width: '1px', background: isEnd ? 'var(--fg2)' : 'var(--border)',
+      },
+    }));
+  }
+  wrap.appendChild(track);
+
+  const labels = el('div', { style: { position: 'relative', height: '16px', fontSize: '10px', color: 'var(--fg2)' } });
+  for (const v of decades) {
+    const p = pos(v);
+    labels.appendChild(el('span', {
+      style: {
+        position: 'absolute', left: (p * 100).toFixed(3) + '%', whiteSpace: 'nowrap',
+        transform: p > 0.9 ? 'translateX(-100%)' : p > 0 ? 'translateX(-50%)' : 'none',
+      },
+    }, v === capacity ? fmtSize(v) + ' capacity' : fmtSize(v)));
+  }
+  wrap.appendChild(labels);
+
+  wrap.appendChild(el('div', { style: { fontSize: '11px', color: 'var(--fg2)', marginTop: '6px' } },
+    'log scale, one tick per factor of 1024. ' + fmtSize(used) + ' of ' + fmtSize(capacity) +
+    ' is ' + storagePct(used, capacity) + ' — a linear bar would draw it as nothing at all.'));
+  return wrap;
+}
+
+// The block map. One cell is a fixed number of bytes; a run of cells is one
+// owner's claim, laid end to end in allocation order.
+function storageMap(runs, used, windowBytes, ctx) {
+  const wrap = el('div', {});
+  const perCell = windowBytes / STORAGE_CELLS;
+
+  const grid = el('div', {
+    style: {
+      display: 'grid', gridTemplateColumns: 'repeat(' + STORAGE_COLS + ', 1fr)',
+      gap: '1px', background: 'var(--border)', border: '1px solid var(--border)',
+      borderRadius: '3px', padding: '1px', lineHeight: '0',
+    },
+  });
+
+  // Cell counts are rounded, and rounding a thousand runs down loses real
+  // space. Distribute the rounding error instead: carry the fractional
+  // remainder forward so the drawn total matches the true total.
+  let drawn = 0, carry = 0, tiny = 0;
+  const shown = [];
+  for (const run of runs) {
+    if (run.bytes <= 0) continue;
+    carry += run.bytes / perCell;
+    let n = Math.floor(carry);
+    carry -= n;
+    if (n === 0) { tiny++; continue; }
+    if (drawn + n > STORAGE_CELLS) n = STORAGE_CELLS - drawn;
+    if (n <= 0) break;
+    shown.push({ run, n });
+    drawn += n;
+  }
+
+  const dim = _storage.focus !== null;
+  for (const { run, n } of shown) {
+    const focused = !dim || String(run.key) === _storage.focus;
+    const color = storageColor(run.key);
+    for (let i = 0; i < n; i++) {
+      const cell = el('div', {
+        className: 'storage-cell',
+        style: {
+          width: '100%', paddingBottom: '100%', background: color,
+          opacity: focused ? '1' : '0.15', cursor: 'pointer',
+        },
+        onclick: () => {
+          _storage.focus = _storage.focus === String(run.key) ? null : String(run.key);
+          storageSyncURL();
+          loadStorage();
+        },
+      });
+      cell.title = run.key + '\n' + fmtSize(run.bytes) + ' (' + fmtNum(run.bytes) + ' bytes)' +
+        '\n' + storagePct(run.bytes, used) + ' of what is in use' +
+        '\n' + fmtGnotAmount(run.fee) + ' locked';
+      grid.appendChild(cell);
+    }
+  }
+  for (let i = drawn; i < STORAGE_CELLS; i++) {
+    const cell = el('div', {
+      className: 'storage-cell storage-cell-free',
+      style: { width: '100%', paddingBottom: '100%', background: 'var(--bg3)' },
+    });
+    cell.title = 'free — ' + fmtSize(perCell) + ' nobody has claimed';
+    grid.appendChild(cell);
+  }
+  wrap.appendChild(grid);
+
+  const free = Math.max(0, windowBytes - used);
+  const note = el('div', { style: { fontSize: '11px', color: 'var(--fg2)', marginTop: '8px' } });
+  note.appendChild(document.createTextNode(
+    '1 cell = ' + fmtSize(perCell) + ' · window ' + fmtSize(windowBytes) +
+    ' · ' + fmtNum(drawn) + ' cells claimed, ' + fmtNum(STORAGE_CELLS - drawn) + ' free (' +
+    fmtSize(free) + ' inside this window)'));
+  if (tiny > 0) {
+    note.appendChild(el('span', { style: { marginLeft: '8px' } },
+      '· ' + fmtNum(tiny) + ' ' + ctx.unit + (tiny === 1 ? ' holds' : ' hold') +
+      ' less than one cell and are folded into their neighbours'));
+  }
+  wrap.appendChild(note);
+  if (ctx.ordered) {
+    wrap.appendChild(el('div', { style: { fontSize: '11px', color: 'var(--fg2)', marginTop: '2px' } },
+      'laid out oldest claim first, left to right, the way a defragmenter shows a disk filling up.'));
+  } else if (_storage.order === 'alloc') {
+    wrap.appendChild(el('div', { style: { fontSize: '11px', color: 'var(--amber)', marginTop: '2px' } },
+      'these rows carry no claim height, so they are laid out largest first. allocation order needs a ' +
+      'first-claim block, which only the per-realm groupings have.'));
+  }
+  return wrap;
+}
+
+function storageLegend(runs, used) {
+  const top = runs.slice().sort((a, b) => b.bytes - a.bytes).filter(r => r.bytes > 0).slice(0, 16);
+  const wrap = el('div', {
+    style: { display: 'flex', flexWrap: 'wrap', gap: '4px 14px', margin: '14px 0 4px' },
+  });
+  for (const run of top) {
+    const active = _storage.focus === String(run.key);
+    const entry = el('span', {
+      style: {
+        display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '11px',
+        cursor: 'pointer', color: active ? 'var(--fg)' : 'var(--fg2)',
+      },
+      onclick: () => {
+        _storage.focus = active ? null : String(run.key);
+        storageSyncURL();
+        loadStorage();
+      },
+    });
+    entry.appendChild(el('span', {
+      style: {
+        width: '9px', height: '9px', borderRadius: '2px', flex: '0 0 9px',
+        background: storageColor(run.key),
+        outline: active ? '1px solid var(--fg)' : 'none', outlineOffset: '1px',
+      },
+    }));
+    entry.appendChild(document.createTextNode(
+      storageShortKey(run.key) + ' ' + fmtSize(run.bytes) + ' (' + storagePct(run.bytes, used) + ')'));
+    wrap.appendChild(entry);
+  }
+  if (_storage.focus !== null) {
+    wrap.appendChild(el('span', {
+      style: { fontSize: '11px', cursor: 'pointer', color: 'var(--accent)' },
+      onclick: () => { _storage.focus = null; storageSyncURL(); loadStorage(); },
+    }, 'clear selection'));
+  }
+  return wrap;
+}
+
+function storageShortKey(key) {
+  const s = String(key);
+  if (looksLikeAddress(s)) return truncAddr(s);
+  return s.replace('gno.land/', '');
+}
+
+// The key as a link wherever it names something with a page of its own.
+function storageKeyEl(key, group, network) {
+  const s = String(key);
+  if (group === 'realm' && s.startsWith('gno.land/')) return realmPathEl(s, network);
+  if (looksLikeAddress(s)) return addrLink(s, network);
+  if (group === 'namespace' && s !== '(none)') {
+    return link(s, () => navigate('/contracts?ns=' + encodeURIComponent(s)));
+  }
+  return el('span', { style: { color: 'var(--fg2)' } }, s);
+}
+
+function storageTable(runs, used, capacity, network) {
+  const g = STORAGE_GROUPINGS[_storage.group];
+  const table = el('table');
+  const head = el('tr', {},
+    el('th', {}, g.label),
+    el('th', {}, 'bytes'),
+    el('th', {}, 'share of used'),
+    el('th', {}, 'share of capacity'),
+    el('th', {}, 'locked'),
+    el('th', {}, g.from === 'payers' ? 'realms paid for' : 'packages'));
+  if (g.from !== 'payers') head.appendChild(el('th', {}, 'first claim'));
+  table.appendChild(el('thead', {}, head));
+
+  const body = el('tbody');
+  const sorted = runs.slice().sort((a, b) => b.bytes - a.bytes);
+  for (const run of sorted.slice(0, 200)) {
+    const active = _storage.focus === String(run.key);
+    const row = el('tr', { style: active ? { background: 'var(--bg3)' } : {} });
+    const nameCell = el('td');
+    nameCell.appendChild(el('span', {
+      style: {
+        display: 'inline-block', width: '8px', height: '8px', borderRadius: '2px',
+        background: storageColor(run.key), marginRight: '7px',
+      },
+    }));
+    nameCell.appendChild(storageKeyEl(run.key, _storage.group, network));
+    row.appendChild(nameCell);
+    row.appendChild(el('td', {}, fmtSize(run.bytes)));
+    row.appendChild(el('td', {}, storagePct(run.bytes, used)));
+    row.appendChild(el('td', {}, capacity ? storagePct(run.bytes, capacity) : '-'));
+    row.appendChild(el('td', {}, fmtGnotAmount(run.fee)));
+    row.appendChild(el('td', {}, fmtNum(run.members)));
+    if (g.from !== 'payers') {
+      row.appendChild(el('td', {}, Number.isFinite(run.first) ? blockLink(run.first, network) : '-'));
+    }
+    body.appendChild(row);
+  }
+  table.appendChild(body);
+  return table;
+}
+
+function storageStats(cap, capacity) {
+  const used = cap.used_bytes || 0;
+  const bar = el('div', { className: 'stats-bar' });
+  const stat = (label, value, title) => {
+    const s = el('div', { className: 'stat' },
+      el('span', { className: 'label' }, label),
+      el('span', { className: 'value' }, value));
+    if (title) s.title = title;
+    bar.appendChild(s);
+  };
+  stat('capacity', capacity ? fmtSize(capacity) : 'unknown',
+    capacity ? fmtNum(capacity) + ' bytes — the whole supply divided by the price per byte' : cap.error || '');
+  stat('in use', fmtSize(used), fmtNum(used) + ' bytes');
+  stat('free', capacity ? fmtSize(Math.max(0, capacity - used)) : 'unknown');
+  stat('full', capacity ? storagePct(used, capacity) : '-');
+  stat('locked', fmtGnotAmount(cap.locked_ugnot || 0),
+    'GNOT held as storage deposits, refundable when the bytes are freed');
+  stat('price', fmtNum(cap.price_per_byte) + ' ugnot/byte',
+    cap.price_source === 'chain'
+      ? 'read live from vm:p:storage_price'
+      : 'the chain did not answer; this is the protocol default, not a reading');
+  stat('realms', fmtNum(cap.realms || 0));
+  return bar;
+}
+
+function toggleRail() {
+  const collapsed = document.documentElement.classList.toggle('rail-collapsed');
+  try { localStorage.setItem('mygnoscan-rail', collapsed ? 'collapsed' : 'open'); } catch (e) { /* denied storage just means it does not persist */ }
+}
+
+async function loadStorage() {
+  storageStateFromURL();
+  const root = clear('storage-content');
+  skeletonBlock(root);
+
+  const network = getNetwork();
+  // "all" is the default network selection and the one thing this page cannot
+  // answer. Capacity is a chain's own supply divided by its own price, and used
+  // bytes summed across two chains measured against one chain's supply is a
+  // fullness figure true of neither. The server refuses it with a 400; asking
+  // anyway would surface as an uncaught rejection and a blank page, so the
+  // choice is offered here instead.
+  if (!network || network === 'all') {
+    root.textContent = '';
+    root.appendChild(el('div', { className: 'section-title' }, 'the chain as a disk'));
+    root.appendChild(el('div', { className: 'section-sub' },
+      'a disk belongs to one chain: its capacity is that chain\'s own money supply divided by its own ' +
+      'price per byte, so there is no meaningful total across several. pick one.'));
+    const picker = el('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap', padding: '10px 0' } });
+    for (const n of _networks) {
+      picker.appendChild(contractPill(n.id, false, () => {
+        setNetwork(n.id);
+        const sel = document.getElementById('network-select');
+        if (sel) sel.value = n.id;
+        loadStorage();
+      }));
+    }
+    root.appendChild(picker);
+    return;
+  }
+
+  await apiSWR('storage/map', (data) => {
+    root.textContent = '';
+    const cap = data.capacity || {};
+    const capacity = storageCapacityNum(cap);
+    const used = cap.used_bytes || 0;
+
+    root.appendChild(el('div', { className: 'section-title' }, 'the chain as a disk'));
+    root.appendChild(el('div', { className: 'section-sub' },
+      'every byte of realm state locks ' + fmtNum(cap.price_per_byte) + ' ugnot, refundable when the bytes are freed. ' +
+      'so the chain cannot hold more than the money supply can pay for, and that ceiling is what is drawn below.'));
+    root.appendChild(storageStats(cap, capacity));
+
+    if (cap.error) {
+      root.appendChild(el('div', { style: { color: 'var(--amber)', fontSize: '12px', margin: '8px 0' } },
+        cap.error));
+    }
+    if (cap.price_source !== 'chain') {
+      root.appendChild(el('div', { style: { color: 'var(--amber)', fontSize: '12px', margin: '8px 0' } },
+        'the storage price could not be read from this chain, so every figure here uses the protocol default of ' +
+        fmtNum(cap.price_per_byte) + ' ugnot/byte. treat the capacity as an assumption, not a reading.'));
+    }
+
+    const whole = el('div', { className: 'section' });
+    whole.appendChild(el('div', { className: 'section-title' }, 'used against capacity'));
+    whole.appendChild(storageRuler(used, capacity));
+    root.appendChild(whole);
+
+    const { runs, ordered } = storageRuns(data, _storage.group);
+    const windowBytes = storageWindow(used, capacity);
+
+    const mapSection = el('div', { className: 'section' });
+    mapSection.appendChild(el('div', { className: 'section-title' }, 'block map'));
+    mapSection.appendChild(el('div', { className: 'section-sub' },
+      STORAGE_GROUPINGS[_storage.group].hint + '.'));
+    mapSection.appendChild(storageControls());
+    mapSection.appendChild(storageMap(runs, used, windowBytes, {
+      ordered,
+      unit: STORAGE_GROUPINGS[_storage.group].label + (runs.length === 1 ? '' : 's'),
+    }));
+    mapSection.appendChild(storageLegend(runs, used));
+    root.appendChild(mapSection);
+
+    const tableSection = el('div', { className: 'section' });
+    tableSection.appendChild(el('div', { className: 'section-title' },
+      'by ' + STORAGE_GROUPINGS[_storage.group].label));
+    if (data.cells_truncated && STORAGE_GROUPINGS[_storage.group].from === 'cells') {
+      tableSection.appendChild(el('div', { className: 'section-sub' },
+        'the chain has ' + fmtNum(cap.realms) + ' realms holding storage and this list covers the largest ' +
+        fmtNum((data.cells || []).length) + '. the capacity figures above are the full totals.'));
+    }
+    tableSection.appendChild(storageTable(runs, used, capacity, network));
+    root.appendChild(tableSection);
+  });
 }
 
 async function loadGas() {
