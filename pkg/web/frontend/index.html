@@ -6047,7 +6047,20 @@ const STORAGE_WINDOWS = (() => {
   return out.sort((a, b) => a - b);
 })();
 
-let _storage = { group: 'namespace', window: 'auto', order: 'alloc', focus: null };
+// How the used-against-capacity ruler is drawn. Both are honest and neither is
+// honest alone, which is why this is a toggle and not a decision.
+const STORAGE_SCALES = {
+  log: {
+    label: 'log',
+    hint: 'one tick per factor of 1024: the only scale that fits what is used and the whole capacity on one axis',
+  },
+  linear: {
+    label: 'max capacity',
+    hint: 'the same bar drawn to scale against the full capacity, where what is in use is a sliver of a pixel',
+  },
+};
+
+let _storage = { group: 'namespace', window: 'auto', order: 'alloc', focus: null, scale: 'log' };
 
 function fmtSize(n) {
   const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
@@ -6203,6 +6216,7 @@ function storageSyncURL() {
   q.set('group', _storage.group);
   if (_storage.order !== 'alloc') q.set('order', _storage.order); else q.delete('order');
   if (_storage.window !== 'auto') q.set('window', String(_storage.window)); else q.delete('window');
+  if (_storage.scale !== 'log') q.set('scale', _storage.scale); else q.delete('scale');
   if (_storage.focus) q.set('focus', _storage.focus); else q.delete('focus');
   history.replaceState({}, '', window.location.pathname + '?' + q.toString());
 }
@@ -6214,6 +6228,7 @@ function storageStateFromURL() {
   const w = q.get('window');
   if (w === 'auto') _storage.window = 'auto';
   else if (w && Number(w) > 0) _storage.window = Number(w);
+  if (STORAGE_SCALES[q.get('scale')]) _storage.scale = q.get('scale');
   if (q.has('focus')) _storage.focus = q.get('focus');
 }
 
@@ -6261,12 +6276,17 @@ function storageWindow(used, capacity) {
   return capacity || Math.max(need, 1);
 }
 
-// The log ruler: the only view that can show used and capacity at once.
+// Used against capacity, at two scales, because neither one is honest alone.
 //
-// A linear bar is the obvious thing and it is useless here — 47 MB against
-// 13.33 TB is a third of a pixel on a 1000px bar, so the honest drawing and the
-// broken one look identical. Six decades on a log axis fit, and the ticks are
-// labelled so nobody reads the fill as "a third full".
+// Log is the default. 43.9 MB against 12.1 TB is 300,000 to 1, and six decades
+// on one axis is the only way to get both numbers into one picture. What it
+// costs is that the fill *looks* like a third of the bar, and a reader who does
+// not stop to read the ticks comes away thinking the chain is a third full.
+//
+// Max capacity is the correction: the same bar to scale, where what is in use
+// is a fraction of one pixel. Useless as a measurement and exactly right as the
+// answer to "yes, but how full is it really", which is why it is a toggle and
+// not a replacement for the log view.
 function storageRuler(used, capacity) {
   const wrap = el('div', { style: { padding: '4px 0 18px' } });
   if (!capacity) {
@@ -6274,57 +6294,121 @@ function storageRuler(used, capacity) {
       'capacity unknown, so there is nothing to measure the used bytes against.'));
     return wrap;
   }
+  wrap.appendChild(el('div', {
+    style: { display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'center', padding: '0 0 12px' },
+  }, contractControlGroup('scale', Object.entries(STORAGE_SCALES).map(
+    ([k, sc]) => storagePill(sc.label, _storage.scale === k, () => {
+      _storage.scale = k;
+      storageSyncURL();
+      loadStorage();
+    }, sc.hint)))));
 
+  if (_storage.scale === 'linear') storageRulerLinear(wrap, used, capacity);
+  else storageRulerLog(wrap, used, capacity);
+  return wrap;
+}
+
+// Both scales draw the same furniture, and a tick that only one of them knew
+// how to draw is how the two views start disagreeing about where the end is.
+function storageRulerTrack() {
+  return el('div', {
+    className: 'storage-ruler-track',
+    style: {
+      position: 'relative', height: '26px', background: 'var(--bg3)',
+      border: '1px solid var(--border)', borderRadius: '3px', overflow: 'hidden',
+    },
+  });
+}
+
+function storageRulerFill(widthPct, minWidth) {
+  const fill = el('div', {
+    className: 'storage-ruler-fill',
+    style: {
+      position: 'absolute', left: '0', top: '0', bottom: '0',
+      width: widthPct.toFixed(4) + '%',
+      background: 'linear-gradient(90deg, rgba(78,205,196,0.25), var(--accent))',
+    },
+  });
+  if (minWidth) fill.style.minWidth = minWidth;
+  return fill;
+}
+
+function storageRulerTick(track, frac, isEnd) {
+  track.appendChild(el('div', {
+    style: {
+      position: 'absolute', top: '0', bottom: '0', left: (frac * 100).toFixed(3) + '%',
+      width: '1px', background: isEnd ? 'var(--fg2)' : 'var(--border)',
+    },
+  }));
+}
+
+function storageRulerLabels(marks) {
+  const labels = el('div', { style: { position: 'relative', height: '16px', fontSize: '10px', color: 'var(--fg2)' } });
+  for (const [frac, text] of marks) {
+    labels.appendChild(el('span', {
+      style: {
+        position: 'absolute', left: (frac * 100).toFixed(3) + '%', whiteSpace: 'nowrap',
+        transform: frac > 0.9 ? 'translateX(-100%)' : frac > 0 ? 'translateX(-50%)' : 'none',
+      },
+    }, text));
+  }
+  return labels;
+}
+
+function storageRulerLog(wrap, used, capacity) {
   const lo = 1024 * 1024; // 1 MB: below this the axis is all empty decades
   const pos = v => {
     if (v <= lo) return 0;
     return Math.min(1, Math.log(v / lo) / Math.log(capacity / lo));
   };
 
-  const track = el('div', {
-    style: {
-      position: 'relative', height: '26px', background: 'var(--bg3)',
-      border: '1px solid var(--border)', borderRadius: '3px', overflow: 'hidden',
-    },
-  });
-  track.appendChild(el('div', {
-    style: {
-      position: 'absolute', left: '0', top: '0', bottom: '0',
-      width: (pos(used) * 100).toFixed(3) + '%',
-      background: 'linear-gradient(90deg, rgba(78,205,196,0.25), var(--accent))',
-    },
-  }));
+  const track = storageRulerTrack();
+  track.appendChild(storageRulerFill(pos(used) * 100));
 
   const decades = [];
   for (let v = lo; v <= capacity; v *= 1024) decades.push(v);
   if (decades[decades.length - 1] !== capacity) decades.push(capacity);
-  for (const v of decades) {
-    const isEnd = v === capacity;
-    track.appendChild(el('div', {
-      style: {
-        position: 'absolute', top: '0', bottom: '0', left: (pos(v) * 100).toFixed(3) + '%',
-        width: '1px', background: isEnd ? 'var(--fg2)' : 'var(--border)',
-      },
-    }));
-  }
+  for (const v of decades) storageRulerTick(track, pos(v), v === capacity);
   wrap.appendChild(track);
-
-  const labels = el('div', { style: { position: 'relative', height: '16px', fontSize: '10px', color: 'var(--fg2)' } });
-  for (const v of decades) {
-    const p = pos(v);
-    labels.appendChild(el('span', {
-      style: {
-        position: 'absolute', left: (p * 100).toFixed(3) + '%', whiteSpace: 'nowrap',
-        transform: p > 0.9 ? 'translateX(-100%)' : p > 0 ? 'translateX(-50%)' : 'none',
-      },
-    }, v === capacity ? fmtSize(v) + ' capacity' : fmtSize(v)));
-  }
-  wrap.appendChild(labels);
+  wrap.appendChild(storageRulerLabels(decades.map(
+    v => [pos(v), v === capacity ? fmtSize(v) + ' capacity' : fmtSize(v)])));
 
   wrap.appendChild(el('div', { style: { fontSize: '11px', color: 'var(--fg2)', marginTop: '6px' } },
     'log scale, one tick per factor of 1024. ' + fmtSize(used) + ' of ' + fmtSize(capacity) +
-    ' is ' + storagePct(used, capacity) + ' — a linear bar would draw it as nothing at all.'));
-  return wrap;
+    ' is ' + storagePct(used, capacity) + ' \u2014 switch to max capacity to see that drawn to scale.'));
+}
+
+function storageRulerLinear(wrap, used, capacity) {
+  const track = storageRulerTrack();
+  // Two pixels, not none. The true width rounds to zero on any display anyone
+  // owns, and a bar with no fill at all reads as "no data" rather than as "not
+  // much": the caption below says what the real figure is, so the floor
+  // misleads nobody and the mark stays findable.
+  track.appendChild(storageRulerFill((used / capacity) * 100, '2px'));
+  const quarters = [0, 0.25, 0.5, 0.75, 1];
+  for (const f of quarters) storageRulerTick(track, f, f === 1);
+  wrap.appendChild(track);
+  wrap.appendChild(storageRulerLabels(quarters.map(
+    f => [f, f === 1 ? fmtSize(capacity) + ' capacity' : fmtSize(capacity * f)])));
+
+  const note = el('div', { style: { fontSize: '11px', color: 'var(--fg2)', marginTop: '6px' } });
+  note.append('to scale: the whole bar is ' + fmtSize(capacity) + ' and ' + fmtSize(used) +
+    ' in use is ' + storagePct(used, capacity) + ' of it');
+  // How small that is has to be measured rather than asserted: it depends on
+  // how wide the browser actually drew the bar, which depends on the window.
+  const measured = el('span');
+  note.appendChild(measured);
+  note.append('. the log scale is the one that can show both numbers at once.');
+  wrap.appendChild(note);
+
+  requestAnimationFrame(() => {
+    const w = track.getBoundingClientRect().width;
+    if (!w) return;
+    const px = (used / capacity) * w;
+    measured.textContent = ', which across these ' + Math.round(w) + ' pixels is ' +
+      (px >= 1 ? px.toFixed(1) + ' pixels' : px.toFixed(4) + ' of one pixel') +
+      ', so the fill is drawn at a floor of two';
+  });
 }
 
 // The block map. One cell is a fixed number of bytes; a run of cells is one
