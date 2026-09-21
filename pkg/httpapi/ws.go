@@ -20,7 +20,7 @@ type liveFeed struct {
 	mu        sync.RWMutex
 	clients   map[chan []byte]struct{}
 	running   bool
-	indexer   *indexer.Client
+	indexer   liveSource
 	networkID string
 	lastBlock int
 }
@@ -106,6 +106,39 @@ func (f *liveFeed) stopIfIdle() bool {
 	return true
 }
 
+// maxLiveCatchup bounds how far back one poll will replay.
+//
+// pollLoop exits when the last client leaves but keeps lastBlock, so the next
+// browser to open live mode restarts it against the height from whenever the
+// previous one disconnected. Unclamped, that first tick pulls every block since
+// then in a single GraphQL query and fans out one SSE frame each: measured at
+// 37 blocks after two minutes idle on mainnet, which is ~1100 after an hour and
+// ~26k after a day. Someone turning live mode on wants what happens next, not
+// the backlog.
+const maxLiveCatchup = 20
+
+// liveCallTimeout caps each indexer call a poll makes, individually: three
+// sequential calls sharing one budget would let a slow first call starve the
+// other two.
+const liveCallTimeout = 10 * time.Second
+
+// liveSource is the slice of indexer.Client a poll needs. Narrowing it is what
+// makes pollStep testable without a live indexer behind it.
+type liveSource interface {
+	LatestBlockHeight(ctx context.Context) (int, error)
+	GetRecentBlocks(ctx context.Context, limit int) ([]indexer.Block, error)
+	GetRecentTransactions(ctx context.Context, maxResults int) ([]indexer.Transaction, error)
+}
+
+func liveEvent(kind, networkID, field string, payload any) []byte {
+	data, _ := json.Marshal(map[string]any{
+		"type":       kind,
+		"network_id": networkID,
+		"payload":    map[string]any{"data": map[string]any{field: payload}},
+	})
+	return data
+}
+
 func (f *liveFeed) pollLoop() {
 	log.Printf("[%s] live feed: started polling", f.networkID)
 	for {
@@ -113,63 +146,83 @@ func (f *liveFeed) pollLoop() {
 			log.Printf("[%s] live feed: no clients, stopped", f.networkID)
 			return
 		}
+		f.pollStep(context.Background())
+		time.Sleep(3 * time.Second)
+	}
+}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		height, err := f.indexer.LatestBlockHeight(ctx)
-		cancel()
-		if err != nil {
-			time.Sleep(3 * time.Second)
+// pollStep broadcasts everything that appeared since the last one.
+//
+// Two invariants the subscribers depend on, both of which this used to break:
+//
+//   - Events go out oldest first. Browsers prepend each event to the top of the
+//     list, and the indexer queries this reads order height DESC, so forwarding
+//     the batch as it arrives rendered every tick upside down: a tick carrying
+//     four blocks put the newest of the four at the bottom of its group.
+//   - Nothing is sent twice. GetRecentBlocks re-reads the latest height itself,
+//     so the batch routinely contains a block above the height read a moment
+//     earlier. Recording the earlier height as the new tip left those extras
+//     unrecorded and the next tick sent them again.
+func (f *liveFeed) pollStep(parent context.Context) {
+	ctx, cancel := context.WithTimeout(parent, liveCallTimeout)
+	height, err := f.indexer.LatestBlockHeight(ctx)
+	cancel()
+	if err != nil {
+		return
+	}
+
+	switch {
+	case f.lastBlock == 0 || height < f.lastBlock:
+		// First poll, or the chain reset under us. Start from the tip: the
+		// blocks already there are the ones the page painted on load. Before
+		// the reset arm existed a rewound chain wedged the feed for good, since
+		// height could never again exceed a lastBlock from the old chain.
+		f.lastBlock = height
+	case height-f.lastBlock > maxLiveCatchup:
+		f.lastBlock = height - maxLiveCatchup
+	}
+
+	if height <= f.lastBlock {
+		return
+	}
+
+	// from is the tip as it stood before this poll. It stays fixed while
+	// lastBlock advances, so both loops below filter against the same edge.
+	from := f.lastBlock
+
+	ctx2, cancel2 := context.WithTimeout(parent, liveCallTimeout)
+	blocks, err := f.indexer.GetRecentBlocks(ctx2, height-from+1)
+	cancel2()
+	if err != nil {
+		// lastBlock stays where it was, so the next tick retries this span
+		// instead of skipping it. maxLiveCatchup keeps the retry bounded.
+		return
+	}
+	for i := len(blocks) - 1; i >= 0; i-- { // DESC query, walked oldest first
+		b := blocks[i]
+		if b.Height <= from {
 			continue
 		}
-
-		if f.lastBlock == 0 {
-			f.lastBlock = height
+		f.broadcast(liveEvent("block", f.networkID, "getBlocks", b))
+		if b.Height > f.lastBlock {
+			f.lastBlock = b.Height
 		}
+	}
 
-		if height > f.lastBlock {
-			// New blocks — fetch them
-			ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
-			blocks, err := f.indexer.GetRecentBlocks(ctx2, height-f.lastBlock+1)
-			cancel2()
-			if err == nil {
-				for _, b := range blocks {
-					if b.Height <= f.lastBlock {
-						continue
-					}
-					data, _ := json.Marshal(map[string]any{
-						"type":       "block",
-						"network_id": f.networkID,
-						"payload": map[string]any{
-							"data": map[string]any{"getBlocks": b},
-						},
-					})
-					f.broadcast(data)
-				}
-			}
-
-			// Check for new txs in these blocks
-			ctx3, cancel3 := context.WithTimeout(context.Background(), 10*time.Second)
-			txs, err := f.indexer.GetRecentTransactions(ctx3, 20)
-			cancel3()
-			if err == nil {
-				for _, tx := range txs {
-					if tx.BlockHeight > f.lastBlock {
-						data, _ := json.Marshal(map[string]any{
-							"type":       "tx",
-							"network_id": f.networkID,
-							"payload": map[string]any{
-								"data": map[string]any{"getTransactions": tx},
-							},
-						})
-						f.broadcast(data)
-					}
-				}
-			}
-
-			f.lastBlock = height
+	ctx3, cancel3 := context.WithTimeout(parent, liveCallTimeout)
+	txs, err := f.indexer.GetRecentTransactions(ctx3, 20)
+	cancel3()
+	if err != nil {
+		return
+	}
+	for i := len(txs) - 1; i >= 0; i-- { // heightAndIndex DESC, same reversal
+		// Bounded above by the blocks this tick actually announced. This is a
+		// third and even fresher read, so without the ceiling a tx from a block
+		// the feed has not reached yet goes out now and goes out again when its
+		// block finally arrives.
+		if h := txs[i].BlockHeight; h > from && h <= f.lastBlock {
+			f.broadcast(liveEvent("tx", f.networkID, "getTransactions", txs[i]))
 		}
-
-		time.Sleep(3 * time.Second)
 	}
 }
 
