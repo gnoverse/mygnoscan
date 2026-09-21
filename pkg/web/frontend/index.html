@@ -795,7 +795,6 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
     <div class="tab-content" id="tab-events"></div>
     <div class="tab-content" id="tab-storage"></div>
     <div class="tab-content" id="tab-deps"></div>
-    <div class="tab-content" id="tab-inert"></div>
   </main></div>
   <div class="view" id="view-tx-detail"><main><div id="tx-detail-content"></div></main></div>
   <div class="view" id="view-address-detail"><main><div id="address-detail-content"></div></main></div>
@@ -8600,43 +8599,42 @@ async function loadGovDAODetail(id) {
   }
 }
 
-// renderInertTab draws a realm/package's inert-lifecycle tab: current
-// status plus the full submitted/enabled/rejected timeline for its path.
+// A realm's inert lifecycle, folded into the info tab rather than owning a
+// tab of its own. For almost every path its entire content is one status
+// word, and a tab a reader opens once to find a single badge costs more than
+// it tells; the timeline underneath is deploy provenance, which is what the
+// rest of info already is.
+//
+// inertStatusEl is the badge line, rendered as a row of the info table beside
+// the deploy tx it describes. inertHistoryEl is the timeline, rendered under
+// that table, and returns null when there is nothing to show so info does not
+// grow an empty section on the realms (most of them) that were never parked.
+//
 // gpao (the usual approver) leaves no on-chain comment beyond a status code
-// and a reason string — there is no "why" text to show beyond what the
+// and a reason string, so there is no "why" text to show beyond what the
 // status/reason line already says.
-function renderInertTab(container, inert) {
-  container.textContent = '';
-  if (!inert) {
-    container.appendChild(el('p', { style: { color: 'var(--fg2)' } }, 'inert-lifecycle data is unavailable right now.'));
-    return;
-  }
-  const meta = inert.meta || {};
-  const history = inert.history || [];
-  if (!history.length && (!meta.status || meta.status === 'absent')) {
-    container.appendChild(el('p', { style: { color: 'var(--fg2)' } },
-      'no inert-policy history for this path — it was never submitted while parking was in effect, or its submission and activation happened as one message.'));
-    return;
-  }
-
-  container.appendChild(el('div', { className: 'section-title' }, 'current status'));
-  const statusRow = el('div', { style: { marginBottom: '16px' } });
-  statusRow.appendChild(
+function inertStatusEl(meta) {
+  const wrap = el('div');
+  wrap.appendChild(
     meta.status === 'live' ? badge('ok', 'live')
       : meta.status === 'inert' ? badge('fail', 'inert — parked')
         : badge('', meta.status || 'unknown'));
   if (meta.pending && meta.status === 'live') {
-    statusRow.appendChild(document.createTextNode(' '));
-    statusRow.appendChild(badge('', 'redeploy pending'));
+    wrap.appendChild(document.createTextNode(' '));
+    wrap.appendChild(badge('', 'redeploy pending'));
   }
   if (meta.reason) {
-    statusRow.appendChild(el('div', { style: { color: 'var(--fg2)', fontSize: '13px', marginTop: '6px' } }, meta.reason));
+    wrap.appendChild(el('div', { style: { color: 'var(--fg2)', fontSize: '13px', marginTop: '6px' } }, meta.reason));
   }
-  container.appendChild(statusRow);
+  return wrap;
+}
 
-  container.appendChild(el('div', { className: 'section-title', style: { marginTop: '16px' } }, 'history'));
-  container.appendChild(el('div', { className: 'section-sub' },
-    'every submission, approval and rejection recorded for this path, oldest first.'));
+function inertHistoryEl(history) {
+  if (!history || !history.length) return null;
+  const wrap = el('div', { style: { marginTop: '24px' } });
+  wrap.appendChild(el('div', { className: 'section-title' }, 'submission history'));
+  wrap.appendChild(el('div', { className: 'section-sub' },
+    'every submission, approval and rejection recorded for this path under the "inert" code submission policy, oldest first.'));
   const tbl = el('table');
   tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'tx'), el('th', {}, 'event'), el('th', {}, 'by'), el('th', {}, 'block'))));
   const body = el('tbody');
@@ -8657,7 +8655,8 @@ function renderInertTab(container, inert) {
     ));
   }
   tbl.appendChild(body);
-  container.appendChild(tbl);
+  wrap.appendChild(tbl);
+  return wrap;
 }
 
 // inlineMarkdownNodes parses inline emphasis/code/links within one line or
@@ -8970,22 +8969,31 @@ async function loadRealmDetail(path, initialTab) {
       header.appendChild(provenance);
       _watchTarget = { kind: 'realms', id: detail.path, height: latestCall };
       const tabs = clear('realm-tabs');
-      // Icon per tab, so eight same-length grey words stop reading as one
-      // band. Written out rather than derived from the name because two of
-      // them are not the obvious noun (deps is the node-link picture it now
-      // leads with, inert is a pause) and because the sprite guard in
-      // web_test.go greps these calls for literals.
+      // Icon per tab, so seven same-length grey words stop reading as one
+      // band. Written out rather than derived from the name because `deps` is
+      // not the obvious noun (it is the node-link picture the tab now leads
+      // with) and because the sprite guard in web_test.go greps these calls
+      // for literals.
       const tabIcons = {
         info: () => icon('info'), docs: () => icon('doc'), source: () => icon('code'),
         calls: () => icon('call'), events: () => icon('events'), storage: () => icon('storage'),
-        deps: () => icon('graph'), inert: () => icon('pause'),
+        deps: () => icon('graph'),
       };
-      const tabNames = ['info', 'docs', 'source', 'calls', 'events', 'storage', 'deps', 'inert'];
+      const tabNames = ['info', 'docs', 'source', 'calls', 'events', 'storage', 'deps'];
       // `deps` absorbed the standalone `graph` tab: both were drawn from the
       // same two dependency queries, so they were one answer split across two
       // clicks. Links shared before the merge still carry ?tab=graph, and
       // dropping them back to `info` would silently strand them.
       const requestedTab = initialTab === 'graph' ? 'deps' : initialTab;
+      // ?tab=inert is the other retired tab, and it has no successor to
+      // redirect to: its content is now part of info, which is where an
+      // unknown tab lands anyway. Dropping the parameter as well keeps a URL
+      // copied off this page from carrying a tab name nothing answers to.
+      if (initialTab === 'inert') {
+        const legacy = new URL(window.location);
+        legacy.searchParams.delete('tab');
+        history.replaceState(null, '', legacy);
+      }
       const activeTab = requestedTab && tabNames.includes(requestedTab) ? requestedTab : 'info';
       tabNames.forEach((name) => {
         const tab = el('div', { className: 'tab' + (name === activeTab ? ' active' : ''), onclick: () => switchTab(name, tab) }, tabIcons[name](), name);
@@ -9002,6 +9010,17 @@ async function loadRealmDetail(path, initialTab) {
       const txRow = el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'tx'));
       txRow.appendChild(el('td', {}, txLink(detail.tx_hash, detail.block_height)));
       tbl.appendChild(txRow);
+      // Status under the "inert" code submission policy: whether this path is
+      // live, parked awaiting an approver, or live with a parked redeploy on
+      // top of it. "absent" means the chain holds nothing at this path, which
+      // on a page that has just rendered the package means the best-effort RPC
+      // read failed rather than that the package is gone, so the row is left
+      // out instead of asserting something false.
+      const inertMeta = (inert && inert.meta) || null;
+      if (inertMeta && inertMeta.status && inertMeta.status !== 'absent') {
+        tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'submission'),
+          el('td', {}, inertStatusEl(inertMeta))));
+      }
       const impRow = el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'imports'));
       const impTd = el('td');
       for (const imp of (detail.imports || [])) { impTd.appendChild(link(imp, () => navigate('/realm/' + imp.replace('gno.land/', '')))); impTd.appendChild(el('br')); }
@@ -9032,6 +9051,8 @@ async function loadRealmDetail(path, initialTab) {
       fnRow.appendChild(fnTd); tbl.appendChild(fnRow);
       tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'msgrun refs'), el('td', {}, fmtNum((detail.msgrun_refs || []).length) + ' references')));
       info.appendChild(tbl);
+      const inertHistory = inertHistoryEl(inert && inert.history);
+      if (inertHistory) info.appendChild(inertHistory);
       info.appendChild(rawJsonToggle(detail));
       // Docs — a real symbol table (signatures, doc comments, consts/vars/types
       // with their methods, functions), grown out of the same source the
@@ -9500,10 +9521,6 @@ async function loadRealmDetail(path, initialTab) {
         _depGraph.center = path;
         reloadDepGraphActivity();
       })();
-      // Inert lifecycle: whether this path has ever been submitted, parked,
-      // enabled or rejected under the "inert" code submission policy.
-      const inertEl = clear('tab-inert'); if (activeTab === 'inert') inertEl.classList.add('active'); else inertEl.classList.remove('active');
-      renderInertTab(inertEl, inert);
     });
   } catch (err) {
     header.textContent = '';
