@@ -567,3 +567,131 @@ func TestNewClientGetsTheRecentTail(t *testing.T) {
 		}
 	})
 }
+
+// drainTips returns the heights of the tip events buffered on a channel, in
+// arrival order, ignoring blocks and txs.
+func drainTips(t *testing.T, ch chan []byte) []int {
+	t.Helper()
+	var out []int
+	for {
+		select {
+		case data := <-ch:
+			var ev struct {
+				Type    string `json:"type"`
+				Payload struct {
+					Height int `json:"height"`
+				} `json:"payload"`
+			}
+			if err := json.Unmarshal(data, &ev); err != nil {
+				t.Fatalf("undecodable event %q: %v", data, err)
+			}
+			if ev.Type == "tip" {
+				out = append(out, ev.Payload.Height)
+			}
+		default:
+			return out
+		}
+	}
+}
+
+// The header HUD shows the chain tip on every page and the feed is its only
+// source. Without a tip event a browser that subscribes between two blocks has
+// nothing to show until the next one is minted, up to a full block time of a
+// header that reads as broken, on every page load.
+func TestTipEvent(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a warm feed hands the tip over on subscribe", func(t *testing.T) {
+		t.Parallel()
+		f := newFeed()
+		f.lastBlock = 4242
+
+		ch := make(chan []byte, 8)
+		f.replay(ch)
+
+		if got, want := drainTips(t, ch), []int{4242}; !slices.Equal(got, want) {
+			t.Errorf("got %v, want %v; the header waits a block time for a number it could have had", got, want)
+		}
+	})
+
+	t.Run("the tip comes before the replayed blocks", func(t *testing.T) {
+		t.Parallel()
+		f := newFeed()
+		f.broadcast(liveEvent("block", "test", "getBlocks", indexer.Block{Height: 100}))
+		f.lastBlock = 100
+
+		ch := make(chan []byte, 8)
+		f.replay(ch)
+
+		var kinds []string
+		for len(ch) > 0 {
+			var ev struct {
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal(<-ch, &ev); err != nil {
+				t.Fatalf("undecodable event: %v", err)
+			}
+			kinds = append(kinds, ev.Type)
+		}
+		if got, want := kinds, []string{"tip", "block"}; !slices.Equal(got, want) {
+			t.Errorf("got %v, want %v; the height must land before the rows it belongs to", got, want)
+		}
+	})
+
+	t.Run("a cold feed claims no height rather than zero", func(t *testing.T) {
+		t.Parallel()
+		ch := make(chan []byte, 4)
+		newFeed().replay(ch)
+
+		if got := drainTips(t, ch); len(got) != 0 {
+			t.Errorf("a feed that has never polled announced tip %v", got)
+		}
+	})
+
+	t.Run("the first poll of a cold feed announces the tip", func(t *testing.T) {
+		t.Parallel()
+		// Nobody subscribed in time for a replay, and the feed sends no blocks
+		// on its first poll because everything up to the tip is what the page
+		// already painted. Without this the HUD sits on a dash until the next
+		// block is minted.
+		f, ch := feedWith(&stubSource{height: 500})
+		f.pollStep(context.Background())
+
+		if got, want := drainTips(t, ch), []int{500}; !slices.Equal(got, want) {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("a chain that rewinds says so", func(t *testing.T) {
+		t.Parallel()
+		f, ch := feedWith(&stubSource{height: 7})
+		f.lastBlock = 900
+		f.pollStep(context.Background())
+
+		// A browser holding 900 would otherwise show the old chain's height
+		// until a reset chain climbed all the way back past it.
+		if got, want := drainTips(t, ch), []int{7}; !slices.Equal(got, want) {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("a tip never enters the replay tail", func(t *testing.T) {
+		t.Parallel()
+		// The tip is regenerated per subscriber, so recording it would spend
+		// the bounded tail on events that are not rows and push real blocks out
+		// of the window a late subscriber is trying to fill.
+		f := newFeed()
+		for i := 1; i <= liveReplay; i++ {
+			f.broadcast(liveEvent("block", "test", "getBlocks", indexer.Block{Height: i}))
+		}
+		f.register(make(chan []byte, 8))
+		f.broadcastTip(999)
+
+		ch := make(chan []byte, 256)
+		f.replay(ch)
+
+		if got := drainHeights(t, ch); len(got) != liveReplay || got[0] != 1 {
+			t.Errorf("tail is %v, want the %d blocks starting at 1", got, liveReplay)
+		}
+	})
+}
