@@ -5461,10 +5461,16 @@ function renderSignals(container, signals) {
   }
 }
 
-// valueEl renders one parameter value, linking it when it is an address so a
-// reader can check who they are about to authorise without retyping 40
-// characters into the search box.
-function paramValueEl(v) {
+// paramDiffValueEl renders one value inside the proposal parameter diff,
+// linking it when it is an address so a reader can check who they are about to
+// authorise without retyping 40 characters into the search box.
+//
+// Named for the diff, not for parameters in general: paramValueEl already
+// belongs to the /params page, and index.html is one script with one global
+// scope, so two `function` declarations sharing a name do not collide loudly.
+// The later one silently wins everywhere, including in the earlier one's own
+// callers. See TestFrontendHasNoDuplicateTopLevelDeclarations.
+function paramDiffValueEl(v) {
   if (/^g1[a-z0-9]{38}$/.test(v)) return addrLink(v);
   if (v === '') return el('span', { className: 'pd-same' }, '(empty)');
   return el('span', {}, v);
@@ -5507,7 +5513,7 @@ function renderParamChanges(container, changes) {
     if (!cur.length) curCell.appendChild(el('span', { className: 'pd-same' }, pc.current_known ? '(unset)' : '(could not read)'));
     for (const v of cur) {
       curCell.appendChild(el('div', { className: 'pd-row ' + (inRes.has(v) ? 'pd-same' : 'pd-del') },
-        el('span', {}, (inRes.has(v) ? '  ' : '− ')), paramValueEl(v)));
+        el('span', {}, (inRes.has(v) ? '  ' : '− ')), paramDiffValueEl(v)));
     }
     const resCell = el('td');
     if (!pc.current_known) {
@@ -5517,7 +5523,7 @@ function renderParamChanges(container, changes) {
     }
     for (const v of res) {
       resCell.appendChild(el('div', { className: 'pd-row ' + (inCur.has(v) ? 'pd-same' : 'pd-add') },
-        el('span', {}, (inCur.has(v) ? '  ' : '+ ')), paramValueEl(v)));
+        el('span', {}, (inCur.has(v) ? '  ' : '+ ')), paramDiffValueEl(v)));
     }
     body.appendChild(el('tr', {}, curCell, resCell));
     tbl.appendChild(body);
