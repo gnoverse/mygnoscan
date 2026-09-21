@@ -17,6 +17,21 @@ export const DEPENDENTS = 60;
 export const SHARED_PACKAGES = 12;
 
 export const HUB_CREATOR = 'g1hubcreator00000000000000000000000000';
+
+// The hub's own account, as pkg/gnoaddr derives it from HUB. Pinned rather than
+// computed because the fixture is JavaScript and the derivation is Go: if the
+// two ever disagree, the defi tab's assertions are what says so.
+export const HUB_ADDRESS = 'g1qql00vm7xf0mydz74md9c57tuv34znm8wm9nxu';
+
+// One GRC20 asset the hub holds a position in. The key is the chain's own shape,
+// `<realm path>.<name>.<id>`, because TokenKeyParts splits from the right and a
+// bare symbol takes a different branch.
+export const GRC20_REALM = 'gno.land/r/hub/token';
+export const GRC20_TOKEN = 'gno.land/r/hub/token.hubcoin.0';
+export const GRC20_FUNDER = 'g1grc20funder0000000000000000000000000';
+export const GRC20_IN = 650000;
+export const GRC20_OUT = 150000;
+export const GRC20_BALANCE = GRC20_IN - GRC20_OUT;
 export const BUSY_CALLER = 'g1busycaller0000000000000000000000000';
 
 // Two addresses that each call the same two realms, so the contracts map has a
@@ -176,6 +191,27 @@ export function seed(dbPath) {
     // The same path on the other chain, with different numbers, so anything
     // that groups by path alone reports a size belonging to neither chain.
     store('beta', 'store-beta-hog', STORAGE_HOG, 4000, 7 * 1024 * 1024);
+
+    // GRC20 positions for the hub realm's own account, so the defi tab's token
+    // half has something to reconstruct.
+    //
+    // The address is the one pkg/gnoaddr derives for HUB, not a decorative
+    // string: the endpoint looks the ledger up by the derived address, and a
+    // made-up one would leave the table permanently empty while the test still
+    // passed on "no positions".
+    //
+    // An empty `from` is a mint, which is how the funder got its own supply,
+    // and the realm both receives and spends so a balance that ignored the
+    // direction of a leg would be caught.
+    const token = db.prepare(`INSERT OR REPLACE INTO token_transfers
+      (network, tx_hash, event_idx, token, pkg_path, from_addr, to_addr, value, block_height, block_time)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    const grc20 = (hash, idx, tok, from, to, value, h) =>
+      token.run('alpha', hash, idx, tok, GRC20_REALM, from, to, value, h, blockTime(h));
+    grc20('grc20-mint', 0, GRC20_TOKEN, '', GRC20_FUNDER, 1000000, 4100);
+    grc20('grc20-in-1', 0, GRC20_TOKEN, GRC20_FUNDER, HUB_ADDRESS, 400000, 4101);
+    grc20('grc20-in-2', 0, GRC20_TOKEN, GRC20_FUNDER, HUB_ADDRESS, 250000, 4102);
+    grc20('grc20-out', 0, GRC20_TOKEN, HUB_ADDRESS, GRC20_FUNDER, 150000, 4103);
 
     db.exec('COMMIT');
   } finally {

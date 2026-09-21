@@ -92,6 +92,29 @@ export const TAB_EVENTS = [
 // page hides them, and it can only be shown to hide them if they are here.
 export const TAB_EVENT_STORAGE_BYTES = 2048;
 
+// The realm's own bank account, and the transfers through it.
+//
+// TAB_REALM_ADDRESS is not a made-up string: it is what pkg/gnoaddr derives for
+// TAB_REALM, and the defi endpoint asks this fake for transfers by that derived
+// address. A fixture with a decorative address would answer every query with
+// nothing and the tab would test as permanently empty.
+export const TAB_REALM_ADDRESS = 'g1qql00vm7xf0mydz74md9c57tuv34znm8wm9nxu';
+export const TAB_FUNDER = 'g1defifunder00000000000000000000000000';
+export const TAB_PAYEE = 'g1defipayee000000000000000000000000000';
+
+// In and out, so the running balance goes up and comes back down: a chart that
+// ignored the sign of a leg still ends on the right total if every leg is a
+// receipt, and only a fixture that spends catches it.
+export const TAB_TRANSFERS = [
+  { height: 1002, from: TAB_FUNDER, to: TAB_REALM_ADDRESS, amount: 5000000 },
+  { height: 1006, from: TAB_FUNDER, to: TAB_REALM_ADDRESS, amount: 3000000 },
+  { height: 1012, from: TAB_REALM_ADDRESS, to: TAB_PAYEE, amount: 1000000 },
+  { height: 1018, from: TAB_FUNDER, to: TAB_REALM_ADDRESS, amount: 2500000 },
+  { height: 1030, from: TAB_REALM_ADDRESS, to: TAB_PAYEE, amount: 500000 },
+];
+export const TAB_NET_UGNOT = TAB_TRANSFERS.reduce(
+  (s, t) => s + (t.to === TAB_REALM_ADDRESS ? t.amount : -t.amount), 0);
+
 // One package lifecycle, so the realm page's info tab has a submission history
 // to draw and the fold of the old inert tab into info is assertable.
 //
@@ -133,6 +156,22 @@ function storageTxs(pkgPath) {
         bytes_delta: e.bytes,
         fee_refund: { amount: -e.bytes * STORAGE_PRICE, denom: 'ugnot' },
         pkg_path: pkgPath,
+      }],
+    },
+  })));
+}
+
+function transferTxs() {
+  return desc(TAB_TRANSFERS.map((t, i) => ({
+    hash: `transfer-${i}`,
+    block_height: t.height,
+    success: true,
+    response: {
+      events: [{
+        __typename: 'TransferEvent',
+        from: t.from,
+        to: t.to,
+        coins: `${t.amount}ugnot`,
       }],
     },
   })));
@@ -222,6 +261,16 @@ function askedPath(query) {
   return m ? m[1] : '';
 }
 
+// The defi query is the one filtered by address rather than by path, so it has
+// its own extractor. Any of the four TransferEvent clauses will do: they are
+// the same two addresses repeated to/from.
+const TRANSFER_ADDR_RE = /TransferEvent: \{ (?:to|from): \{ eq: "([^"]+)" \} \}/;
+
+function askedTransferAddress(query) {
+  const m = TRANSFER_ADDR_RE.exec(query);
+  return m ? m[1] : '';
+}
+
 function blocks() {
   // Newest first, the order the real indexer returns for this query and the
   // order the frontend's sparkline relies on when it reverses for display.
@@ -260,6 +309,11 @@ export function startFakeIndexer() {
         data = { latestBlockHeight: TIP };
       } else if (query.includes('getBlocks')) {
         data = { getBlocks: blocks() };
+      } else if (query.includes('TransferEvent: {')) {
+        data = {
+          getTransactions: askedTransferAddress(query) === TAB_REALM_ADDRESS
+            ? transferTxs() : [],
+        };
       } else if (query.includes('StorageDepositEvent: { pkg_path: { eq:')) {
         data = { getTransactions: askedPath(query) === TAB_REALM ? storageTxs(TAB_REALM) : [] };
       } else if (query.includes('MsgCall: { pkg_path: { eq:')) {
