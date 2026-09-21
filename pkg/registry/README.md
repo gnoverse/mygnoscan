@@ -48,7 +48,11 @@ that makes it worth using.
    it has to be evidence rather than an assertion: "3683 sends to 953 addresses,
    never calls a realm" is evidence, "it is a faucet" is not.
 3. Add `checked` (a `YYYY-MM-DD` date) for anything measured, so a reader can
-   see how old the measurement is.
+   see how old the measurement is. It works in all three files. An app blurb
+   needs one whenever it names a fact that can change without the entry
+   changing: a minimum balance a realm asks for, which generation a front-end
+   currently serves, a parameter's present value. "What this realm is for" does
+   not need a date; "it asks 3000 GNOT" does, and `/apps` prints it.
 4. Open a pull request. `go test ./pkg/registry/` validates the shape, and CI
    runs it.
 
@@ -62,6 +66,9 @@ blast radius: it appears on every page the address does.
 | `addresses.json` | bech32 address | every address link in the explorer |
 | `tokens.json` | `<realm path>.<name>.<id>`, the GRC20 event key | the token views |
 | `apps.json` | realm path | `/apps` |
+
+Every file's `checked` is validated the same way and none may be dated in the
+future; `TestShippedDatesAreNotInTheFuture` covers all three.
 
 Token keys are whatever the GRC20 `Transfer` event puts in its `token`
 attribute, verbatim. That is usually the full triple

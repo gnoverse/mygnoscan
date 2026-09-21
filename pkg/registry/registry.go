@@ -74,6 +74,12 @@ type App struct {
 	Category    string `json:"category"`
 	Description string `json:"description"`
 	URL         string `json:"url,omitempty"`
+	// Checked dates the description, for the same reason Entry and Token carry
+	// it: an app blurb is mostly durable ("what this realm is for") but usually
+	// smuggles in one fact that is not, like a minimum balance a board asks of
+	// a poster, or which generation a front-end currently serves. Those go
+	// stale silently, because nothing about the page says how old they are.
+	Checked string `json:"checked,omitempty"`
 }
 
 // Registry is the parsed whole.
@@ -149,13 +155,20 @@ func validateEntry(addr string, e Entry) error {
 	if e.Kind != KindCurated && strings.TrimSpace(e.Why) == "" {
 		return fmt.Errorf("addresses.json: %s is %q and must explain why", addr, e.Kind)
 	}
-	if e.Checked != "" {
-		if !isoDate.MatchString(e.Checked) {
-			return fmt.Errorf("addresses.json: %s has checked %q, want YYYY-MM-DD", addr, e.Checked)
-		}
-		if _, err := time.Parse("2006-01-02", e.Checked); err != nil {
-			return fmt.Errorf("addresses.json: %s has checked %q, which is not a date", addr, e.Checked)
-		}
+	return validateChecked("addresses.json", addr, e.Checked)
+}
+
+// validateChecked is shared by every file, because a date that is only
+// validated in one of them is a date that is wrong in the other two.
+func validateChecked(file, subject, checked string) error {
+	if checked == "" {
+		return nil
+	}
+	if !isoDate.MatchString(checked) {
+		return fmt.Errorf("%s: %s has checked %q, want YYYY-MM-DD", file, subject, checked)
+	}
+	if _, err := time.Parse("2006-01-02", checked); err != nil {
+		return fmt.Errorf("%s: %s has checked %q, which is not a date", file, subject, checked)
 	}
 	return nil
 }
@@ -194,6 +207,9 @@ func validateTokens(tokens map[string]Token) error {
 		if tok.Decimals < 0 || tok.Decimals > 30 {
 			return fmt.Errorf("tokens.json: %s has implausible decimals %d", key, tok.Decimals)
 		}
+		if err := validateChecked("tokens.json", key, tok.Checked); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -205,23 +221,8 @@ func loadApps() ([]App, error) {
 	if err := readJSON("data/apps.json", &doc); err != nil {
 		return nil, err
 	}
-	seen := map[string]bool{}
-	for _, a := range doc.Apps {
-		switch {
-		case !realmPath.MatchString(a.Path):
-			return nil, fmt.Errorf("apps.json: %q is not a gno.land path", a.Path)
-		case seen[a.Path]:
-			return nil, fmt.Errorf("apps.json: %s is listed twice", a.Path)
-		case strings.TrimSpace(a.Name) == "":
-			return nil, fmt.Errorf("apps.json: %s has no name", a.Path)
-		case strings.TrimSpace(a.Category) == "":
-			return nil, fmt.Errorf("apps.json: %s has no category", a.Path)
-		case strings.TrimSpace(a.Description) == "":
-			// A directory entry that does not say what the thing does is a link
-			// list, which the realm list already is.
-			return nil, fmt.Errorf("apps.json: %s has no description", a.Path)
-		}
-		seen[a.Path] = true
+	if err := validateApps(doc.Apps); err != nil {
+		return nil, err
 	}
 	// Sorted here rather than in the file, so a contributor adding an entry
 	// does not have to find the right line and a reviewer sees a one-line diff.
@@ -232,6 +233,31 @@ func loadApps() ([]App, error) {
 		return doc.Apps[i].Name < doc.Apps[j].Name
 	})
 	return doc.Apps, nil
+}
+
+func validateApps(apps []App) error {
+	seen := map[string]bool{}
+	for _, a := range apps {
+		switch {
+		case !realmPath.MatchString(a.Path):
+			return fmt.Errorf("apps.json: %q is not a gno.land path", a.Path)
+		case seen[a.Path]:
+			return fmt.Errorf("apps.json: %s is listed twice", a.Path)
+		case strings.TrimSpace(a.Name) == "":
+			return fmt.Errorf("apps.json: %s has no name", a.Path)
+		case strings.TrimSpace(a.Category) == "":
+			return fmt.Errorf("apps.json: %s has no category", a.Path)
+		case strings.TrimSpace(a.Description) == "":
+			// A directory entry that does not say what the thing does is a link
+			// list, which the realm list already is.
+			return fmt.Errorf("apps.json: %s has no description", a.Path)
+		}
+		if err := validateChecked("apps.json", a.Path, a.Checked); err != nil {
+			return err
+		}
+		seen[a.Path] = true
+	}
+	return nil
 }
 
 func readJSON(name string, out any) error {

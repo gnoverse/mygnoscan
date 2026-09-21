@@ -23,6 +23,13 @@ test('the apps directory renders what each realm is for', async ({ page }) => {
   await expect(content).toContainText('GovDAO');
   await expect(content).toContainText('proposals, votes');
 
+  // An entry whose blurb names a fact that can change under it says when that
+  // fact was last confirmed, so a reader can weigh it rather than assume it is
+  // current. Entries with nothing volatile in them carry no date and show none.
+  const dated = content.locator('tr', { hasText: 'Boards2' });
+  await expect(dated).toContainText(/checked \d{4}-\d{2}-\d{2}/);
+  await expect(content.locator('tr', { hasText: 'Valopers' })).not.toContainText('checked ');
+
   expect(seen.jsErrors, 'uncaught exceptions').toEqual([]);
   expect(unexpected(seen.consoleErrors), 'console errors').toEqual([]);
 
