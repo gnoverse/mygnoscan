@@ -123,6 +123,11 @@ test('the events tab charts the event mix', async ({ page }) => {
   for (const type of new Set(TAB_EVENTS.map(e => e.type))) {
     expect(series(drawn[0], type).total).toBe(TAB_EVENTS.filter(e => e.type === type).length);
   }
+  // The fixture posts a storage deposit alongside every one of those, and it
+  // must not become a series: the chain writes one per state-changing
+  // transaction, so charting it draws the transaction count a second time and
+  // outranks every real event type on a realm with few of them.
+  expect(drawn[0].datasets.map(d => d.label)).not.toContain('StorageDepositEvent');
 });
 
 // The account page ranks who and what in three tables and said nothing about
