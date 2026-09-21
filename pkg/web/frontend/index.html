@@ -12893,6 +12893,11 @@ function renderContractMap() {
   // Only the force map knows how to redraw into what is already there. The
   // other five are handed an empty canvas, the way they always were.
   if (!spec.morph) zoomG.selectAll('*').remove();
+  // The zoom handler belongs to whichever layout is about to draw. Cleared
+  // here rather than in the teardown because the surface survives a repaint
+  // and a metric switch would otherwise leave the previous render's closure
+  // deciding what the new one labels.
+  surface.onZoom = null;
   const fit = draw(ctx) || (() => svg.transition().duration(300).call(zoom.transform, d3.zoomIdentity));
 
   // A draw function is allowed to give up and tear the surface down (the chord
@@ -12929,11 +12934,9 @@ function contractSurface(container, layoutKey, width, height) {
   const svg = d3.select(container).append('svg').attr('width', width).attr('height', height)
     .attr('role', 'img').attr('aria-label', 'map of deployed contracts');
   const zoomG = svg.append('g');
-  const zoom = d3.zoom().scaleExtent([0.15, 6]).on('zoom', e => zoomG.attr('transform', e.transform));
-  svg.call(zoom);
   const chrome = el('div');
   const next = {
-    container, layoutKey, width, height, svg, zoomG, zoom,
+    container, layoutKey, width, height, svg, zoomG, zoom: null,
     tip: contractTooltip(container), chrome,
     // Both of these are per surface rather than per render. fitted, because
     // framing the map is right the first time it settles and wrong on every
@@ -12941,7 +12944,21 @@ function contractSurface(container, layoutKey, width, height) {
     // it. shape, because how hard to reheat the simulation depends on what
     // changed since the last render, which only the surface remembers.
     fitted: false, shape: null, sim: null, reused: false,
+    // onZoom is how a layout gets told the scale changed, so it can re-decide
+    // what it draws instead of only being magnified. Set by the draw function
+    // that wants it and cleared before every draw, because a surface outlives
+    // a repaint and a stale handler would be re-deciding against the last
+    // render's data.
+    onZoom: null,
   };
+  // 12, not 6: the ceiling is what "zoom in enough" means, and the packing's
+  // smallest bubbles are 3.5px at rest. At 6 they are 21px across and only the
+  // shortest names fit; at 12 every contract on the map can be read.
+  next.zoom = d3.zoom().scaleExtent([0.15, 12]).on('zoom', e => {
+    zoomG.attr('transform', e.transform);
+    if (next.onZoom) next.onZoom(e.transform);
+  });
+  svg.call(next.zoom);
   container.appendChild(chrome);
   _contracts.surface = next;
   return next;
@@ -13068,6 +13085,37 @@ function contractHover(sel, tip, get) {
 
 function contractOpen(d) { navigate('/realm/' + d.path.replace('gno.land/', '')); }
 
+// contractEdgePath draws a link as a curve that starts and ends on the two
+// bubbles' borders rather than at their centres.
+//
+// Centre to centre is what every one of these views drew, and it is wrong in a
+// way that gets worse the further the metric spreads the radii: the visible end
+// of an edge is wherever the circle it disappears under happens to stop, so the
+// same weight reads as a shorter link into a large contract than into a small
+// one, and on the import view the arrowhead that says which way the dependency
+// points is buried inside the package it points at.
+//
+// Trimmed along the tangent and not along the chord: a quadratic curve leaves
+// its start point in the direction of its control point and arrives at its end
+// from that same direction, so that is the only direction in which stepping the
+// radius lands back on the curve. Passing the midpoint as the control point
+// draws a straight line.
+function contractEdgePath(ax, ay, bx, by, ar, br, cx, cy) {
+  const step = (x, y, r, tx, ty) => {
+    const d = Math.hypot(tx - x, ty - y) || 1;
+    return [x + ((tx - x) / d) * r, y + ((ty - y) / d) * r];
+  };
+  const [sx, sy] = step(ax, ay, ar, cx, cy);
+  const [ex, ey] = step(bx, by, br, cx, cy);
+  // Circles that touch or overlap have no gap between them to draw a link in:
+  // a packing puts siblings in contact, and the force map lets bubbles overlap
+  // while it settles. Both trims then run past each other and the curve doubles
+  // back, which draws as a stray hook pointing the wrong way. A zero-length
+  // path draws nothing and still answers getTotalLength for the flow particles.
+  if ((ex - sx) * (bx - ax) + (ey - sy) * (by - ay) <= 0) return 'M' + sx + ',' + sy;
+  return 'M' + sx + ',' + sy + 'Q' + cx + ',' + cy + ' ' + ex + ',' + ey;
+}
+
 // The hierarchy four of the layouts share: root, one child per namespace, one
 // leaf per contract, valued by the selected metric.
 //
@@ -13127,8 +13175,12 @@ function drawContractForce(ctx) {
   svg.selectAll('defs').remove();
   if (showArrows) {
     svg.append('defs').append('marker')
+      // refX 10, the tip of the marker's own path: the line now stops at the
+      // target's border, so the tip lands there too. It was 14 to claw back
+      // some of the overlap from a line that ran to the centre, by a fixed
+      // amount that was right for one radius and wrong for every other.
       .attr('id', 'contract-arrow').attr('viewBox', '0 -5 10 10')
-      .attr('refX', 14).attr('refY', 0).attr('markerWidth', 3).attr('markerHeight', 3)
+      .attr('refX', 10).attr('refY', 0).attr('markerWidth', 3).attr('markerHeight', 3)
       .attr('orient', 'auto')
       .append('path').attr('d', 'M0,-5L10,0L0,5').attr('fill', 'var(--fg2)');
   }
@@ -13261,8 +13313,22 @@ function drawContractForce(ctx) {
 
   const byNamespace = d3.group(nodes, d => d.namespace);
   const paint = () => {
-    linkEl.attr('x1', l => l.source.x).attr('y1', l => l.source.y)
-      .attr('x2', l => l.target.x).attr('y2', l => l.target.y);
+    // Border to border, for the reason contractEdgePath spells out. Written as
+    // one each() rather than four attr() passes because this runs on every tick
+    // of the simulation, and four passes is four walks of the same selection.
+    linkEl.each(function (l) {
+      const dx = l.target.x - l.source.x, dy = l.target.y - l.source.y;
+      const len = Math.hypot(dx, dy) || 1;
+      // Clamped at the midpoint each side: two bubbles closer than their radii
+      // have no gap between them to draw a link in, and trimming past each
+      // other would draw the line, and its arrowhead, backwards.
+      const t0 = Math.min(radius(l.source) / len, 0.5);
+      const t1 = Math.max(1 - radius(l.target) / len, 0.5);
+      this.setAttribute('x1', l.source.x + dx * t0);
+      this.setAttribute('y1', l.source.y + dy * t0);
+      this.setAttribute('x2', l.source.x + dx * t1);
+      this.setAttribute('y2', l.source.y + dy * t1);
+    });
     nodeEl.attr('cx', d => d.x).attr('cy', d => d.y);
     if (_contracts.hulls) drawNamespaceHulls(hullG, byNamespace, radius);
     if (_contracts.labels) labelEl.attr('x', d => d.x).attr('y', d => d.y - radius(d) - 3);
@@ -13384,9 +13450,18 @@ function drawContractOrbit(ctx) {
   ring1.forEach(r => place(r, R1));
   ring2List.forEach(r => place(r, R2));
 
-  const pos = new Map([[focus.path, { x: cx, y: cy }]]);
-  ring1.forEach(r => pos.set(r.node.path, { x: r.x, y: r.y }));
-  ring2List.forEach(r => pos.set(r.node.path, { x: r.x, y: r.y }));
+  // The centre is drawn at a fixed large radius rather than by the metric: it
+  // is the subject of the view, and a focus that shrank when you switched
+  // metric would read as having been deselected.
+  const focusR = Math.max(20, ctx.rMax * 0.8);
+  const ringR = (node, ring) => ring === 0 ? focusR
+    : Math.max(5, radius(node) * (ring === 1 ? 0.9 : 0.7));
+
+  // Radius alongside position, because the links are trimmed to the borders
+  // and a border is a radius away from a centre.
+  const pos = new Map([[focus.path, { x: cx, y: cy, r: focusR }]]);
+  ring1.forEach(r => pos.set(r.node.path, { x: r.x, y: r.y, r: ringR(r.node, 1) }));
+  ring2List.forEach(r => pos.set(r.node.path, { x: r.x, y: r.y, r: ringR(r.node, 2) }));
 
   // Faint guide rings, so "one step out" and "two steps out" are readable
   // without counting. The second one only when something is on it: an empty
@@ -13411,8 +13486,8 @@ function drawContractOrbit(ctx) {
     const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
     const dx = mx - cx, dy = my - cy, len = Math.hypot(dx, dy) || 1;
     const bow = Math.hypot(b.x - a.x, b.y - a.y) * 0.18;
-    return 'M' + a.x + ',' + a.y + 'Q' + (mx + (dx / len) * bow) + ',' + (my + (dy / len) * bow) +
-      ' ' + b.x + ',' + b.y;
+    return contractEdgePath(a.x, a.y, b.x, b.y, a.r, b.r,
+      mx + (dx / len) * bow, my + (dy / len) * bow);
   };
   const touchesFocus = l => l.source === focus.path || l.target === focus.path;
   const linkEl = zoomG.append('g').attr('fill', 'none').selectAll('path').data(drawn).join('path')
@@ -13448,10 +13523,7 @@ function drawContractOrbit(ctx) {
   const nodeEl = decorateContractShape(
     zoomG.append('g').selectAll('circle').data(ringData).join('circle'), d => d.node)
     .attr('cx', d => d.x).attr('cy', d => d.y)
-    // The centre is drawn at a fixed large radius rather than by the metric:
-    // it is the subject of the view, and a focus that shrank when you switched
-    // metric would read as having been deselected.
-    .attr('r', d => d.ring === 0 ? Math.max(20, ctx.rMax * 0.8) : Math.max(5, radius(d.node) * (d.ring === 1 ? 0.9 : 0.7)))
+    .attr('r', d => ringR(d.node, d.ring))
     .attr('stroke', d => d.ring === 0 ? 'var(--accent)' : (d.node.parked ? 'var(--accent2)' : 'rgba(0,0,0,0.45)'))
     .attr('stroke-width', d => d.ring === 0 ? 2 : 1)
     // Clicking re-centres, which is the whole interaction. The centre is the
@@ -13472,8 +13544,8 @@ function drawContractOrbit(ctx) {
     .text(d => shortContractLabel(d.node))
     .attr('x', d => d.x)
     .attr('y', d => d.ring === 0
-      ? cy + Math.max(20, ctx.rMax * 0.8) + 13
-      : d.y - Math.max(5, radius(d.node) * 0.9) - 4)
+      ? cy + focusR + 13
+      : d.y - ringR(d.node, d.ring) - 4)
     .attr('text-anchor', 'middle')
     .attr('font-size', d => d.ring === 0 ? 12 : 9.5)
     .attr('fill', d => d.ring === 0 ? 'var(--accent)' : 'var(--fg)')
@@ -13482,7 +13554,7 @@ function drawContractOrbit(ctx) {
   const dropped = adj.get(focus.path).length - ring1.length;
   if (dropped > 0) {
     zoomG.append('text')
-      .attr('x', cx).attr('y', cy + Math.max(20, ctx.rMax * 0.8) + 27)
+      .attr('x', cx).attr('y', cy + focusR + 27)
       .attr('text-anchor', 'middle').attr('font-size', 10).attr('fill', 'var(--fg2)')
       .text('+' + fmtNum(dropped) + ' weaker links not drawn');
   }
@@ -13594,7 +13666,7 @@ function drawContractPacked(ctx) {
     // map is panned with rather than a second, private notion of "zoomed in".
     .on('click', (e, d) => {
       e.stopPropagation();
-      const k = Math.min(6, Math.min(width, height) / (2.2 * d.r));
+      const k = Math.min(12, Math.min(width, height) / (2.2 * d.r));
       svg.transition().duration(500).call(zoom.transform,
         d3.zoomIdentity.translate(width / 2, height / 2).scale(k).translate(-(d.x + 4), -(d.y + 4)));
     })
@@ -13624,41 +13696,103 @@ function drawContractPacked(ctx) {
     const mine = neighbours.get(d.data.leaf.path) || [];
     overlay.selectAll('path').data(mine.filter(l => at.has(l.source) && at.has(l.target)))
       .join('path')
+      // Border to border. The bow is the one the arc had: an SVG arc of radius
+      // 0.9 chords deviates from its chord by 0.1517 of it, and a quadratic
+      // deviates by half its control offset, so 0.303 perpendicular is the
+      // same curve written in the form that can be trimmed.
       .attr('d', l => {
         const a = at.get(l.source), b = at.get(l.target);
-        return 'M' + a.x + ',' + a.y + 'A' + (Math.hypot(b.x - a.x, b.y - a.y) * 0.9) + ',' +
-          (Math.hypot(b.x - a.x, b.y - a.y) * 0.9) + ' 0 0,1 ' + b.x + ',' + b.y;
+        const dx = b.x - a.x, dy = b.y - a.y, dist = Math.hypot(dx, dy) || 1;
+        return contractEdgePath(a.x, a.y, b.x, b.y, a.r, b.r,
+          (a.x + b.x) / 2 + (dy / dist) * dist * 0.303,
+          (a.y + b.y) / 2 - (dx / dist) * dist * 0.303);
       })
       .attr('stroke', 'var(--accent)').attr('stroke-opacity', 0.75).attr('stroke-width', 1.6);
   }).on('mouseleave.edges', () => overlay.selectAll('path').remove());
 
-  // A namespace is named when its circle has room for the name, and the ones
-  // that do not are the long tail of single-contract namespaces that the
-  // legend already covers.
+  // Labels decided by the zoom, not by the layout.
+  //
+  // A packing of nine hundred contracts has room to name about twenty of them
+  // at rest. That is the honest answer at that scale, and it used to be the
+  // answer at every scale: the threshold was the radius d3.pack computed, so
+  // zooming in magnified the circles and the text together and never revealed a
+  // single new name. Deciding against the radius *on screen* is what turns
+  // zooming from magnifying into reading, and it is the whole point of a view
+  // whose bubbles are two hundred times apart in area.
+  //
+  // Counter-scaled by 1/k, so a name is the same size on screen at every zoom
+  // level and a circle passes the threshold by growing under fixed text rather
+  // than by carrying text that grew with it. Joined on the labels that fit, not
+  // drawn once and hidden, so the DOM holds the twenty showing and not one per
+  // contract.
+  const NAME_PX = 9.5, VAL_PX = 9, NS_PX = 11;
+  // Rough on purpose: getBBox per label would be a layout per label per frame,
+  // and there is one frame per wheel notch. 0.55em per character over-estimates
+  // slightly for this font, which errs toward dropping a label rather than
+  // letting it spill out of its circle.
+  const fits = (text, px, rScreen) => text.length * px * 0.55 <= rScreen * 1.8;
   const nsLabels = groups.append('g').attr('pointer-events', 'none');
-  nsLabels.selectAll('text').data(nsNodes.filter(d => d.r > 26)).join('text')
-    .attr('x', d => d.x).attr('y', d => d.y - d.r + 11)
-    .attr('text-anchor', 'middle').attr('font-size', 11)
-    .attr('fill', d => namespaceColor(d.data.ns))
-    .attr('stroke', 'var(--bg)').attr('stroke-width', 3).attr('paint-order', 'stroke')
-    .text(d => namespaceLabel(d.data.ns) +
-      (d.r > 44 ? ' \u00b7 ' + fmtMetricShort(metric, nsMetricTotal(d, metric)) : ''));
-
-  // Name on one line, the metric under it, in the circles with room for two
-  // lines. Same reason as the treemap: a packing sized by gas that never
-  // prints a gas figure is a picture of a ranking, not of a quantity.
   const leafLabels = groups.append('g').attr('pointer-events', 'none');
-  leafLabels.selectAll('text.name').data(leaves.filter(d => d.r > 18)).join('text')
-    .attr('class', 'name')
-    .attr('x', d => d.x).attr('y', d => d.r > 26 ? d.y - 1 : d.y + 3)
-    .attr('text-anchor', 'middle').attr('font-size', 9.5).attr('fill', 'var(--bg)')
-    .text(d => d.data.leaf.name);
-  leafLabels.selectAll('text.val').data(leaves.filter(d => d.r > 26)).join('text')
-    .attr('class', 'val')
-    .attr('x', d => d.x).attr('y', d => d.y + 10)
-    .attr('text-anchor', 'middle').attr('font-size', 9).attr('fill', 'var(--bg)')
-    .attr('fill-opacity', 0.75)
-    .text(d => fmtMetricShort(metric, metric.get(d.data.leaf)));
+
+  const relabel = t => {
+    const k = t.k, s = 1 / k;
+    // Only what is on screen. Past about 6x nearly every circle has room for
+    // its name and all but a few percent of them are outside the viewport, so
+    // without this the browser carries a thousand text nodes to show a dozen.
+    // The +4 is the translate the packing is drawn under.
+    const onScreen = d => {
+      const rs = d.r * k, sx = t.applyX(d.x + 4), sy = t.applyY(d.y + 4);
+      return sx + rs > -40 && sx - rs < width + 40 && sy + rs > -40 && sy - rs < height + 40;
+    };
+
+    // A namespace is named when its circle has room for the name, and the ones
+    // that do not are the long tail of single-contract namespaces that the
+    // legend already covers.
+    const nsShown = nsNodes.filter(d => d.r * k > 26 && onScreen(d));
+    nsLabels.selectAll('text').data(nsShown, d => d.data.ns).join('text')
+      .attr('x', d => d.x).attr('y', d => d.y - d.r + NS_PX * s)
+      .attr('text-anchor', 'middle').attr('font-size', NS_PX * s)
+      .attr('fill', d => namespaceColor(d.data.ns))
+      .attr('stroke', 'var(--bg)').attr('stroke-width', 3 * s).attr('paint-order', 'stroke')
+      .text(d => namespaceLabel(d.data.ns) +
+        (d.r * k > 44 ? ' \u00b7 ' + fmtMetricShort(metric, nsMetricTotal(d, metric)) : ''));
+
+    // Name on one line, the metric under it, in the circles with room for two
+    // lines. Same reason as the treemap: a packing sized by gas that never
+    // prints a gas figure is a picture of a ranking, not of a quantity.
+    const val = d => fmtMetricShort(metric, metric.get(d.data.leaf));
+    const named = leaves.filter(d => d.r * k >= 7 && onScreen(d) &&
+      fits(d.data.leaf.name, NAME_PX, d.r * k));
+    const twoLine = new Set(named
+      .filter(d => d.r * k >= 22 && fits(val(d), VAL_PX, d.r * k))
+      .map(d => d.data.leaf.path));
+    leafLabels.selectAll('text.name').data(named, d => d.data.leaf.path).join('text')
+      .attr('class', 'name')
+      .attr('x', d => d.x)
+      .attr('y', d => d.y + (twoLine.has(d.data.leaf.path) ? -1 : 3.2) * s)
+      .attr('text-anchor', 'middle').attr('font-size', NAME_PX * s).attr('fill', 'var(--bg)')
+      .text(d => d.data.leaf.name);
+    leafLabels.selectAll('text.val').data(named.filter(d => twoLine.has(d.data.leaf.path)),
+      d => d.data.leaf.path).join('text')
+      .attr('class', 'val')
+      .attr('x', d => d.x).attr('y', d => d.y + 10 * s)
+      .attr('text-anchor', 'middle').attr('font-size', VAL_PX * s).attr('fill', 'var(--bg)')
+      .attr('fill-opacity', 0.75)
+      .text(val);
+  };
+
+  // Synchronously for the first paint, so the map is never on screen unlabelled
+  // for a frame, and against the live transform rather than a captured one
+  // because the surface may already have been panned before this repaint.
+  relabel(d3.zoomTransform(svg.node()));
+  // One relabel per frame at most. A wheel gesture delivers zoom events faster
+  // than the browser paints, and re-joining a thousand-leaf packing per event
+  // is work thrown away before anyone sees it.
+  let frame = null;
+  ctx.surface.onZoom = () => {
+    if (frame) return;
+    frame = requestAnimationFrame(() => { frame = null; relabel(d3.zoomTransform(svg.node())); });
+  };
 
   return () => svg.transition().duration(300).call(zoom.transform, d3.zoomIdentity);
 }

@@ -551,6 +551,138 @@ for (const [view, query, floor] of VIEWS) {
   });
 }
 
+// Zoom in far enough and the map has to say more, not just say it bigger. The
+// packing's labels were thresholded on the radius d3.pack computed, so zooming
+// scaled the circles and the text together: the same twenty contracts stayed
+// named at every scale and the other three hundred never were.
+test('zooming into the packing names contracts too small to name at rest', async ({ page }) => {
+  const seen = watch(page);
+  // Narrow, so the fixture's seventy contracts pack into circles small enough
+  // that some of them cannot be named. That is the state mainnet's nine hundred
+  // are in at any width, and it is the whole case this behaviour is for.
+  await page.setViewportSize({ width: 520, height: 760 });
+  await openMap(page, '?view=packed&edges=none');
+  await page.waitForSelector('#contract-map svg text.name', { timeout: 20_000 });
+
+  // Labels are located by x, not read as text: the fixture deploys sixty
+  // packages all called "app", so a set of names cannot tell a circle that just
+  // gained a label from one that already had it. x is the leaf's own layout
+  // coordinate and does not move when the group is scaled.
+  const labelledAt = () => page.locator('#contract-map svg text.name')
+    .evaluateAll(els => els.map(e => e.getAttribute('x')));
+  const font = () => page.locator('#contract-map svg text.name').first()
+    .evaluate(e => +e.getAttribute('font-size'));
+  const before = await labelledAt();
+  const fontBefore = await font();
+  expect(before.length,
+    'every circle is already named, so this asserts nothing').toBeLessThan(
+    await page.locator('#contract-map svg circle[data-path]').count());
+
+  // An unnamed contract and the namespace circle around it. Clicking a
+  // namespace frames it, which is the map's own gesture for zooming into one,
+  // so this asserts what a reader can actually do.
+  const pick = await page.evaluate(xs => {
+    const leaf = [...document.querySelectorAll('#contract-map svg circle[data-path]')]
+      .find(c => !xs.includes(c.getAttribute('cx')));
+    if (!leaf) return null;
+    const lx = +leaf.getAttribute('cx'), ly = +leaf.getAttribute('cy');
+    const ns = [...document.querySelectorAll('#contract-map svg circle:not([data-path])')]
+      .filter(c => Math.hypot(+c.getAttribute('cx') - lx, +c.getAttribute('cy') - ly) < +c.getAttribute('r'))
+      .sort((a, b) => +a.getAttribute('r') - +b.getAttribute('r'))[0];
+    if (!ns) return null;
+    const box = ns.getBoundingClientRect();
+    // Just inside the top of the namespace ring, where the packing's padding
+    // guarantees no leaf is in the way to swallow the click.
+    return { at: leaf.getAttribute('cx'), x: box.x + box.width / 2, y: box.y + 3 };
+  }, before);
+  expect(pick, 'no unnamed contract inside a namespace circle').not.toBeNull();
+
+  await page.mouse.click(pick.x, pick.y);
+  await page.waitForTimeout(700);
+
+  const after = await labelledAt();
+  expect(after.includes(pick.at),
+    `the contract at x=${pick.at} is still unnamed after framing its namespace`).toBe(true);
+
+  // Same size on screen at every scale: the group is scaled by k, so the font
+  // has to be divided by it. Text that grew with the circles is what used to
+  // make the few labels there were spill out of the bubbles they name.
+  const k = await page.evaluate(() => {
+    const n = document.querySelector('#contract-map svg');
+    return n.__zoom ? n.__zoom.k : 1;
+  });
+  expect(k).toBeGreaterThan(1.5);
+  expect(await font()).toBeCloseTo(fontBefore / k, 2);
+
+  expect(seen.jsErrors).toEqual([]);
+  expect(unexpected(seen.consoleErrors)).toEqual([]);
+});
+
+// A link drawn to a centre runs under the bubble it points at, so its visible
+// end is wherever that circle happens to stop and the import arrowhead is
+// buried inside the package it is aiming at.
+test('an edge starts on a bubble border, not at its centre', async ({ page }) => {
+  const seen = watch(page);
+
+  // The packing is deterministic, so its geometry can be asserted exactly:
+  // both ends of every edge the hover reveals sit on a contract's outline,
+  // one radius out from the centre it belongs to.
+  await openMap(page, '?view=packed&edges=imports');
+  await page.waitForSelector('#contract-map svg circle[data-path]', { timeout: 20_000 });
+  const target = await page.evaluate(() => {
+    const c = [...document.querySelectorAll('#contract-map svg circle[data-path]')]
+      .sort((a, b) => +b.getAttribute('r') - +a.getAttribute('r'))[0];
+    return c.getAttribute('data-path');
+  });
+  await page.locator(`#contract-map svg circle[data-path="${target}"]`).hover({ force: true });
+
+  const probe = await page.evaluate(() => {
+    const circles = [...document.querySelectorAll('#contract-map svg circle[data-path]')]
+      .map(c => ({ x: +c.getAttribute('cx'), y: +c.getAttribute('cy'), r: +c.getAttribute('r') }));
+    // The first coordinate pair and the last one, whatever command joins them.
+    const pts = [...document.querySelectorAll('#contract-map svg g[fill="none"] path')]
+      .map(p => p.getAttribute('d'))
+      .filter(Boolean)
+      .flatMap(d => {
+        const n = (d.match(/-?\d+(?:\.\d+)?(?:e[-+]?\d+)?/gi) || []).map(Number);
+        return n.length >= 4 ? [[n[0], n[1]], [n[n.length - 2], n[n.length - 1]]] : [];
+      });
+    return {
+      pts: pts.length,
+      offBorder: pts.filter(([x, y]) =>
+        !circles.some(c => Math.abs(Math.hypot(c.x - x, c.y - y) - c.r) < 0.5)).length,
+      onCentre: pts.filter(([x, y]) =>
+        circles.some(c => Math.hypot(c.x - x, c.y - y) < 0.5)).length,
+    };
+  });
+  expect(probe.pts, 'the hovered contract has no import edges in the fixture').toBeGreaterThan(0);
+  expect(probe.offBorder).toBe(0);
+  expect(probe.onCentre).toBe(0);
+
+  // The force map moves, so the exact radius is a moving target; what is fixed
+  // is that no end of a link sits on a contract's centre any more.
+  await openMap(page, '?view=force&edges=imports');
+  await waitForMapSettled(page);
+  const ends = await page.evaluate(() => {
+    const centres = [...document.querySelectorAll('#contract-map svg g.l-nodes circle')]
+      .map(c => [+c.getAttribute('cx'), +c.getAttribute('cy')]);
+    const pts = [];
+    for (const l of document.querySelectorAll('#contract-map svg g.l-links line')) {
+      pts.push([+l.getAttribute('x1'), +l.getAttribute('y1')]);
+      pts.push([+l.getAttribute('x2'), +l.getAttribute('y2')]);
+    }
+    return {
+      total: pts.length,
+      onCentre: pts.filter(([x, y]) => centres.some(([cx, cy]) => Math.hypot(cx - x, cy - y) < 0.5)).length,
+    };
+  });
+  expect(ends.total).toBeGreaterThan(0);
+  expect(ends.onCentre).toBe(0);
+
+  expect(seen.jsErrors).toEqual([]);
+  expect(unexpected(seen.consoleErrors)).toEqual([]);
+});
+
 for (const view of ['orbit', 'packed', 'bundled', 'chord', 'treemap']) {
   test(`the ${view} view pill reflects its own state when clicked`, async ({ page }) => {
     const seen = watch(page);
