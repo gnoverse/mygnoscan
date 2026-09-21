@@ -377,6 +377,172 @@ labels this figure "recent" for the same reason.
 | `GET /api/address/{addr}` | activity for an address, **from local storage**: calls, deploys, runs, sends (both directions), with `total` covering its whole history and `limit`/`offset` paging the rows. `balance` comes from RPC and is present only when a single network is selected **and** that RPC has been confirmed to serve the same chain as the network's indexer — an unverified or mismatched RPC yields an empty balance rather than one from another chain. The indexer cannot serve this at chain scale — five address predicates over unindexed fields means a scan |
 | `GET /api/accounts` | most active accounts. `limit` (default 100, max 500), `offset`, and `sort` = `calls`, `deploys`, `runs`, `sends` or total activity. One row per `(address, network)`: the same key on two chains is two different actors, and each row carries its `network` |
 
+## Validators
+
+| endpoint | description |
+|---|---|
+| `GET /api/validator/{addr}` | one validator by consensus address: its proposed blocks, and a daily share series |
+| `GET /api/validators` | unchanged: the `r/gnops/valopers` registration log |
+
+`/validators` already renders the set, deriving proposers from recent blocks,
+drawing a liveness sparkline per row and joining gnockpit's power, missed-block
+and spof columns onto them. That table is a snapshot; this endpoint is the one
+view it cannot be, which is a single validator across the chain's history.
+
+### Two address spaces, deliberately not joined
+
+The word "validator" covers two disjoint keys, and conflating them is a bug this
+repo has already had (`loadValMonikers` never matched a proposer):
+
+| key | who has it | where it appears |
+|---|---|---|
+| **consensus** | the node signing blocks | `blocks.proposer_id`, gnockpit |
+| **operator** | the account registering the validator | `valoper_registrations` |
+
+Nothing on chain maps one to the other. This endpoint is keyed on the consensus
+address, and the registration table stays its own view. Verified against mainnet
+on 2026-09-20: all four gnockpit addresses matched the interned proposer
+addresses exactly, so *that* join does work and is the one used here.
+
+### What each figure comes from
+
+`voting_power`, `missed_24h`, `missed_100`, `avg_block_ms` and `spof` come from
+gnockpit. `blocks`, `txs`, `share` and `last_block_time` come from the blocks
+this instance has synced, so they cover the synced range rather than all of
+history.
+
+`in_set` separates the two cases that otherwise look identical: an address with
+proposal history that gnockpit no longer lists has **left the set**, and the
+page says so instead of rendering an active-looking validator. A live member
+this instance has never seen propose is served too, with zero blocks. An address
+that is neither is a 404, because an empty page reads as an idle validator.
+
+### No staking, and no voting-power timeline
+
+gno has no delegation and its set is governance-assigned, so there is no APR, no
+bonded ratio, no commission and no delegator list. Those columns would be four
+confident zeros.
+
+No historical validator set is stored anywhere and gnockpit reports only the
+current one, so a true voting-power timeline is not derivable. `shares` is the
+observable half of one: each day's blocks split between proposers, so a
+validator joining or leaving shows up as its share appearing or going to zero.
+A share rather than a count, because variable block time makes per-day counts
+incomparable.
+
+## Assets (GRC20)
+
+| endpoint | description |
+|---|---|
+| `GET /api/assets` | every asset seen on a network: supply, holders, transfer counts, first and last seen, plus registry metadata |
+| `GET /api/asset/{token...}` | one asset: top holders, recent transfers, and a daily supply series. Single network |
+
+Built from the `Transfer` events the chain already emits, which were flowing
+through the sync walk unstored. An empty `from` is a mint and an empty `to` a
+burn, so replaying the column gives **exact** supply and every holder's balance
+with no extra RPC call. Holders are counted from reconstructed balances, not
+from distinct recipients: an address that received and passed it all on is not a
+holder.
+
+`/api/tokens` previously listed packages whose `dependencies.import_path`
+matched `%grc20%`. That matches anything that *imports* grc20 rather than
+anything that *is* a token, so a DEX router sat in the list beside the tokens it
+calls, and the row carried no supply, holders or volume.
+
+### Three things the events do not guarantee
+
+Each of these was measured against mainnet on 2026-09-20 and each would produce
+a plausible wrong answer if assumed away.
+
+**The event's `pkg_path` is the library, not the token.** Every GRC20 event on
+the chain reports `gno.land/p/nt/grc20/v0`. Grouping by it produces one giant
+asset holding every token on the chain. The token is in the `token` attribute.
+
+**The `token` attribute is usually, not always, `<path>.<name>.<id>`.** Two live
+mainnet tokens (`COVID`, `META`) emit a bare symbol instead. The key is stored
+verbatim and only split when it has the shape; for the others `pkg_path` is
+empty and the UI says the realm is unknown rather than printing the symbol in a
+column headed "realm".
+
+**Not every `Transfer` carries an amount.** GRC721 emits the same event shape
+without a value, so gnoswap's GNFT has 201 transfers that all parse to 0.
+Summing them yields a supply of 0 and no holders, which reads as "this token is
+empty" when it means "this arithmetic does not apply". Each asset therefore
+carries `fungible`, derived from whether *any* of its transfers carried a
+positive amount, and both figures are suppressed when it is false. Derived from
+the data rather than from the library path, so a token that starts carrying
+amounts starts counting.
+
+Failed transactions are skipped: their events are still reported and counting
+them would invent supply.
+
+### What is deliberately absent
+
+No price, no market cap, no total value. GNOT is not listed on any exchange and
+there is no oracle on chain, so every such column would be a number this
+explorer invented. `verified` is the curated registry's claim and is worded as
+one: anyone can deploy a realm called `gns`, and nothing on chain distinguishes
+the real one.
+
+Amounts are raw units, not scaled by `decimals`. Only a handful of tokens have a
+curated entry, and dividing by a guessed exponent produces a different number
+wearing the right shape.
+
+## Account balances
+
+| endpoint | description |
+|---|---|
+| `GET /api/accounts/rich` | addresses ranked by balance, with `coverage`. `limit` (default 100, max 500), `offset` (1-based). Single network, resolved rather than refused |
+| `GET /api/accounts/population` | `known`, `daily_active`, `weekly_active`, `monthly_active` |
+
+Balances are the one figure here that can be neither synced nor derived. gno
+carries no balance in any indexed message, and computing one from `bank_sends`
+as received-minus-sent would be wrong in a way a reader could not see: it
+ignores gas fees, storage deposits, genesis allocations and every transfer a
+realm makes through a banker rather than a `BankMsgSend`. A rich list that is
+wrong at the top is worse than no rich list.
+
+So each balance is one live `bank/balances` read, **swept into a local table in
+the background** rather than fetched on the read path. `/api/accounts` used to
+fan out one request per row, 20 at a time, on every cold request, against a
+single node, which is where its 7.8s came from. It is now a join.
+
+The sweep runs every 10 minutes, 400 addresses at a time at 8 concurrent
+requests, ordering never-fetched addresses first and then oldest-first, so a
+cold cache fills in over several passes and a warm one refreshes round-robin.
+It only asks endpoints that passed `VerifyRPCChains`: withholding a figure costs
+a blank, and trusting a mismatched one costs a number from another chain that
+nobody can see is wrong.
+
+### What the ranking actually covers
+
+`coverage` travels with every rich-list response and the page prints it:
+
+| field | meaning |
+|---|---|
+| `swept` | addresses with a cached balance |
+| `known` | addresses this instance has seen on chain, in any role |
+| `oldest_fetch`, `newest_fetch` | how old the figures are |
+
+This ranks what has been seen and swept, not a chain's accounts, and says so.
+Cosmos explorers can claim the stronger thing because Cosmos can enumerate
+accounts; gno offers no way to do that at any price.
+
+For the same reason `known` is labelled **"addresses seen"** rather than "total
+accounts" in the UI. It counts distinct addresses appearing in `calls`,
+`package_submissions`, `msg_runs` or either side of `bank_sends`. It is a real
+number; it is not the number of accounts that exist.
+
+`daily_active` and friends re-deduplicate from `active_addr_rollup` rather than
+summing it, because counts cannot be re-aggregated: an address active on three
+days of a week is one weekly active address, not three. An empty rollup (a fresh
+instance, before the first build) falls back to counting live rather than
+reporting a confident zero.
+
+An address with no cached balance is **absent** from the lookup, and rendered as
+unknown rather than as zero. Those are different claims and only one of them is
+safe to make about money.
+
 ## Aggregates
 
 | endpoint | description |

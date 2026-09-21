@@ -272,6 +272,12 @@ func (c *Client) lightFields(ctx context.Context) string {
 	return c.trimFields(ctx, txFieldsLight)
 }
 
+// syncFields is the set the sync loop reads with: package file bodies, which it
+// stores, without content_raw, which it does not.
+func (c *Client) syncFields(ctx context.Context) string {
+	return c.trimFields(ctx, txFieldsSync)
+}
+
 func (c *Client) fullFields(ctx context.Context) string {
 	return c.trimFields(ctx, txFields)
 }
@@ -700,15 +706,19 @@ type EventAttr struct {
 	Value string `json:"value"`
 }
 
-// Light fields for list views — no file bodies
-const txFieldsLight = `
+// txFieldsTemplate is the single source for the transaction selection sets.
+// They differ only in whether they carry package file bodies and content_raw,
+// and a second literal of ninety-odd lines would drift from this one. trimFields
+// also strips the optional fragment groups by exact substring, which keeps
+// working only while every set is cut from the same template.
+const txFieldsTemplate = `
 	hash
 	success
 	block_height
 	gas_wanted
 	gas_used
 	gas_fee { amount denom }
-	memo
+%[1]s	memo
 	messages {
 		typeUrl
 		route
@@ -716,7 +726,7 @@ const txFieldsLight = `
 			__typename
 			... on MsgAddPackage {
 				creator
-				package { name path files { name } }
+				package { name path files { name%[2]s } }
 				send
 			}
 			... on MsgCall {
@@ -729,7 +739,7 @@ const txFieldsLight = `
 			... on MsgRun {
 				caller
 				send
-				package { name path files { name } }
+				package { name path files { name%[2]s } }
 			}
 			... on BankMsgSend {
 				from_address
@@ -791,97 +801,32 @@ const txFieldsLight = `
 	}
 `
 
-// Full fields including file bodies — for single tx detail and sync
-const txFields = `
-	hash
-	success
-	block_height
-	gas_wanted
-	gas_used
-	gas_fee { amount denom }
-	content_raw
-	memo
-	messages {
-		typeUrl
-		route
-		value {
-			__typename
-			... on MsgAddPackage {
-				creator
-				package { name path files { name body } }
-				send
-			}
-			... on MsgCall {
-				caller
-				send
-				pkg_path
-				func
-				args
-			}
-			... on MsgRun {
-				caller
-				send
-				package { name path files { name body } }
-			}
-			... on BankMsgSend {
-				from_address
-				to_address
-				amount
-			}
-			... on MsgEnablePackage {
-				approver
-				pkg_path
-				pkg_hash
-				pkg_height
-			}
-			... on MsgRejectPackage {
-				sender
-				pkg_path
-			}
-			... on MsgCreateSession {
-				creator
-				session_key
-				expires_at
-				allow_paths
-				spend_limit
-				spend_period
-			}
-			... on MsgRevokeSession {
-				creator
-				session_key
-			}
-			... on MsgRevokeAllSessions {
-				creator
-			}
-		}
+// txSelection renders the template. fileBodies adds the package sources the
+// sync stores; contentRaw adds the encoded signed transaction, which carries
+// those same sources a second time and is read only by SignerAddress.
+func txSelection(fileBodies, contentRaw bool) string {
+	raw := ""
+	if contentRaw {
+		raw = "\tcontent_raw\n"
 	}
-	response {
-		log
-		info
-		error
-		data
-		events {
-			__typename
-			... on GnoEvent {
-				type
-				pkg_path
-				attrs { key value }
-			}
-			... on StorageDepositEvent {
-				type
-				bytes_delta
-				fee_delta { amount denom }
-				pkg_path
-			}
-			... on StorageUnlockEvent {
-				type
-				bytes_delta
-				fee_refund { amount denom }
-				pkg_path
-			}
-		}
+
+	body := ""
+	if fileBodies {
+		body = " body"
 	}
-`
+
+	return fmt.Sprintf(txFieldsTemplate, raw, body)
+}
+
+var (
+	// txFieldsLight drops file bodies, for list views
+	txFieldsLight = txSelection(false, false)
+	// txFieldsSync carries the file bodies the sync stores, and not content_raw,
+	// which it never reads
+	txFieldsSync = txSelection(true, false)
+	// txFields adds content_raw, for the single transaction detail path
+	txFields = txSelection(true, true)
+)
 
 // transactionsFromHeight fetches one page of transactions above lastHeight (from
 // genesis when nil), oldest first. truncated reports that the indexer stopped at
@@ -955,7 +900,7 @@ func dropTrailingHeight(txs []Transaction) []Transaction {
 // See transactionsFromHeight for the paging contract.
 func (c *Client) GetAllPackages(ctx context.Context, lastHeight *int) ([]Transaction, bool, error) {
 	return c.transactionsFromHeight(ctx, lastHeight,
-		`messages: { value: { MsgAddPackage: {} } }`, c.fullFields(ctx))
+		`messages: { value: { MsgAddPackage: {} } }`, c.syncFields(ctx))
 }
 
 // GetRecentTransactions fetches the most recent transactions, limited to maxResults.
@@ -1190,7 +1135,7 @@ func (c *Client) GetTransactionsByAddress(ctx context.Context, addr string) ([]T
 // See transactionsFromHeight for the paging contract.
 func (c *Client) GetMsgRunTransactions(ctx context.Context, lastHeight *int) ([]Transaction, bool, error) {
 	return c.transactionsFromHeight(ctx, lastHeight,
-		`messages: { value: { MsgRun: {} } }`, c.fullFields(ctx))
+		`messages: { value: { MsgRun: {} } }`, c.syncFields(ctx))
 }
 
 type Block struct {

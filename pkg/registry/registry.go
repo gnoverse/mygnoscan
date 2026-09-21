@@ -167,26 +167,35 @@ func loadTokens() (map[string]Token, error) {
 	if err := readJSON("data/tokens.json", &doc); err != nil {
 		return nil, err
 	}
-	for key, tok := range doc.Tokens {
-		if !realmPath.MatchString(key) {
-			return nil, fmt.Errorf("tokens.json: %q is not a gno.land path", key)
-		}
-		// The key is the triple GRC20 events carry, not a bare path: one realm
-		// can expose several tokens and a path alone would collide.
-		if strings.Count(strings.TrimPrefix(key, "gno.land/"), ".") < 2 {
-			return nil, fmt.Errorf("tokens.json: %q must be <path>.<name>.<id>, the key GRC20 events emit", key)
-		}
-		if strings.TrimSpace(tok.Symbol) == "" {
-			return nil, fmt.Errorf("tokens.json: %s has no symbol", key)
-		}
-		if tok.Verified && strings.TrimSpace(tok.Why) == "" {
-			return nil, fmt.Errorf("tokens.json: %s is verified and must explain why", key)
-		}
-		if tok.Decimals < 0 || tok.Decimals > 30 {
-			return nil, fmt.Errorf("tokens.json: %s has implausible decimals %d", key, tok.Decimals)
-		}
+	if err := validateTokens(doc.Tokens); err != nil {
+		return nil, err
 	}
 	return doc.Tokens, nil
+}
+
+func validateTokens(tokens map[string]Token) error {
+	for key, tok := range tokens {
+		if !realmPath.MatchString(key) {
+			return fmt.Errorf("tokens.json: %q is not a gno.land path", key)
+		}
+		// Keys mirror whatever the Transfer event emits. That is usually the
+		// triple, because one realm can expose several tokens, but two live
+		// mainnet tokens emit a bare symbol instead (measured 2026-09-20), so
+		// this checks the shape is plausible rather than mandating one.
+		if strings.HasSuffix(key, ".") || strings.Contains(key, "..") {
+			return fmt.Errorf("tokens.json: %q is not a usable token key", key)
+		}
+		if strings.TrimSpace(tok.Symbol) == "" {
+			return fmt.Errorf("tokens.json: %s has no symbol", key)
+		}
+		if tok.Verified && strings.TrimSpace(tok.Why) == "" {
+			return fmt.Errorf("tokens.json: %s is verified and must explain why", key)
+		}
+		if tok.Decimals < 0 || tok.Decimals > 30 {
+			return fmt.Errorf("tokens.json: %s has implausible decimals %d", key, tok.Decimals)
+		}
+	}
+	return nil
 }
 
 func loadApps() ([]App, error) {

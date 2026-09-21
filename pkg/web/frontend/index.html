@@ -598,15 +598,26 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
   </main></div>
   <div class="view" id="view-accounts"><main>
     <div id="accounts-stats" class="stats-bar" style="display:none"></div>
-    <div class="section"><div class="section-title">active accounts</div>
-    <table><thead><tr><th>address</th><th>calls</th><th>deploys</th><th>msg_runs</th><th>sends</th><th>total</th><th>spent</th><th>received</th><th>balance</th></tr></thead><tbody id="accounts-list"></tbody></table></div></main></div>
+    <div class="tabs" id="accounts-subnav">
+      <div class="tab active" data-av="activity" onclick="switchAccountsView('activity', this)">activity</div>
+      <div class="tab" data-av="balances" onclick="switchAccountsView('balances', this)">balances</div>
+    </div>
+    <div id="accounts-view-activity">
+      <div class="section"><div class="section-title">active accounts</div>
+      <table><thead><tr><th>address</th><th>calls</th><th>deploys</th><th>msg_runs</th><th>sends</th><th>total</th><th>spent</th><th>received</th><th>balance</th></tr></thead><tbody id="accounts-list"></tbody></table></div>
+    </div>
+    <div id="accounts-view-balances" style="display:none"><div id="accounts-rich-content"></div></div>
+  </main></div>
   <div class="view" id="view-tokens"><main>
     <div id="tokens-stats" class="stats-bar" style="display:none"></div>
     <div id="tokens-bank-content"></div>
-    <div class="section"><div class="section-title">tokens (grc20)</div>
-    <table><thead><tr><th>path</th><th>creator</th><th>calls</th></tr></thead><tbody id="tokens-list"></tbody></table></div></main></div>
+    <div class="section"><div class="section-title">assets (grc20)</div>
+    <div class="section-sub">supply and holders are replayed from the Transfer events the chain emits, so both are exact rather than sampled. no price or market value: GNOT is not listed anywhere and there is no oracle on chain, so any figure in dollars would be one this explorer invented.</div>
+    <table><thead><tr><th>asset</th><th>realm</th><th>supply</th><th>holders</th><th>transfers</th><th>24h</th><th>first seen</th></tr></thead><tbody id="tokens-list"></tbody></table></div>
+    <div id="asset-detail"></div></main></div>
   <div class="view" id="view-validators"><main><div class="section"><div class="section-title">validators</div>
     <div id="validators-content"></div></div></main></div>
+  <div class="view" id="view-validator-detail"><main><div id="validator-detail-content"></div></main></div>
   <div class="view" id="view-govdao"><main><div id="govdao-content"></div></main></div>
   <div class="view" id="view-govdao-detail"><main><div id="govdao-detail-content"></div></main></div>
   <div class="view" id="view-analytics"><main><div id="analytics-content"></div></main></div>
@@ -2548,6 +2559,7 @@ function route() {
   else if (path === '/accounts') { view = 'accounts'; }
   else if (path === '/tokens') { view = 'tokens'; }
   else if (path === '/validators') { view = 'validators'; }
+  else if (path.startsWith('/validator/')) { view = 'validator-detail'; data = path.slice(11); }
   else if (path === '/govdao') { view = 'govdao'; }
   else if (path === '/events') { view = 'events'; }
   else if (path === '/gas') { view = 'gas'; }
@@ -2564,6 +2576,7 @@ function route() {
   else if (path.startsWith('/address/')) { view = 'address-detail'; data = path.slice(9); }
   const urlTab = new URLSearchParams(window.location.search).get('tab');
   const urlPv = new URLSearchParams(window.location.search).get('pv');
+  const urlAv = new URLSearchParams(window.location.search).get('av');
 
   const ve = document.getElementById('view-' + view);
   if (ve) ve.classList.add('active');
@@ -2590,9 +2603,10 @@ function route() {
     case 'apps': loadApps(); break;
     case 'txs': loadTxs(); break;
     case 'blocks': loadBlocks(); break;
-    case 'accounts': loadAccounts(); break;
+    case 'accounts': enterAccounts(urlAv); break;
     case 'tokens': loadTokens(); break;
     case 'validators': loadValidators(); break;
+    case 'validator-detail': loadValidatorDetail(data); break;
     case 'govdao': loadGovDAO(); break;
     case 'govdao-detail': loadGovDAODetail(data); break;
     case 'events': loadEvents(); break;
@@ -3701,20 +3715,149 @@ function callsCell(a) {
   }
   return span;
 }
+// --- Accounts: activity, balances, and how many there are --------------------
+//
+// Two rankings that answer different questions. "Active accounts" ranks by what
+// an address did, which is the more useful of the two on a chain this young.
+// "Balances" ranks by what it holds, which is the one every explorer has and
+// this one could not, because ranking by balance needs every balance and gno
+// offers neither an account enumeration nor a batch balance query.
+//
+// It is possible now because balances are swept into a local table in the
+// background instead of fetched per row on the read path. The consequence is
+// that the ranking covers what has been swept, and the page says so: see
+// renderRichList's coverage line.
+let _accountsActivityLoaded = false;
+let _accountsRichLoaded = false;
+
+function switchAccountsView(view, tabEl) {
+  document.querySelectorAll('#accounts-subnav .tab').forEach(t => t.classList.remove('active'));
+  if (!tabEl) tabEl = document.querySelector('#accounts-subnav .tab[data-av="' + view + '"]');
+  if (tabEl) tabEl.classList.add('active');
+  document.getElementById('accounts-view-activity').style.display = view === 'activity' ? '' : 'none';
+  document.getElementById('accounts-view-balances').style.display = view === 'balances' ? '' : 'none';
+
+  // Persisted in the URL, the same way the packages tabs are: a reload or a
+  // shared link lands back where it was.
+  const params = new URLSearchParams(window.location.search);
+  if (view === 'balances') params.set('av', 'balances'); else params.delete('av');
+  const qs = params.toString();
+  history.replaceState(null, '', window.location.pathname + (qs ? '?' + qs : ''));
+
+  if (view === 'activity' && !_accountsActivityLoaded) {
+    _accountsActivityLoaded = true;
+    loadAccounts();
+  }
+  if (view === 'balances' && !_accountsRichLoaded) {
+    _accountsRichLoaded = true;
+    loadRichList();
+  }
+}
+
+function enterAccounts(av) {
+  _accountsActivityLoaded = false;
+  _accountsRichLoaded = false;
+  loadAccountPopulation();
+  switchAccountsView(av === 'balances' ? 'balances' : 'activity');
+}
+
+// The population summary. Three numbers that each count something different,
+// each labelled with what it actually counts.
+async function loadAccountPopulation() {
+  const bar = document.getElementById('accounts-stats');
+  if (!bar) return;
+  let pop;
+  try {
+    pop = await api('accounts/population');
+  } catch (_) {
+    bar.style.display = 'none';
+    return;
+  }
+  bar.textContent = '';
+  bar.style.display = 'flex';
+  const stat = (label, value, title) => {
+    const s = el('div', { className: 'stat' },
+      el('span', { className: 'label' }, label),
+      el('span', { className: 'value' }, fmtNum(value)));
+    if (title) s.title = title;
+    bar.appendChild(s);
+  };
+  // Deliberately not "total accounts". gno cannot enumerate the auth module
+  // over RPC, so a true account count is unavailable at any price, and putting
+  // this number under that name would be a different figure wearing it.
+  stat('addresses seen', pop.known,
+    'distinct addresses this instance has seen on chain, in any role. not the number of accounts that exist, which gno offers no way to count');
+  stat('active 24h', pop.daily_active, 'distinct addresses that called, ran or sent in the last 24 hours');
+  stat('active 7d', pop.weekly_active, 'distinct over the whole week, not the sum of seven days');
+  stat('active 30d', pop.monthly_active, 'distinct over the whole month');
+}
+
+async function loadRichList() {
+  const container = clear('accounts-rich-content');
+  skeletonBlock(container);
+  try {
+    await apiSWR('accounts/rich', (data) => renderRichList(container, data));
+  } catch (err) {
+    failBlock(container, err, loadRichList);
+  }
+}
+
+function renderRichList(container, data) {
+  container.textContent = '';
+  const cov = data.coverage || {};
+  const entries = data.entries || [];
+
+  // The boundary, printed rather than implied. Mintscan can say it ranks a
+  // chain's accounts because Cosmos can enumerate them. This ranks the
+  // addresses it has seen and swept, and a reader has to know which.
+  const note = el('div', { className: 'section-sub' });
+  note.append('ranked over the ' + fmtNum(cov.swept || 0) + ' addresses whose balance has been read, '
+    + 'out of ' + fmtNum(cov.known || 0) + ' seen on ' + (data.network || 'this chain') + '. ');
+  if (cov.oldest_fetch) {
+    note.append('oldest reading ');
+    note.appendChild(timeEl(cov.oldest_fetch));
+    note.append('. ');
+  }
+  note.append('balances are read in the background, so each figure is as of its own timestamp rather than of now.');
+  container.appendChild(note);
+
+  if (!entries.length) {
+    container.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '12px' } },
+      'no balances read yet: the first sweep runs shortly after startup'));
+    return;
+  }
+
+  const tbody = el('tbody');
+  for (const e of entries) {
+    const info = addrInfo(e.address);
+    tbody.appendChild(el('tr', {},
+      el('td', {}, '#' + e.rank),
+      el('td', {}, addrLink(e.address, data.network)),
+      // The provenance of the name beside it, from the curated registry.
+      // Without a label column the top of any chain's rich list is
+      // infrastructure that reads as whales.
+      el('td', { style: { color: 'var(--fg2)', fontSize: '12px' } }, info ? (info.kind || '') : ''),
+      el('td', {}, fmtGnotAmount(e.ugnot)),
+      el('td', { style: { color: 'var(--fg2)', fontSize: '11px' } }, e.height ? 'at block ' + fmtNum(e.height) : ''),
+      el('td', {}, e.fetched_at ? timeEl(e.fetched_at) : '')));
+  }
+  const section = el('div', { className: 'section', style: { marginTop: '16px' } });
+  section.appendChild(el('div', { className: 'section-title' }, 'balances'));
+  section.appendChild(el('table', {},
+    el('thead', {}, el('tr', {},
+      el('th', {}, 'rank'), el('th', {}, 'address'), el('th', {}, 'label'),
+      el('th', {}, 'balance'), el('th', {}, 'as of'), el('th', {}, 'read'))),
+    tbody));
+  container.appendChild(section);
+}
+
 async function loadAccounts() {
   skeletonRows(clear('accounts-list'), 6, 10);
-  const statsBar = document.getElementById('accounts-stats');
-  statsBar.style.display = 'none';
+  // The stats bar above is the population summary now (loadAccountPopulation):
+  // it describes the chain, where these totals only ever described the rows
+  // that happened to be on screen.
   try {
     await apiSWR('accounts', (data, swrMeta) => {
-      // Stats
-      const totalCalls = (data || []).reduce((s, a) => s + a.call_count, 0);
-      const totalSends = (data || []).reduce((s, a) => s + (a.send_count || 0), 0);
-      statsBar.textContent = '';
-      statsBar.style.display = 'flex';
-      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'accounts'), el('span', { className: 'value' }, fmtNum((data || []).length))));
-      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total calls'), el('span', { className: 'value' }, fmtNum(totalCalls))));
-      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total sends'), el('span', { className: 'value' }, fmtNum(totalSends))));
       const tbody = clear('accounts-list');
       for (const a of (data || [])) {
         const total = a.call_count + a.deploy_count + a.msgrun_count + (a.send_count || 0);
@@ -3737,6 +3880,150 @@ async function loadAccounts() {
   }
 }
 
+// --- Assets: the GRC20 ledger ------------------------------------------------
+//
+// /tokens used to list packages that imported grc20, which over-matched (a DEX
+// router imports grc20 to call tokens, and sat in the list beside them) and
+// said nothing about the asset. These rows are replayed from Transfer events,
+// so supply and holders are exact.
+//
+// The verified badge is the registry's, not the chain's. Anyone can deploy a
+// realm called `gns`, and nothing on chain distinguishes the real one, so the
+// badge is a human's claim and is worded as one.
+function assetSymbolEl(t) {
+  const wrap = el('span');
+  wrap.appendChild(el('span', { style: { fontWeight: 'bold' } }, t.display_symbol || t.symbol || '?'));
+  if (t.verified) {
+    const badge = el('span', { className: 'badge badge-ok', style: { marginLeft: '6px' } }, 'verified');
+    badge.title = 'a contributor vouched for this being the token it claims to be. nothing on chain says so: anyone may deploy a realm with this name';
+    wrap.appendChild(badge);
+  }
+  if (t.display_name) {
+    wrap.appendChild(el('div', { style: { color: 'var(--fg2)', fontSize: '11px' } }, t.display_name));
+  }
+  return wrap;
+}
+
+// Raw units, not scaled by decimals. A supply divided by a decimals value the
+// registry guessed at would be a different number wearing the right shape, and
+// only a handful of tokens have a curated entry at all.
+function fmtTokenUnits(v) {
+  return fmtNum(v);
+}
+
+function renderAssetRows(assets) {
+  const tbody = clear('tokens-list');
+  for (const t of assets) {
+    // An asset whose transfers carry no amount is not a balance ledger, and
+    // printing 0 for supply and holders would read as "empty" rather than as
+    // "this arithmetic does not apply". GRC721 goes through the same events.
+    const supplyCell = t.fungible ? fmtTokenUnits(t.supply)
+      : el('span', { style: { color: 'var(--fg2)' }, title: 'these transfers carry no amount, so supply and holders do not apply. most likely an NFT collection' }, 'n/a');
+    const holdersCell = t.fungible ? fmtNum(t.holders || 0)
+      : el('span', { style: { color: 'var(--fg2)' } }, 'n/a');
+    const row = netRow(t.network,
+      el('td', {}, link(t.display_symbol || t.symbol || t.token, () => showAssetDetail(t))),
+      el('td', {}, t.pkg_path ? realmPathEl(t.pkg_path, t.network)
+        : el('span', { style: { color: 'var(--fg2)' }, title: 'this token emits a bare symbol rather than its realm path, so the realm is not known from the event' }, 'unknown')),
+      el('td', {}, supplyCell),
+      el('td', {}, holdersCell),
+      el('td', {}, fmtNum(t.transfers || 0)),
+      el('td', {}, fmtNum(t.transfers_24h || 0)),
+      el('td', {}, t.first_seen_time ? timeEl(t.first_seen_time) : ''));
+    row.firstChild.textContent = '';
+    row.firstChild.appendChild(assetSymbolEl(t));
+    row.firstChild.appendChild(el('div', { style: { fontSize: '11px' } },
+      link('details', () => showAssetDetail(t))));
+    tbody.appendChild(row);
+  }
+  if (!assets.length) {
+    tbody.appendChild(el('tr', {}, el('td', { colspan: '7', style: { color: 'var(--fg2)' } },
+      'no GRC20 transfers synced yet')));
+  }
+}
+
+let _assetDetailGen = 0;
+
+async function showAssetDetail(t) {
+  const gen = ++_assetDetailGen;
+  const container = clear('asset-detail');
+  skeletonBlock(container);
+  let data;
+  try {
+    data = await api('asset/' + encodeURIComponent(t.token));
+  } catch (err) {
+    if (gen !== _assetDetailGen) return;
+    failBlock(container, err, () => showAssetDetail(t));
+    return;
+  }
+  if (gen !== _assetDetailGen) return;
+  container.textContent = '';
+
+  const a = data.asset || t;
+  const head = el('div', { className: 'section', style: { marginTop: '24px' } });
+  head.appendChild(el('div', { className: 'section-title' }, (a.display_symbol || a.symbol || a.token)));
+  head.appendChild(el('div', { className: 'section-sub' }, a.token));
+  container.appendChild(head);
+
+  const holders = el('div', { className: 'section' });
+  holders.appendChild(el('div', { className: 'section-title' }, 'top holders'));
+  if (!a.fungible) {
+    holders.appendChild(el('div', { className: 'section-sub' },
+      'this asset\u2019s transfers carry no amount, so there are no balances to reconstruct. '
+      + 'most likely an NFT collection, which emits the same Transfer event without a value.'));
+    container.appendChild(holders);
+    container.appendChild(assetTransfersSection(data));
+    container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return;
+  }
+  holders.appendChild(el('div', { className: 'section-sub' },
+    'balances reconstructed from every transfer: an empty sender is a mint and an empty recipient a burn.'));
+  const hbody = el('tbody');
+  (data.holders || []).forEach((h, i) => {
+    const share = a.supply > 0 ? (h.balance / a.supply * 100).toFixed(2) + '%' : '';
+    hbody.appendChild(el('tr', {},
+      el('td', {}, '#' + (i + 1)),
+      el('td', {}, addrLink(h.address, data.network)),
+      el('td', {}, fmtTokenUnits(h.balance)),
+      el('td', { style: { color: 'var(--fg2)' } }, share)));
+  });
+  if (!(data.holders || []).length) {
+    hbody.appendChild(el('tr', {}, el('td', { colspan: '4', style: { color: 'var(--fg2)' } }, 'no holders with a positive balance')));
+  }
+  holders.appendChild(el('table', {},
+    el('thead', {}, el('tr', {}, el('th', {}, 'rank'), el('th', {}, 'address'), el('th', {}, 'balance'), el('th', {}, 'share'))),
+    hbody));
+  container.appendChild(holders);
+
+  container.appendChild(assetTransfersSection(data));
+
+  container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function assetTransfersSection(data) {
+  const xfers = el('div', { className: 'section' });
+  xfers.appendChild(el('div', { className: 'section-title' }, 'recent transfers'));
+  const xbody = el('tbody');
+  for (const x of (data.transfers || [])) {
+    // Mints and burns are named rather than rendered as a blank address, which
+    // is what the event actually carries and what a reader would misread.
+    const fromCell = x.from ? addrLink(x.from, data.network)
+      : el('span', { className: 'badge badge-ok' }, 'mint');
+    const toCell = x.to ? addrLink(x.to, data.network)
+      : el('span', { className: 'badge badge-fail' }, 'burn');
+    xbody.appendChild(el('tr', {},
+      el('td', {}, txLink(x.tx_hash, x.block_height, data.network)),
+      el('td', {}, fromCell),
+      el('td', {}, toCell),
+      el('td', {}, fmtTokenUnits(x.value)),
+      el('td', {}, x.block_time ? timeEl(x.block_time) : '')));
+  }
+  xfers.appendChild(el('table', {},
+    el('thead', {}, el('tr', {}, el('th', {}, 'tx'), el('th', {}, 'from'), el('th', {}, 'to'), el('th', {}, 'value'), el('th', {}, 'when'))),
+    xbody));
+  return xfers;
+}
+
 async function loadTokens() {
   skeletonRows(clear('tokens-list'), 3, 5);
   const statsBar = document.getElementById('tokens-stats');
@@ -3745,11 +4032,13 @@ async function loadTokens() {
   bankContent.textContent = '';
   skeletonBlock(bankContent);
   try {
-    await apiSWR(['tokens', 'bankstats'], ([data, bank], swrMeta) => {
+    await apiSWR(['assets', 'bankstats'], ([assetsResp, bank], swrMeta) => {
+      const assets = (assetsResp && assetsResp.assets) || [];
       // Stats: merge token + bank
-      const totalCalls = (data || []).reduce((s, t) => s + t.call_count, 0);
+      const totalTransfers = assets.reduce((s, t) => s + (t.transfers || 0), 0);
       statsBar.textContent = ''; statsBar.style.display = 'flex';
-      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'grc20 tokens'), el('span', { className: 'value' }, fmtNum((data || []).length))));
+      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'grc20 assets'), el('span', { className: 'value' }, fmtNum(assets.length))));
+      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'grc20 transfers'), el('span', { className: 'value' }, fmtNum(totalTransfers))));
       statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'bank transfers'), el('span', { className: 'value' }, fmtNum(bank.total_sends))));
       // Volume is denominated per chain, so a single blended figure across
       // networks describes nothing — one chain's GNOT is not another's. In
@@ -3830,18 +4119,7 @@ async function loadTokens() {
 
       bankContent.appendChild(grid);
 
-      // GRC20 tokens list
-      const tbody = clear('tokens-list');
-      for (const t of (data || [])) {
-        tbody.appendChild(netRow(t.network,
-          el('td', {}, realmPathEl(t.path, t.network)),
-          el('td', {}, addrLink(t.creator, t.network)),
-          el('td', {}, String(t.call_count))
-        ));
-      }
-      if (!(data || []).length) {
-        tbody.appendChild(el('tr', {}, el('td', { colspan: '3', style: { color: 'var(--fg2)' } }, 'no tokens found')));
-      }
+      renderAssetRows(assets);
     });
   } catch (err) {
     console.error(err);
@@ -3921,6 +4199,108 @@ function livenessSpark(blocks, addr) {
   return spark;
 }
 
+// --- One validator ----------------------------------------------------------
+//
+// /validators already renders the set, keyed on the proposer's consensus
+// address, with a liveness sparkline and gnockpit's power/missed/spof columns.
+// What it had no way to show was one validator over time, so this is the detail
+// page those rows now link to.
+//
+// ⚠️ Keyed on the **consensus** address. The operator address that registers in
+// r/gnops/valopers is a different key and nothing on chain maps the two, which
+// is why the registration table on /validators stays its own thing.
+async function loadValidatorDetail(addr) {
+  const container = clear('validator-detail-content');
+  skeletonBlock(container);
+  try {
+    await apiSWR('validator/' + encodeURIComponent(addr), (data) => renderValidatorDetail(container, data, addr));
+  } catch (err) {
+    failBlock(container, err, () => loadValidatorDetail(addr));
+  }
+}
+
+function renderValidatorDetail(container, data, addr) {
+  container.textContent = '';
+  const v = data.validator || { address: addr };
+
+  container.appendChild(el('div', { style: { marginBottom: '12px' } },
+    link('\u2190 all validators', () => navigate('/validators' + netSuffix()))));
+
+  const head = el('div', { className: 'section' });
+  head.appendChild(el('div', { className: 'section-title' }, v.name || truncAddr(addr)));
+  const sub = el('div', { className: 'section-sub' });
+  sub.append('consensus address ' + addr + '. ');
+  if (!data.in_set) {
+    // Proposed blocks in the past but is not in the current set: it left, and
+    // the page has to say which rather than showing a validator that looks
+    // active.
+    sub.appendChild(el('span', { style: { color: '#ffd43b' } },
+      'not in the current set: this address has proposed blocks but gnockpit does not list it now.'));
+  }
+  head.appendChild(sub);
+  container.appendChild(head);
+
+  const bar = el('div', { className: 'stats-bar' });
+  const stat = (label, value, color) => bar.appendChild(el('div', { className: 'stat' },
+    el('span', { className: 'label' }, label),
+    el('span', { className: 'value', style: color ? { color } : {} }, value)));
+  stat('voting power', v.voting_power ? fmtNum(v.voting_power) : '-');
+  stat('blocks proposed', fmtNum(v.blocks || 0));
+  stat('share', ((v.share || 0) * 100).toFixed(1) + '%');
+  stat('txs in them', fmtNum(v.txs || 0));
+  stat('missed 24h', fmtNum(v.missed_24h || 0), v.missed_24h > 0 ? '#ff6b6b' : undefined);
+  stat('avg block', v.avg_block_ms ? v.avg_block_ms + 'ms' : '-');
+  container.appendChild(bar);
+
+  // The share series, which is the honest stand-in for a voting-power
+  // timeline: no historical valset is stored anywhere, and gnockpit reports
+  // only the current one. When a validator joined or left shows up here as its
+  // share appearing or going to zero.
+  const shares = data.shares || [];
+  if (shares.length) {
+    const trend = el('div', { className: 'section' });
+    trend.appendChild(el('div', { className: 'section-title' }, 'share of blocks, by day'));
+    trend.appendChild(el('div', { className: 'section-sub' },
+      'no historical validator set is recorded anywhere, so this is the observable half of one: '
+      + 'a validator joining or leaving shows up as its share appearing or going to zero.'));
+    const tbody = el('tbody');
+    for (const p of shares.slice(-14)) {
+      const share = p.shares && p.shares[addr] ? p.shares[addr] : 0;
+      const bar2 = el('div', {
+        style: {
+          height: '10px', borderRadius: '2px', width: Math.max(2, share * 200) + 'px',
+          background: share > 0 ? 'var(--accent)' : 'var(--bg3)',
+        },
+      });
+      tbody.appendChild(el('tr', {},
+        el('td', {}, p.day),
+        el('td', {}, (share * 100).toFixed(1) + '%'),
+        el('td', {}, bar2),
+        el('td', { style: { color: 'var(--fg2)', fontSize: '11px' } }, fmtNum(p.blocks) + ' blocks that day')));
+    }
+    trend.appendChild(el('table', {}, tbody));
+    container.appendChild(trend);
+  }
+
+  const blocks = el('div', { className: 'section' });
+  blocks.appendChild(el('div', { className: 'section-title' }, 'recent blocks proposed'));
+  const bbody = el('tbody');
+  for (const b of (data.blocks || [])) {
+    bbody.appendChild(el('tr', {},
+      el('td', {}, link(fmtNum(b.height), () => navigate('/block/' + b.height + netSuffix()))),
+      el('td', {}, fmtNum(b.num_txs || 0)),
+      el('td', {}, b.time ? timeEl(b.time) : '')));
+  }
+  if (!(data.blocks || []).length) {
+    bbody.appendChild(el('tr', {}, el('td', { colspan: '3', style: { color: 'var(--fg2)' } },
+      'no proposed blocks in the synced range')));
+  }
+  blocks.appendChild(el('table', {},
+    el('thead', {}, el('tr', {}, el('th', {}, 'height'), el('th', {}, 'txs'), el('th', {}, 'when'))),
+    bbody));
+  container.appendChild(blocks);
+}
+
 async function loadValidators() {
   const container = clear('validators-content');
   skeletonRows(container, 3, 5);
@@ -3970,8 +4350,13 @@ async function loadValidators() {
       const recent = (blocks || []).slice(0, SPARK_BLOCKS);
       for (const [addr, count] of sorted) {
         const live = liveByAddr.get(addr);
+        const nameCell = el('td', {}, proposerEl(addr));
+        // Through to the per-validator page, which is the one view this table
+        // cannot be: it is a snapshot, and a validator's story is over time.
+        nameCell.appendChild(el('div', { style: { fontSize: '11px' } },
+          link('history', () => navigate('/validator/' + addr + netSuffix()))));
         vsBody.appendChild(el('tr', {},
-          el('td', {}, proposerEl(addr)),
+          nameCell,
           el('td', {}, fmtNum(count)),
           el('td', {}, (count / total * 100).toFixed(1) + '%'),
           el('td', {}, livenessSpark(recent, addr)),
