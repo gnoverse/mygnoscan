@@ -47,6 +47,16 @@ Break these and things go wrong in ways that are hard to see:
   the explorer renders on-chain content, all of which is attacker-controlled.
   This is also why the optimistic-UI cache stores payloads and not rendered
   markup: a revived `innerHTML` would be the one place this stopped being true.
+- **A block height is drawn by `blockWithAge`, never by `blockLink` alone.**
+  A bare height answers "which block" and leaves "when" to a second page load,
+  which is the question a reader of a table actually had. The shape is
+  `1,234 (3d)`, and the age carries `data-age` so the 10s ticker refreshes it
+  on a tab left open. The exception is a column that already has a timestamp
+  beside it (`/blocks`, the home tx feed, the tx detail table): there the age
+  is a second way of saying the same thing. `e2e/tests/block-age.spec.js`
+  holds the line. An endpoint that returns a height and no time is the bug to
+  fix, not a reason to drop back to `blockLink`.
+
 - **An `apiSWR` render function runs up to twice, and must be synchronous.**
   Loaders paint cached data first and fresh data second, so a render has to
   rebuild its container from scratch (appending to something a previous pass

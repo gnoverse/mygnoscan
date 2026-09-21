@@ -50,9 +50,11 @@ func (a *API) HandleAddress(w http.ResponseWriter, r *http.Request) {
 	// The oldest block on this page, not the address's first ever: paging back
 	// would otherwise make "first seen" wander. Named accordingly.
 	oldestOnPage := -1
+	oldestOnPageTime := ""
 	for _, tx := range txs {
 		if oldestOnPage < 0 || tx.BlockHeight < oldestOnPage {
 			oldestOnPage = tx.BlockHeight
+			oldestOnPageTime = tx.BlockTime
 		}
 	}
 
@@ -70,7 +72,10 @@ func (a *API) HandleAddress(w http.ResponseWriter, r *http.Request) {
 		"total":          total,
 		"packages":       pkgs,
 		"oldest_on_page": oldestOnPage,
-		"balance":        balance,
+		// Paired with the height rather than derived from row order: the age
+		// beside it has to be that block's, not the page's newest.
+		"oldest_on_page_time": oldestOnPageTime,
+		"balance":             balance,
 	})
 }
 
