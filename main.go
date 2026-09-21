@@ -46,6 +46,11 @@ func run() error {
 		// exactly what the default view shows.
 		blockHistoryDays = flag.Int("block-history-days", 90,
 			"days of block history to backfill (0 = full chain history, negative = do not store blocks at all)")
+		// Off unless an operator asks for it: every deployment shares the same
+		// embedded frontend, so a hardcoded tag would make every one of them
+		// report to somebody else's analytics account.
+		analyticsScript = flag.String("analytics-script", "",
+			"URL of an analytics script to load in the frontend, e.g. https://scripts.simpleanalyticscdn.com/latest.js (empty = none)")
 	)
 	flag.Parse()
 
@@ -250,9 +255,12 @@ func run() error {
 	mux.HandleFunc("GET /api/live", httpapi.LiveFeedHandler())
 
 	// Frontend: SPA handler serves index.html for all non-API routes
-	frontend, err := web.Handler()
+	frontend, err := web.Handler(web.Options{AnalyticsScript: *analyticsScript})
 	if err != nil {
 		return err
+	}
+	if *analyticsScript != "" {
+		log.Printf("analytics: frontend loads %s", *analyticsScript)
 	}
 	mux.HandleFunc("GET /", frontend)
 

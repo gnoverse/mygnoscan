@@ -8,14 +8,30 @@ import (
 	"embed"
 	"encoding/base64"
 	"fmt"
+	"html"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 )
 
 //go:embed frontend
 var frontendFS embed.FS
+
+// Options configures what gets served.
+type Options struct {
+	// AnalyticsScript is the URL of a third-party analytics script to load on
+	// every page, or "" to load none. Off by default: an explorer that phones
+	// a third party home without its operator having asked for it is not a
+	// default anyone should inherit by upgrading.
+	//
+	// The deployment at mygnoscan.moul.p2p.team passes Simple Analytics'
+	// https://scripts.simpleanalyticscdn.com/latest.js, which sets no cookie
+	// and stores nothing on the device. Any provider serving a single
+	// self-contained script works the same way.
+	AnalyticsScript string
+}
 
 // Handler serves the frontend: a static file when the path names one, and
 // index.html for everything else.
@@ -27,7 +43,7 @@ var frontendFS embed.FS
 // The static attempt comes first and is an existence check rather than a path
 // prefix: anything actually embedded is served as itself, and only genuine
 // misses fall through to the app.
-func Handler() (http.HandlerFunc, error) {
+func Handler(opts Options) (http.HandlerFunc, error) {
 	sub, err := fs.Sub(frontendFS, "frontend")
 	if err != nil {
 		return nil, fmt.Errorf("frontend fs: %w", err)
@@ -36,6 +52,14 @@ func Handler() (http.HandlerFunc, error) {
 	index, err := fs.ReadFile(frontendFS, "frontend/index.html")
 	if err != nil {
 		return nil, fmt.Errorf("read index.html: %w", err)
+	}
+
+	// Before the ETag and the gzip below, so both describe what is actually
+	// sent: turning analytics on changes the body, and a reader holding the
+	// previous build's tag has to be told so.
+	index, err = withAnalytics(index, opts.AnalyticsScript)
+	if err != nil {
+		return nil, err
 	}
 
 	// The app is a single 450 KB HTML file, and every deep link serves the
@@ -136,6 +160,40 @@ func matchesETag(inm, etag string) bool {
 		}
 	}
 	return false
+}
+
+// withAnalytics returns index.html with an analytics script tag added just
+// before </head>, or unchanged when src is empty.
+//
+// Injected here rather than written into index.html because the frontend is
+// one file compiled into the binary and shared by every deployment, and a
+// hardcoded tag would make anyone else running mygnoscan report to our account.
+//
+// The URL lands in an HTML attribute, so it is validated as an absolute http(s)
+// URL and escaped. A misconfigured flag fails at startup rather than shipping
+// a broken tag, or a javascript: URL, to every reader.
+func withAnalytics(index []byte, src string) ([]byte, error) {
+	if src == "" {
+		return index, nil
+	}
+	u, err := url.Parse(src)
+	if err != nil {
+		return nil, fmt.Errorf("analytics script %q: %w", src, err)
+	}
+	if (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		return nil, fmt.Errorf("analytics script %q: want an absolute http(s) URL", src)
+	}
+	i := bytes.Index(index, []byte("</head>"))
+	if i < 0 {
+		return nil, fmt.Errorf("analytics script: no </head> in index.html")
+	}
+	tag := "<!-- Third-party analytics, off unless -analytics-script names one. -->\n" +
+		`<script async src="` + html.EscapeString(u.String()) + `"></script>` + "\n"
+	out := make([]byte, 0, len(index)+len(tag))
+	out = append(out, index[:i]...)
+	out = append(out, tag...)
+	out = append(out, index[i:]...)
+	return out, nil
 }
 
 // Index is the embedded index.html, for callers that need the bytes rather than
