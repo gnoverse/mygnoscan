@@ -9053,7 +9053,7 @@ function usageChip(host, detail, gen, key, label, body) {
   return chip;
 }
 
-// usageNarrow sets one narrowing filter and reloads — what clicking a caller
+// usageNarrow sets one narrowing filter and reloads: what clicking a caller
 // row or a function row does.
 function usageNarrow(host, detail, gen, key, value) {
   _usageFilter[key] = _usageFilter[key] === value ? '' : value;
@@ -9102,14 +9102,14 @@ function renderRealmUsage(host, detail, usage, gen) {
   bar.appendChild(el('span', { className: 'usage-filter-label' }, 'what'));
   bar.appendChild(usageSeg(host, detail, gen, 'kind', [
     ['', 'all', 'MsgCall and MsgRun together'],
-    ['call', 'calls', 'MsgCall only — a direct call to an exported function'],
-    ['run', 'runs', 'MsgRun only — a script that imports this realm'],
+    ['call', 'calls', 'MsgCall only: a direct call to an exported function'],
+    ['run', 'runs', 'MsgRun only: a script that imports this realm'],
   ]));
   bar.appendChild(el('span', { className: 'usage-filter-label' }, 'result'));
   bar.appendChild(usageSeg(host, detail, gen, 'status', [
     ['', 'any', 'succeeded or failed'],
     ['ok', 'ok', 'succeeded'],
-    ['fail', 'failed', 'reverted — the fee was still paid'],
+    ['fail', 'failed', 'reverted, and the fee was still paid'],
   ]));
   if (_usageFilter.func) {
     bar.appendChild(usageChip(host, detail, gen, 'func', 'function', funcSpan(_usageFilter.func)));
@@ -9317,7 +9317,7 @@ function renderRealmUsage(host, detail, usage, gen) {
     sec.appendChild(el('div', { style: { color: 'var(--fg2)', padding: '12px 0' } },
       filtered ? 'no messages match this filter' : 'no activity'));
   }
-  // The deploy is not in the feed — it is a MsgAddPackage, not a call — but a
+  // The deploy is not in the feed (it is a MsgAddPackage, not a call), but a
   // realm nobody has called yet would otherwise show nothing at all here.
   sec.appendChild(el('div', { className: 'usage-note' }, [
     'deployed at block ', String(detail.block_height), ' by ',
@@ -9469,7 +9469,7 @@ async function loadRealmDetail(path, initialTab) {
       // so a realm nobody has used yet advertised nothing at all. Dimmed pills are
       // exported but never called — the useful distinction, and the reason this is
       // not folded into the calls tab.
-      // detail.calls is a *count* on PackageInfo, not a list — reading it as
+      // detail.calls is a *count* on PackageInfo, not a list. Reading it as
       // one made calledFns permanently empty and dimmed every pill, including
       // on realms with thousands of calls. The recent rows are the synchronous
       // answer; the calls tab upgrades this set to the whole history once

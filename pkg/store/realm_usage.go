@@ -17,7 +17,7 @@ import (
 //
 // So: aggregate in SQL over every row, and apply the reader's filters to the
 // aggregate as well as to the feed. Filtering to `func=Bid` and reading
-// "12 unique callers" is the point — it means twelve addresses bid, not twelve
+// "12 unique callers" is the point: it means twelve addresses bid, not twelve
 // addresses touched the realm at all.
 
 // RealmUsageFilter narrows a realm's message history.
@@ -149,7 +149,7 @@ type RealmUsageRow struct {
 //
 // Both halves carry their own copy of the predicates rather than filtering the
 // union afterward, so SQLite can use idx_calls_net_pkg_height instead of
-// scanning the union. The MsgRun half has no such index and cannot get one —
+// scanning the union. The MsgRun half has no such index and cannot get one:
 // it matches on a LIKE over the script's source, the same heuristic
 // GetPackageDetail's msgrun_refs has always used.
 func activitySource(network, path string, f RealmUsageFilter) (string, []any) {
