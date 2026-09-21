@@ -724,6 +724,37 @@ func initSchema(db *sql.DB) error {
 			PRIMARY KEY (network, address)
 		) WITHOUT ROWID;
 
+		-- GRC20 transfers, from the Transfer events the chain already emits.
+		--
+		-- A complete ledger: an empty from_addr is a mint, an empty to_addr is
+		-- a burn, and replaying the column gives exact supply and every
+		-- holder's balance without a single extra RPC call.
+		--
+		-- token is the full triple the events carry
+		-- (gno.land/r/gnoland/wugnot.wugnot.0000000), not a bare realm path:
+		-- one realm can expose several tokens. pkg_path is that realm, split
+		-- out at insert so queries do not have to parse the key.
+		--
+		-- NOT keyed on the event's pkg_path, which is the grc20 library for
+		-- every token on the chain and would collapse them all into one.
+		CREATE TABLE IF NOT EXISTS token_transfers (
+			network    TEXT NOT NULL,
+			tx_hash    TEXT NOT NULL,
+			event_idx  INTEGER NOT NULL,
+			token      TEXT NOT NULL,
+			pkg_path   TEXT NOT NULL,
+			from_addr  TEXT NOT NULL DEFAULT '',
+			to_addr    TEXT NOT NULL DEFAULT '',
+			value      INTEGER NOT NULL DEFAULT 0,
+			block_height INTEGER NOT NULL,
+			block_time TEXT NOT NULL,
+			PRIMARY KEY (network, tx_hash, event_idx)
+		) WITHOUT ROWID;
+
+		CREATE INDEX IF NOT EXISTS idx_token_transfers_token ON token_transfers(network, token, block_height DESC);
+		CREATE INDEX IF NOT EXISTS idx_token_transfers_from ON token_transfers(network, token, from_addr);
+		CREATE INDEX IF NOT EXISTS idx_token_transfers_to ON token_transfers(network, token, to_addr);
+
 		-- The rich list's only query: the top balances on one chain.
 		CREATE INDEX IF NOT EXISTS idx_balances_rank ON balances(network, ugnot DESC);
 

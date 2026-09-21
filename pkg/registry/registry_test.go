@@ -118,17 +118,33 @@ func TestShippedDatesAreNotInTheFuture(t *testing.T) {
 	}
 }
 
-// Token keys are the triple GRC20 events emit. A bare realm path would collide
-// the moment a realm exposes a second token, and the events themselves report
-// the library path rather than the token, so this is the only usable key.
-func TestTokenKeysAreTheEventTriple(t *testing.T) {
+// Token keys mirror whatever the Transfer event emits, verbatim.
+//
+// That is usually the `<path>.<name>.<id>` triple, because a realm can expose
+// several tokens and the event's own pkg_path is the grc20 library for all of
+// them. It is not guaranteed: two live mainnet tokens emit a bare symbol
+// instead, measured 2026-09-20. So the rule is that a key has to be usable as
+// a key, not that it has a particular shape.
+func TestTokenKeysAreUsable(t *testing.T) {
 	reg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
 	for key := range reg.Tokens {
-		if strings.Count(strings.TrimPrefix(key, "gno.land/"), ".") < 2 {
-			t.Errorf("token key %q is not <path>.<name>.<id>", key)
+		if key == "" || strings.HasSuffix(key, ".") || strings.Contains(key, "..") {
+			t.Errorf("token key %q is not usable", key)
+		}
+	}
+}
+
+func TestTokenValidationRejectsUnusableKeys(t *testing.T) {
+	for _, key := range []string{"gno.land/r/x/y.", "gno.land/r/x..y", "notapath"} {
+		var doc struct {
+			Tokens map[string]Token `json:"tokens"`
+		}
+		doc.Tokens = map[string]Token{key: {Symbol: "X"}}
+		if err := validateTokens(doc.Tokens); err == nil {
+			t.Errorf("accepted unusable key %q", key)
 		}
 	}
 }

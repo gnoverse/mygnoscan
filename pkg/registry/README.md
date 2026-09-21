@@ -63,6 +63,9 @@ blast radius: it appears on every page the address does.
 | `tokens.json` | `<realm path>.<name>.<id>`, the GRC20 event key | the token views |
 | `apps.json` | realm path | `/apps` |
 
-Token keys are the full triple the GRC20 events emit
-(`gno.land/r/gnoland/wugnot.wugnot.0000000`), not a bare realm path, because one
-realm can expose more than one token.
+Token keys are whatever the GRC20 `Transfer` event puts in its `token`
+attribute, verbatim. That is usually the full triple
+(`gno.land/r/gnoland/wugnot.wugnot.0000000`) rather than a bare realm path,
+because one realm can expose more than one token, but not always: two live
+mainnet tokens emit a bare symbol instead. Copy the key from the asset page
+rather than constructing it.

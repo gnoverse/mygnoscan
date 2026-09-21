@@ -878,6 +878,58 @@ func (s *Syncer) backfillValopers(ctx context.Context) {
 // Failures are logged and skipped rather than aborting the walk. A storage row
 // is derived detail — losing one costs a number on a page, where abandoning the
 // pass costs every call and send behind it.
+// recordTokenTransfers stores the GRC20 Transfer events in a transaction.
+//
+// Rides the walk syncCalls already does: the events are in the payload being
+// iterated, with `attrs` already selected, so this costs no extra query and
+// needs no separate backfill pass.
+//
+// Only Transfer is stored. Approval says what an address is *allowed* to move,
+// which changes no balance and would inflate every count it appeared in.
+//
+// ⚠️ The token is the `token` attribute, never ev.PkgPath. Every GRC20 event on
+// the chain reports the library path (gno.land/p/nt/grc20/v0) there, so keying
+// on it would collapse every asset on the chain into one.
+func (s *Syncer) recordTokenTransfers(tx indexer.Transaction, blockTime string) int {
+	if tx.Response == nil || !tx.Success {
+		// A failed transaction moved nothing. Its events are still reported,
+		// and counting them would invent supply.
+		return 0
+	}
+	stored := 0
+	for i, ev := range tx.Response.Events {
+		if ev.Typename != "GnoEvent" || ev.Type != "Transfer" {
+			continue
+		}
+		var t store.TokenTransfer
+		for _, attr := range ev.Attrs {
+			switch attr.Key {
+			case "token":
+				t.Token = attr.Value
+			case "from":
+				t.From = attr.Value
+			case "to":
+				t.To = attr.Value
+			case "value":
+				t.Value = store.ParseTokenValue(attr.Value)
+			}
+		}
+		if t.Token == "" {
+			// A Transfer without a token attribute is not one this ledger can
+			// attribute, and a row keyed on "" would pool every such event into
+			// a token that does not exist.
+			continue
+		}
+		t.BlockHeight, t.BlockTime = tx.BlockHeight, blockTime
+		if err := s.db.InsertTokenTransfer(s.networkID, tx.Hash, i, t); err != nil {
+			log.Printf("[%s] store token transfer: %v", s.networkID, err)
+			continue
+		}
+		stored++
+	}
+	return stored
+}
+
 func (s *Syncer) recordStorageEvents(tx indexer.Transaction, blockTime string) int {
 	if tx.Response == nil {
 		return 0
@@ -925,13 +977,14 @@ func (s *Syncer) syncCalls(ctx context.Context) error {
 		return fmt.Errorf("last synced call height: %w", err)
 	}
 
-	callCount, sendCount, storageCount := 0, 0, 0
+	callCount, sendCount, storageCount, transferCount := 0, 0, 0, 0
 	err = walkTransactions(ctx, lastHeight, s.client.GetTransactionsFromHeight, func(txs []indexer.Transaction) {
 		times := s.fetchBlockTimes(ctx, txs)
 		for _, tx := range txs {
 			bt := times[tx.BlockHeight]
 			s.upsertTx(tx, bt)
 			storageCount += s.recordStorageEvents(tx, bt)
+			transferCount += s.recordTokenTransfers(tx, bt)
 			for i, msg := range tx.Messages {
 				switch msg.Value.Typename {
 				case "MsgCall":
@@ -969,7 +1022,8 @@ func (s *Syncer) syncCalls(ctx context.Context) error {
 			}
 		}
 	})
-	log.Printf("[%s] synced %d calls, %d sends, %d storage events", s.networkID, callCount, sendCount, storageCount)
+	log.Printf("[%s] synced %d calls, %d sends, %d storage events, %d token transfers",
+		s.networkID, callCount, sendCount, storageCount, transferCount)
 	if err != nil {
 		return fmt.Errorf("walk transactions: %w", err)
 	}

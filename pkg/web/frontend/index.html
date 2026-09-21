@@ -503,8 +503,10 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
   <div class="view" id="view-tokens"><main>
     <div id="tokens-stats" class="stats-bar" style="display:none"></div>
     <div id="tokens-bank-content"></div>
-    <div class="section"><div class="section-title">tokens (grc20)</div>
-    <table><thead><tr><th>path</th><th>creator</th><th>calls</th></tr></thead><tbody id="tokens-list"></tbody></table></div></main></div>
+    <div class="section"><div class="section-title">assets (grc20)</div>
+    <div class="section-sub">supply and holders are replayed from the Transfer events the chain emits, so both are exact rather than sampled. no price or market value: GNOT is not listed anywhere and there is no oracle on chain, so any figure in dollars would be one this explorer invented.</div>
+    <table><thead><tr><th>asset</th><th>realm</th><th>supply</th><th>holders</th><th>transfers</th><th>24h</th><th>first seen</th></tr></thead><tbody id="tokens-list"></tbody></table></div>
+    <div id="asset-detail"></div></main></div>
   <div class="view" id="view-validators"><main><div class="section"><div class="section-title">validators</div>
     <div id="validators-content"></div></div></main></div>
   <div class="view" id="view-govdao"><main><div id="govdao-content"></div></main></div>
@@ -3757,6 +3759,150 @@ async function loadAccounts() {
   }
 }
 
+// --- Assets: the GRC20 ledger ------------------------------------------------
+//
+// /tokens used to list packages that imported grc20, which over-matched (a DEX
+// router imports grc20 to call tokens, and sat in the list beside them) and
+// said nothing about the asset. These rows are replayed from Transfer events,
+// so supply and holders are exact.
+//
+// The verified badge is the registry's, not the chain's. Anyone can deploy a
+// realm called `gns`, and nothing on chain distinguishes the real one, so the
+// badge is a human's claim and is worded as one.
+function assetSymbolEl(t) {
+  const wrap = el('span');
+  wrap.appendChild(el('span', { style: { fontWeight: 'bold' } }, t.display_symbol || t.symbol || '?'));
+  if (t.verified) {
+    const badge = el('span', { className: 'badge badge-ok', style: { marginLeft: '6px' } }, 'verified');
+    badge.title = 'a contributor vouched for this being the token it claims to be. nothing on chain says so: anyone may deploy a realm with this name';
+    wrap.appendChild(badge);
+  }
+  if (t.display_name) {
+    wrap.appendChild(el('div', { style: { color: 'var(--fg2)', fontSize: '11px' } }, t.display_name));
+  }
+  return wrap;
+}
+
+// Raw units, not scaled by decimals. A supply divided by a decimals value the
+// registry guessed at would be a different number wearing the right shape, and
+// only a handful of tokens have a curated entry at all.
+function fmtTokenUnits(v) {
+  return fmtNum(v);
+}
+
+function renderAssetRows(assets) {
+  const tbody = clear('tokens-list');
+  for (const t of assets) {
+    // An asset whose transfers carry no amount is not a balance ledger, and
+    // printing 0 for supply and holders would read as "empty" rather than as
+    // "this arithmetic does not apply". GRC721 goes through the same events.
+    const supplyCell = t.fungible ? fmtTokenUnits(t.supply)
+      : el('span', { style: { color: 'var(--fg2)' }, title: 'these transfers carry no amount, so supply and holders do not apply. most likely an NFT collection' }, 'n/a');
+    const holdersCell = t.fungible ? fmtNum(t.holders || 0)
+      : el('span', { style: { color: 'var(--fg2)' } }, 'n/a');
+    const row = netRow(t.network,
+      el('td', {}, link(t.display_symbol || t.symbol || t.token, () => showAssetDetail(t))),
+      el('td', {}, t.pkg_path ? realmPathEl(t.pkg_path, t.network)
+        : el('span', { style: { color: 'var(--fg2)' }, title: 'this token emits a bare symbol rather than its realm path, so the realm is not known from the event' }, 'unknown')),
+      el('td', {}, supplyCell),
+      el('td', {}, holdersCell),
+      el('td', {}, fmtNum(t.transfers || 0)),
+      el('td', {}, fmtNum(t.transfers_24h || 0)),
+      el('td', {}, t.first_seen_time ? timeEl(t.first_seen_time) : ''));
+    row.firstChild.textContent = '';
+    row.firstChild.appendChild(assetSymbolEl(t));
+    row.firstChild.appendChild(el('div', { style: { fontSize: '11px' } },
+      link('details', () => showAssetDetail(t))));
+    tbody.appendChild(row);
+  }
+  if (!assets.length) {
+    tbody.appendChild(el('tr', {}, el('td', { colspan: '7', style: { color: 'var(--fg2)' } },
+      'no GRC20 transfers synced yet')));
+  }
+}
+
+let _assetDetailGen = 0;
+
+async function showAssetDetail(t) {
+  const gen = ++_assetDetailGen;
+  const container = clear('asset-detail');
+  skeletonBlock(container);
+  let data;
+  try {
+    data = await api('asset/' + encodeURIComponent(t.token));
+  } catch (err) {
+    if (gen !== _assetDetailGen) return;
+    failBlock(container, err, () => showAssetDetail(t));
+    return;
+  }
+  if (gen !== _assetDetailGen) return;
+  container.textContent = '';
+
+  const a = data.asset || t;
+  const head = el('div', { className: 'section', style: { marginTop: '24px' } });
+  head.appendChild(el('div', { className: 'section-title' }, (a.display_symbol || a.symbol || a.token)));
+  head.appendChild(el('div', { className: 'section-sub' }, a.token));
+  container.appendChild(head);
+
+  const holders = el('div', { className: 'section' });
+  holders.appendChild(el('div', { className: 'section-title' }, 'top holders'));
+  if (!a.fungible) {
+    holders.appendChild(el('div', { className: 'section-sub' },
+      'this asset\u2019s transfers carry no amount, so there are no balances to reconstruct. '
+      + 'most likely an NFT collection, which emits the same Transfer event without a value.'));
+    container.appendChild(holders);
+    container.appendChild(assetTransfersSection(data));
+    container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return;
+  }
+  holders.appendChild(el('div', { className: 'section-sub' },
+    'balances reconstructed from every transfer: an empty sender is a mint and an empty recipient a burn.'));
+  const hbody = el('tbody');
+  (data.holders || []).forEach((h, i) => {
+    const share = a.supply > 0 ? (h.balance / a.supply * 100).toFixed(2) + '%' : '';
+    hbody.appendChild(el('tr', {},
+      el('td', {}, '#' + (i + 1)),
+      el('td', {}, addrLink(h.address, data.network)),
+      el('td', {}, fmtTokenUnits(h.balance)),
+      el('td', { style: { color: 'var(--fg2)' } }, share)));
+  });
+  if (!(data.holders || []).length) {
+    hbody.appendChild(el('tr', {}, el('td', { colspan: '4', style: { color: 'var(--fg2)' } }, 'no holders with a positive balance')));
+  }
+  holders.appendChild(el('table', {},
+    el('thead', {}, el('tr', {}, el('th', {}, 'rank'), el('th', {}, 'address'), el('th', {}, 'balance'), el('th', {}, 'share'))),
+    hbody));
+  container.appendChild(holders);
+
+  container.appendChild(assetTransfersSection(data));
+
+  container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function assetTransfersSection(data) {
+  const xfers = el('div', { className: 'section' });
+  xfers.appendChild(el('div', { className: 'section-title' }, 'recent transfers'));
+  const xbody = el('tbody');
+  for (const x of (data.transfers || [])) {
+    // Mints and burns are named rather than rendered as a blank address, which
+    // is what the event actually carries and what a reader would misread.
+    const fromCell = x.from ? addrLink(x.from, data.network)
+      : el('span', { className: 'badge badge-ok' }, 'mint');
+    const toCell = x.to ? addrLink(x.to, data.network)
+      : el('span', { className: 'badge badge-fail' }, 'burn');
+    xbody.appendChild(el('tr', {},
+      el('td', {}, txLink(x.tx_hash, x.block_height, data.network)),
+      el('td', {}, fromCell),
+      el('td', {}, toCell),
+      el('td', {}, fmtTokenUnits(x.value)),
+      el('td', {}, x.block_time ? timeEl(x.block_time) : '')));
+  }
+  xfers.appendChild(el('table', {},
+    el('thead', {}, el('tr', {}, el('th', {}, 'tx'), el('th', {}, 'from'), el('th', {}, 'to'), el('th', {}, 'value'), el('th', {}, 'when'))),
+    xbody));
+  return xfers;
+}
+
 async function loadTokens() {
   skeletonRows(clear('tokens-list'), 3, 5);
   const statsBar = document.getElementById('tokens-stats');
@@ -3765,11 +3911,13 @@ async function loadTokens() {
   bankContent.textContent = '';
   skeletonBlock(bankContent);
   try {
-    await apiSWR(['tokens', 'bankstats'], ([data, bank], swrMeta) => {
+    await apiSWR(['assets', 'bankstats'], ([assetsResp, bank], swrMeta) => {
+      const assets = (assetsResp && assetsResp.assets) || [];
       // Stats: merge token + bank
-      const totalCalls = (data || []).reduce((s, t) => s + t.call_count, 0);
+      const totalTransfers = assets.reduce((s, t) => s + (t.transfers || 0), 0);
       statsBar.textContent = ''; statsBar.style.display = 'flex';
-      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'grc20 tokens'), el('span', { className: 'value' }, fmtNum((data || []).length))));
+      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'grc20 assets'), el('span', { className: 'value' }, fmtNum(assets.length))));
+      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'grc20 transfers'), el('span', { className: 'value' }, fmtNum(totalTransfers))));
       statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'bank transfers'), el('span', { className: 'value' }, fmtNum(bank.total_sends))));
       // Volume is denominated per chain, so a single blended figure across
       // networks describes nothing — one chain's GNOT is not another's. In
@@ -3850,18 +3998,7 @@ async function loadTokens() {
 
       bankContent.appendChild(grid);
 
-      // GRC20 tokens list
-      const tbody = clear('tokens-list');
-      for (const t of (data || [])) {
-        tbody.appendChild(netRow(t.network,
-          el('td', {}, realmPathEl(t.path, t.network)),
-          el('td', {}, addrLink(t.creator, t.network)),
-          el('td', {}, String(t.call_count))
-        ));
-      }
-      if (!(data || []).length) {
-        tbody.appendChild(el('tr', {}, el('td', { colspan: '3', style: { color: 'var(--fg2)' } }, 'no tokens found')));
-      }
+      renderAssetRows(assets);
     });
   } catch (err) {
     console.error(err);
