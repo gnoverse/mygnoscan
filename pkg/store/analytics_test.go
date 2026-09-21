@@ -799,3 +799,92 @@ func TestRealmShareRejectsAnUnknownMetric(t *testing.T) {
 		t.Error("an unknown metric was accepted; it would silently return an empty chart")
 	}
 }
+
+// The rollup is bounded per network, not across all of them.
+//
+// The INSERT used one global LIMIT while its comment claimed "bounded per
+// network", and the two only agreed while every network was small. A busy chain
+// with more high-count addresses than the whole limit fills the rollup on its
+// own, and the quiet chain beside it ends up with a leaderboard of nothing —
+// which reads as "nobody moves the coin here", not as "this is truncated".
+//
+// The quiet network's counts are deliberately lower than every one of the busy
+// network's, so a global ORDER BY puts all of them past the cut.
+func TestBankRollupBoundsEachNetworkSeparately(t *testing.T) {
+	db := NewTestDB(t)
+	db.SetConfiguredNetworks([]config.NetworkConfig{{ID: "busy"}, {ID: "quiet"}})
+
+	const when = "2026-08-01T00:00:00Z"
+	send := func(net, addr string, n, seq int) {
+		t.Helper()
+		for i := 0; i < n; i++ {
+			id := fmt.Sprintf("%s-%s-%d", net, addr, i)
+			if err := db.InsertBankSend(net, id, seq*100+i, when, addr, "g1recv", "1ugnot", true); err != nil {
+				t.Fatalf("InsertBankSend: %v", err)
+			}
+		}
+	}
+	for who := 0; who < bankTopRollupLimit+10; who++ {
+		send("busy", fmt.Sprintf("g1busy%05d", who), 2, who)
+	}
+	for who := 0; who < bankTopRead+10; who++ {
+		send("quiet", fmt.Sprintf("g1quiet%05d", who), 1, who)
+	}
+
+	if err := db.RefreshRollups(); err != nil {
+		t.Fatalf("RefreshRollups: %v", err)
+	}
+
+	for _, tc := range []struct{ network string }{{"busy"}, {"quiet"}} {
+		s, err := db.GetBankStats(tc.network)
+		if err != nil {
+			t.Fatalf("GetBankStats(%s): %v", tc.network, err)
+		}
+		if len(s.TopSenders) != bankTopRead {
+			t.Errorf("%s: top senders = %d rows, want %d — each network gets its own slice of the rollup",
+				tc.network, len(s.TopSenders), bankTopRead)
+		}
+		for _, row := range s.TopSenders {
+			if row.Network != tc.network {
+				t.Errorf("%s: leaked a %s row into the leaderboard", tc.network, row.Network)
+			}
+		}
+	}
+}
+
+// The three /coins leaderboards are bankTopRead long whether they come from the
+// rollup or from the live fallback a fresh database uses, so the page does not
+// silently shrink to ten rows for the first five minutes after a restart.
+func TestBankStatsLiveFallbackIsTheSameLength(t *testing.T) {
+	db := NewTestDB(t)
+	db.SetConfiguredNetworks([]config.NetworkConfig{{ID: "n"}})
+
+	const when = "2026-08-01T00:00:00Z"
+	for who := 0; who < bankTopRead+10; who++ {
+		for i := 0; i < 2; i++ {
+			id := fmt.Sprintf("s-%d-%d", who, i)
+			if err := db.InsertBankSend("n", id, who*10+i, when,
+				fmt.Sprintf("g1sender%05d", who), fmt.Sprintf("g1recv%05d", who), "1ugnot", true); err != nil {
+				t.Fatalf("InsertBankSend: %v", err)
+			}
+		}
+	}
+
+	// No RefreshRollups: this is the path a fresh database takes.
+	s, err := db.GetBankStats("n")
+	if err != nil {
+		t.Fatalf("GetBankStats: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		rows []AddrStat
+	}{
+		{"top_senders", s.TopSenders},
+		{"top_receivers_volume", s.TopReceiversVol},
+		{"top_receivers_count", s.TopReceiversCnt},
+	} {
+		if len(tc.rows) != bankTopRead {
+			t.Errorf("%s = %d rows, want %d", tc.name, len(tc.rows), bankTopRead)
+		}
+	}
+}

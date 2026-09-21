@@ -408,8 +408,15 @@ func gnoEvents(txs []indexer.Transaction, network string) []EventResult {
 	return out
 }
 
-// gnoEventsForPath keeps only the events a given realm emitted. The transaction
-// may carry events from several realms; the realm view wants one realm's.
+// gnoEventsForPath keeps only the events tagged with a given realm's path. The
+// transaction may carry events from several realms; the realm view wants one
+// realm's.
+//
+// Unlike gnoEvents this does not filter by typename, so the rows include the
+// chain's own StorageDepositEvent / StorageUnlockEvent for that path alongside
+// the realm's GnoEvents. The realm page hides those by default and offers a
+// toggle, which is why they are still served: filtering here would take the
+// choice away from the reader. Keep them.
 
 func gnoEventsForPath(txs []indexer.Transaction, network, path string) []EventResult {
 	out := make([]EventResult, 0, len(txs))

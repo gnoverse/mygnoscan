@@ -37,8 +37,9 @@ const rollupComputedAtKey = "gas_rollup_at"
 
 const RollupInterval = 5 * time.Minute
 
-// bankTopRollupLimit is how many rows each bank leaderboard keeps. The read
-// shows ten; the slack absorbs a network filter narrowing the set afterwards.
+// bankTopRollupLimit is how many rows each bank leaderboard keeps, per network.
+// The read shows bankTopRead; the slack absorbs a network filter narrowing the
+// set afterwards.
 
 const bankTopRollupLimit = 400
 
@@ -219,8 +220,10 @@ func (d *DB) refreshBankRollups(tx *sql.Tx) error {
 	if _, err := tx.Exec(`DELETE FROM bank_top_rollup`); err != nil {
 		return err
 	}
-	// Bounded per network per leaderboard: the read only ever shows ten, and
-	// storing every address would make the rollup as large as the table.
+	// Bounded per network per leaderboard, via ROW_NUMBER rather than a plain
+	// LIMIT: one global LIMIT lets a busy chain crowd a quiet one out of its own
+	// leaderboard, so a per-network read could come back short of what it asked
+	// for. Storing every address would make the rollup as large as the table.
 	//
 	// One kind per *ordering*, not one per address column. Storing the top 400
 	// receivers by count and re-sorting those by volume gives the wrong answer:
@@ -235,11 +238,12 @@ func (d *DB) refreshBankRollups(tx *sql.Tx) error {
 	} {
 		if _, err := tx.Exec(`
 			INSERT INTO bank_top_rollup (network, kind, address, count, total)
-			SELECT network, ?, `+r.addr+`, COUNT(*), `+amountExpr+`
-			FROM bank_sends WHERE `+scope+`
-			GROUP BY network, `+r.addr+`
-			ORDER BY `+r.order+` DESC
-			LIMIT `+strconv.Itoa(bankTopRollupLimit)+``, r.kind); err != nil {
+			SELECT network, ?, address, count, total FROM (
+				SELECT network, `+r.addr+` AS address, COUNT(*) AS count, `+amountExpr+` AS total,
+				       ROW_NUMBER() OVER (PARTITION BY network ORDER BY `+r.order+` DESC) AS rank
+				FROM bank_sends WHERE `+scope+`
+				GROUP BY network, `+r.addr+`
+			) WHERE rank <= `+strconv.Itoa(bankTopRollupLimit)+``, r.kind); err != nil {
 			return err
 		}
 	}

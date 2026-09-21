@@ -49,7 +49,11 @@ a:hover { text-decoration: underline; }
 .container { max-width: 1200px; margin: 0 auto; padding: 0 20px; }
 header { border-bottom: 1px solid var(--border); padding: 12px 0; position: sticky; top: 0; background: var(--bg); z-index: 100; }
 #sanity-subbar { display: none; position: sticky; z-index: 90; background: var(--bg); border-bottom: 1px solid var(--border); padding: 6px 0; }
-header .container { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+/* position: relative so the search popup can hang off the container rather than
+   off the 280px input. The rail is fixed at z-index 110 and the header is a
+   stacking context at 100, so a popup anchored to the input and wide enough for
+   a realm path slid *under* the rail; anchored here it simply cannot reach it. */
+header .container { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; position: relative; }
 .logo { font-size: 18px; font-weight: bold; color: var(--accent); cursor: pointer; }
 
 /* The nav rail.
@@ -141,10 +145,29 @@ html.rail-collapsed .rail-toggle svg { transform: scaleX(-1); }
   font-size: 11px; color: var(--fg2); border: 1px solid var(--border); border-radius: 3px;
   padding: 1px 5px; pointer-events: none; background: var(--bg); }
 .search-box input:focus + .kbd-hint, .search-box input:not(:placeholder-shown) + .kbd-hint { display: none; }
-#search-results { position: absolute; top: 100%; left: 0; right: 0; background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; margin-top: 4px; max-height: 340px; overflow-y: auto; display: none; z-index: 200; }
+/* The popup is sized for what it holds, not for the box above it. A realm path
+   is gno.land/r/<40-character address>/<name>, sixty-odd characters that a
+   280px dropdown clipped at exactly the wrong end: two of one deployer's
+   realms, "/bubblerumble" and "/bubblerumble2", rendered as the same row.
+   Anchored to the input's right edge and capped against the viewport, so it can
+   grow left over the page without ever pushing a horizontal scrollbar. */
+#search-results { position: absolute; top: calc(100% + 8px); left: 0; right: 0; max-width: 820px; margin-left: auto; background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; max-height: min(70vh, 560px); overflow-y: auto; overflow-x: hidden; display: none; z-index: 200; box-shadow: 0 10px 30px rgba(0,0,0,0.45); }
 #search-results.open { display: block; }
-.search-section-label { padding: 6px 12px 4px; font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--fg2); }
-.search-loading { padding: 8px 12px; color: var(--fg2); font-size: 12px; }
+.search-section-label { padding: 8px 12px 4px; font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--fg2); }
+.search-loading { padding: 10px 12px; color: var(--fg2); font-size: 12px; }
+.search-result { display: flex; align-items: center; gap: 10px; padding: 9px 12px; cursor: pointer; border-bottom: 1px solid var(--border); }
+.search-result:last-child { border-bottom: none; }
+.search-result:hover { background: var(--bg3); }
+.search-result .badge { flex: none; }
+.search-result-text { flex: 1; min-width: 0; }
+/* What identifies a package is the END of its path, so the two halves give up
+   room in the opposite order to the reading order: the namespace shrinks first
+   (999 against 1) and is the only part that ever shows an ellipsis; the name
+   survives whole until there is genuinely nothing left to take. */
+.search-result-title { display: flex; align-items: baseline; font-family: var(--mono); font-size: 14px; }
+.search-result-prefix { flex: 0 999 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg2); }
+.search-result-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+.search-result-sub { margin-top: 2px; font-size: 12px; color: var(--fg2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .stats-bar { display: flex; gap: 24px; padding: 16px 0; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
 .stat { display: flex; flex-direction: column; }
 .stat .label { font-size: 11px; color: var(--fg2); text-transform: uppercase; letter-spacing: 1px; }
@@ -654,8 +677,8 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
     <div class="search-box">
       <input type="text" id="search-input" placeholder="search...">
       <span class="kbd-hint" aria-hidden="true">/</span>
-      <div id="search-results"></div>
     </div>
+    <div id="search-results"></div>
     <span class="net-swatch" id="network-swatch" title=""></span><select class="network-select" id="network-select" onchange="onNetworkChange()"></select><a class="health-chip" id="health-chip" onclick="navigate('/sanity')" title=""></a>
     <button class="live-btn" id="live-toggle" onclick="toggleLive()"><span class="live-dot"></span><span id="live-label"> live</span></button>
   </div>
@@ -1758,12 +1781,24 @@ function shortAge(t) {
   if (s < 31536000) return Math.floor(s / 2592000) + 'mo';
   return Math.floor(s / 31536000) + 'y';
 }
-// A block height linked to its block, with its age in short form beside it —
-// "added" and "last call" both show this shape.
+// A block height linked to its block, with its age in parentheses beside it.
+//
+// This is the only shape a height should ever be drawn in: a bare number
+// answers "which block" and leaves "when" to a page load, which is the
+// question a reader of a table actually had. Anywhere a column already
+// carries its own timestamp (/blocks, the home tx feed) the age is redundant
+// and that column stays as it is.
+//
+// data-age lets the ticker below refresh it, so a tab left open does not keep
+// claiming a block is 2m old an hour later.
 function blockWithAge(height, time, network) {
   const span = el('span');
   span.appendChild(blockLink(height, network));
-  if (time) span.appendChild(el('span', { className: 'block-ctx' }, ' ' + shortAge(time)));
+  if (time) {
+    const age = el('span', { className: 'block-ctx' }, ' (' + shortAge(time) + ')');
+    age.setAttribute('data-age', time);
+    span.appendChild(age);
+  }
   return span;
 }
 function timeEl(t) {
@@ -1776,6 +1811,10 @@ setInterval(() => {
   document.querySelectorAll('[data-time]').forEach(s => {
     const t = s.getAttribute('data-time');
     if (t) s.textContent = timeAgo(t);
+  });
+  document.querySelectorAll('[data-age]').forEach(s => {
+    const t = s.getAttribute('data-age');
+    if (t) s.textContent = ' (' + shortAge(t) + ')';
   });
 }, 10000);
 function blockLabel(h) { return h === 0 ? 'genesis' : fmtNum(h); }
@@ -3717,7 +3756,7 @@ async function loadHome() {
           el('td', {}, usageLink(r, 'imports')),
           el('td', {}, fmtNum(r.calls || 0)),
           el('td', {}, addrLink(r.creator, r.network)),
-          el('td', {}, blockLink(r.block_height, r.network))
+          el('td', {}, blockWithAge(r.block_height, r.block_time, r.network))
         ));
       }
       const txBody = clear('recent-txs');
@@ -3839,7 +3878,7 @@ async function loadPackages(page) {
           el('td', {}, countCell(p.imports)),
           el('td', {}, countCell(p.unique_users)),
           el('td', {}, countCell(p.gas_used)),
-          el('td', {}, blockLink(p.block_height, p.network)), el('td', {}, String(p.num_files))
+          el('td', {}, blockWithAge(p.block_height, p.block_time, p.network)), el('td', {}, String(p.num_files))
         ));
       }
       pager(section, page, data.total || 0, loadPackages);
@@ -3981,7 +4020,7 @@ async function loadInertQueue() {
         eBody.appendChild(el('tr', {},
           el('td', {}, realmPathEl(e.pkg_path)),
           el('td', {}, addrLink(e.actor)),
-          el('td', {}, e.submitted_height ? blockLink(e.submitted_height) : '–'),
+          el('td', {}, e.submitted_height ? blockWithAge(e.submitted_height, e.submitted_time) : '–'),
           el('td', {}, blockWithAge(e.block_height, e.block_time)),
           el('td', {}, e.wait_seconds ? fmtDuration(e.wait_seconds) : (e.wait_blocks ? fmtNum(e.wait_blocks) + ' blocks' : '–')),
           el('td', {}, txLink(e.tx_hash, e.block_height, null, { showBlock: false }))
@@ -4159,7 +4198,7 @@ function renderTxRows(data) {
     list.appendChild(liveTagRow(netRow(tx.network,
       el('td', {}, txLink(tx.hash, tx.block_height, tx.network, { showBlock: false })),
       el('td', {}, signerCell(tx, tx.network)),
-      el('td', {}, blockLink(tx.block_height, tx.network)),
+      el('td', {}, blockWithAge(tx.block_height, tx.block_time, tx.network)),
       el('td', {}, type),
       el('td', {}, detail),
       el('td', {}, statusBadge(tx.success))
@@ -5395,7 +5434,7 @@ async function loadAnalytics() {
         rcbody.appendChild(netRow(r.network,
           el('td', {}, realmPathEl(r.path, r.network)),
           el('td', {}, addrLink(r.creator, r.network)),
-          el('td', {}, blockLink(r.block_height, r.network))
+          el('td', {}, blockWithAge(r.block_height, r.block_time, r.network))
         ));
       }
       rctbl.appendChild(rcbody); recentCol.appendChild(rctbl); grid.appendChild(recentCol);
@@ -6647,13 +6686,17 @@ function storageRuns(data, groupKey) {
     const key = g.key(r);
     let run = by.get(key);
     if (!run) {
-      run = { key, bytes: 0, fee: 0, members: 0, first: Infinity, last: 0, sample: r };
+      run = { key, bytes: 0, fee: 0, members: 0, first: Infinity, firstTime: '', last: 0, sample: r };
       by.set(key, run);
     }
     run.bytes += r.bytes || 0;
     run.fee += r.fee || 0;
     run.members += g.from === 'payers' ? (r.realms || 0) : 1;
-    if (r.first_height) run.first = Math.min(run.first, r.first_height);
+    // firstTime tracks the height it belongs to, not the earliest timestamp
+    // seen: a row synced before storage_events carried block_time has a height
+    // and no time, and taking the two from different rows would date the run
+    // wrong.
+    if (r.first_height && r.first_height < run.first) { run.first = r.first_height; run.firstTime = r.first_time || ''; }
     if (r.last_height) run.last = Math.max(run.last, r.last_height);
   }
   const runs = [...by.values()];
@@ -7053,7 +7096,7 @@ function storageTable(runs, used, capacity, network) {
     row.appendChild(el('td', {}, fmtGnotAmount(run.fee)));
     row.appendChild(el('td', {}, fmtNum(run.members)));
     if (g.from !== 'payers') {
-      row.appendChild(el('td', {}, Number.isFinite(run.first) ? blockLink(run.first, network) : '-'));
+      row.appendChild(el('td', {}, Number.isFinite(run.first) ? blockWithAge(run.first, run.firstTime, network) : '-'));
     }
     body.appendChild(row);
   }
@@ -7453,6 +7496,19 @@ async function loadGasTxs() {
   });
 }
 
+// StorageDepositEvent / StorageUnlockEvent are the chain's own bookkeeping,
+// not anything a realm chose to emit: the VM posts one per transaction that
+// changed state, they carry no attributes, and their numbers are already the
+// storage tab's subject in a form that actually reads (before / delta / after
+// per realm, plus the running total). Listed beside real events they simply
+// double the table with a row that says "and it stored some bytes", which is
+// why every event list here hides them by default. One owner for the two
+// typenames, so a third kind of chain event only has to be added once.
+const STORAGE_EVENT_TYPENAMES = ['StorageDepositEvent', 'StorageUnlockEvent'];
+function isStorageEvent(ev) {
+  return STORAGE_EVENT_TYPENAMES.includes(ev.__typename);
+}
+
 let _eventsCache = null;
 let _eventsFilter = null;
 
@@ -7478,6 +7534,7 @@ async function loadEvents() {
         for (const ev of (item.events || [])) {
           _eventsFlat.push({
             block: item.block_height,
+            time: item.block_time,
             tx: item.tx_hash,
             success: item.success,
             network: item.network,
@@ -7587,7 +7644,7 @@ function renderEventRows() {
       : el('span', {}, '-');
     if (ev.pkg_path) realmLink.setAttribute('data-hl', 'realm:' + ev.pkg_path);
     list.appendChild(netRow(ev.network,
-      el('td', {}, blockLink(ev.block, ev.network)),
+      el('td', {}, blockWithAge(ev.block, ev.time, ev.network)),
       el('td', {}, realmLink),
       el('td', {}, badge('realm', ev.type)),
       el('td', {}, attrStr ? linkify(attrStr) : el('span', {}, '-')),
@@ -8583,7 +8640,7 @@ async function loadGovDAODetail(id) {
             el('td', {}, txLink(r.tx_hash, r.block_height, null, { showBlock: false })),
             el('td', {}, addrLink(r.caller)),
             el('td', {}, statusBadge(r.success)),
-            el('td', {}, blockLink(r.block_height))
+            el('td', {}, blockWithAge(r.block_height, r.block_time))
           ));
         }
         rmTbl.appendChild(rmBody);
@@ -9194,9 +9251,9 @@ async function loadRealmDetail(path, initialTab) {
       // Merged table
       const allRows = [];
       // Deploy tx
-      allRows.push({ type: 'deploy', block: detail.block_height, caller: detail.creator, detail: 'MsgAddPackage', success: true, tx: detail.tx_hash });
-      for (const c of directCalls) allRows.push({ type: 'call', block: c.block_height, caller: c.caller, detail: c.func_name, success: c.success, tx: c.tx_hash });
-      for (const r of msgRuns) allRows.push({ type: 'run', block: r.block_height, caller: r.caller, detail: 'MsgRun', success: r.success, tx: r.tx_hash });
+      allRows.push({ type: 'deploy', block: detail.block_height, time: detail.block_time, caller: detail.creator, detail: 'MsgAddPackage', success: true, tx: detail.tx_hash });
+      for (const c of directCalls) allRows.push({ type: 'call', block: c.block_height, time: c.block_time, caller: c.caller, detail: c.func_name, success: c.success, tx: c.tx_hash });
+      for (const r of msgRuns) allRows.push({ type: 'run', block: r.block_height, time: r.block_time, caller: r.caller, detail: 'MsgRun', success: r.success, tx: r.tx_hash });
       allRows.sort((a, b) => b.block - a.block);
       if (allRows.length) {
         const callTbl = el('table');
@@ -9213,7 +9270,7 @@ async function loadRealmDetail(path, initialTab) {
             el('td', { className: 'truncate' }, addrLink(row.caller)),
             el('td', {}, row.type === 'call' ? funcSpan(row.detail) : row.detail),
             el('td', {}, statusBadge(row.success)),
-            spanTd(callSpans, i, blockLink(row.block))
+            spanTd(callSpans, i, blockWithAge(row.block, row.time))
           ));
         });
         callTbl.appendChild(callBody); calls.appendChild(callTbl);
@@ -9230,18 +9287,37 @@ async function loadRealmDetail(path, initialTab) {
           const evData = await api('events/' + eventsPath);
           if (gen !== _detailGen) return;
           eventsEl.textContent = '';
-          if (!(evData || []).length) {
-            eventsEl.appendChild(el('div', { style: { color: 'var(--fg2)', padding: '12px 0' } }, 'no events emitted by this realm'));
+          // /api/events returns every event carrying this pkg_path, which
+          // includes the chain's storage bookkeeping (see isStorageEvent).
+          // Those are hidden here by default, so count both halves first: the
+          // chart and the empty state are about what the realm itself emitted,
+          // and the toggle below needs to say how many rows it would add.
+          let evStorageCount = 0, evGnoCount = 0, evGnoTxCount = 0;
+          for (const item of evData) {
+            let n = 0;
+            for (const ev of (item.events || [])) {
+              if (isStorageEvent(ev)) evStorageCount++; else { evGnoCount++; n++; }
+            }
+            if (n) evGnoTxCount++;
+          }
+          if (!evGnoCount) {
+            eventsEl.appendChild(el('div', { style: { color: 'var(--fg2)', padding: '12px 0' } },
+              evStorageCount
+                ? 'no events emitted by this realm (' + fmtNum(evStorageCount) + ' storage deposits, see the storage tab)'
+                : 'no events emitted by this realm'));
             return;
           }
           // Event mix over time. The rows are nested (one transaction, many
-          // events), and the type is the interesting axis: a realm that emits
-          // nothing but StorageDepositEvent is a different animal from one
-          // emitting Transfer all day, and the table cannot say which without
-          // being read end to end.
+          // events), and the type is the interesting axis: a realm emitting
+          // Transfer all day is a different animal from one emitting a dozen
+          // kinds, and the table cannot say which without being read end to
+          // end. Storage events are left out: the chain posts one per
+          // state-changing transaction, so charting them draws the transaction
+          // count a second time in a taller stack.
           const evRows = [];
           for (const item of evData) {
             for (const ev of (item.events || [])) {
+              if (isStorageEvent(ev)) continue;
               evRows.push({ t: item.block_time, k: ev.type || ev.__typename || 'event' });
             }
           }
@@ -9256,7 +9332,7 @@ async function loadRealmDetail(path, initialTab) {
             const evNames = evFolded ? evKept.concat(['other']) : evKept;
             detailChart(eventsEl, _detailCharts, {
               title: 'events, per ' + evBuckets.unit,
-              note: fmtNum(evRows.length) + ' events over ' + fmtNum(evData.length) + ' transactions' +
+              note: fmtNum(evRows.length) + ' events over ' + fmtNum(evGnoTxCount) + ' transactions' +
                 (evFolded ? ', types past the top ' + evKept.length + ' folded into "other"' : ''),
               data: {
                 labels: evBuckets.labels,
@@ -9274,21 +9350,41 @@ async function loadRealmDetail(path, initialTab) {
               },
             });
           }
-          const evTbl = el('table');
-          evTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'tx'), el('th', {}, 'type'), el('th', {}, 'attributes'), el('th', {}, 'block'))));
-          const evBody = el('tbody');
-          for (const item of evData) {
-            for (const ev of item.events) {
-              const attrStr = (ev.attrs || []).map(a => a.key + '=' + a.value).join(', ');
-              evBody.appendChild(el('tr', {},
-                el('td', {}, txLink(item.tx_hash, item.block_height, null, { showBlock: false })),
-                el('td', {}, badge('realm', ev.type || 'event')),
-                el('td', {}, attrStr ? linkify(attrStr) : el('span', {}, '-')),
-                el('td', {}, blockWithAge(item.block_height, item.block_time))
-              ));
+          // Hidden by default rather than dropped: on a realm whose whole
+          // point is what it costs to store, the raw deposit stream beside the
+          // call that caused it is occasionally the thing you came for.
+          let evShowStorage = false;
+          const evTblWrap = el('div');
+          const renderEvTable = () => {
+            evTblWrap.textContent = '';
+            const evTbl = el('table');
+            evTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'tx'), el('th', {}, 'type'), el('th', {}, 'attributes'), el('th', {}, 'block'))));
+            const evBody = el('tbody');
+            for (const item of evData) {
+              for (const ev of (item.events || [])) {
+                if (!evShowStorage && isStorageEvent(ev)) continue;
+                const attrStr = (ev.attrs || []).map(a => a.key + '=' + a.value).join(', ');
+                evBody.appendChild(el('tr', {},
+                  el('td', {}, txLink(item.tx_hash, item.block_height, null, { showBlock: false })),
+                  el('td', {}, badge('realm', ev.type || ev.__typename || 'event')),
+                  el('td', {}, attrStr ? linkify(attrStr) : el('span', {}, '-')),
+                  el('td', {}, blockWithAge(item.block_height, item.block_time))
+                ));
+              }
             }
+            evTbl.appendChild(evBody); evTblWrap.appendChild(evTbl);
+          };
+          if (evStorageCount) {
+            const evCb = document.createElement('input'); evCb.type = 'checkbox';
+            evCb.addEventListener('change', () => { evShowStorage = evCb.checked; renderEvTable(); });
+            const evLabel = el('label', { style: { display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--fg2)', fontSize: '13px', cursor: 'pointer' } });
+            evLabel.appendChild(evCb);
+            evLabel.appendChild(document.createTextNode('show ' + fmtNum(evStorageCount) + ' storage events'));
+            evLabel.title = 'StorageDepositEvent / StorageUnlockEvent: the chain’s own bookkeeping, one per state-changing transaction. The storage tab reads them properly.';
+            eventsEl.appendChild(el('div', { style: { marginBottom: '8px' } }, evLabel));
           }
-          evTbl.appendChild(evBody); eventsEl.appendChild(evTbl);
+          eventsEl.appendChild(evTblWrap);
+          renderEvTable();
         } catch (err) {
           if (gen !== _detailGen) return;
           eventsEl.textContent = '';
@@ -9711,11 +9807,11 @@ async function loadTxDetail(hash) {
     const msgData = (tx.response?.data || '').split('\n\n').map(s => s.trim()).filter(Boolean);
     // Storage section (dedicated, separate from events) — shown unconditionally
     // above the messages/events tabs below, rather than folded into "events":
-    // it is mygnoscan's own before/delta/after-by-realm view, not a rendering
-    // of the raw StorageDepositEvent/StorageUnlockEvent rows (those still
-    // appear as ordinary events too), and it is useful often enough on a
-    // storage-heavy tx that hiding it behind a click cost more than it saved.
-    const storageEvs = events.filter(ev => ev.__typename === 'StorageDepositEvent' || ev.__typename === 'StorageUnlockEvent');
+    // it is mygnoscan's own before/delta/after-by-realm view rather than a
+    // dump of the raw StorageDepositEvent/StorageUnlockEvent rows, which the
+    // events tab below leaves out entirely, and it is useful often enough on
+    // a storage-heavy tx that hiding it behind a click cost more than it saved.
+    const storageEvs = events.filter(isStorageEvent);
     if (storageEvs.length > 0) {
       container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'storage (' + storageEvs.length + ')'));
       const stTbl = el('table', { style: { width: '100%' } });
@@ -9979,7 +10075,7 @@ async function loadAddressDetail(addr) {
         const label = (data.total > txs.length) ? 'oldest here' : 'first seen';
         const fbEl = el('div', { className: 'stat' }, el('span', { className: 'label' }, label));
         const fbVal = el('span', { className: 'value' });
-        fbVal.appendChild(blockLink(data.oldest_on_page, data.transactions?.[0]?.network));
+        fbVal.appendChild(blockWithAge(data.oldest_on_page, data.oldest_on_page_time, data.transactions?.[0]?.network));
         fbEl.appendChild(fbVal);
         statsBar.appendChild(fbEl);
       }
@@ -11192,16 +11288,32 @@ let searchTimeout;
 // in flight used to let whichever answered second win, even if it was the
 // stale one - flashing yesterday's query's results into today's box.
 let _searchGen = 0;
+// pathParts splits a package path at its last slash, so the row can render the
+// namespace and the name as two elements that shrink independently.
+//
+// The whole path in one element elides from the right, which on a package path
+// removes the only part that identifies it: searching "bubble" returns
+// gno.land/r/g1leu.../bubblerumble and gno.land/r/g1leu.../bubblerumble2, and
+// clipping the tail makes them the same row twice.
+function pathParts(path) {
+  const cut = String(path).lastIndexOf('/');
+  return cut < 0 ? { name: String(path) } : { prefix: path.slice(0, cut + 1), name: path.slice(cut + 1) };
+}
+// `title` is a string, or the {prefix, name} pathParts returns. Only a package
+// path gets split: a transaction hash is base64 and can contain a slash of its
+// own, which is not a namespace boundary.
 function searchResultRow(badgeType, badgeText, title, subtitle, onClick) {
-  const item = el('div', { style: { padding: '8px 12px', cursor: 'pointer', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '8px' } });
+  const parts = typeof title === 'string' ? { name: title } : title;
+  const item = el('div', { className: 'search-result' });
   item.appendChild(badge(badgeType, badgeText));
-  const text = el('div', {});
-  text.appendChild(el('div', { style: { fontSize: '13px' } }, title));
-  if (subtitle) text.appendChild(el('div', { style: { fontSize: '11px', color: 'var(--fg2)' } }, subtitle));
+  const text = el('div', { className: 'search-result-text' });
+  const titleEl = el('div', { className: 'search-result-title', title: (parts.prefix || '') + parts.name });
+  if (parts.prefix) titleEl.appendChild(el('span', { className: 'search-result-prefix' }, parts.prefix));
+  titleEl.appendChild(el('span', { className: 'search-result-name' }, parts.name));
+  text.appendChild(titleEl);
+  if (subtitle) text.appendChild(el('div', { className: 'search-result-sub' }, subtitle));
   item.appendChild(text);
   item.addEventListener('click', onClick);
-  item.addEventListener('mouseover', () => item.style.background = 'var(--bg3)');
-  item.addEventListener('mouseout', () => item.style.background = '');
   return item;
 }
 document.getElementById('search-input').addEventListener('input', function() {
@@ -11232,14 +11344,14 @@ document.getElementById('search-input').addEventListener('input', function() {
 
       if (!data || !data.length) {
         if (!direct.length) {
-          results.appendChild(el('div', { style: { padding: '8px 12px' } }, 'no results'));
+          results.appendChild(el('div', { style: { padding: '10px 12px' } }, 'no results'));
         }
         return;
       }
       results.appendChild(el('div', { className: 'search-section-label' }, 'packages'));
       for (const r of data) {
         results.appendChild(searchResultRow(r.is_realm ? 'realm' : 'pkg', r.is_realm ? 'realm' : 'package',
-          r.path, 'by ' + shortAddr(r.creator) + (r.status === 'inert' ? ' · parked' : ''),
+          pathParts(r.path), 'by ' + shortAddr(r.creator) + (r.status === 'inert' ? ' · parked' : ''),
           () => { results.classList.remove('open'); navigate('/realm/' + r.path.replace('gno.land/', '')); }));
       }
     } catch (err) {
@@ -11249,7 +11361,10 @@ document.getElementById('search-input').addEventListener('input', function() {
     }
   }, 200);
 });
-document.addEventListener('click', (e) => { if (!e.target.closest('.search-box')) document.getElementById('search-results').classList.remove('open'); });
+// Both, since the results are a sibling of the box rather than a child of it:
+// a click on a result row closes the popup through its own handler, but a click
+// that only scrolls or selects inside it must not.
+document.addEventListener('click', (e) => { if (!e.target.closest('.search-box') && !e.target.closest('#search-results')) document.getElementById('search-results').classList.remove('open'); });
 
 
 // --- Keyboard ---------------------------------------------------------------
@@ -11615,7 +11730,7 @@ function onLiveTx(tx) {
     const tr = el('tr', { className: 'live-new' },
       el('td', {}, txLink(tx.hash, tx.block_height, tx.network, { showBlock: false })),
       el('td', {}, signerCell(tx, tx.network)),
-      el('td', {}, blockLink(tx.block_height, tx.network)),
+      el('td', {}, blockWithAge(tx.block_height, tx.block_time || new Date().toISOString(), tx.network)),
       el('td', {}, typeBadge(msg?.value?.__typename, msg)),
       el('td', {}, txDetailEl(msg)),
       el('td', {}, statusBadge(tx.success))
