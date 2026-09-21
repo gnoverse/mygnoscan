@@ -859,7 +859,8 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
     <div class="section"><div class="section-title">assets (grc20)</div>
     <div class="section-sub">supply and holders are replayed from the Transfer events the chain emits, so both are exact rather than sampled. no price or market value: GNOT is not listed anywhere and there is no oracle on chain, so any figure in dollars would be one this explorer invented.</div>
     <table><thead><tr><th>asset</th><th>realm</th><th>supply</th><th>holders</th><th>transfers</th><th>24h</th><th>first seen</th></tr></thead><tbody id="grc20-list"></tbody></table></div>
-    <div id="asset-detail"></div></main></div>
+  </main></div>
+  <div class="view" id="view-asset-detail"><main><div id="asset-detail-content"></div></main></div>
   <div class="view" id="view-validators"><main><div class="section"><div class="section-title">validators</div>
     <div id="validators-content"></div></div></main></div>
   <div class="view" id="view-validator-detail"><main><div id="validator-detail-content"></div></main></div>
@@ -2976,6 +2977,10 @@ function route() {
   // figures and the GRC20 ledger. It answers as the GRC20 half, which is the
   // larger one and the one the name means; the coin figures are one pill away.
   else if (path === '/grc20' || path === '/tokens') { view = 'grc20'; }
+  // Before any other /grc20 branch, and the key is percent-encoded because it
+  // is an event key, not a path: `gno.land/r/gnoswap/gns.GNS.0000000` carries
+  // both slashes and dots and neither is a route separator here.
+  else if (path.startsWith('/grc20/')) { view = 'asset-detail'; data = decodeURIComponent(path.slice(7)); }
   else if (path === '/validators') { view = 'validators'; }
   else if (path.startsWith('/validator/')) { view = 'validator-detail'; data = path.slice(11); }
   else if (path === '/govdao') { view = 'govdao'; }
@@ -3034,7 +3039,7 @@ function route() {
   }
 
   if (view !== 'dashboards' && typeof destroyDashCharts === 'function') destroyDashCharts();
-  if (view !== 'realm-detail' && view !== 'address-detail' && typeof destroyDetailCharts === 'function') destroyDetailCharts();
+  if (view !== 'realm-detail' && view !== 'address-detail' && view !== 'asset-detail' && typeof destroyDetailCharts === 'function') destroyDetailCharts();
   switch (view) {
     case 'home': loadHome(); break;
     case 'watch': loadWatchlist(); break;
@@ -3048,6 +3053,7 @@ function route() {
     case 'defi': loadDefi(); break;
     case 'coins': loadCoins(); break;
     case 'grc20': loadGRC20(); break;
+    case 'asset-detail': loadAssetDetail(data); break;
     case 'validators': loadValidators(); break;
     case 'validator-detail': loadValidatorDetail(data); break;
     case 'govdao': loadGovDAO(); break;
@@ -4629,6 +4635,16 @@ function fmtTokenUnits(v) {
   return fmtNum(v);
 }
 
+// assetPath is the one place the token page's URL is built.
+//
+// The key is the whole event key, `<realm path>.<SYMBOL>.<id>`, and not the
+// realm. Six of mainnet's twelve assets are issued by one realm
+// (`.../gnomi/padv3`, measured 2026-09-22) and grc20factory exists to issue
+// many, so a page keyed on the realm would merge assets that share nothing but
+// a deployer. Percent-encoded because the key carries both slashes and dots
+// and neither is a route separator.
+function assetPath(token) { return '/grc20/' + encodeURIComponent(token); }
+
 function renderAssetRows(assets) {
   const tbody = clear('grc20-list');
   for (const t of assets) {
@@ -4639,8 +4655,16 @@ function renderAssetRows(assets) {
       : el('span', { style: { color: 'var(--fg2)' }, title: 'these transfers carry no amount, so supply and holders do not apply. most likely an NFT collection' }, 'n/a');
     const holdersCell = t.fungible ? fmtNum(t.holders || 0)
       : el('span', { style: { color: 'var(--fg2)' } }, 'n/a');
+    // Built before netRow rather than rewritten after it: netRow inserts the
+    // network dot into the first cell, and clearing that cell afterwards
+    // (which is what this did) deleted the dot in all-networks mode.
+    const symbolCell = el('td');
+    const symbolLink = el('a', { href: assetPath(t.token) });
+    symbolLink.appendChild(assetSymbolEl(t));
+    symbolLink.addEventListener('click', (e) => { e.preventDefault(); navigate(assetPath(t.token)); });
+    symbolCell.appendChild(symbolLink);
     const row = netRow(t.network,
-      el('td', {}, link(t.display_symbol || t.symbol || t.token, () => showAssetDetail(t))),
+      symbolCell,
       el('td', {}, t.pkg_path ? realmPathEl(t.pkg_path, t.network)
         : el('span', { style: { color: 'var(--fg2)' }, title: 'this token emits a bare symbol rather than its realm path, so the realm is not known from the event' }, 'unknown')),
       el('td', {}, supplyCell),
@@ -4648,10 +4672,6 @@ function renderAssetRows(assets) {
       el('td', {}, fmtNum(t.transfers || 0)),
       el('td', {}, fmtNum(t.transfers_24h || 0)),
       el('td', {}, t.first_seen_time ? timeEl(t.first_seen_time) : ''));
-    row.firstChild.textContent = '';
-    row.firstChild.appendChild(assetSymbolEl(t));
-    row.firstChild.appendChild(el('div', { style: { fontSize: '11px' } },
-      link('details', () => showAssetDetail(t))));
     tbody.appendChild(row);
   }
   if (!assets.length) {
@@ -4660,42 +4680,364 @@ function renderAssetRows(assets) {
   }
 }
 
-let _assetDetailGen = 0;
+// --- /grc20/<key>: one asset, as a page --------------------------------------
+//
+// This was a panel painted under the assets table, which meant a token had no
+// URL of its own: it could not be linked, bookmarked or opened in a new tab,
+// and the back button left the list rather than returning to it. Everything a
+// reader might arrive from (the list, the defi summary, the search box, the
+// realm that issues it) now routes to the same address.
 
-async function showAssetDetail(t) {
-  const gen = ++_assetDetailGen;
-  const container = clear('asset-detail');
+let _assetGen = 0;
+
+async function loadAssetDetail(token) {
+  const container = clear('asset-detail-content');
+  const gen = ++_assetGen;
   skeletonBlock(container);
   let data;
   try {
-    data = await api('asset/' + encodeURIComponent(t.token));
+    data = await api('asset/' + encodeURIComponent(token));
   } catch (err) {
-    if (gen !== _assetDetailGen) return;
-    failBlock(container, err, () => showAssetDetail(t));
+    if (gen !== _assetGen) return;
+    failBlock(container, err, () => loadAssetDetail(token));
     return;
   }
-  if (gen !== _assetDetailGen) return;
+  if (gen !== _assetGen) return;
+  destroyDetailCharts();
   container.textContent = '';
+  renderAssetPage(container, data, token);
+}
 
-  const a = data.asset || t;
-  const head = el('div', { className: 'section', style: { marginTop: '24px' } });
-  head.appendChild(el('div', { className: 'section-title' }, (a.display_symbol || a.symbol || a.token)));
-  head.appendChild(el('div', { className: 'section-sub' }, a.token));
-  container.appendChild(head);
+// A figure in whole tokens, but only where the registry curated the decimals.
+//
+// Never derived from the raw number: guessing the exponent scales every figure
+// on the page by a power of ten and the result still looks like a plausible
+// supply. Most tokens have no curated entry, and for those the raw units are
+// the only honest reading.
+function tokenScaledEl(v, decimals, symbol) {
+  if (!decimals || typeof v !== 'number' || v === 0) return null;
+  const scaled = v / Math.pow(10, decimals);
+  return el('div', { style: { color: 'var(--fg2)', fontSize: '11px' } },
+    '= ' + scaled.toLocaleString(undefined, { maximumFractionDigits: decimals }) + ' ' + (symbol || ''));
+}
 
+function assetStat(label, value, sub) {
+  const stat = el('div', { className: 'stat' });
+  stat.appendChild(el('span', { className: 'label' }, label));
+  const v = el('span', { className: 'value' });
+  if (typeof value === 'string' || typeof value === 'number') v.textContent = String(value);
+  else if (value) v.appendChild(value);
+  stat.appendChild(v);
+  if (sub) stat.appendChild(sub);
+  return stat;
+}
+
+// ledgerNoteEl states the window the figures on this page were computed over.
+//
+// The transfer ledger is filled by the sync walk and sync resumes from the
+// highest stored height, so an index that existed before the ledger shipped
+// starts its transfer history mid-chain. Every supply and holder count is then
+// a figure over that window, and the page has to say so rather than print it as
+// a total. The proof that it matters is on mainnet today: GNOMIC reports a
+// supply of -881,594,858, which is what a burn of tokens minted before the
+// window looks like as arithmetic.
+function ledgerNoteEl(data) {
+  const a = data.asset || {};
+  const ledger = data.ledger || {};
+  if (!ledger.first_block) return null;
+  const realmHeight = data.realm ? data.realm.block_height : null;
+  const olderThanLedger = realmHeight !== null && realmHeight < ledger.first_block;
+  const negative = a.fungible && a.supply < 0;
+  if (!olderThanLedger && !negative) return null;
+
+  const box = el('div', {
+    style: {
+      border: '1px solid var(--amber)', borderRadius: '4px', padding: '10px 12px',
+      margin: '12px 0', fontSize: '12px', color: 'var(--fg2)', maxWidth: '80ch',
+    },
+  });
+  box.appendChild(el('div', { style: { color: 'var(--amber)', fontWeight: 'bold', marginBottom: '4px' } },
+    negative ? 'the figures below are a window, and this one proves it'
+      : 'the figures below are a window, not a total'));
+  const from = el('span', {}, blockLink(ledger.first_block, data.network));
+  const sentence = el('div');
+  sentence.appendChild(document.createTextNode('this index’s transfer ledger starts at block '));
+  sentence.appendChild(from);
+  sentence.appendChild(document.createTextNode(
+    ledger.first_time ? ' (' + ledger.first_time.slice(0, 10) + ')' : ''));
+  if (olderThanLedger) {
+    sentence.appendChild(document.createTextNode(', and the issuing realm was deployed at block '
+      + fmtNum(realmHeight) + '. Transfers in between were never recorded here, so supply, holders and '
+      + 'balances count only what moved after the ledger begins.'));
+  } else {
+    sentence.appendChild(document.createTextNode(
+      '. Supply, holders and balances count only what moved after that.'));
+  }
+  box.appendChild(sentence);
+  if (negative) {
+    box.appendChild(el('div', { style: { marginTop: '6px' } },
+      'The supply is negative because burns of tokens minted before the ledger starts subtract from a '
+      + 'total that was never added. It is not a rendering fault and it is not the token’s real supply.'));
+  }
+  return box;
+}
+
+function renderAssetPage(container, data, token) {
+  const a = data.asset || {};
+  const symbol = a.display_symbol || a.symbol || a.token || token;
+
+  const titleRow = el('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', margin: '16px 0 4px', flexWrap: 'wrap' } },
+    el('h2', { style: { margin: 0 } }, symbol));
+  if (a.verified) {
+    const badgeEl = el('span', { className: 'badge badge-ok' }, 'verified');
+    badgeEl.title = 'a contributor vouched for this being the token it claims to be. nothing on chain says so: anyone may deploy a realm with this name';
+    titleRow.appendChild(badgeEl);
+  }
+  if (!a.fungible) {
+    const nf = el('span', { className: 'badge' }, 'not fungible');
+    nf.title = 'every transfer of this asset carries no amount, which is how GRC721 goes through the same event. supply and balances do not apply';
+    titleRow.appendChild(nf);
+  }
+  titleRow.appendChild(copyButton(a.token || token, 'copy the token key'));
+  if (a.pkg_path) {
+    titleRow.appendChild(el('a', {
+      href: 'https://' + a.pkg_path, target: '_blank', rel: 'noopener',
+      className: 'watch-btn', style: { textDecoration: 'none', fontSize: '12px' },
+    }, 'see the realm on gnoweb ↗'));
+  }
+  container.appendChild(titleRow);
+  if (a.display_name) {
+    container.appendChild(el('div', { style: { color: 'var(--fg2)', marginBottom: '2px' } }, a.display_name));
+  }
+  container.appendChild(el('div', { className: 'section-sub', style: { marginTop: '2px' } }, a.token || token));
+
+  // Headline figures. Supply and holders are suppressed for a non-fungible
+  // asset rather than shown as 0, for the same reason the list suppresses
+  // them: 0 reads as "empty", and the truth is "this does not apply".
+  const stats = el('div', { className: 'stats-bar' });
+  if (a.fungible) {
+    stats.appendChild(assetStat('supply', fmtTokenUnits(a.supply), tokenScaledEl(a.supply, a.decimals, a.display_symbol || a.symbol)));
+    stats.appendChild(assetStat('holders', fmtNum(a.holders || 0)));
+  } else {
+    stats.appendChild(assetStat('supply', 'n/a'));
+    stats.appendChild(assetStat('holders', 'n/a'));
+  }
+  stats.appendChild(assetStat('transfers', fmtNum(a.transfers || 0)));
+  stats.appendChild(assetStat('24h', fmtNum(a.transfers_24h || 0)));
+  // Only when the index reports them: an apiSWR payload cached before these
+  // fields existed would otherwise print "minted 0" for a token with a supply,
+  // which is worse than not saying.
+  if (a.fungible && typeof a.minted === 'number') {
+    stats.appendChild(assetStat('minted', fmtTokenUnits(a.minted || 0),
+      el('div', { style: { color: 'var(--fg2)', fontSize: '11px' } }, fmtNum(a.mint_count || 0) + ' mints')));
+    stats.appendChild(assetStat('burned', fmtTokenUnits(a.burned || 0),
+      el('div', { style: { color: 'var(--fg2)', fontSize: '11px' } }, fmtNum(a.burn_count || 0) + ' burns')));
+  }
+  container.appendChild(stats);
+
+  const note = ledgerNoteEl(data);
+  if (note) container.appendChild(note);
+
+  // What it is, and who made it.
+  const info = el('div', { className: 'section' });
+  info.appendChild(el('div', { className: 'section-title' }, 'about'));
+  const tbl = el('table');
+  const row = (label, value) => {
+    const tr = el('tr', {}, el('td', { style: { color: 'var(--fg2)', width: '160px' } }, label));
+    const td = el('td');
+    if (typeof value === 'string') td.textContent = value;
+    else if (value) td.appendChild(value);
+    tr.appendChild(td);
+    tbl.appendChild(tr);
+  };
+  row('key', a.token || token);
+  row('symbol', a.symbol || '');
+  if (a.display_symbol && a.display_symbol !== a.symbol) row('registry symbol', a.display_symbol);
+  if (a.display_name) row('name', a.display_name);
+  row('decimals', a.decimals
+    ? String(a.decimals)
+    : el('span', { style: { color: 'var(--fg2)' }, title: 'nothing in the Transfer event carries decimals, and only a curated registry entry has them. figures on this page are raw units' }, 'not curated'));
+  row('realm', a.pkg_path ? realmPathEl(a.pkg_path, data.network)
+    : el('span', { style: { color: 'var(--fg2)' }, title: 'this token emits a bare symbol rather than its realm path, so the realm is not known from the event' }, 'unknown'));
+  if (data.realm) {
+    row('deployed by', addrLink(data.realm.creator, data.network));
+    row('realm deployed', el('span', {},
+      data.realm.block_height === 0 ? document.createTextNode('genesis') : blockLink(data.realm.block_height, data.network),
+      document.createTextNode(data.realm.block_time ? ' · ' + data.realm.block_time.slice(0, 10) : '')));
+    row('realm activity', fmtNum(data.realm.call_count || 0) + ' calls · ' + fmtNum(data.realm.num_files || 0) + ' files');
+  }
+  // An explicit dash rather than an empty cell: a blank reads as a rendering
+  // fault, and both are nullable on a row the syncer wrote without a time.
+  //
+  // The height is appended only when there is one. apiSWR replays a payload
+  // cached before this deploy, and an older one carries no first_block, which
+  // rendered as the literal "block undefined".
+  const seenAt = (when, height) => {
+    if (!when) return el('span', { style: { color: 'var(--fg2)' } }, '\u2014');
+    const span = el('span', {}, timeEl(when));
+    if (typeof height === 'number') {
+      span.appendChild(document.createTextNode(' \u00b7 block '));
+      span.appendChild(blockLink(height, data.network));
+    }
+    return span;
+  };
+  row('first transfer seen', seenAt(a.first_seen_time, a.first_block));
+  row('last transfer seen', seenAt(a.last_seen_time, a.last_block));
+  row('verified', a.verified
+    ? el('span', {}, el('span', { className: 'badge badge-ok' }, 'yes'),
+      el('span', { style: { color: 'var(--fg2)', marginLeft: '8px', fontSize: '11px' } },
+        'a contributor’s claim in the registry, not the chain’s'))
+    : el('span', { style: { color: 'var(--fg2)' } }, 'no registry entry: nothing on chain distinguishes this from a lookalike'));
+  info.appendChild(tbl);
+  container.appendChild(info);
+
+  // The sibling list, which is the whole reason the realm is not the unit.
+  container.appendChild(assetSiblingsSection(data));
+
+  if (a.fungible) container.appendChild(assetSupplySection(data));
+  container.appendChild(assetHoldersSection(data));
+  container.appendChild(assetTransfersSection(data));
+  container.appendChild(el('div', { style: { margin: '16px 0' } },
+    link('← all grc20 assets', () => navigate('/grc20'))));
+}
+
+// assetSiblingsSection names the other tokens the same realm issues.
+//
+// A realm is a container, not a token: `grc20factory` mints on demand and
+// `.../gnomi/padv3` carries six. Without this a reader who arrived from the
+// realm page has no way to tell whether they are looking at the realm's asset
+// or at one of several, and the two readings differ by a factor of six.
+function assetSiblingsSection(data) {
+  const sec = el('div', { className: 'section' });
+  const siblings = data.siblings || [];
+  const a = data.asset || {};
+  sec.appendChild(el('div', { className: 'section-title' }, 'others from the same realm'));
+  if (!a.pkg_path) {
+    sec.appendChild(el('div', { className: 'section-sub' },
+      'this token emits a bare symbol rather than a realm path, so there is no realm to compare it against.'));
+    return sec;
+  }
+  // Absent is not empty. An index that predates this field (or a payload
+  // apiSWR cached before the deploy) sends nothing, and saying "the only
+  // asset" there is a confident wrong answer on precisely the realms this
+  // section exists for.
+  if (!Array.isArray(data.siblings)) {
+    sec.appendChild(el('div', { className: 'section-sub' },
+      'this index does not report sibling assets yet, so whether this realm issues others is unknown here. '
+      + 'the assets list has the full set.'));
+    return sec;
+  }
+  if (!siblings.length) {
+    sec.appendChild(el('div', { className: 'section-sub' },
+      'this is the only asset this realm has issued on this chain.'));
+    return sec;
+  }
+  sec.appendChild(el('div', { className: 'section-sub' },
+    'this realm issues ' + fmtNum(siblings.length + 1) + ' assets. they share a deployer and nothing else: '
+    + 'each has its own supply, its own holders and its own page.'));
+  const tbody = el('tbody');
+  for (const t of siblings) {
+    tbody.appendChild(el('tr', {},
+      el('td', {}, link(t.display_symbol || t.symbol || t.token, () => navigate(assetPath(t.token)))),
+      el('td', {}, t.fungible ? fmtTokenUnits(t.supply) : el('span', { style: { color: 'var(--fg2)' } }, 'n/a')),
+      el('td', {}, t.fungible ? fmtNum(t.holders || 0) : el('span', { style: { color: 'var(--fg2)' } }, 'n/a')),
+      el('td', {}, fmtNum(t.transfers || 0)),
+      el('td', { style: { color: 'var(--fg2)', fontSize: '11px' } }, t.token)));
+  }
+  sec.appendChild(el('table', {},
+    el('thead', {}, el('tr', {}, el('th', {}, 'asset'), el('th', {}, 'supply'),
+      el('th', {}, 'holders'), el('th', {}, 'transfers'), el('th', {}, 'key'))),
+    tbody));
+  return sec;
+}
+
+// realmAssetsSection is the realm page's view of what it issues.
+//
+// The honest answer to "where do I see this token" is both places: the asset
+// has its own page because one realm can issue many, and the realm names them
+// because that is where a reader lands first.
+function realmAssetsSection(assets) {
+  const sec = el('div', { className: 'section' });
+  sec.appendChild(el('div', { className: 'section-title' },
+    assets.length === 1 ? 'grc20 asset issued by this realm'
+      : 'grc20 assets issued by this realm (' + fmtNum(assets.length) + ')'));
+  sec.appendChild(el('div', { className: 'section-sub' },
+    assets.length === 1
+      ? 'replayed from the Transfer events this realm emits. the asset has its own page.'
+      : 'this realm issues several, so "the token of this realm" does not name one. '
+        + 'each has its own supply, its own holders and its own page.'));
+  const dim = { style: { color: 'var(--fg2)' } };
+  const tbody = el('tbody');
+  for (const t of assets) {
+    tbody.appendChild(netRow(t.network,
+      el('td', {}, link(t.display_symbol || t.symbol || t.token, () => navigate(assetPath(t.token)))),
+      el('td', {}, t.fungible ? fmtTokenUnits(t.supply) : el('span', dim, 'n/a')),
+      el('td', {}, t.fungible ? fmtNum(t.holders || 0) : el('span', dim, 'n/a')),
+      el('td', {}, fmtNum(t.transfers || 0)),
+      el('td', {}, t.first_seen_time ? timeEl(t.first_seen_time) : '')));
+  }
+  sec.appendChild(el('table', {},
+    el('thead', {}, el('tr', {}, el('th', {}, 'asset'), el('th', {}, 'supply'),
+      el('th', {}, 'holders'), el('th', {}, 'transfers'), el('th', {}, 'first seen'))),
+    tbody));
+  return sec;
+}
+
+function assetSupplySection(data) {
+  const sec = el('div', { className: 'section' });
+  sec.appendChild(el('div', { className: 'section-title' }, 'supply over time'));
+  const series = data.supply_series || [];
+  if (series.length < 2) {
+    sec.appendChild(el('div', { className: 'section-sub' },
+      'not enough history yet: the series needs at least two days of transfers.'));
+    return sec;
+  }
+  detailChart(sec, _detailCharts, {
+    type: 'line',
+    height: 220,
+    data: {
+      labels: series.map(p => p.time),
+      datasets: [{
+        label: 'supply',
+        data: series.map(p => p.blocks),
+        borderColor: '#4ecdc4',
+        backgroundColor: 'rgba(78,205,196,0.12)',
+        fill: true,
+        tension: 0.2,
+      }],
+    },
+    scales: { x: chartAxis({}), y: chartAxis({ beginAtZero: false }) },
+    note: 'running total in raw units, cumulative from the first mint the ledger recorded, one point per day.',
+  });
+  return sec;
+}
+
+function assetHoldersSection(data) {
+  const a = data.asset || {};
   const holders = el('div', { className: 'section' });
   holders.appendChild(el('div', { className: 'section-title' }, 'top holders'));
   if (!a.fungible) {
     holders.appendChild(el('div', { className: 'section-sub' },
-      'this asset\u2019s transfers carry no amount, so there are no balances to reconstruct. '
+      'this asset’s transfers carry no amount, so there are no balances to reconstruct. '
       + 'most likely an NFT collection, which emits the same Transfer event without a value.'));
-    container.appendChild(holders);
-    container.appendChild(assetTransfersSection(data));
-    container.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    return;
+    return holders;
   }
   holders.appendChild(el('div', { className: 'section-sub' },
-    'balances reconstructed from every transfer: an empty sender is a mint and an empty recipient a burn.'));
+    'balances reconstructed from every transfer the ledger holds: an empty sender is a mint and an empty recipient a burn. '
+    + 'an address that received and passed everything on is not counted.'));
+  // Shares that add past 100% are the ledger window arriving as arithmetic,
+  // not a rounding fault, and they are worth naming where they are read. An
+  // address funded before the ledger starts spends into a balance the ledger
+  // never credited, so its balance goes negative and is dropped, while every
+  // recipient of that spend is credited in full. Measured on the live index
+  // 2026-09-22: GNOMI's top holder alone holds 112% of the reported supply.
+  const listed = (data.holders || []).reduce((sum, h) => sum + (h.balance || 0), 0);
+  if (a.supply > 0 && listed > a.supply) {
+    holders.appendChild(el('div', { className: 'section-sub', style: { color: 'var(--amber)' } },
+      'these balances add up to ' + fmtTokenUnits(listed) + ', more than the ' + fmtTokenUnits(a.supply)
+      + ' supply above, so the shares pass 100%. both figures come from the same ledger and it does not '
+      + 'reach back to this asset\u2019s first mint.'));
+  }
   const hbody = el('tbody');
   (data.holders || []).forEach((h, i) => {
     const share = a.supply > 0 ? (h.balance / a.supply * 100).toFixed(2) + '%' : '';
@@ -4711,11 +5053,7 @@ async function showAssetDetail(t) {
   holders.appendChild(el('table', {},
     el('thead', {}, el('tr', {}, el('th', {}, 'rank'), el('th', {}, 'address'), el('th', {}, 'balance'), el('th', {}, 'share'))),
     hbody));
-  container.appendChild(holders);
-
-  container.appendChild(assetTransfersSection(data));
-
-  container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  return holders;
 }
 
 function assetTransfersSection(data) {
@@ -4735,6 +5073,9 @@ function assetTransfersSection(data) {
       el('td', {}, toCell),
       el('td', {}, fmtTokenUnits(x.value)),
       el('td', {}, x.block_time ? timeEl(x.block_time) : '')));
+  }
+  if (!(data.transfers || []).length) {
+    xbody.appendChild(el('tr', {}, el('td', { colspan: '5', style: { color: 'var(--fg2)' } }, 'no transfers recorded')));
   }
   xfers.appendChild(el('table', {},
     el('thead', {}, el('tr', {}, el('th', {}, 'tx'), el('th', {}, 'from'), el('th', {}, 'to'), el('th', {}, 'value'), el('th', {}, 'when'))),
@@ -4856,8 +5197,8 @@ async function loadDefi() {
     if (assets.length) {
       container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'grc20 assets'));
       // Its own small table rather than renderAssetRows: that one writes into
-      // the grc20 view's tbody and its rows open a detail panel that lives
-      // there too, which from here would render into a hidden view.
+      // the grc20 view's tbody, which from here is a hidden view. The rows
+      // route to the same per-asset page.
       const tbl = el('table');
       tbl.appendChild(el('thead', {}, el('tr', {},
         el('th', {}, 'asset'), el('th', {}, 'realm'), el('th', {}, 'supply'), el('th', {}, 'holders'), el('th', {}, 'transfers'))));
@@ -4865,7 +5206,7 @@ async function loadDefi() {
       const dim = { style: { color: 'var(--fg2)' } };
       for (const t of assets.slice(0, 5)) {
         body.appendChild(netRow(t.network,
-          el('td', {}, link(t.display_symbol || t.symbol || t.token, () => navigate('/grc20'))),
+          el('td', {}, link(t.display_symbol || t.symbol || t.token, () => navigate(assetPath(t.token)))),
           el('td', {}, t.pkg_path ? realmPathEl(t.pkg_path, t.network) : el('span', dim, 'unknown')),
           el('td', {}, t.fungible ? fmtTokenUnits(t.supply) : el('span', dim, 'n/a')),
           el('td', {}, t.fungible ? fmtNum(t.holders || 0) : el('span', dim, 'n/a')),
@@ -9674,10 +10015,14 @@ async function loadRealmDetail(path, initialTab) {
     // inert/package is optional: a realm that was never parked has nothing
     // there, and the endpoint is a best-effort RPC read. It must not be able to
     // take the whole realm page down with it.
+    // assets?realm= is optional for the same reason inert/package is: a realm
+    // that issues no GRC20 has nothing there, and that is the common case. It
+    // must not be able to take the realm page down.
     await apiSWR([
       'realm/' + path.replace('gno.land/', ''),
       { path: 'inert/package/' + path.replace('gno.land/', ''), fallback: null },
-    ], ([detail, inert], swrMeta) => {
+      { path: 'assets?realm=' + encodeURIComponent(path), fallback: null },
+    ], ([detail, inert, issued], swrMeta) => {
       const gen = ++_detailGen;
       destroyDetailCharts();
       header.textContent = '';
@@ -9824,6 +10169,12 @@ async function loadRealmDetail(path, initialTab) {
       // Info
       const info = clear('tab-info');
       if (activeTab === 'info') info.classList.add('active'); else info.classList.remove('active');
+      // What this realm issues, before what it is. A realm is a container of
+      // assets, not an asset: `.../gnomi/padv3` issues six and grc20factory
+      // exists to issue many, so this is always a list and each row routes to
+      // the asset's own page rather than back here.
+      const issuedAssets = (issued && issued.assets) || [];
+      if (issuedAssets.length) info.appendChild(realmAssetsSection(issuedAssets));
       const tbl = el('table');
       tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'path'), el('td', {}, realmPathEl(detail.path))));
       tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'name'), el('td', {}, detail.name)));
@@ -12612,18 +12963,36 @@ document.getElementById('search-input').addEventListener('input', function() {
         () => { results.classList.remove('open'); navigate(d.href); }));
     }
   }
-  const loading = el('div', { className: 'search-loading' }, 'searching packages...');
+  const loading = el('div', { className: 'search-loading' }, 'searching\u2026');
   results.appendChild(loading);
   results.classList.add('open');
 
   searchTimeout = setTimeout(async () => {
     try {
-      const data = await api('search?q=' + encodeURIComponent(q));
+      // Assets come from their own endpoint rather than being folded into
+      // /api/search: that one answers with packages, and a realm issuing six
+      // tokens collapses to one package row, which is the confusion the
+      // per-asset page exists to undo. Optional, so an old backend that has
+      // no such route still answers with packages.
+      const [data, assets] = await Promise.all([
+        api('search?q=' + encodeURIComponent(q)),
+        api('assets/search?q=' + encodeURIComponent(q)).catch(() => null),
+      ]);
       if (gen !== _searchGen) return;
       loading.remove();
 
+      const tokens = (assets && assets.assets) || [];
+      if (tokens.length) {
+        results.appendChild(el('div', { className: 'search-section-label' }, 'grc20 assets'));
+        for (const t of tokens) {
+          results.appendChild(searchResultRow('', 'asset',
+            t.display_symbol || t.symbol || t.token, t.pkg_path || t.token,
+            () => { results.classList.remove('open'); navigate(assetPath(t.token)); }));
+        }
+      }
+
       if (!data || !data.length) {
-        if (!direct.length) {
+        if (!direct.length && !tokens.length) {
           results.appendChild(el('div', { style: { padding: '10px 12px' } }, 'no results'));
         }
         return;

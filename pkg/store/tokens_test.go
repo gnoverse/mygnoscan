@@ -228,3 +228,138 @@ func TestTokenSupplyOverTimeIsCumulative(t *testing.T) {
 		t.Errorf("supply = %d, want the running total including the mint before the window", pts[0].Blocks)
 	}
 }
+
+// Mints and burns are carried apart from the supply they net out to. The
+// difference alone cannot tell "150 minted, nothing burned" from "200 minted,
+// 50 burned", and on the per-asset page that is the answer rather than a
+// detail.
+func TestTokenSummariesSeparateMintsAndBurns(t *testing.T) {
+	db := NewTestDB(t)
+	const tok = "gno.land/r/x/coin.COIN.0000000"
+	seedTransfers(t, db, "alpha", []TokenTransfer{
+		{Token: tok, From: "", To: "g1a", Value: 200},
+		{Token: tok, From: "g1a", To: "", Value: 50},
+		{Token: tok, From: "", To: "g1b", Value: 30},
+	})
+
+	all, err := db.TokenSummaries("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := all[0]
+	if got.Minted != 230 || got.Burned != 50 || got.Supply != 180 {
+		t.Errorf("got minted %d burned %d supply %d, want 230/50/180", got.Minted, got.Burned, got.Supply)
+	}
+	if got.MintCount != 2 || got.BurnCount != 1 {
+		t.Errorf("got %d mints and %d burns, want 2 and 1", got.MintCount, got.BurnCount)
+	}
+	if got.FirstBlock != 1 || got.LastBlock != 3 {
+		t.Errorf("block range = %d..%d, want 1..3", got.FirstBlock, got.LastBlock)
+	}
+}
+
+// A non-fungible asset reports no minted or burned totals either. Zero would
+// read as "nothing was ever minted"; the truth is that its transfers carry no
+// amount to add up.
+func TestTokenSummariesSuppressMintTotalsWhenNotFungible(t *testing.T) {
+	db := NewTestDB(t)
+	const tok = "gno.land/r/x/nft.NFT.0000000"
+	seedTransfers(t, db, "alpha", []TokenTransfer{
+		{Token: tok, From: "", To: "g1a", Value: 0},
+		{Token: tok, From: "g1a", To: "g1b", Value: 0},
+	})
+
+	all, err := db.TokenSummaries("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := all[0]
+	if got.Fungible {
+		t.Fatal("fungible = true for transfers carrying no amount")
+	}
+	if got.Minted != 0 || got.Burned != 0 || got.Supply != 0 {
+		t.Errorf("got minted %d burned %d supply %d, want all suppressed", got.Minted, got.Burned, got.Supply)
+	}
+}
+
+// The ledger is filled by the sync walk, which resumes from the highest stored
+// height, so an index that predates the feature holds a window of history
+// rather than all of it. Reporting the window is what lets a page say its
+// supply is partial instead of printing it as a total.
+func TestTokenLedgerWindowReportsTheSpanItHolds(t *testing.T) {
+	db := NewTestDB(t)
+	seedTransfers(t, db, "alpha", []TokenTransfer{
+		{Token: "gno.land/r/x/a.A.0000000", From: "", To: "g1a", Value: 1, BlockHeight: 4200, BlockTime: "2026-09-21T13:00:00Z"},
+		{Token: "gno.land/r/x/b.B.0000000", From: "", To: "g1b", Value: 1, BlockHeight: 4900, BlockTime: "2026-09-22T09:00:00Z"},
+	})
+
+	w, err := db.TokenLedgerWindow("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.FirstBlock != 4200 || w.LastBlock != 4900 {
+		t.Errorf("window = %d..%d, want 4200..4900", w.FirstBlock, w.LastBlock)
+	}
+	if w.Transfers != 2 {
+		t.Errorf("transfers = %d, want 2", w.Transfers)
+	}
+	if w.FirstTime != "2026-09-21T13:00:00Z" {
+		t.Errorf("first time = %q", w.FirstTime)
+	}
+}
+
+// An empty ledger is the state of every deployment that existed before the
+// feature shipped, and MIN over no rows is NULL. Scanning that into an int
+// fails, which would make the whole asset page 500 rather than show an honest
+// empty window.
+func TestTokenLedgerWindowOnAnEmptyLedger(t *testing.T) {
+	db := NewTestDB(t)
+	w, err := db.TokenLedgerWindow("alpha")
+	if err != nil {
+		t.Fatalf("empty ledger: %v", err)
+	}
+	if w.FirstBlock != 0 || w.LastBlock != 0 || w.Transfers != 0 || w.FirstTime != "" {
+		t.Errorf("window = %+v, want a zero window", w)
+	}
+}
+
+// Search matches the whole event key, so typing a realm path finds every asset
+// that realm issues rather than collapsing them into one row. That collapse is
+// the confusion the per-asset page exists to undo.
+func TestSearchTokensMatchesKeyAndRealm(t *testing.T) {
+	db := NewTestDB(t)
+	seedTransfers(t, db, "alpha", []TokenTransfer{
+		{Token: "gno.land/r/demo/factory.AAA.0000001", From: "", To: "g1a", Value: 1},
+		{Token: "gno.land/r/demo/factory.BBB.0000002", From: "", To: "g1b", Value: 1},
+		{Token: "gno.land/r/other/coin.COIN.0000000", From: "", To: "g1c", Value: 1},
+	})
+
+	bySymbol, err := db.SearchTokens("alpha", "BBB", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bySymbol) != 1 || bySymbol[0].Symbol != "BBB" {
+		t.Fatalf("search BBB = %+v", bySymbol)
+	}
+
+	byRealm, err := db.SearchTokens("alpha", "demo/factory", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byRealm) != 2 {
+		t.Fatalf("search by realm path = %+v, want both assets", byRealm)
+	}
+
+	// Scoped by network like every other reconstruction here: the same key on
+	// another chain is a different asset held by different people.
+	seedTransfers(t, db, "beta", []TokenTransfer{
+		{Token: "gno.land/r/demo/factory.AAA.0000001", From: "", To: "g1z", Value: 9},
+	})
+	scoped, err := db.SearchTokens("alpha", "AAA", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scoped) != 1 || scoped[0].Network != "alpha" {
+		t.Fatalf("scoped search = %+v, want alpha only", scoped)
+	}
+}

@@ -108,3 +108,133 @@ func TestHandleAssetUnknownToken(t *testing.T) {
 		t.Errorf("status = %d, want 404", rec.Code)
 	}
 }
+
+// seedFactory writes two assets issued by one realm, which is the case the
+// per-asset page exists for: on mainnet six of the twelve assets come out of
+// `.../gnomi/padv3` and grc20factory is built to mint many, so "the token of
+// this realm" names nothing.
+func seedFactory(t *testing.T, db *store.DB) {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339)
+	xs := []store.TokenTransfer{
+		{Token: "gno.land/r/demo/factory.AAA.0000001", From: "", To: "g1a", Value: 100, BlockHeight: 10, BlockTime: now},
+		{Token: "gno.land/r/demo/factory.BBB.0000002", From: "", To: "g1b", Value: 200, BlockHeight: 11, BlockTime: now},
+		{Token: "gno.land/r/demo/factory.BBB.0000002", From: "g1b", To: "", Value: 50, BlockHeight: 12, BlockTime: now},
+	}
+	for i, x := range xs {
+		if err := db.InsertTokenTransfer("alpha", "TXF"+string(rune('a'+i)), 0, x); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+}
+
+func TestHandleAssetsFilterByRealm(t *testing.T) {
+	api, db := newTestAPI(t)
+	seedAssets(t, db)
+	seedFactory(t, db)
+
+	var all assetsResponse
+	getJSON(t, api.HandleAssets, "/api/assets?network=alpha", &all)
+	if len(all.Assets) != 4 {
+		t.Fatalf("got %d assets unfiltered, want 4: %+v", len(all.Assets), all.Assets)
+	}
+
+	var byRealm assetsResponse
+	getJSON(t, api.HandleAssets, "/api/assets?network=alpha&realm=gno.land/r/demo/factory", &byRealm)
+	// Both of the factory's assets, and neither of the others. A filter that
+	// returned one row would be the bug this page is here to prevent.
+	if len(byRealm.Assets) != 2 {
+		t.Fatalf("got %d assets for the factory realm, want both: %+v", len(byRealm.Assets), byRealm.Assets)
+	}
+	for _, a := range byRealm.Assets {
+		if a.PkgPath != "gno.land/r/demo/factory" {
+			t.Errorf("realm filter let through %q", a.Token)
+		}
+	}
+}
+
+func TestHandleAssetCarriesItsSiblings(t *testing.T) {
+	api, db := newTestAPI(t)
+	seedAssets(t, db)
+	seedFactory(t, db)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/asset/x?network=alpha", nil)
+	req.SetPathValue("token", "gno.land/r/demo/factory.AAA.0000001")
+	api.HandleAsset(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp assetDetailResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(resp.Siblings) != 1 || resp.Siblings[0].Token != "gno.land/r/demo/factory.BBB.0000002" {
+		t.Fatalf("siblings = %+v, want the other asset from the same realm", resp.Siblings)
+	}
+	// The asset itself is not its own sibling.
+	for _, s := range resp.Siblings {
+		if s.Token == "gno.land/r/demo/factory.AAA.0000001" {
+			t.Error("the asset is listed among its own siblings")
+		}
+	}
+	// A token from another realm never leaks in, even though it is in the
+	// same summaries call.
+	for _, s := range resp.Siblings {
+		if s.PkgPath != "gno.land/r/demo/factory" {
+			t.Errorf("sibling %q comes from another realm", s.Token)
+		}
+	}
+
+	// The window every figure on the page was computed over, so the page can
+	// say so rather than present a partial supply as a total.
+	if resp.Ledger.FirstBlock != 1 || resp.Ledger.LastBlock != 12 {
+		t.Errorf("ledger window = %+v, want blocks 1 to 12", resp.Ledger)
+	}
+}
+
+func TestHandleAssetSeparatesMintsFromBurns(t *testing.T) {
+	api, db := newTestAPI(t)
+	seedFactory(t, db)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/asset/x?network=alpha", nil)
+	req.SetPathValue("token", "gno.land/r/demo/factory.BBB.0000002")
+	api.HandleAsset(rec, req)
+	var resp assetDetailResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	a := resp.Asset
+	// 200 minted, 50 burned, so a supply of 150. The difference alone cannot
+	// tell that apart from "150 minted and nothing burned", which is why both
+	// halves are carried.
+	if a.Minted != 200 || a.Burned != 50 || a.Supply != 150 {
+		t.Errorf("asset = minted %d burned %d supply %d, want 200/50/150", a.Minted, a.Burned, a.Supply)
+	}
+	if a.MintCount != 1 || a.BurnCount != 1 {
+		t.Errorf("counts = %d mints %d burns, want one of each", a.MintCount, a.BurnCount)
+	}
+}
+
+func TestHandleAssetSearchFindsBySymbol(t *testing.T) {
+	api, db := newTestAPI(t)
+	seedAssets(t, db)
+	seedFactory(t, db)
+
+	var resp assetsResponse
+	getJSON(t, api.HandleAssetSearch, "/api/assets/search?network=alpha&q=BBB", &resp)
+	if len(resp.Assets) != 1 || resp.Assets[0].Token != "gno.land/r/demo/factory.BBB.0000002" {
+		t.Fatalf("search BBB = %+v, want the one asset", resp.Assets)
+	}
+
+	// A realm path matches every asset it issues, which is the point: typing
+	// the factory's path must not collapse to one row.
+	var byPath assetsResponse
+	getJSON(t, api.HandleAssetSearch, "/api/assets/search?network=alpha&q=demo/factory", &byPath)
+	if len(byPath.Assets) != 2 {
+		t.Fatalf("search by realm path = %+v, want both of its assets", byPath.Assets)
+	}
+}
