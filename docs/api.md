@@ -172,10 +172,21 @@ fact.
 |---|---|
 | `GET /api/realms` | list realms. `limit`, `offset` |
 | `GET /api/packages` | list all packages, realms and pure packages. `limit`, `offset` |
-| `GET /api/realm/{path...}` | detail for one package: metadata, source files, imports, dependents, callers, MsgRun references. `recent_calls` and `msgrun_refs` are the 50 most recent of each, and carry `block_time` where the syncer knew it (omitted otherwise, so a consumer plotting them on a time axis can say how many it left out) |
+| `GET /api/realm/{path...}` | detail for one package: metadata, source files, imports, dependents, callers, MsgRun references. `recent_calls` and `msgrun_refs` are the 50 most recent of each, and carry `block_time` where the syncer knew it (omitted otherwise, so a consumer plotting them on a time axis can say how many it left out). `address` and `storage_deposit_address` are the two accounts the package owns, derived from its path (see below) |
 | `GET /api/deps/{path...}` | dependency graph as `{path: [imports]}`. `dir=dependents` reverses direction |
 | `GET /api/storage/{path...}` | storage events for a package. **Requires `network`**: the figures are denominated amounts and blending chains would be meaningless |
-| `GET /api/events/{path...}` | events emitted by a package. Bounded: `limit` defaults to 200, capped at 2000. In all-networks mode it queries every chain and tags each row with its `network` |
+| `GET /api/events/{path...}` | every event tagged with a package's path. Bounded: `limit` defaults to 200, capped at 2000. In all-networks mode it queries every chain and tags each row with its `network`. Unlike `/api/allevents` this is not filtered to `GnoEvent`, so the chain's own `StorageDepositEvent` / `StorageUnlockEvent` for that path are included; the realm page hides those behind a toggle rather than dropping them here |
+
+### The two accounts a package owns
+
+`address` and `storage_deposit_address` are not read from anywhere. Both are
+hashes of the path (`pkgPath:<path>` and `pkgPath:<path>.storageDeposit`,
+SHA-256 truncated to 20 bytes, bech32 under `g`), so they exist from the moment
+the package does and are returned whether or not either has ever held a coin.
+The first is the realm's banker; the second holds the deposit locked against its
+bytes. A `gno.land/e/<g1...>/run` path is the exception: its address is embedded
+in the path rather than hashed, and it has no deposit account, so that field is
+omitted. See `pkg/gnoaddr`.
 
 ### Sync health versus chain liveness
 
@@ -377,7 +388,7 @@ answer it must never give.
 | `GET /api/tx/{hash}` | one transaction: messages, events, errors |
 | `GET /api/blocks` | recent blocks. `limit` |
 | `GET /api/block/{height}` | one block and its transactions. **Requires `network`**: a height alone does not identify a block across chains |
-| `GET /api/allevents` | recent events across all packages. `limit` defaults to 200, capped at 2000. Rows carry their `network` |
+| `GET /api/allevents` | recent `GnoEvent`s across all packages, and only those: the chain's storage bookkeeping is filtered out server-side. `limit` defaults to 200, capped at 2000. Rows carry their `network` |
 
 `total` on `/api/txs` is the size of the fetched window, **not** the chain's
 transaction count. It never could be: the indexer caps a result set at 10,000
