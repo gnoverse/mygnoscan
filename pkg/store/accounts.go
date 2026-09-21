@@ -393,9 +393,14 @@ func (d *DB) DerivedAddressLabels(network string) (map[string]AddressLabel, erro
 		if float64(n)/float64(total[creator]) < namespaceLabelDominance {
 			continue
 		}
+		// "derived" is the provenance taxonomy the explorer renders by (see
+		// pkg/registry): proved from chain data and recomputed on every
+		// request, as opposed to a human's assertion or a heuristic. The
+		// specific rule that proved it lives in Why, which is what a reader
+		// checks it against.
 		labels[creator] = AddressLabel{
 			Label: "@" + best,
-			Kind:  "namespace",
+			Kind:  "derived",
 			Why:   fmt.Sprintf("sole deployer of gno.land/*/%s/* (%d packages)", best, n),
 		}
 	}

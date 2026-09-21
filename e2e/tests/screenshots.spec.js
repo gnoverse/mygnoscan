@@ -32,6 +32,7 @@ const PAGES = [
   ['contracts-bundled', '/contracts?view=bundled&edges=imports&metric=importers&flow=0'],
   ['contracts-chord', '/contracts?view=chord&edges=imports'],
   ['contracts-treemap', '/contracts?view=treemap&edges=none&metric=storage_bytes'],
+  ['apps', '/apps'],
   ['transactions', '/txs'],
   ['blocks', '/blocks'],
   ['accounts', '/accounts'],

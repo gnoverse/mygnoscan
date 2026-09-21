@@ -1,0 +1,91 @@
+{
+  "addresses": {
+    "g1edq4dugw0sgat4zxcw9xardvuydqf6cgleuc8p": {
+      "label": "@genesis_deployer",
+      "kind": "curated",
+      "why": "the account every genesis package was deployed by"
+    },
+    "g1manfred47kzduec920z88wfr64ylksmdcedlf5": {
+      "label": "@moul",
+      "kind": "curated",
+      "why": "gno.land core contributor"
+    },
+    "g1m0rgan0rla00ygmdmp55f5m0unvsvknluyg2a4": {
+      "label": "@morgan",
+      "kind": "curated",
+      "why": "gno.land core contributor"
+    },
+    "g1ecsuj0q572jr0dhu29q9njtnmw03hyu7tyyvv6": {
+      "label": "@jaekwon",
+      "kind": "curated",
+      "why": "gno.land founder"
+    },
+    "g148583t5x66zs6p90ehad6l4qefeyaf54s69wql": {
+      "label": "@faucet",
+      "kind": "curated",
+      "why": "the published testnet faucet account"
+    },
+    "g1yaaa6rcp4ew5yjzdj4yms596wx2dtrj3a86704": {
+      "label": "@gpao_oracle",
+      "kind": "curated",
+      "why": "the sole entry in vm:p:pkg_approvers on mainnet, and the actor on every MsgEnablePackage in the enable history. It is the process that decides whether a parked package ever becomes callable",
+      "checked": "2026-09-19"
+    },
+
+    "g1r929wt2qplfawe4lvqv9zuwfdcz4vxdun7qh8l": {
+      "label": "@sys_deployer",
+      "kind": "inferred",
+      "why": "sole deployer of every gno.land/r/sys/* and p/sys/* package (validators, txfees, rewards, names, params, users)",
+      "checked": "2026-09-14"
+    },
+    "g1g73v2anukg4ej7axwqpthsatzrxjsh0wk797da": {
+      "label": "@gov_dao_deployer",
+      "kind": "inferred",
+      "why": "sole deployer of every gno.land/r/gov/dao/* package (loader, init, impl, memberstore)",
+      "checked": "2026-09-14"
+    },
+    "g1g3lsfxhvaqgdv4ccemwpnms4fv6t3aq3p5z6u7": {
+      "label": "@gnoland_deployer",
+      "kind": "inferred",
+      "why": "deployed gno.land/r/gnops/valopers (the validator registry) plus gnoland/coins and gnoland/blog, which are official gno.land realms rather than one user's namespace",
+      "checked": "2026-09-14"
+    },
+
+    "g18qhq2fl54lszhmxeyqlvxnwjzc3xpu4nnakclp": {
+      "label": "@faucet",
+      "kind": "inferred",
+      "why": "3683 sends to 953 addresses across three networks, never calls a realm, receives nothing",
+      "checked": "2026-08-28"
+    },
+    "g1ve35g5rhcn9mlmqcp9pr085hsqe5x4dm8f23j7": {
+      "label": "@test_token_faucet",
+      "kind": "inferred",
+      "why": "464582 calls, almost all Transfer on gnoswap test tokens (test_atom, test_btc and friends)",
+      "checked": "2026-08-28"
+    },
+    "g1v73cacldctfky0thu5xuuhmy5zs0mnd8vxyl2w": {
+      "label": "@gnoswap_bot",
+      "kind": "inferred",
+      "why": "7189 uniform 500000 ugnot sends plus router::ExactInSwapRoute calls: it distributes and trades",
+      "checked": "2026-08-28"
+    },
+    "g1vmmklhc7eyxgr3x8ll0yr5wupv8lkxv4xhd8l0": {
+      "label": "@gnoswap_bot",
+      "kind": "inferred",
+      "why": "6410 sends to 6123 addresses plus 6135 router::ExactInSwapRoute calls",
+      "checked": "2026-08-28"
+    },
+    "g1cywjkx44a92c2j0fgfjxa64pg9qjf0vn6p8qsm": {
+      "label": "@gnoswap_bot",
+      "kind": "inferred",
+      "why": "5262 sends to 4924 addresses plus 4930 router::ExactInSwapRoute calls",
+      "checked": "2026-08-28"
+    },
+    "g1uhsq7qat4l345hkw9f2g5wpm6pnncmrju9p5mu": {
+      "label": "@gnoswap_bot",
+      "kind": "inferred",
+      "why": "1637 uniform 500000 ugnot sends plus router::ExactInSwapRoute calls",
+      "checked": "2026-08-28"
+    }
+  }
+}
