@@ -21,6 +21,20 @@ test('a child page highlights itself and its section', async ({ page }) => {
   await expect(page.locator('.rail nav a.active')).toHaveCount(1);
 });
 
+// validators used to be a top-level rail entry, one row below govdao. It is
+// a child of blocks now, which is what puts it in the blocks strip and
+// lights blocks behind it instead of nothing.
+test('validators is a child of the blocks section', async ({ page }) => {
+  await page.goto('/validators');
+  await settle(page);
+
+  await expect(page.locator('#nav-validators')).toHaveClass(/active/);
+  await expect(page.locator('.nav-kids', { has: page.locator('#nav-validators') }))
+    .toHaveCount(1);
+  await expect(page.locator('#nav-blocks')).toHaveClass(/in-section/);
+  await expect(page.locator('.rail nav a.active')).toHaveCount(1);
+});
+
 // The section strip is the only way to the children when the rail is
 // collapsed, so it has to be on every page of a section — including the
 // eight whose markup is static HTML and whose loaders never touch <main>.
@@ -30,8 +44,9 @@ test('every page in a section carries the section strip', async ({ page }) => {
     ['/storage', 'storage', ['summary', 'by realm']],
     ['/govdao', 'overview', ['proposals', 'voters', 'options', 'params']],
     ['/packages', 'packages', ['map', 'realms', 'apps']],
-    ['/txs', 'txs', ['blocks', 'events', 'sanity']],
-    ['/sanity', 'sanity', ['blocks', 'txs', 'events']],
+    ['/txs', 'txs', ['blocks', 'events', 'validators', 'sanity']],
+    ['/validators', 'validators', ['blocks', 'txs', 'events', 'sanity']],
+    ['/sanity', 'sanity', ['blocks', 'txs', 'events', 'validators']],
     ['/defi', 'overview', ['accounts', 'coins', 'grc20']],
     ['/accounts', 'accounts', ['overview', 'coins', 'grc20']],
     ['/', 'overview', ['analytics', 'dashboards']],
@@ -74,28 +89,27 @@ test('the params page answers on both of its paths', async ({ page }) => {
   }
 });
 
-// Folding a section is a preference, and it is stored. The twisty sits
-// inside the parent's own <a>, so the one thing that must not happen is the
-// click navigating.
-test('the twisty folds a section without navigating', async ({ page }) => {
+// A section header used to carry a twisty, which made the whole row read as
+// a disclosure header and hid the fact that the label is itself a link to a
+// real page. The twisty is gone, so what has to hold now is that clicking
+// the label navigates, that no twisty is left rendered, and that no
+// section's children are ever folded away.
+test('a section header is a link, with no twisty and nothing folded', async ({ page }) => {
   await page.goto('/accounts');
   await settle(page);
 
-  const group = page.locator('.nav-group[data-group="gas"]');
-  await expect(group).not.toHaveClass(/closed/);
-  await group.locator('.nav-twisty').click();
-  await expect(group).toHaveClass(/closed/);
-  await expect(page).toHaveURL(/\/accounts$/);
+  await expect(page.locator('.rail nav .nav-twisty')).toHaveCount(0);
+  // Every section has its children showing, however many sections there are.
+  const groups = await page.locator('.rail nav .nav-group').count();
+  expect(groups).toBeGreaterThan(0);
+  const kids = page.locator('.rail nav .nav-kids');
+  await expect(kids).toHaveCount(groups);
+  for (let i = 0; i < groups; i++) await expect(kids.nth(i)).toBeVisible();
 
-  await page.reload();
+  await page.locator('#nav-gas').click();
   await settle(page);
-  await expect(page.locator('.nav-group[data-group="gas"]')).toHaveClass(/closed/);
-
-  // ...except for the section being looked at. A stored preference that hid
-  // the current page would be worse than no preference at all.
-  await page.goto('/gas/users');
-  await settle(page);
-  await expect(page.locator('.nav-group[data-group="gas"]')).not.toHaveClass(/closed/);
+  await expect(page).toHaveURL(/\/gas$/);
+  await expect(page.locator('#nav-gas')).toHaveClass(/active/);
 });
 
 // /tokens was the URL when the bank figures and the GRC20 ledger were one

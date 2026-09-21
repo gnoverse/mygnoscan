@@ -94,23 +94,20 @@ html.rail-collapsed .rail nav a.has-watch::after { left: calc(50% + 4px); }
 
 /* Sections. The children are a plain indented list under the parent, with
    the guide line doing the work a second icon column would do badly at
-   12.5px. The twisty folds one section away; the section you are currently
-   in is always open regardless (see applyNavGroups), because a rail that
-   hides the page you are on is worse than one that ignores a preference. */
+   12.5px. Every section is always open: the parent row is a link to a real
+   page, and the twisty that used to fold it made the row read as a
+   disclosure header instead, so the label looked unclickable. Six sections
+   of at most four children never needed folding, and dropping it drops the
+   stored preference with it. */
 .rail nav .nav-kids { display: flex; flex-direction: column; gap: 1px;
   margin: 1px 0 4px 21px; padding-left: 4px; border-left: 1px solid var(--border); }
 .rail nav .nav-kids a { padding: 4px 8px; font-size: 12px; }
-.nav-group.closed .nav-kids { display: none; }
-.nav-twisty { margin-left: auto; font-size: 8px; line-height: 1; color: var(--fg2);
-  padding: 3px; border-radius: 3px; transition: transform 0.12s; }
-.nav-twisty:hover { color: var(--fg); background: var(--bg); }
-.nav-group.closed .nav-twisty { transform: rotate(-90deg); }
 /* A parent whose child is the current page. Muted while the labels are
    visible — the child row already carries the accent, and two accents in a
    column read as two selections — and promoted to the full active styling
    once the rail is collapsed and the child row is gone. */
 .rail nav a.in-section { color: var(--fg); }
-html.rail-collapsed .rail nav .nav-kids, html.rail-collapsed .nav-twisty { display: none; }
+html.rail-collapsed .rail nav .nav-kids { display: none; }
 html.rail-collapsed .rail nav a.in-section { color: var(--accent); background: var(--bg3);
   border-left-color: var(--accent); }
 .rail-foot { margin-top: auto; padding: 8px 6px 12px; }
@@ -543,7 +540,7 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
   .rail .rail-label { position: absolute; width: 1px; height: 1px; overflow: hidden;
     clip-path: inset(50%); white-space: nowrap; }
   .rail nav a, .rail-toggle { justify-content: center; padding: 6px 0; }
-  .rail nav .nav-kids, .nav-twisty { display: none; }
+  .rail nav .nav-kids { display: none; }
   .rail nav a.in-section { color: var(--accent); background: var(--bg3); border-left-color: var(--accent); }
   .rail-top { justify-content: center; padding: 12px 0 10px; }
   .rail-foot { display: none; }
@@ -557,7 +554,6 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
 <symbol id="i-bubbles" viewBox="0 0 16 16"><circle cx="5" cy="5.4" r="3.1"/><circle cx="11.9" cy="4.6" r="1.9"/><circle cx="10.4" cy="11.4" r="3.1"/><circle cx="3.4" cy="12" r="1.7"/></symbol>
 <symbol id="i-blocks" viewBox="0 0 16 16"><rect x="1.8" y="1.8" width="5.4" height="5.4" rx="1"/><rect x="8.8" y="1.8" width="5.4" height="5.4" rx="1"/><rect x="1.8" y="8.8" width="5.4" height="5.4" rx="1"/><rect x="8.8" y="8.8" width="5.4" height="5.4" rx="1"/></symbol>
 <symbol id="i-coin" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.4v7.2"/><path d="M10 6.1a2.2 2.2 0 0 0-2-1.1c-1.2 0-2 .7-2 1.7s.8 1.4 2 1.7 2 .7 2 1.7-.8 1.6-2 1.6a2.2 2.2 0 0 1-2-1.1"/></symbol>
-<symbol id="i-shield" viewBox="0 0 16 16"><path d="M8 1.6 13.4 4v4.2c0 3-2.3 5.2-5.4 6.2-3.1-1-5.4-3.2-5.4-6.2V4z"/><path d="m5.7 8 1.7 1.7 3.1-3.4"/></symbol>
 <symbol id="i-gavel" viewBox="0 0 16 16"><path d="M2 14.2h8"/><path d="M6 11.4V6.6"/><path d="M2.6 6.6h6.8"/><path d="M11 1.8 14.4 5.2"/><path d="m9.3 5.2 3.4-3.4"/><path d="M6 6.6 12.7 5.2"/></symbol>
 <symbol id="i-gauge" viewBox="0 0 16 16"><path d="M2 12a6.6 6.6 0 1 1 12 0"/><path d="m8 12 3-4.4"/><circle cx="8" cy="12" r="1"/></symbol>
 <symbol id="i-collapse" viewBox="0 0 16 16"><path d="M9.6 3.4 5 8l4.6 4.6"/><path d="M13.2 2.4v11.2"/></symbol>
@@ -571,39 +567,40 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
        bottom of this file are render-blocking: building the rail in JS would
        make the whole navigation hostage to cdn.jsdelivr.net being up (#214). -->
   <nav>
-      <div class="nav-group" data-group="home">
-        <a onclick="navigate('/')" id="nav-home" class="active" title="home, analytics, dashboards"><svg aria-hidden="true"><use href="#i-home"/></svg><span class="rail-label">home</span><span class="nav-twisty" onclick="toggleNavGroup(event, 'home')" aria-hidden="true">&#9660;</span></a>
+      <div class="nav-group">
+        <a onclick="navigate('/')" id="nav-home" class="active" title="home, analytics, dashboards"><svg aria-hidden="true"><use href="#i-home"/></svg><span class="rail-label">home</span></a>
         <div class="nav-kids">
           <a onclick="navigate('/analytics')" id="nav-analytics" title="analytics"><span class="rail-label">analytics</span></a>
           <a onclick="navigate('/dashboards')" id="nav-dashboards" title="dashboards"><span class="rail-label">dashboards</span></a>
         </div>
       </div>
-      <div class="nav-group" data-group="contracts">
-        <a onclick="navigate('/contracts')" id="nav-contracts" title="contracts map, realms, packages, apps"><svg aria-hidden="true"><use href="#i-bubbles"/></svg><span class="rail-label">contracts</span><span class="nav-twisty" onclick="toggleNavGroup(event, 'contracts')" aria-hidden="true">&#9660;</span></a>
+      <div class="nav-group">
+        <a onclick="navigate('/contracts')" id="nav-contracts" title="contracts map, realms, packages, apps"><svg aria-hidden="true"><use href="#i-bubbles"/></svg><span class="rail-label">contracts</span></a>
         <div class="nav-kids">
           <a onclick="navigate('/realms')" id="nav-realms" title="realms"><span class="rail-label">realms</span></a>
           <a onclick="navigate('/packages')" id="nav-packages" title="packages"><span class="rail-label">packages</span></a>
           <a onclick="navigate('/apps')" id="nav-apps" title="apps"><span class="rail-label">apps</span></a>
         </div>
       </div>
-      <div class="nav-group" data-group="blocks">
-        <a onclick="navigate('/blocks')" id="nav-blocks" title="blocks, transactions, events, sanity"><svg aria-hidden="true"><use href="#i-blocks"/></svg><span class="rail-label">blocks</span><span class="nav-twisty" onclick="toggleNavGroup(event, 'blocks')" aria-hidden="true">&#9660;</span></a>
+      <div class="nav-group">
+        <a onclick="navigate('/blocks')" id="nav-blocks" title="blocks, transactions, events, validators, sanity"><svg aria-hidden="true"><use href="#i-blocks"/></svg><span class="rail-label">blocks</span></a>
         <div class="nav-kids">
           <a onclick="navigate('/txs')" id="nav-txs" title="transactions"><span class="rail-label">txs</span></a>
           <a onclick="navigate('/events')" id="nav-events" title="events"><span class="rail-label">events</span></a>
+          <a onclick="navigate('/validators')" id="nav-validators" title="who is producing blocks, and the valopers registry"><span class="rail-label">validators</span></a>
           <a onclick="navigate('/sanity')" id="nav-sanity" title="is the chain healthy, and is our sync keeping up"><span class="rail-label">sanity</span></a>
         </div>
       </div>
-      <div class="nav-group" data-group="defi">
-        <a onclick="navigate('/defi')" id="nav-defi" title="the money side: accounts, coins, grc20"><svg aria-hidden="true"><use href="#i-coin"/></svg><span class="rail-label">defi</span><span class="nav-twisty" onclick="toggleNavGroup(event, 'defi')" aria-hidden="true">&#9660;</span></a>
+      <div class="nav-group">
+        <a onclick="navigate('/defi')" id="nav-defi" title="the money side: accounts, coins, grc20"><svg aria-hidden="true"><use href="#i-coin"/></svg><span class="rail-label">defi</span></a>
         <div class="nav-kids">
           <a onclick="navigate('/accounts')" id="nav-accounts" title="accounts, balances and the rich list"><span class="rail-label">accounts</span></a>
           <a onclick="navigate('/coins')" id="nav-coins" title="native ugnot: transfers, volume, who moves it"><span class="rail-label">coins</span></a>
           <a onclick="navigate('/grc20')" id="nav-grc20" title="grc20 assets, supply and holders"><span class="rail-label">grc20</span></a>
         </div>
       </div>
-      <div class="nav-group" data-group="gas">
-        <a onclick="navigate('/gas')" id="nav-gas" title="gas summary, by realm, by user, top txs, storage"><svg aria-hidden="true"><use href="#i-gauge"/></svg><span class="rail-label">gas</span><span class="nav-twisty" onclick="toggleNavGroup(event, 'gas')" aria-hidden="true">&#9660;</span></a>
+      <div class="nav-group">
+        <a onclick="navigate('/gas')" id="nav-gas" title="gas summary, by realm, by user, top txs, storage"><svg aria-hidden="true"><use href="#i-gauge"/></svg><span class="rail-label">gas</span></a>
         <div class="nav-kids">
           <a onclick="navigate('/gas/realms')" id="nav-gas-realms" title="gas by realm"><span class="rail-label">by realm</span></a>
           <a onclick="navigate('/gas/users')" id="nav-gas-users" title="gas by user"><span class="rail-label">by user</span></a>
@@ -611,8 +608,8 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
           <a onclick="navigate('/storage')" id="nav-storage" title="storage"><span class="rail-label">storage</span></a>
         </div>
       </div>
-      <div class="nav-group" data-group="govdao">
-        <a onclick="navigate('/govdao')" id="nav-govdao" title="govdao overview, proposals, voters, options, params"><svg aria-hidden="true"><use href="#i-gavel"/></svg><span class="rail-label">govdao</span><span class="nav-twisty" onclick="toggleNavGroup(event, 'govdao')" aria-hidden="true">&#9660;</span></a>
+      <div class="nav-group">
+        <a onclick="navigate('/govdao')" id="nav-govdao" title="govdao overview, proposals, voters, options, params"><svg aria-hidden="true"><use href="#i-gavel"/></svg><span class="rail-label">govdao</span></a>
         <div class="nav-kids">
           <a onclick="navigate('/govdao/proposals')" id="nav-govdao-proposals" title="every proposal"><span class="rail-label">proposals</span></a>
           <a onclick="navigate('/govdao/voters')" id="nav-govdao-voters" title="who votes, and who does not"><span class="rail-label">voters</span></a>
@@ -620,7 +617,6 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
           <a onclick="navigate('/govdao/params')" id="nav-params" title="chain parameters"><span class="rail-label">params</span></a>
         </div>
       </div>
-      <a onclick="navigate('/validators')" id="nav-validators" title="validators"><svg aria-hidden="true"><use href="#i-shield"/></svg><span class="rail-label">validators</span></a>
       <a onclick="navigate('/watch')" id="nav-watch" title="watch"><svg aria-hidden="true"><use href="#i-eye"/></svg><span class="rail-label">watch</span></a>
   </nav>
   <div class="rail-foot">
@@ -2701,6 +2697,7 @@ const NAV = [
   { id: 'blocks', label: 'blocks', path: '/blocks', own: 'blocks', children: [
     { id: 'txs', label: 'txs', path: '/txs' },
     { id: 'events', label: 'events', path: '/events' },
+    { id: 'validators', label: 'validators', path: '/validators' },
     { id: 'sanity', label: 'sanity', path: '/sanity' },
   ] },
   { id: 'defi', label: 'defi', path: '/defi', own: 'overview', children: [
@@ -2720,7 +2717,6 @@ const NAV = [
     { id: 'govdao-options', label: 'options', path: '/govdao/options' },
     { id: 'params', label: 'params', path: '/govdao/params' },
   ] },
-  { id: 'validators', label: 'validators', path: '/validators' },
   { id: 'watch', label: 'watch', path: '/watch' },
 ];
 
@@ -2732,37 +2728,6 @@ for (const s of NAV) {
   if (!s.children) continue;
   NAV_SECTION[s.id] = s;
   for (const c of s.children) NAV_SECTION[c.id] = s;
-}
-
-// Sections the reader has folded away by hand. The section they are
-// currently in is forced open on top of this (applyNavGroups), so a stored
-// preference can never hide the page being looked at.
-let _navClosed = new Set();
-try {
-  _navClosed = new Set(JSON.parse(localStorage.getItem('mygnoscan-nav-closed') || '[]'));
-} catch (e) { /* denied or malformed storage just means every section is open */ }
-
-function toggleNavGroup(ev, id) {
-  // The twisty lives inside the parent's <a>, which navigates. Folding a
-  // section is not a request to go there.
-  ev.stopPropagation();
-  ev.preventDefault();
-  if (_navClosed.has(id)) _navClosed.delete(id); else _navClosed.add(id);
-  try { localStorage.setItem('mygnoscan-nav-closed', JSON.stringify([..._navClosed])); } catch (e) { /* not persisting is fine */ }
-  applyNavGroups(currentNavSection());
-}
-
-function currentNavSection() {
-  const active = document.querySelector('.rail nav a.active, .rail nav a.in-section');
-  if (!active) return null;
-  const s = NAV_SECTION[active.id.replace(/^nav-/, '')];
-  return s ? s.id : null;
-}
-
-function applyNavGroups(openID) {
-  document.querySelectorAll('.rail nav .nav-group').forEach(g => {
-    g.classList.toggle('closed', _navClosed.has(g.dataset.group) && g.dataset.group !== openID);
-  });
 }
 
 // pageNav builds the section strip for a view, or returns null when the view
@@ -2876,7 +2841,6 @@ function route() {
     const parent = document.getElementById('nav-' + section.id);
     if (parent) parent.classList.add('in-section');
   }
-  applyNavGroups(section ? section.id : null);
   mountPageNav(view);
 
   const subbar = document.getElementById('sanity-subbar');
