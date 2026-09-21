@@ -305,6 +305,11 @@ html.embed .pagenav { display: none; }
 .tab:hover svg { opacity: 1; }
 .tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
 .tab.active svg { opacity: 1; }
+/* The count beside a tab's name. Dimmed and a size down: it is the answer to
+   "is there anything in here", not a heading, and at full weight seven numbers
+   compete with the seven words they qualify. */
+.tab-count { color: var(--fg2); font-size: 11px; opacity: 0.75; font-weight: 400; font-variant-numeric: tabular-nums; }
+.tab.active .tab-count { opacity: 0.9; }
 .tab-content { display: none; }
 .tab-content.active { display: block; }
 pre { background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; padding: 16px; overflow-x: auto; font-size: 13px; line-height: 1.5; white-space: pre; }
@@ -9039,6 +9044,29 @@ async function loadRealmDetail(path, initialTab) {
         deps: () => icon('graph'),
       };
       const tabNames = ['info', 'docs', 'source', 'calls', 'events', 'storage', 'deps'];
+      // How much is behind each tab, in the strip itself.
+      //
+      // Seven bare words said nothing about which of them were empty, so
+      // finding out cost a click, a fetch and a wait, once per tab, and the
+      // answer on most realms is "nothing here". Five of the seven are free:
+      // the detail payload the page has already rendered from carries them, so
+      // they need no request and no schema change.
+      //
+      // `events` and `storage` are the two it does not carry. Both load from
+      // the indexer after the strip is drawn, so they arrive through
+      // setTabCount when their loader resolves rather than being waited for.
+      //
+      // `info` gets none on purpose: it is a description, not a list, and a
+      // number beside it would be a number of what.
+      const tabCounts = {
+        docs: countSymbols(detail.symbols),
+        source: (detail.files || []).length,
+        calls: detail.call_count,
+        // Direct edges only, both directions, which is what the tab leads with
+        // and what the payload already knows. The graph below it reaches
+        // further, and counting that would need the fetch this avoids.
+        deps: (detail.imports || []).length + (detail.dependents || []).length,
+      };
       // `deps` absorbed the standalone `graph` tab: both were drawn from the
       // same two dependency queries, so they were one answer split across two
       // clicks. Links shared before the merge still carry ?tab=graph, and
@@ -9056,6 +9084,9 @@ async function loadRealmDetail(path, initialTab) {
       const activeTab = requestedTab && tabNames.includes(requestedTab) ? requestedTab : 'info';
       tabNames.forEach((name) => {
         const tab = el('div', { className: 'tab' + (name === activeTab ? ' active' : ''), onclick: () => switchTab(name, tab) }, tabIcons[name](), name);
+        tab.setAttribute('data-tab', name);
+        const n = tabCounts[name];
+        if (n) tab.appendChild(el('span', { className: 'tab-count' }, '(' + fmtNum(n) + ')'));
         tabs.appendChild(tab);
       });
       // Info
@@ -9286,6 +9317,10 @@ async function loadRealmDetail(path, initialTab) {
           const eventsPath = path.replace('gno.land/', '');
           const evData = await api('events/' + eventsPath);
           if (gen !== _detailGen) return;
+          // The strip counts events, not the transactions carrying them: the
+          // table below has one row per event, and a realm emitting six of them
+          // in one transaction has six rows, not one.
+          setTabCount('events', (evData || []).reduce((n, item) => n + (item.events || []).length, 0));
           eventsEl.textContent = '';
           // /api/events returns every event carrying this pkg_path, which
           // includes the chain's storage bookkeeping (see isStorageEvent).
@@ -9413,6 +9448,7 @@ async function loadRealmDetail(path, initialTab) {
           storageEl.textContent = '';
           const st = sData.storage || {};
           const gs = sData.gas || {};
+          setTabCount('storage', (st.entries || []).length);
           // Stats bar
           const sStats = el('div', { className: 'stats-bar' });
           sStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'net storage'), el('span', { className: 'value' }, fmtNum(st.net_bytes || 0) + ' bytes')));
@@ -10764,6 +10800,39 @@ function renderMessageEl(msg, index, returnData, msgLog, collapsed) {
   body.appendChild(tbl);
   details.appendChild(body);
   return details;
+}
+
+// countSymbols is what the docs tab will draw: every declaration in the symbol
+// table, methods included, since the tab lists them under their type rather
+// than folding them away.
+function countSymbols(sym) {
+  if (!sym) return 0;
+  return (sym.consts || []).length + (sym.vars || []).length + (sym.funcs || []).length
+    + (sym.types || []).reduce((n, t) => n + 1 + (t.methods || []).length, 0);
+}
+
+// setTabCount fills in a count the strip could not know when it was drawn.
+//
+// The two indexer-backed tabs resolve after the strip exists, so their number
+// arrives late. Until it does the tab renders bare, the same as an empty one:
+// for the second the two differ, "loading" and "nothing here" look alike, which
+// is better than a number that starts at zero and jumps.
+//
+// Callers must check their render generation first. A slow fetch from the realm
+// the reader just navigated away from will still resolve, and stamping its count
+// onto the strip of the realm now on screen is the exact bug the loaders' own
+// `gen !== _detailGen` guards exist for.
+function setTabCount(name, n) {
+  const tab = document.querySelector('#realm-tabs .tab[data-tab="' + name + '"]');
+  if (!tab) return;
+  const existing = tab.querySelector('.tab-count');
+  if (!n) {
+    if (existing) existing.remove();
+    return;
+  }
+  const text = '(' + fmtNum(n) + ')';
+  if (existing) existing.textContent = text;
+  else tab.appendChild(el('span', { className: 'tab-count' }, text));
 }
 
 function switchTab(name, tabEl) {
