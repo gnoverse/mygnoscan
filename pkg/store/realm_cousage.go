@@ -1,6 +1,7 @@
 package store
 
 import (
+	"strings"
 	"time"
 )
 
@@ -23,6 +24,14 @@ import (
 // So this asks the targeted question instead: take the addresses that called
 // this realm, and count what else each of them called. Two index-covered
 // lookups rather than a matrix, no fanout cap, no minimum.
+//
+// The cost tracks how many of the chain's addresses called the subject, not how
+// big the chain is. Measured 2026-09-22 at pearl's size (200k calls, 350
+// contracts): 15ms on a small realm, 131ms on one shaped like r/gnoland/wugnot
+// (416 callers of mainnet's 2305), and 457ms in the case that cannot be
+// exceeded, every address on the chain having called this one realm. See
+// BenchmarkRealmCoUsagePartners, which also records the index hint that looks
+// obvious and is 12x slower.
 
 // DefaultCoUsageLimit caps the partner list. Well past what a force graph lays
 // out legibly, so the limit is a guard against a pathological chain rather than
@@ -156,11 +165,21 @@ func (d *DB) RealmCoUsagePartners(network, path string, since time.Time, limit i
 		return out, nil
 	}
 
-	// Each partner's own caller count, as one grouped pass rather than a
-	// correlated subquery per partner. The subquery form would be evaluated for
-	// every group in the query above, which is every contract the callers
-	// touched, before the LIMIT cuts it down to the ones anybody will read.
-	totals, err := d.callerTotals(network, cutoff)
+	// Each partner's own caller count, in one grouped pass over the partners
+	// that survived the limit.
+	//
+	// Two things this deliberately is not. Not a correlated subquery in the
+	// SELECT list above: that is evaluated per group, and the groups are every
+	// contract the callers touched, before the LIMIT cuts them down to the
+	// hundred anybody will read. And not a pass over the whole network either,
+	// which is what this was first written as and which spent its time on the
+	// contracts that did not make the list: 113ms of a 630ms request in the
+	// benchmark's worst case, 350 contracts scanned to decorate 100.
+	paths := make([]string, len(out.Partners))
+	for i, p := range out.Partners {
+		paths[i] = p.Path
+	}
+	totals, err := d.callerTotals(network, cutoff, paths)
 	if err != nil {
 		return nil, err
 	}
@@ -170,16 +189,22 @@ func (d *DB) RealmCoUsagePartners(network, path string, since time.Time, limit i
 	return out, nil
 }
 
-// callerTotals is every contract's distinct caller count on one network, in one
-// index scan of idx_calls_net_caller_pkg.
-func (d *DB) callerTotals(network, cutoff string) (map[string]int, error) {
+// callerTotals is the distinct caller count of each named contract on one
+// network, one index range scan of idx_calls_net_pkg_caller per path.
+func (d *DB) callerTotals(network, cutoff string, paths []string) (map[string]int, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
 	args := []any{network}
 	q := `SELECT pkg_path, COUNT(DISTINCT caller) FROM calls WHERE network = ?`
 	if cutoff != "" {
 		q += ` AND block_time >= ?`
 		args = append(args, cutoff)
 	}
-	q += ` GROUP BY pkg_path`
+	q += ` AND pkg_path IN (?` + strings.Repeat(",?", len(paths)-1) + `) GROUP BY pkg_path`
+	for _, p := range paths {
+		args = append(args, p)
+	}
 
 	rows, err := d.db.Query(q, args...)
 	if err != nil {
