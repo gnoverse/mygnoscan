@@ -954,10 +954,14 @@ func (s *Syncer) recordStorageEvents(tx indexer.Transaction, blockTime string) i
 		default:
 			continue
 		}
+		// bytes_delta is stored exactly as the chain emits it, which means
+		// negative for an unlock: keeper.go sets BytesDelta to the realm's
+		// signed storage diff, and gnovm/stdlibs/chain/emit_event.go says so on
+		// the field. Negating it here would make SUM(bytes_delta) add freed
+		// bytes to used ones, and every aggregate over this table assumes the
+		// sign is the chain's (GetStorageDeltaTimeSeries splits on > 0 and < 0).
+		// TestStorageBytesAndFeeAgree pins the invariant that catches a flip.
 		bytesDelta := ev.BytesDelta
-		if kind == "unlock" {
-			bytesDelta = -bytesDelta
-		}
 		// The event index is over all events, not over storage events only:
 		// it has to stay stable across passes, and filtering first would
 		// renumber rows whenever the event list changed shape.

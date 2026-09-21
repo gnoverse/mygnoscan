@@ -149,6 +149,11 @@ func NewDB(path string) (*DB, error) {
 		return nil, fmt.Errorf("migrate block_time: %w", err)
 	}
 
+	if err := migrateStorageUnlockSign(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate storage unlock sign: %w", err)
+	}
+
 	if err := initSchema(db); err != nil {
 		db.Close()
 		return nil, err
@@ -861,4 +866,37 @@ var backfillTables = []string{"packages", "package_submissions", "calls", "msg_r
 // implementation detail of the sync loop.
 func BlocksBackfillDoneKey(network string) string {
 	return "blocks_backfill_done:" + network
+}
+
+// migrateStorageUnlockSign repairs storage_events rows written while the
+// syncer negated an already-negative BytesDelta.
+//
+// The chain emits a signed diff, negative for an unlock. The syncer used to
+// flip it, so every unlock landed positive and SUM(bytes_delta) added freed
+// bytes to used ones instead of cancelling them. On mainnet that reported
+// gno.land/r/gnoland/wugnot at 10,918,147 bytes where the chain says 1,180,507,
+// and left the released series of every realm flat at zero.
+//
+// The same rows carry the fee, which was always stored with the chain's sign,
+// so the two columns of one row disagreed and the fee one was right. That is
+// also what makes this migration safe to run repeatedly: it only touches
+// unlock rows whose bytes are positive, which cannot occur once the sign is
+// correct, so a second run is a no-op.
+func migrateStorageUnlockSign(db *sql.DB) error {
+	var exists int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='storage_events'`,
+	).Scan(&exists); err != nil || exists == 0 {
+		return err
+	}
+	res, err := db.Exec(
+		`UPDATE storage_events SET bytes_delta = -bytes_delta
+		  WHERE kind = 'unlock' AND bytes_delta > 0`)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("migration: corrected the sign of %d storage unlock rows", n)
+	}
+	return nil
 }
