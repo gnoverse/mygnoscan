@@ -837,6 +837,10 @@ func (a *API) HandleFunctionCallHeatmap(w http.ResponseWriter, r *http.Request) 
 func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/stats", a.HandleStats)
 	mux.HandleFunc("GET /api/realms", a.HandleRealms)
+	// Beats the /api/realm/{path...} wildcard below by Go 1.22 mux precedence:
+	// the more specific pattern wins, and no gno path starts with "cousage/"
+	// because the first segment is always r/ or p/.
+	mux.HandleFunc("GET /api/realm/cousage/{path...}", a.HandleRealmCoUsage)
 	mux.HandleFunc("GET /api/realm/{path...}", a.HandleRealm)
 	mux.HandleFunc("GET /api/packages", a.HandlePackages)
 	mux.HandleFunc("GET /api/tx/{hash}", a.HandleTx)
