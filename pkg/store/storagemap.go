@@ -36,7 +36,11 @@ type StorageCell struct {
 	Fee         int    `json:"fee"`
 	Events      int    `json:"events"`
 	FirstHeight int    `json:"first_height"`
-	LastHeight  int    `json:"last_height"`
+	// FirstTime is the timestamp of FirstHeight, so the table can print the
+	// age beside the height rather than making the reader open the block.
+	// Empty for rows synced before storage_events carried block_time.
+	FirstTime  string `json:"first_time,omitempty"`
+	LastHeight int    `json:"last_height"`
 }
 
 // StoragePayer is one account's footprint, attributed to whoever actually paid.
@@ -105,6 +109,7 @@ func (d *DB) StorageCells(network string, limit int) ([]StorageCell, error) {
 		       COALESCE(SUM(s.bytes_delta), 0) AS bytes,
 		       COALESCE(SUM(s.fee), 0),
 		       COUNT(*), MIN(s.block_height), MAX(s.block_height),
+		       COALESCE(MIN(NULLIF(s.block_time, '')), ''),
 		       COALESCE(p.creator, '')
 		  FROM storage_events s
 		  LEFT JOIN packages p
@@ -122,7 +127,7 @@ func (d *DB) StorageCells(network string, limit int) ([]StorageCell, error) {
 	for rows.Next() {
 		var c StorageCell
 		if err := rows.Scan(&c.Network, &c.PkgPath, &c.Bytes, &c.Fee,
-			&c.Events, &c.FirstHeight, &c.LastHeight, &c.Deployer); err != nil {
+			&c.Events, &c.FirstHeight, &c.LastHeight, &c.FirstTime, &c.Deployer); err != nil {
 			return nil, err
 		}
 		c.Namespace = NamespaceOf(c.PkgPath)
