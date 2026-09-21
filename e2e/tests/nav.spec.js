@@ -30,7 +30,10 @@ test('every page in a section carries the section strip', async ({ page }) => {
     ['/storage', 'storage', ['summary', 'by realm']],
     ['/govdao', 'overview', ['proposals', 'voters', 'options', 'params']],
     ['/packages', 'packages', ['map', 'realms', 'apps']],
-    ['/txs', 'txs', ['blocks', 'events']],
+    ['/txs', 'txs', ['blocks', 'events', 'sanity']],
+    ['/sanity', 'sanity', ['blocks', 'txs', 'events']],
+    ['/defi', 'overview', ['accounts', 'coins', 'grc20']],
+    ['/accounts', 'accounts', ['overview', 'coins', 'grc20']],
     ['/', 'overview', ['analytics', 'dashboards']],
   ]) {
     await page.goto(path);
@@ -93,4 +96,19 @@ test('the twisty folds a section without navigating', async ({ page }) => {
   await page.goto('/gas/users');
   await settle(page);
   await expect(page.locator('.nav-group[data-group="gas"]')).not.toHaveClass(/closed/);
+});
+
+// /tokens was the URL when the bank figures and the GRC20 ledger were one
+// page. It has to keep answering, and it has to land on the grc20 view with
+// that pill lit rather than on a page that no longer exists.
+test('the old /tokens url lands on grc20', async ({ page }) => {
+  const seen = watch(page);
+  await page.goto('/tokens');
+  await settle(page);
+
+  await expect(page.locator('#view-grc20')).toHaveClass(/active/);
+  await expect(page.locator('#nav-grc20')).toHaveClass(/active/);
+  await expect(page.locator('#nav-defi')).toHaveClass(/in-section/);
+  await expect(page.locator('.view.active main > .pagenav a.active')).toHaveText('grc20');
+  expect(unexpected(seen.consoleErrors)).toEqual([]);
 });

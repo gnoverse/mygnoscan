@@ -40,11 +40,11 @@ test('an asset shows supply, holders and whether anyone vouched for it', async (
   const seen = watch(page);
   await stubAssets(page);
 
-  const response = await page.goto('/tokens');
+  const response = await page.goto('/grc20');
   expect(response.status()).toBe(200);
   await settle(page);
 
-  const list = page.locator('#tokens-list');
+  const list = page.locator('#grc20-list');
   await expect(list).toContainText('GNS');
   await expect(list).toContainText('100,393,107,865,894');
   await expect(list).toContainText('119');
@@ -59,12 +59,12 @@ test('an asset whose transfers carry no amount says n/a, not zero', async ({ pag
   const seen = watch(page);
   await stubAssets(page);
 
-  await page.goto('/tokens');
+  await page.goto('/grc20');
   await settle(page);
 
   // A supply of 0 and 0 holders would read as "this token is empty". It means
   // the arithmetic does not apply, and the row has to distinguish the two.
-  const nftRow = page.locator('#tokens-list tr', { hasText: 'GNFT' });
+  const nftRow = page.locator('#grc20-list tr', { hasText: 'GNFT' });
   await expect(nftRow).toContainText('n/a');
   // Its transfers are real and still counted.
   await expect(nftRow).toContainText('201');
@@ -76,11 +76,11 @@ test('an asset that emits a bare symbol admits its realm is unknown', async ({ p
   const seen = watch(page);
   await stubAssets(page);
 
-  await page.goto('/tokens');
+  await page.goto('/grc20');
   await settle(page);
 
   // Printing "COVID" under a column headed "realm" would be inventing a path.
-  const row = page.locator('#tokens-list tr', { hasText: 'COVID' });
+  const row = page.locator('#grc20-list tr', { hasText: 'COVID' });
   await expect(row).toContainText('unknown');
   // Its supply is still real: only the realm is missing.
   await expect(row).toContainText('615,028,450');
@@ -92,7 +92,7 @@ test('the page refuses to show a price', async ({ page }) => {
   const seen = watch(page);
   await stubAssets(page);
 
-  await page.goto('/tokens');
+  await page.goto('/grc20');
   await settle(page);
 
   // Not a style preference: GNOT is unlisted and there is no oracle on chain,

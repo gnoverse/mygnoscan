@@ -308,3 +308,55 @@ func between(t *testing.T, s, openTag, closeTag string) string {
 	}
 	return rest[:j]
 }
+
+// The icon sprite is a block of <symbol> definitions at the top of
+// index.html, referenced by <use href="#i-name">. Nothing links the two: an
+// orphaned symbol ships to every reader forever, and a reference to a symbol
+// that is not there renders as an empty 15px box with no error anywhere.
+//
+// Both happen for the same reason, which is that the sprite is edited from
+// the other end of a 13,000-line file. Nesting the nav orphaned nine of them
+// in one commit: every icon that belonged to an entry which became a child,
+// since children are indented text and carry none.
+func TestFrontendSpriteHasNoOrphansOrDanglingRefs(t *testing.T) {
+	index, err := Index()
+	if err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+	html := string(index)
+
+	defined := map[string]bool{}
+	for _, m := range regexp.MustCompile(`<symbol id="(i-[a-z0-9-]+)"`).FindAllStringSubmatch(html, -1) {
+		defined[m[1]] = true
+	}
+	used := map[string]bool{}
+	for _, m := range regexp.MustCompile(`href="#(i-[a-z0-9-]+)"`).FindAllStringSubmatch(html, -1) {
+		used[m[1]] = true
+	}
+	if len(defined) == 0 || len(used) == 0 {
+		t.Fatalf("found %d symbols and %d references — the shape of the sprite changed", len(defined), len(used))
+	}
+
+	var orphans, dangling []string
+	for name := range defined {
+		if !used[name] {
+			orphans = append(orphans, name)
+		}
+	}
+	for name := range used {
+		if !defined[name] {
+			dangling = append(dangling, name)
+		}
+	}
+	sort.Strings(orphans)
+	sort.Strings(dangling)
+
+	if len(orphans) > 0 {
+		t.Errorf("defined but never referenced, so they are dead bytes in every response: %s",
+			strings.Join(orphans, ", "))
+	}
+	if len(dangling) > 0 {
+		t.Errorf("referenced but not defined, so they render as an empty box: %s",
+			strings.Join(dangling, ", "))
+	}
+}

@@ -43,6 +43,9 @@ const PAGES = [
   ['transactions', '/txs'],
   ['blocks', '/blocks'],
   ['accounts', '/accounts'],
+  ['defi', '/defi'],
+  ['coins', '/coins'],
+  ['grc20', '/grc20'],
   ['validators', '/validators'],
   ['analytics', '/analytics'],
   ['gas', '/gas'],
@@ -55,6 +58,7 @@ const PAGES = [
   ['govdao-voters', '/govdao/voters'],
   ['govdao-options', '/govdao/options'],
   ['params', '/params'],
+  ['sanity', '/sanity'],
   // The rail folded to icons: the section children are gone there, and the
   // .pagenav strip is the only way through to them.
   ['rail-collapsed', '/gas'],
