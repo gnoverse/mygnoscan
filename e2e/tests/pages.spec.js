@@ -24,6 +24,7 @@ const ROUTES = [
   ['gas', '/gas'],
   ['analytics', '/analytics'],
   ['dashboards', '/dashboards'],
+  ['params', '/params'],
   ['sanity', '/sanity'],
   ['events', '/events'],
   ['realm detail', `/realm/${HUB_ROUTE}`],

@@ -38,6 +38,7 @@ const PAGES = [
   ['validators', '/validators'],
   ['analytics', '/analytics'],
   ['gas', '/gas'],
+  ['params', '/params'],
   ['realm-detail', `/realm/${HUB_ROUTE}`],
   ['realm-graph', `/realm/${HUB_ROUTE}?tab=graph`],
   ['realm-source', `/realm/${HUB_ROUTE}?tab=source`],

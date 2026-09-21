@@ -209,6 +209,52 @@ how many contracts one address touched: a bot that called fifty of them
 contributes 1,225 pairs by itself and links everything to everything. Its calls
 still count toward every node's metrics either way.
 
+## Chain parameters
+
+Powers `/params`: what one chain is currently configured to do. Read live from
+that network's verified RPC on every cache miss; nothing here is synced, and
+none of it can come from the indexer.
+
+| endpoint | description |
+|---|---|
+| `GET /api/params` | `identity` (chain id, node version and moniker, `tx_index`, height, `catching_up`, plus the RPC and indexer actually in use), `groups` of catalogued params, and `consensus` from `/consensus_params` |
+
+**Single network, resolved rather than refused**, the same rule as
+`/api/contracts/*`: an absent or `all` network resolves to the first configured
+one and the response says which under `network`. There is no such thing as the
+code submission policy of three chains at once.
+
+Each param carries `state`, and the four values are the point of the endpoint:
+
+| `state` | means | looks like |
+|---|---|---|
+| `set` | configured, with a value | `raw` plus `value` or `list` |
+| `empty` | configured, and the value is empty | `raw` is `[]` or `""` |
+| `unset` | this chain has never held the key | no `raw` |
+| `error` | the node refused the query | `error` |
+
+Every read goes through the `params/` prefix, which is what makes that split
+possible: a bare `vm:p:<key>` answers with empty data and no error whether the
+key is unset **or** the query was malformed. Conflating `empty` with `unset`
+would be a real misreport, because `vm:p:pkg_approvers` empty freezes every
+parked package on the chain while unset is not a configuration at all.
+
+`raw` is the chain's response verbatim, still JSON-encoded, and it is kept
+alongside the decoded `value`/`list` rather than dropped. It is the form a
+reader quotes in a proposal, and the only one that survives a decoding bug here.
+
+`note` is a remark computed against other live state, never a restatement of the
+value: `node:p:halt_height` is read against the current height, so a halt that
+has already been passed says so instead of reading as armed.
+
+A key absent from the response is one this catalogue does not list. The chain
+cannot enumerate its own params, so the list is curated by hand and the page
+says as much.
+
+Reads degrade per key. One rejected query produces one `error` row and leaves
+the rest of the page intact, which matters because an odd chain state is exactly
+when someone opens this.
+
 ## Transactions and blocks
 
 | endpoint | description |
