@@ -867,6 +867,7 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
     <div class="tab-content" id="tab-calls"></div>
     <div class="tab-content" id="tab-events"></div>
     <div class="tab-content" id="tab-storage"></div>
+    <div class="tab-content" id="tab-defi"></div>
     <div class="tab-content" id="tab-deps"></div>
   </main></div>
   <div class="view" id="view-tx-detail"><main><div id="tx-detail-content"></div></main></div>
@@ -9103,20 +9104,23 @@ async function loadRealmDetail(path, initialTab) {
       const tabIcons = {
         info: () => icon('info'), docs: () => icon('doc'), source: () => icon('code'),
         calls: () => icon('call'), events: () => icon('events'), storage: () => icon('storage'),
-        deps: () => icon('graph'),
+        defi: () => icon('coin'), deps: () => icon('graph'),
       };
-      const tabNames = ['info', 'docs', 'source', 'calls', 'events', 'storage', 'deps'];
+      const tabNames = ['info', 'docs', 'source', 'calls', 'events', 'storage', 'defi', 'deps'];
       // How much is behind each tab, in the strip itself.
       //
-      // Seven bare words said nothing about which of them were empty, so
-      // finding out cost a click, a fetch and a wait, once per tab, and the
-      // answer on most realms is "nothing here". Five of the seven are free:
-      // the detail payload the page has already rendered from carries them, so
-      // they need no request and no schema change.
+      // Bare words said nothing about which of them were empty, so finding out
+      // cost a click, a fetch and a wait, once per tab, and the answer on most
+      // realms is "nothing here". Four of them are free: the detail payload the
+      // page has already rendered from carries them, so they need no request
+      // and no schema change.
       //
-      // `events` and `storage` are the two it does not carry. Both load from
-      // the indexer after the strip is drawn, so they arrive through
-      // setTabCount when their loader resolves rather than being waited for.
+      // `events` and `storage` are two it does not carry. Both load from the
+      // indexer after the strip is drawn, so they arrive through setTabCount
+      // when their loader resolves rather than being waited for. `defi` is the
+      // third, and it is not counted at all: its fetch does not happen until
+      // the tab is opened (see tabLoaders), so counting it would undo exactly
+      // the cost that deferral avoids.
       //
       // `info` gets none on purpose: it is a description, not a list, and a
       // number beside it would be a number of what.
@@ -9144,8 +9148,19 @@ async function loadRealmDetail(path, initialTab) {
         history.replaceState(null, '', legacy);
       }
       const activeTab = requestedTab && tabNames.includes(requestedTab) ? requestedTab : 'info';
+      // Every other tab's content is built or fetched during this render. defi
+      // is loaded on first open instead, because its cost is not bounded by
+      // this realm's size: reconstructing a balance means every transfer leg
+      // the address ever had, and r/gnoland/wugnot has 1,555 of them, which the
+      // indexer takes ~16s to return cold. Paying that on every realm page load
+      // to fill a tab most readers never open is the wrong trade; the response
+      // cache absorbs the repeats once somebody has.
+      const tabLoaders = { defi: () => loadRealmDefi(path, detail, gen) };
       tabNames.forEach((name) => {
-        const tab = el('div', { className: 'tab' + (name === activeTab ? ' active' : ''), onclick: () => switchTab(name, tab) }, tabIcons[name](), name);
+        const tab = el('div', { className: 'tab' + (name === activeTab ? ' active' : ''), onclick: () => {
+          switchTab(name, tab);
+          if (tabLoaders[name]) tabLoaders[name]();
+        } }, tabIcons[name](), name);
         tab.setAttribute('data-tab', name);
         const n = tabCounts[name];
         if (n) tab.appendChild(el('span', { className: 'tab-count' }, '(' + fmtNum(n) + ')'));
@@ -9700,6 +9715,11 @@ async function loadRealmDetail(path, initialTab) {
       // that a reader who never opens the deps tab does not need at all — and
       // an await here is also what stops the whole render from being the single
       // synchronous pass apiSWR needs it to be.
+      // Defi. Emptied and shown or hidden like every other tab, but filled only
+      // on demand: see tabLoaders above. A deep link straight to it counts as
+      // demand.
+      const defiEl = clear('tab-defi');
+      if (activeTab === 'defi') { defiEl.classList.add('active'); tabLoaders.defi(); } else defiEl.classList.remove('active');
       const depsEl = clear('tab-deps'); if (activeTab === 'deps') depsEl.classList.add('active'); else depsEl.classList.remove('active');
       skeletonBlock(depsEl);
       const depsPath = path.replace('gno.land/', '');
@@ -10895,6 +10915,236 @@ function setTabCount(name, n) {
   const text = '(' + fmtNum(n) + ')';
   if (existing) existing.textContent = text;
   else tab.appendChild(el('span', { className: 'tab-count' }, text));
+}
+
+// --- The defi tab -----------------------------------------------------------
+//
+// What a contract holds, and how it came to hold it. The rest of the realm page
+// answers who called it, what it emitted, what it costs to store and what
+// imports it; for anything defi-shaped the first question is money, and nothing
+// here could answer it.
+//
+// Loaded on demand rather than with the page: see tabLoaders. _defiGen is the
+// render generation this tab was last filled for, so re-opening the tab on the
+// same realm does not refetch, and navigating to another realm does.
+let _defiGen = -1;
+
+function loadRealmDefi(path, detail, gen) {
+  if (_defiGen === gen) return;
+  _defiGen = gen;
+  const into = clear('tab-defi');
+  // Denominated figures, so the blended view has nothing to show: adding two
+  // chains' ugnot would invent a number. Same refusal the storage tab makes.
+  if (getNetwork() === 'all') {
+    into.appendChild(el('div', { style: { color: 'var(--fg2)' } },
+      'balances are denominated per chain — select a specific network to see them'));
+    return;
+  }
+  skeletonBlock(into);
+  (async () => {
+    let d;
+    try {
+      d = await api('realm/defi/' + path.replace('gno.land/', ''));
+    } catch (err) {
+      if (gen !== _detailGen) return;
+      into.textContent = '';
+      into.appendChild(el('div', { style: { color: 'var(--red)' } }, 'Error loading holdings: ' + err.message));
+      return;
+    }
+    if (gen !== _detailGen) return;
+    into.textContent = '';
+    renderRealmDefi(into, d);
+  })();
+}
+
+function renderRealmDefi(into, d) {
+  const flows = d.flows || [];
+  const banker = flows.filter(f => f.account === 'banker');
+  const tokens = d.tokens || [];
+  const live = d.live_ugnot || 0;
+
+  const stats = el('div', { className: 'stats-bar' });
+  const stat = (label, value, title) => {
+    const cell = el('div', { className: 'stat' },
+      el('span', { className: 'label' }, label),
+      el('span', { className: 'value' }, value));
+    if (title) cell.title = title;
+    stats.appendChild(cell);
+  };
+  // An empty balance string is a failed RPC read, not a zero balance, and
+  // rendering it as "0 GNOT" would be the site asserting something it does not
+  // know.
+  stat('held', d.balance ? fmtBalanceStr(d.balance) : unknownEl(),
+    'the realm’s own account: ' + d.address);
+  if (d.storage_deposit_address) {
+    stat('storage deposit', d.storage_balance ? fmtBalanceStr(d.storage_balance) : unknownEl(),
+      'locked against this package’s bytes, refunded when they are freed: ' + d.storage_deposit_address);
+  }
+  stat('transfers', fmtNum(d.flows_total || 0), 'bank transfers touching either account');
+  if (tokens.length) stat('GRC20 positions', fmtNum(tokens.length));
+  into.appendChild(stats);
+
+  // Where the figure came from, and whether it can be trusted whole.
+  //
+  // The chain's own balance and the reconstruction are both printed rather than
+  // one being chosen. The two agreeing is the evidence that the history below is
+  // complete; the two differing is a fact worth seeing, not one to paper over.
+  const note = el('div', { className: 'detail-chart-note', style: { marginBottom: '16px' } });
+  const gap = live - (d.derived_ugnot || 0);
+  if (!d.balance) {
+    note.textContent = 'the chain could not be read for a live balance, so the figures below are the reconstruction alone: '
+      + fmtGnotAmount(d.derived_ugnot || 0) + ' over ' + fmtNum(d.flows_total || 0) + ' transfers.';
+  } else if (gap === 0) {
+    note.textContent = 'reconstructed from ' + fmtNum(d.flows_total || 0)
+      + ' transfer events, and the total lands exactly on what the chain reports, so this history is complete.';
+  } else {
+    note.textContent = 'the reconstruction comes to ' + fmtGnotAmount(d.derived_ugnot || 0)
+      + ', ' + fmtGnotAmount(Math.abs(gap)) + (gap > 0 ? ' short of' : ' over') + ' what the chain reports. '
+      + (d.truncated ? 'The indexer capped the query, so the oldest transfers are missing.'
+        : 'A genesis allocation moves no coins through the bank and emits no event, which is the usual cause.');
+  }
+  into.appendChild(note);
+
+  // The balance over time, the same shape the storage tab uses for bytes: bars
+  // are the movement in each bucket, the line is the running balance.
+  //
+  // The line is anchored on the *live* balance rather than started at zero and
+  // summed forward. Both land in the same place when the history is complete,
+  // but only the anchor is right when it is not: a capped query would otherwise
+  // draw a curve ending somewhere the realm has never been.
+  const asc = banker.slice().reverse();
+  const buckets = bucketCounts(asc, f => f.block_time,
+    f => (f.amount < 0 ? 'sent' : 'received'), f => f.amount);
+  if (buckets && asc.length >= CHART_MIN_POINTS) {
+    const received = seriesData(buckets, 'received');
+    const sent = seriesData(buckets, 'sent');
+    const shown = asc.reduce((sum, f) => sum + f.amount, 0);
+    const before = live - shown;
+    const held = runningTotal(received.map((v, i) => v + sent[i])).map(v => v + before);
+    const chartNote = [fmtNum(asc.length) + ' transfers plotted'];
+    if (d.flows_total > d.flows_shown) {
+      chartNote.push('the ' + fmtNum(d.flows_shown) + ' most recent of ' + fmtNum(d.flows_total));
+    }
+    if (buckets.dropped) chartNote.push(fmtNum(buckets.dropped) + ' with no block time, not plotted');
+    chartNote.push('the line ends at ' + fmtGnotAmount(live));
+    detailChart(into, _detailCharts, {
+      title: 'native balance, per ' + buckets.unit,
+      note: chartNote.join(' · '),
+      data: {
+        labels: buckets.labels,
+        datasets: [
+          { label: 'received', data: received, backgroundColor: 'rgba(78,205,196,0.55)', borderColor: '#4ecdc4', borderWidth: 1, yAxisID: 'y', order: 3 },
+          { label: 'sent', data: sent, backgroundColor: 'rgba(255,107,107,0.55)', borderColor: '#ff6b6b', borderWidth: 1, yAxisID: 'y', order: 3 },
+          {
+            label: 'balance held', data: held, type: 'line', yAxisID: 'y1',
+            borderColor: '#ffd43b', backgroundColor: 'rgba(255,212,59,0.08)',
+            borderWidth: 2, tension: 0.2, fill: true, order: 1,
+          },
+        ],
+      },
+      scales: {
+        x: chartAxis({ stacked: true }),
+        y: chartAxis({ stacked: true, title: 'movement', format: signedGnot }),
+        y1: chartAxis({ position: 'right', grid: false, title: 'held', format: signedGnot }),
+      },
+    });
+  }
+
+  if (tokens.length) into.appendChild(defiTokensEl(d, tokens));
+
+  if (flows.length) {
+    into.appendChild(el('div', { className: 'section-title' }, 'native transfers'));
+    const tbl = el('table', { id: 'defi-flows' });
+    tbl.appendChild(el('thead', {}, el('tr', {},
+      el('th', {}, 'tx'), el('th', {}, 'account'), el('th', {}, 'counterparty'),
+      el('th', {}, 'amount'), el('th', {}, 'block'))));
+    const body = el('tbody');
+    for (const f of flows) {
+      body.appendChild(el('tr', {},
+        el('td', {}, txLink(f.tx_hash, f.block_height, null, { showBlock: false })),
+        el('td', {}, badge(f.account === 'banker' ? 'realm' : 'pkg', f.account)),
+        // An empty counterparty is the chain itself (a collector, genesis), not
+        // a value the indexer failed to report.
+        el('td', { className: 'truncate' }, f.counterparty ? addrLink(f.counterparty)
+          : el('span', { style: { color: 'var(--fg2)' }, title: 'no counterparty address: the chain itself' }, 'chain')),
+        el('td', {}, signedGnotEl(f.amount, f.coins)),
+        el('td', {}, blockWithAge(f.block_height, f.block_time))));
+    }
+    tbl.appendChild(body);
+    into.appendChild(tbl);
+    if (d.flows_total > d.flows_shown) {
+      into.appendChild(el('div', { className: 'detail-chart-note' },
+        'showing the ' + fmtNum(d.flows_shown) + ' most recent of ' + fmtNum(d.flows_total)
+        + '. The balance above is computed over all of them.'));
+    }
+  } else {
+    into.appendChild(el('div', { style: { color: 'var(--fg2)', padding: '12px 0' } },
+      'no coin has ever moved through this realm’s account'));
+  }
+}
+
+// defiTokensEl is the GRC20 half: what the contract holds in tokens, and the
+// caveat that makes those figures a floor rather than a count.
+function defiTokensEl(d, tokens) {
+  const section = el('div');
+  section.appendChild(el('div', { className: 'section-title' }, 'GRC20 positions'));
+  const tbl = el('table', { id: 'defi-tokens' });
+  tbl.appendChild(el('thead', {}, el('tr', {},
+    el('th', {}, 'token'), el('th', {}, 'realm'), el('th', {}, 'balance'),
+    el('th', {}, 'received'), el('th', {}, 'sent'), el('th', {}, 'transfers'))));
+  const body = el('tbody');
+  for (const t of tokens) {
+    // GRC721 rides the same Transfer event and carries no amount, so its legs
+    // all parse to zero. Printing 0 would read as "holds none" rather than as
+    // "this arithmetic does not apply", the same distinction the assets page
+    // makes for supply.
+    const na = () => el('span', { style: { color: 'var(--fg2)' }, title: 'these transfers carry no amount, so a balance does not apply. most likely an NFT collection' }, 'n/a');
+    body.appendChild(el('tr', {},
+      el('td', {}, t.display_symbol || t.symbol || t.token),
+      el('td', {}, t.pkg_path ? realmPathEl(t.pkg_path, d.network)
+        : el('span', { style: { color: 'var(--fg2)' }, title: 'this token emits a bare symbol rather than its realm path' }, 'unknown')),
+      el('td', {}, t.fungible ? fmtTokenUnits(t.balance) : na()),
+      el('td', {}, t.fungible ? fmtTokenUnits(t.received) : na()),
+      el('td', {}, t.fungible ? fmtTokenUnits(t.sent) : na()),
+      el('td', {}, fmtNum(t.transfers || 0))));
+  }
+  tbl.appendChild(body);
+  section.appendChild(tbl);
+  // The caveat, next to the figures rather than in a footnote: this ledger is
+  // rebuilt from Transfer events the syncer walked, and it only ever saw the
+  // ones it was running for. A token received before that leaves no row, so a
+  // position is a floor.
+  if (d.token_ledger_from) {
+    section.appendChild(el('div', { className: 'detail-chart-note' },
+      'reconstructed from the transfer ledger, which starts at '
+      + d.token_ledger_from.slice(0, 10)
+      + '. Anything received before then is not in it, so these are floors rather than balances.'));
+  }
+  return section;
+}
+
+// signedGnot formats a signed ugnot amount for an axis tick.
+function signedGnot(n) {
+  return (n < 0 ? '-' : '') + fmtGnotAmount(Math.abs(n));
+}
+
+// signedGnotEl is the same for a table cell, coloured by direction and carrying
+// the chain's own coin string when the denom is not ugnot — which the signed
+// number cannot represent and must not silently report as zero.
+function signedGnotEl(amount, coins) {
+  if (!amount && coins && !/^\d+ugnot$/.test(coins)) {
+    return el('span', { title: 'not denominated in ugnot' }, fmtCoins(coins));
+  }
+  const span = el('span', { style: { color: amount < 0 ? 'var(--red)' : 'var(--green)' } },
+    (amount < 0 ? '-' : '+') + fmtGnotAmount(Math.abs(amount)));
+  span.title = coins || '';
+  return span;
+}
+
+// unknownEl is a value the site could not read, as distinct from a zero. Used
+// where a failed RPC read would otherwise render as a confident number.
+function unknownEl() {
+  return el('span', { style: { color: 'var(--fg2)' }, title: 'the chain could not be read' }, 'unknown');
 }
 
 function switchTab(name, tabEl) {

@@ -175,6 +175,7 @@ fact.
 | `GET /api/realm/{path...}` | detail for one package: metadata, source files, imports, dependents, callers, MsgRun references. `recent_calls` and `msgrun_refs` are the 50 most recent of each, and carry `block_time` where the syncer knew it (omitted otherwise, so a consumer plotting them on a time axis can say how many it left out). `address` and `storage_deposit_address` are the two accounts the package owns, derived from its path (see below) |
 | `GET /api/deps/{path...}` | dependency graph as `{path: [imports]}`. `dir=dependents` reverses direction |
 | `GET /api/storage/{path...}` | storage events for a package. **Requires `network`**: the figures are denominated amounts and blending chains would be meaningless |
+| `GET /api/realm/defi/{path...}` | what a package holds: its two accounts' live balances, every native transfer through them, and its GRC20 positions. **Requires `network`** |
 | `GET /api/events/{path...}` | every event tagged with a package's path. Bounded: `limit` defaults to 200, capped at 2000. In all-networks mode it queries every chain and tags each row with its `network`. Unlike `/api/allevents` this is not filtered to `GnoEvent`, so the chain's own `StorageDepositEvent` / `StorageUnlockEvent` for that path are included; the realm page hides those behind a toggle rather than dropping them here |
 
 ### The two accounts a package owns
@@ -187,6 +188,26 @@ The first is the realm's banker; the second holds the deposit locked against its
 bytes. A `gno.land/e/<g1...>/run` path is the exception: its address is embedded
 in the path rather than hashed, and it has no deposit account, so that field is
 omitted. See `pkg/gnoaddr`.
+
+### Balances are reconstructed, and the response says how well
+
+`/api/realm/defi` reports `derived_ugnot` beside `live_ugnot` rather than picking
+one. The first is the sum of every `TransferEvent` leg touching the package's
+banker; the second is what `bank/balances` says. The chain emits a
+`TransferEvent` on every bank transfer including a realm's own banker moves, so
+for a realm the two are equal, and their being equal is the evidence that the
+transfer history returned is complete. A gap means a genesis allocation (which
+moves no coins through the bank) or an indexer that capped the query, which
+`truncated` distinguishes.
+
+This does **not** generalise to an address that signs transactions: gas
+collection and the storage deposit both go through `SendCoinsUnrestricted`, which
+emits nothing, so the same sum for a user account is short by its gas spend.
+Neither touches a realm's banker, which is why the realm case is exact.
+
+GRC20 positions come from the local transfer ledger, which only ever saw what the
+syncer walked: `token_ledger_from` is the oldest row on that chain, and a
+position is a floor rather than a figure whenever it postdates the deploy.
 
 ### Sync health versus chain liveness
 

@@ -760,6 +760,13 @@ func initSchema(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_token_transfers_from ON token_transfers(network, token, from_addr);
 		CREATE INDEX IF NOT EXISTS idx_token_transfers_to ON token_transfers(network, token, to_addr);
 
+		-- "What does this address hold" reads along the other axis to the two
+		-- above, which lead with the token. Without these, asking what one
+		-- realm holds scans every transfer on the chain, because the address is
+		-- the second column of a three-column index and the first is unbound.
+		CREATE INDEX IF NOT EXISTS idx_token_transfers_holder_from ON token_transfers(network, from_addr);
+		CREATE INDEX IF NOT EXISTS idx_token_transfers_holder_to ON token_transfers(network, to_addr);
+
 		-- The rich list's only query: the top balances on one chain.
 		CREATE INDEX IF NOT EXISTS idx_balances_rank ON balances(network, ugnot DESC);
 
