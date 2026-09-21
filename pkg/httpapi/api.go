@@ -893,6 +893,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/accounts/rich", a.HandleRichList)
 	mux.HandleFunc("GET /api/accounts/population", a.HandleAccountPopulation)
 	mux.HandleFunc("GET /api/assets", a.HandleAssets)
+	mux.HandleFunc("GET /api/validator/{addr}", a.HandleValidator)
 	mux.HandleFunc("GET /api/asset/{token...}", a.HandleAsset)
 	mux.HandleFunc("GET /api/contracts/map", a.HandleContractsMap)
 	mux.HandleFunc("GET /api/contracts/edges", a.HandleContractsEdges)
