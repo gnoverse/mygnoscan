@@ -5838,6 +5838,15 @@ function renderApps(container, data) {
         const ext = el('a', { href: app.url, target: '_blank', rel: 'noopener noreferrer' }, app.url);
         descCell.appendChild(el('div', { style: { marginTop: '4px', fontSize: '11px' } }, ext));
       }
+      // A blurb is mostly durable, but the one volatile fact inside it is what
+      // a reader acts on. Showing the date lets them weigh it, the same way an
+      // inferred address label carries its measurement date.
+      if (app.checked) {
+        descCell.appendChild(el('div', {
+          style: { marginTop: '4px', fontSize: '11px', color: 'var(--fg2)' },
+          title: 'the volatile part of this description was last confirmed on this date',
+        }, 'checked ' + app.checked));
+      }
       tbody.appendChild(el('tr', {}, nameCell, pathCell, descCell));
     }
     section.appendChild(el('table', {},

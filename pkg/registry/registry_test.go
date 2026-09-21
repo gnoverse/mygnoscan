@@ -103,18 +103,72 @@ func TestShippedDatesAreNotInTheFuture(t *testing.T) {
 		t.Fatal(err)
 	}
 	tomorrow := time.Now().UTC().AddDate(0, 0, 1)
+	// All three files, not just addresses: the field means the same thing
+	// everywhere it appears, so a guard on one of them is a guard on none.
+	dated := map[string]string{}
 	for addr, e := range reg.Addresses {
-		if e.Checked == "" {
+		dated["addresses.json: "+addr] = e.Checked
+	}
+	for key, tok := range reg.Tokens {
+		dated["tokens.json: "+key] = tok.Checked
+	}
+	for _, a := range reg.Apps {
+		dated["apps.json: "+a.Path] = a.Checked
+	}
+	for subject, checked := range dated {
+		if checked == "" {
 			continue
 		}
-		when, err := time.Parse("2006-01-02", e.Checked)
+		when, err := time.Parse("2006-01-02", checked)
 		if err != nil {
-			t.Errorf("%s: %v", addr, err)
+			t.Errorf("%s: %v", subject, err)
 			continue
 		}
 		if when.After(tomorrow) {
-			t.Errorf("%s was checked %s, which is in the future", addr, e.Checked)
+			t.Errorf("%s was checked %s, which is in the future", subject, checked)
 		}
+	}
+}
+
+// An app description is mostly durable, but the volatile fact inside one (a
+// minimum balance, which generation a front-end serves) is exactly what a
+// reader acts on, so the entries carrying one have to say how old they are.
+func TestAppValidationRejects(t *testing.T) {
+	ok := App{Path: "gno.land/r/x/y", Name: "Y", Category: "content", Description: "what it is"}
+	mutate := func(f func(*App)) App {
+		a := ok
+		f(&a)
+		return a
+	}
+	tests := []struct {
+		name string
+		app  App
+		want string
+	}{
+		{"not a path", mutate(func(a *App) { a.Path = "example.com/x" }), "not a gno.land path"},
+		{"no name", mutate(func(a *App) { a.Name = " " }), "has no name"},
+		{"no category", mutate(func(a *App) { a.Category = "" }), "has no category"},
+		{"no description", mutate(func(a *App) { a.Description = "" }), "has no description"},
+		{"a malformed date", mutate(func(a *App) { a.Checked = "yesterday" }), "want YYYY-MM-DD"},
+		{"a date that is not one", mutate(func(a *App) { a.Checked = "2026-13-45" }), "not a date"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateApps([]App{tt.app})
+			if err == nil {
+				t.Fatalf("accepted %+v, want a rejection mentioning %q", tt.app, tt.want)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("error = %q, want it to mention %q", err, tt.want)
+			}
+		})
+	}
+
+	if err := validateApps([]App{ok, ok}); err == nil || !strings.Contains(err.Error(), "listed twice") {
+		t.Errorf("a duplicate path gave %v, want it rejected as listed twice", err)
+	}
+	if err := validateApps([]App{mutate(func(a *App) { a.Checked = "2026-09-21" })}); err != nil {
+		t.Errorf("rejected a well-formed dated entry: %v", err)
 	}
 }
 
