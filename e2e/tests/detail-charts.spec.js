@@ -109,8 +109,24 @@ test('the calls tab charts activity split by function', async ({ page }) => {
   // one series per function is the reason to draw this rather than a count.
   const labels = drawn[0].datasets.map(d => d.label);
   expect(labels).toContain('Render');
+  // The deploy is a MsgAddPackage and so not in the feed the chart is drawn
+  // from, but it is where the history starts, so it is added back — on an
+  // unfiltered first page only.
   expect(labels).toContain('deploy');
   expect(series(drawn[0], 'deploy').total).toBe(1);
+});
+
+// ...and taken away again as soon as a filter is on, because then every other
+// bar on the chart is something that matched that filter and the deploy is not.
+test('a filtered calls chart drops the deploy bar', async ({ page }) => {
+  await page.goto(`/realm/${HUB_ROUTE}?network=alpha&tab=calls`);
+  await settle(page);
+  await page.locator('#tab-calls .dash-seg button:text-is("calls")').click();
+  await settle(page);
+
+  const drawn = await charts(page, 'calls');
+  expect(drawn.length).toBe(1);
+  expect(drawn[0].datasets.map(d => d.label)).not.toContain('deploy');
 });
 
 test('the events tab charts the event mix', async ({ page }) => {
