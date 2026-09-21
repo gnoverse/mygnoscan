@@ -15,6 +15,7 @@ const ROUTES = [
   ['realms', '/realms'],
   ['packages', '/packages'],
   ['contracts', '/contracts'],
+  ['apps', '/apps'],
   ['transactions', '/txs'],
   ['blocks', '/blocks'],
   ['accounts', '/accounts'],

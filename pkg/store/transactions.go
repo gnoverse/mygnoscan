@@ -598,6 +598,56 @@ type BlockTimePoint struct {
 	Txs    int    `json:"txs"`
 }
 
+// BlockTick is one block, reduced to the two fields a cadence view needs.
+type BlockTick struct {
+	Height int    `json:"height"`
+	Time   string `json:"time"`
+	Txs    int    `json:"txs"`
+}
+
+// RecentBlockTimes returns this network's blocks since a cutoff, oldest first.
+//
+// For the heartbeat strip, which needs *when each block arrived* rather than
+// how many arrived per bucket. Bucketing happens in the caller: a chain with
+// ~3s blocks produces a couple of hundred rows over the windows this serves,
+// which is cheaper to bucket in Go than to coax out of SQLite's date handling,
+// and it lets one query serve every cell size.
+//
+// `limit` is a guard, not a feature. A caller asking for a huge window on a
+// fast chain gets the newest rows rather than the whole table.
+func (d *DB) RecentBlockTimes(network string, since time.Time, limit int) ([]BlockTick, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	// Ordered newest-first so the limit keeps the newest rows, then reversed
+	// below: the strip reads left to right in time.
+	rows, err := d.db.Query(
+		`SELECT height, time, num_txs FROM blocks
+		  WHERE network = ? AND time >= ?
+		  ORDER BY height DESC LIMIT ?`,
+		network, since.UTC().Format(time.RFC3339), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	ticks := []BlockTick{}
+	for rows.Next() {
+		var t BlockTick
+		if err := rows.Scan(&t.Height, &t.Time, &t.Txs); err != nil {
+			return nil, err
+		}
+		ticks = append(ticks, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i, j := 0, len(ticks)-1; i < j; i, j = i+1, j-1 {
+		ticks[i], ticks[j] = ticks[j], ticks[i]
+	}
+	return ticks, nil
+}
+
 type BlockTimeBin struct {
 	Bin    string `json:"bin"`
 	Blocks int    `json:"blocks"`

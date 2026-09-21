@@ -1542,8 +1542,17 @@ func TestGetRollingActiveTimeSeries(t *testing.T) {
 
 	// One address active 20 days ago, one active today. On today's point DAU
 	// and WAU see only the recent one; MAU's 30-day window sees both.
+	//
+	// "Recent" has to land on *today's* UTC date, not merely in the last hour:
+	// the assertions below are about today's point, and between 00:00 and 01:00
+	// UTC an hour ago is yesterday, so DAU reads 0 and this test fails for one
+	// hour a day. Verified by running it at 00:19 UTC.
+	recent := now.Add(-1 * time.Hour)
+	if recent.Day() != now.Day() {
+		recent = now
+	}
 	MustCall(t, db, "gnoland1", "a1", 1, now.AddDate(0, 0, -20), "g1old", "gno.land/r/x", "F")
-	MustCall(t, db, "gnoland1", "a2", 2, now.Add(-1*time.Hour), "g1now", "gno.land/r/x", "F")
+	MustCall(t, db, "gnoland1", "a2", 2, recent, "g1now", "gno.land/r/x", "F")
 
 	pts, err := db.GetRollingActiveTimeSeries("gnoland1", 10)
 	if err != nil {

@@ -232,6 +232,14 @@ type sanityResponse struct {
 	// selecting and the full set it may select from. A pool silently down to
 	// its last working member is the failure this exists to make visible.
 	Indexers map[string]endpointView `json:"indexers,omitempty"`
+	// Nodes is what each network's own node says about itself, read over RPC
+	// rather than through the indexer. Every other field on this response is
+	// the indexer's account, which cannot distinguish a stopped chain from a
+	// data source we have lost.
+	Nodes map[string]NodeState `json:"nodes,omitempty"`
+	// Diagnosis is the verdict per network: which of the two halves is broken,
+	// and what to say about it. See diagnose.
+	Diagnosis map[string]ChainDiagnosis `json:"diagnosis,omitempty"`
 }
 
 type endpointView struct {
@@ -268,13 +276,18 @@ func (a *API) HandleSanityOverview(w http.ResponseWriter, r *http.Request) {
 	// indexer. They are also the figures that cannot be merged: there is no
 	// such thing as the height of four chains at once.
 	if network != "" {
+		var live store.SanityLiveness
 		if client := a.clientFor(network); client != nil {
-			live := livenessOf(r.Context(), client)
+			live = livenessOf(r.Context(), client)
 			ov.ChainHeight, ov.LastBlockTime = live.ChainHeight, live.LastBlockTime
 			ov.SecondsSinceBlock, ov.IsAlive = live.SecondsSinceBlock, live.IsAlive
 		}
 		resp.SanityOverview = ov
 		resp.Indexers = a.endpointsFor([]string{network})
+		if cfg, ok := a.networkConfig(network); ok {
+			resp.Nodes, resp.Diagnosis = a.probeNetworks(r.Context(),
+				[]config.NetworkConfig{cfg}, map[string]store.SanityLiveness{network: live})
+		}
 		// One network selected, so the other chains' sync records are noise.
 		if h, ok := resp.Sync[network]; ok {
 			resp.Sync = map[string]syncer.NetworkHealth{network: h}
@@ -314,6 +327,10 @@ func (a *API) HandleSanityOverview(w http.ResponseWriter, r *http.Request) {
 	}
 	resp.SanityOverview = ov
 	resp.Indexers = a.endpointsFor(ids)
+	// The node probe runs for every configured network, including the ones
+	// fanOut skipped above. A chain whose indexer is gone is exactly the case
+	// where the node has something to say.
+	resp.Nodes, resp.Diagnosis = a.probeNetworks(r.Context(), a.networks, ov.ByNetwork)
 	JSONResponse(w, resp)
 }
 

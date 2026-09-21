@@ -699,6 +699,65 @@ func initSchema(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_txs_block_time    ON transactions(network, block_time);
 		CREATE INDEX IF NOT EXISTS idx_blocks_time ON blocks(network, time);
 
+		-- Account balances, cached.
+		--
+		-- Not synced and not derivable: gno has no balance in any indexed
+		-- message, and deriving one from bank_sends would be wrong in a way
+		-- readers could not see, because it ignores gas fees, storage deposits,
+		-- genesis allocations and every transfer a realm makes through a banker
+		-- rather than a BankMsgSend.
+		--
+		-- So each row is one live bank/balances read, swept in the
+		-- background. amount is the raw coin string the chain returned, and
+		-- ugnot is it parsed for sorting: keeping both means the rich list can
+		-- ORDER BY without the display value ever having been through a lossy
+		-- conversion. height is the chain tip when it was read, which is what
+		-- dates the figure; a balance with no height was never successfully
+		-- fetched.
+		CREATE TABLE IF NOT EXISTS balances (
+			network    TEXT    NOT NULL,
+			address    TEXT    NOT NULL,
+			amount     TEXT    NOT NULL DEFAULT '',
+			ugnot      INTEGER NOT NULL DEFAULT 0,
+			height     INTEGER NOT NULL DEFAULT 0,
+			fetched_at TEXT    NOT NULL,
+			PRIMARY KEY (network, address)
+		) WITHOUT ROWID;
+
+		-- GRC20 transfers, from the Transfer events the chain already emits.
+		--
+		-- A complete ledger: an empty from_addr is a mint, an empty to_addr is
+		-- a burn, and replaying the column gives exact supply and every
+		-- holder's balance without a single extra RPC call.
+		--
+		-- token is the full triple the events carry
+		-- (gno.land/r/gnoland/wugnot.wugnot.0000000), not a bare realm path:
+		-- one realm can expose several tokens. pkg_path is that realm, split
+		-- out at insert so queries do not have to parse the key.
+		--
+		-- NOT keyed on the event's pkg_path, which is the grc20 library for
+		-- every token on the chain and would collapse them all into one.
+		CREATE TABLE IF NOT EXISTS token_transfers (
+			network    TEXT NOT NULL,
+			tx_hash    TEXT NOT NULL,
+			event_idx  INTEGER NOT NULL,
+			token      TEXT NOT NULL,
+			pkg_path   TEXT NOT NULL,
+			from_addr  TEXT NOT NULL DEFAULT '',
+			to_addr    TEXT NOT NULL DEFAULT '',
+			value      INTEGER NOT NULL DEFAULT 0,
+			block_height INTEGER NOT NULL,
+			block_time TEXT NOT NULL,
+			PRIMARY KEY (network, tx_hash, event_idx)
+		) WITHOUT ROWID;
+
+		CREATE INDEX IF NOT EXISTS idx_token_transfers_token ON token_transfers(network, token, block_height DESC);
+		CREATE INDEX IF NOT EXISTS idx_token_transfers_from ON token_transfers(network, token, from_addr);
+		CREATE INDEX IF NOT EXISTS idx_token_transfers_to ON token_transfers(network, token, to_addr);
+
+		-- The rich list's only query: the top balances on one chain.
+		CREATE INDEX IF NOT EXISTS idx_balances_rank ON balances(network, ugnot DESC);
+
 		-- The gas view's "most expensive transactions" sorts by gas_used within a
 		-- network and keeps 20 rows. Without this the sort cannot be served from
 		-- an index, so the eight correlated subqueries in its select list are

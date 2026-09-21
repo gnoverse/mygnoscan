@@ -600,3 +600,44 @@ func TestCommentNameClaim(t *testing.T) {
 		}
 	}
 }
+
+// TestDecodeParamChangesSurvivesAZeroArgRequest pins the guard in
+// decodeParamChanges' variadic branch.
+//
+// The source scan is a regex over a MsgRun script, so it matches a
+// constructor name written anywhere, including inside a comment and
+// including with no arguments at all. That yields a call whose Args is
+// empty, and the variadic branch used to slice it from index 1, which
+// panics and takes the whole /govdao/<id> response down with it.
+func TestDecodeParamChangesSurvivesAZeroArgRequest(t *testing.T) {
+	for _, fn := range []string{
+		"ProposeAddUnrestrictedAcctsRequest",
+		"ProposeRemoveUnrestrictedAcctsRequest",
+	} {
+		t.Run(fn, func(t *testing.T) {
+			got := decodeParamChanges(ProposalRequestCall{Pkg: "pp", Func: fn})
+			if len(got) != 0 {
+				t.Fatalf("decodeParamChanges(no args) = %#v, want none: a call with\n"+
+					"no arguments describes no parameter change", got)
+			}
+		})
+	}
+}
+
+// TestParseProposalRequestsYieldsEmptyArgs is the other half: it shows the
+// input above is one the parser really produces, rather than a literal only
+// a test would build.
+func TestParseProposalRequestsYieldsEmptyArgs(t *testing.T) {
+	src := "package main\n\n" +
+		"func main(cur realm) {\n" +
+		"\t// we used to call pp.ProposeAddUnrestrictedAcctsRequest()\n" +
+		"}\n"
+	calls := parseProposalRequests(src)
+	if len(calls) != 1 {
+		t.Fatalf("parseProposalRequests found %d calls, want 1", len(calls))
+	}
+	if len(calls[0].Args) != 0 {
+		t.Fatalf("Args = %#v, want empty", calls[0].Args)
+	}
+	decodeParamChanges(calls[0]) // must not panic
+}
