@@ -9147,6 +9147,13 @@ function renderRealmUsage(host, detail, usage, gen) {
       'every figure above is computed over the filtered set, not over the page below.'));
   }
 
+  // A mount point for the usage treemap (function -> caller, area = messages),
+  // built on the same payload in a stacked change. Created here and left empty
+  // so the treemap has a stable place in the tab's order without its renderer
+  // and this one both appending into the same container: an apiSWR render runs
+  // twice, so "append wherever" is how you get two of everything.
+  host.appendChild(el('div', { id: 'usage-treemap' }));
+
   // --- Activity chart ---
   //
   // Drawn from the feed page, which is one page of many on a busy realm. The
