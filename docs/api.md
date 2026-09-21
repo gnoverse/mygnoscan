@@ -273,7 +273,7 @@ transaction is not billed once per message.
 **Filters apply to the aggregates, not only to the feed.** That is the point of
 the endpoint: `?func=Bid&window=7d` reporting 12 unique callers means twelve
 addresses bid in the last week, not twelve addresses touched the realm since
-genesis. An unrecognised `status` or `kind` is dropped rather than rejected —
+genesis. An unrecognised `status` or `kind` is dropped rather than rejected:
 these arrive from links and bookmarks, and should degrade to "no filter" rather
 than to an error page over a perfectly readable realm.
 
