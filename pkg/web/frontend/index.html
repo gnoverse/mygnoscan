@@ -10827,6 +10827,11 @@ const CONTRACT_LAYOUTS = {
     label: 'force',
     hint: 'clusters emerge from the links, the bubblemaps read',
     grouping: true, sized: true,
+    // The only view that redraws in place. The other five lay out in one
+    // deterministic pass over a geometry of their own (rectangles, arcs,
+    // bundled splines), so there is no shared set of dots to move and their
+    // container is emptied before each repaint.
+    morph: true,
   },
   orbit: {
     label: 'orbit',
@@ -10903,6 +10908,13 @@ let _contracts = {
   // running is a timer moving dots along edges that are no longer on screen.
   timer: null,
   gen: 0,
+  // The node objects themselves, kept between repaints and keyed by path, and
+  // the chain they belong to.
+  objs: new Map(),
+  objsFor: null,
+  // The SVG, its zoom transform, the hover card and the force simulation, kept
+  // between repaints. Null whenever nothing is on screen.
+  surface: null,
 };
 
 // Controls live in the URL so a map someone found worth looking at is a link
@@ -10992,17 +11004,35 @@ function contractControlGroup(title, children) {
   return wrap;
 }
 
-async function loadContracts() {
+// loadContracts fetches and paints the page.
+//
+// keepMap is for the two controls whose answer has to come from the server:
+// the link mode and the window. Rebuilding the page around their request would
+// replace a map that is still perfectly readable with a skeleton, and take
+// every dot's position with it, for data that is about to arrive. Keeping it
+// means the response lands on the map already on screen and moves it.
+async function loadContracts(opts) {
+  const keepMap = !!(opts && opts.keepMap) && !!document.getElementById('contract-map');
   contractsStateFromURL();
-  const root = clear('contracts-content');
   const gen = ++_contracts.gen;
 
-  root.appendChild(contractsControls());
-  const mapBox = el('div', { id: 'contract-map' });
-  root.appendChild(mapBox);
-  const rankings = el('div', { id: 'contract-rankings' });
-  root.appendChild(rankings);
-  skeletonBlock(mapBox);
+  if (keepMap) {
+    // The pill has to light up now rather than when the response lands: while
+    // the map underneath still shows the previous answer, the bar is the only
+    // thing on screen saying the click was received.
+    const bar = document.getElementById('contracts-controls');
+    if (bar) bar.replaceWith(contractsControls());
+  } else {
+    const root = clear('contracts-content');
+    root.appendChild(contractsControls());
+    const mapBox = el('div', { id: 'contract-map' });
+    root.appendChild(mapBox);
+    root.appendChild(el('div', { id: 'contract-rankings' }));
+    skeletonBlock(mapBox);
+    // The surface just went out of the document with the container that held
+    // it, and a simulation ticking against detached nodes is pure heat.
+    dropContractSurface();
+  }
 
   try {
     // Both in flight at once: the edges query is the slower of the two and
@@ -11016,14 +11046,52 @@ async function loadContracts() {
     if (gen !== _contracts.gen) return; // superseded by a newer navigation
     _contracts.data = data;
     _contracts.edgeData = edgeData;
+    pruneContractNodeObjects(data);
     renderContractMap();
     renderContractRankings();
   } catch (e) {
     if (gen !== _contracts.gen) return;
-    clear('contract-map').appendChild(
+    const box = document.getElementById('contract-map');
+    if (!box) return;
+    teardownContractSurface(box);
+    box.appendChild(
       el('div', { style: { padding: '40px', textAlign: 'center', color: 'var(--accent2)' } },
         'could not load the contract map: ' + e.message));
   }
+}
+
+// Contract nodes are the same objects from one repaint to the next, keyed by
+// path.
+//
+// This is what makes a click move the dots instead of redrawing them: d3 only
+// seeds a starting position for a node that does not already have one, so a
+// simulation handed the previous render's objects resumes from where it left
+// off and relaxes into the new answer. Handed fresh copies, which is what this
+// used to build, it reseeds every contract onto its spiral and plays the whole
+// settle again, from a layout nobody asked it to leave.
+function contractNodeObjects(rows) {
+  return rows.map(n => {
+    let o = _contracts.objs.get(n.path);
+    if (!o) { o = { id: n.path }; _contracts.objs.set(n.path, o); }
+    // The row is refreshed, the coordinates are not: an API node carries no
+    // x/y/vx/vy, so there is nothing here that can clobber them.
+    return Object.assign(o, n);
+  });
+}
+
+// Positions are kept per contract path, so they have to be dropped when the
+// path goes, and all of them when the chain changes: r/demo/boards on alpha and
+// on beta are two different contracts, and lending one the other's coordinates
+// would animate a dot between two chains.
+function pruneContractNodeObjects(data) {
+  const network = (data && data.network) || null;
+  if (_contracts.objsFor !== network) {
+    _contracts.objs.clear();
+    _contracts.objsFor = network;
+    return;
+  }
+  const live = new Set((data.nodes || []).map(n => n.path));
+  _contracts.objs.forEach((_, path) => { if (!live.has(path)) _contracts.objs.delete(path); });
 }
 
 // Hovering an address anywhere on the contracts page lights up every bubble
@@ -11127,7 +11195,10 @@ function contractsControls() {
       }
       if (!_contracts.clusterPinned) _contracts.cluster = k !== 'imports';
       contractsStateToURL();
-      loadContracts(); // a different query, so this one does refetch
+      // A different query, so this one does refetch. keepMap because the nodes
+      // are the same contracts either way: only the edges between them change,
+      // and the map should move rather than be rebuilt around them.
+      loadContracts({ keepMap: true });
     }));
   bar.appendChild(contractControlGroup('links', edgePills));
 
@@ -11135,7 +11206,7 @@ function contractsControls() {
     contractPill(wname, _contracts.window === wname, () => {
       _contracts.window = wname;
       contractsStateToURL();
-      loadContracts();
+      loadContracts({ keepMap: true });
     }));
   bar.appendChild(contractControlGroup('window', windowPills));
 
@@ -11253,18 +11324,18 @@ function visibleContractNodes() {
 // and each one drops a dimension the force layout keeps in exchange for
 // answering a question the hairball cannot.
 function renderContractMap() {
-  const container = clear('contract-map');
+  const container = document.getElementById('contract-map');
+  if (!container) return;
   container.style.position = 'relative';
 
-  // Anything still running from the previous render is running against nodes
-  // that are no longer on screen.
-  if (_contracts.sim) { _contracts.sim.stop(); _contracts.sim = null; }
+  // Particles are rebuilt per render either way: each one holds a DOM node
+  // belonging to an edge that may not be on screen a moment from now.
   if (_contracts.timer) { _contracts.timer.stop(); _contracts.timer = null; }
 
   const layoutKey = CONTRACT_LAYOUTS[_contracts.layout] ? _contracts.layout : 'force';
   const spec = CONTRACT_LAYOUTS[layoutKey];
 
-  let nodes = visibleContractNodes().map(n => Object.assign({}, n, { id: n.path }));
+  let nodes = contractNodeObjects(visibleContractNodes());
   const rawEdges = (_contracts.edgeData && _contracts.edgeData.edges) || [];
   if (_contracts.linkedOnly && _contracts.edges !== 'none') {
     // Computed against the edges as fetched, before they are narrowed to the
@@ -11275,6 +11346,7 @@ function renderContractMap() {
     nodes = nodes.filter(n => linked.has(n.path));
   }
   if (!nodes.length) {
+    teardownContractSurface(container);
     container.appendChild(el('div', { style: { padding: '40px', textAlign: 'center', color: 'var(--fg2)' } },
       'no contracts to show with these filters'));
     return;
@@ -11296,6 +11368,7 @@ function renderContractMap() {
     const why = _contracts.edges === 'none'
       ? 'this view is about the links, and links are switched off'
       : 'no ' + CONTRACT_EDGE_KINDS[_contracts.edges].label + ' links survive the current filters';
+    teardownContractSurface(container);
     container.appendChild(el('div', {
       style: { padding: '60px 40px', textAlign: 'center', color: 'var(--fg2)', lineHeight: '1.8' },
     },
@@ -11324,15 +11397,10 @@ function renderContractMap() {
 
   const namespaces = Array.from(new Set(nodes.map(n => n.namespace))).sort();
 
-  const svg = d3.select(container).append('svg').attr('width', width).attr('height', height)
-    .attr('role', 'img').attr('aria-label', 'map of deployed contracts');
-  const zoomG = svg.append('g');
-  const zoom = d3.zoom().scaleExtent([0.15, 6]).on('zoom', e => zoomG.attr('transform', e.transform));
-  svg.call(zoom);
-
-  const tip = contractTooltip(container);
+  const surface = contractSurface(container, layoutKey, width, height);
+  const { svg, zoomG, zoom, tip } = surface;
   const ctx = {
-    container, svg, zoomG, zoom, tip,
+    container, svg, zoomG, zoom, tip, surface,
     nodes, links, byPath, namespaces,
     radius, rMin, rMax, norm, metric, maxVal,
     width, height,
@@ -11346,10 +11414,84 @@ function renderContractMap() {
     chord: drawContractChord,
     treemap: drawContractTreemap,
   }[layoutKey];
+  // Only the force map knows how to redraw into what is already there. The
+  // other five are handed an empty canvas, the way they always were.
+  if (!spec.morph) zoomG.selectAll('*').remove();
   const fit = draw(ctx) || (() => svg.transition().duration(300).call(zoom.transform, d3.zoomIdentity));
 
-  container.appendChild(contractMapChrome(svg, zoom, namespaces, nodes, links.length, fit));
+  // A draw function is allowed to give up and tear the surface down (the chord
+  // does, when nothing crosses a namespace boundary). Chrome for a map that is
+  // no longer there would be a legend over an error message.
+  if (_contracts.surface === surface) {
+    const chrome = contractMapChrome(svg, zoom, namespaces, nodes, links.length, fit);
+    surface.chrome.replaceWith(chrome);
+    surface.chrome = chrome;
+  }
   applyContractHighlight();
+}
+
+// The map's DOM and its simulation, kept across repaints.
+//
+// Everything a click used to throw away lives here: the SVG, the zoom
+// behaviour and the transform the reader panned it to, the hover card, and the
+// force simulation. Reusing them is what lets a repaint move what is on screen
+// to its new place. Rebuilding them, which is what clearing the container did,
+// can only replace it, and that is why switching metric used to replay the
+// whole settle from a fresh spiral.
+//
+// Keyed on the layout, because the six views are not one picture in different
+// clothes: a treemap's rectangles and a chord's ribbons share no geometry to
+// interpolate between. A view switch gets a fresh surface and a fresh zoom.
+function contractSurface(container, layoutKey, width, height) {
+  const s = _contracts.surface;
+  if (s && s.container === container && s.layoutKey === layoutKey &&
+      s.width === width && s.height === height && container.contains(s.svg.node())) {
+    s.reused = true;
+    return s;
+  }
+  teardownContractSurface(container);
+  const svg = d3.select(container).append('svg').attr('width', width).attr('height', height)
+    .attr('role', 'img').attr('aria-label', 'map of deployed contracts');
+  const zoomG = svg.append('g');
+  const zoom = d3.zoom().scaleExtent([0.15, 6]).on('zoom', e => zoomG.attr('transform', e.transform));
+  svg.call(zoom);
+  const chrome = el('div');
+  const next = {
+    container, layoutKey, width, height, svg, zoomG, zoom,
+    tip: contractTooltip(container), chrome,
+    // Both of these are per surface rather than per render. fitted, because
+    // framing the map is right the first time it settles and wrong on every
+    // repaint after, where it would yank the view from under whoever panned
+    // it. shape, because how hard to reheat the simulation depends on what
+    // changed since the last render, which only the surface remembers.
+    fitted: false, shape: null, sim: null, reused: false,
+  };
+  container.appendChild(chrome);
+  _contracts.surface = next;
+  return next;
+}
+
+function teardownContractSurface(container) {
+  dropContractSurface();
+  container.textContent = '';
+}
+
+// Stop what is running and forget the surface, without touching the DOM: for
+// the case where the container itself has just been replaced and emptying it
+// would be emptying the wrong element.
+function dropContractSurface() {
+  if (_contracts.sim) { _contracts.sim.stop(); _contracts.sim = null; }
+  if (_contracts.timer) { _contracts.timer.stop(); _contracts.timer = null; }
+  _contracts.surface = null;
+}
+
+// contractLayer hands back the same <g> on every repaint, created the first
+// time it is asked for and in that order, so a redraw joins into it rather
+// than stacking a second copy on top of the first.
+function contractLayer(zoomG, name) {
+  let g = zoomG.select(':scope > g.l-' + name);
+  if (g.empty()) g = zoomG.append('g').attr('class', 'l-' + name);
+  return g;
 }
 
 // One hover card, shared by every layout, so a bubble on the force map and a
@@ -11460,7 +11602,13 @@ function namespaceLabel(ns) { return ns.startsWith('g1') ? truncAddr(ns) : ns; }
 // force: the original. Clusters emerge from the links rather than being drawn.
 // ---------------------------------------------------------------------------
 function drawContractForce(ctx) {
-  const { svg, zoomG, zoom, tip, nodes, links, radius, metric, width, height, namespaces } = ctx;
+  const { svg, zoomG, zoom, tip, surface, nodes, links, radius, metric, width, height, namespaces } = ctx;
+
+  // A repaint moves what is already on screen. A first paint has nothing to
+  // move and draws straight at the answer, so loading the page is not an
+  // animation of a map arriving from nowhere.
+  const ms = surface.reused ? 420 : 0;
+  const ease = sel => ms ? sel.transition().duration(ms) : sel.interrupt();
 
   // Namespace centroids sit on a ring, in an order derived from the namespace
   // name, so the same chain lays out the same way every time.
@@ -11477,6 +11625,10 @@ function drawContractForce(ctx) {
   // direction of an edge you cannot trace is not information.
   const arrowLimit = 220;
   const showArrows = _contracts.edges === 'imports' && links.length <= arrowLimit;
+  // Rebuilt rather than kept across repaints: the marker is the one piece of
+  // this SVG whose mere presence is a mode, and one left behind by the import
+  // view is a stray <path> on a map that has no arrows.
+  svg.selectAll('defs').remove();
   if (showArrows) {
     svg.append('defs').append('marker')
       .attr('id', 'contract-arrow').attr('viewBox', '0 -5 10 10')
@@ -11485,36 +11637,69 @@ function drawContractForce(ctx) {
       .append('path').attr('d', 'M0,-5L10,0L0,5').attr('fill', 'var(--fg2)');
   }
 
-  // Under the links so an outline never sits on top of the structure it is
-  // grouping.
-  const hullG = zoomG.append('g').attr('pointer-events', 'none');
+  // Four layers in paint order, the same four on every repaint: outlines under
+  // the links so a hull never sits on top of the structure it is grouping,
+  // labels on top so a bubble drawn later cannot cover them.
+  const hullG = contractLayer(zoomG, 'hulls').attr('pointer-events', 'none');
+  const linkG = contractLayer(zoomG, 'links');
+  const nodeG = contractLayer(zoomG, 'nodes');
+  const labelG = contractLayer(zoomG, 'labels').attr('pointer-events', 'none');
 
   const maxWeight = d3.max(links, l => l.weight) || 1;
   // Thinner and fainter as the graph gets denser, so a hairball reads as
   // texture behind the contracts rather than covering them.
   const dense = links.length > arrowLimit;
-  const linkEl = zoomG.append('g').selectAll('line').data(links).join('line')
+  // Keyed by the pair it joins, and read through .id because forceLink has by
+  // now rewritten the previous render's endpoints from paths into the node
+  // objects themselves. A key function is handed both, so it has to read both.
+  const linkKey = l => (l.source.id || l.source) + '\u0000' + (l.target.id || l.target);
+  const linkEl = linkG.selectAll('line').data(links, linkKey).join('line')
     .attr('stroke', 'var(--fg2)')
     .attr('stroke-opacity', dense ? 0.14 : 0.3)
     .attr('stroke-width', l => (dense ? 0.4 : 0.6) + (dense ? 1.2 : 2.4) * Math.sqrt(l.weight / maxWeight))
     .attr('marker-end', showArrows ? 'url(#contract-arrow)' : null);
 
-  const nodeEl = decorateContractShape(
-    zoomG.append('g').selectAll('circle').data(nodes).join('circle'), d => d)
-    .attr('r', radius)
-    .on('click', (e, d) => contractOpen(d))
-    .call(d3.drag()
-      .on('start', (e, d) => { if (!e.active) sim.alphaTarget(0.25).restart(); d.fx = d.x; d.fy = d.y; })
-      .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; })
-      .on('end', (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }));
-  contractHover(nodeEl, tip, d => d);
+  // Enter, update and exit separately, which is the whole point: a contract
+  // that was already on the map keeps its circle, and therefore its position,
+  // and is transitioned to its new radius. One arriving grows from nothing
+  // where it is about to be, one leaving shrinks into nothing where it was.
+  const nodeEl = nodeG.selectAll('circle').data(nodes, d => d.id).join(
+    enter => {
+      const c = enter.append('circle')
+        .attr('r', 0)
+        .attr('cx', d => d.x == null ? width / 2 : d.x)
+        .attr('cy', d => d.y == null ? height / 2 : d.y)
+        .on('click', (e, d) => contractOpen(d))
+        .call(d3.drag()
+          // Through _contracts.sim rather than a captured variable: these
+          // handlers are attached once, when the bubble first appears, and
+          // outlive every render after that one.
+          .on('start', (e, d) => {
+            const s = _contracts.sim;
+            if (!e.active && s) s.alphaTarget(0.25).restart();
+            d.fx = d.x; d.fy = d.y;
+          })
+          .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; })
+          .on('end', (e, d) => {
+            const s = _contracts.sim;
+            if (!e.active && s) s.alphaTarget(0);
+            d.fx = null; d.fy = null;
+          }));
+      return contractHover(c, tip, d => d);
+    },
+    update => update,
+    exit => ms ? exit.transition().duration(ms).attr('r', 0).remove() : exit.remove(),
+  );
+  // Colour, opacity and the dashed ring land at once. Only the radius is worth
+  // interpolating, and fill-opacity must not be: the search box writes it
+  // directly, and a transition running over it would fight the highlight.
+  decorateContractShape(nodeEl, d => d);
+  ease(nodeEl).attr('r', radius);
 
-  // Labels last, so they are never covered by a bubble drawn after them.
-  const labelG = zoomG.append('g').attr('pointer-events', 'none');
   const labelled = _contracts.labels
     ? nodes.slice().sort((a, b) => metric.get(b) - metric.get(a)).slice(0, 14)
     : [];
-  const labelEl = labelG.selectAll('text').data(labelled).join('text')
+  const labelEl = labelG.selectAll('text').data(labelled, d => d.id).join('text')
     .text(d => d.path.replace('gno.land/', ''))
     .attr('font-size', 10)
     .attr('text-anchor', 'middle')
@@ -11524,51 +11709,101 @@ function drawContractForce(ctx) {
     // colour to give it.
     .attr('stroke', 'var(--bg)')
     .attr('stroke-width', 3)
-    .attr('paint-order', 'stroke');
+    .attr('paint-order', 'stroke')
+    // hideOverlappingLabels hid some of these on the last settle, against a
+    // layout that has since moved. Show them all again and let the next settle
+    // decide again, or a label dropped once is dropped for the rest of the
+    // session.
+    .style('display', '');
 
-  const sim = d3.forceSimulation(nodes)
-    .force('link', d3.forceLink(links).id(d => d.id).distance(40).strength(l => Math.min(0.7, 0.1 + l.weight / (maxWeight * 2))))
-    .force('charge', d3.forceManyBody().strength(-24))
-    .force('collide', d3.forceCollide().radius(d => radius(d) + 1.5).iterations(2))
-    // The clustering force is what makes this a bubblemap rather than a
-    // hairball: same-namespace contracts are pulled toward a shared centre, so
-    // clusters emerge and then deform under the links, instead of being drawn
-    // as rigid parent circles that the links have no say in.
-    //
-    // Switchable because the two views answer different questions. With it on,
-    // the grouping is imposed and the links show how far they can stretch it.
-    // With it off, position comes from the links alone, and any grouping you
-    // still see is one the traffic actually has. Off, a weak centring force
-    // replaces it so disconnected nodes do not drift out of the viewport.
-    .force('x', _contracts.cluster
-      ? d3.forceX(d => centroids.get(d.namespace).x).strength(0.11)
-      : d3.forceX(width / 2).strength(0.05))
-    .force('y', _contracts.cluster
-      ? d3.forceY(d => centroids.get(d.namespace).y).strength(0.11)
-      : d3.forceY(height / 2).strength(0.05));
+  // One simulation per surface, reconfigured rather than replaced.
+  //
+  // A new d3.forceSimulation starts at alpha 1 and seeds every node it has not
+  // seen, which is the same thing as starting over however carefully the
+  // positions were kept. Reusing this one means a repaint is a change of
+  // forces over a layout that already exists.
+  let sim = surface.sim;
+  if (!sim) {
+    sim = d3.forceSimulation()
+      .force('link', d3.forceLink().id(d => d.id))
+      .force('charge', d3.forceManyBody())
+      .force('collide', d3.forceCollide())
+      // The clustering force is what makes this a bubblemap rather than a
+      // hairball: same-namespace contracts are pulled toward a shared centre,
+      // so clusters emerge and then deform under the links, instead of being
+      // drawn as rigid parent circles that the links have no say in.
+      //
+      // Switchable because the two views answer different questions. With it
+      // on, the grouping is imposed and the links show how far they can
+      // stretch it. With it off, position comes from the links alone, and any
+      // grouping you still see is one the traffic actually has. Off, a weak
+      // centring force replaces it so disconnected nodes do not drift out of
+      // the viewport.
+      .force('x', d3.forceX())
+      .force('y', d3.forceY());
+    surface.sim = sim;
+  }
   _contracts.sim = sim;
 
+  // Links are emptied before the node set changes and refilled after: forceLink
+  // resolves its endpoints against whatever nodes it was last initialised with,
+  // and handing it the previous render's links over a new node set is how that
+  // throws.
+  sim.force('link').links([]);
+  sim.nodes(nodes);
+  sim.force('link').links(links)
+    .distance(40)
+    .strength(l => Math.min(0.7, 0.1 + l.weight / (maxWeight * 2)));
+  sim.force('charge').strength(-24);
+  sim.force('collide').radius(d => radius(d) + 1.5).iterations(2);
+  sim.force('x')
+    .x(_contracts.cluster ? d => centroids.get(d.namespace).x : width / 2)
+    .strength(_contracts.cluster ? 0.11 : 0.05);
+  sim.force('y')
+    .y(_contracts.cluster ? d => centroids.get(d.namespace).y : height / 2)
+    .strength(_contracts.cluster ? 0.11 : 0.05);
+
   const byNamespace = d3.group(nodes, d => d.namespace);
-  sim.on('tick', () => {
+  const paint = () => {
     linkEl.attr('x1', l => l.source.x).attr('y1', l => l.source.y)
       .attr('x2', l => l.target.x).attr('y2', l => l.target.y);
     nodeEl.attr('cx', d => d.x).attr('cy', d => d.y);
     if (_contracts.hulls) drawNamespaceHulls(hullG, byNamespace, radius);
     if (_contracts.labels) labelEl.attr('x', d => d.x).attr('y', d => d.y - radius(d) - 3);
-  });
+  };
+  sim.on('tick', paint);
+  // Outlines are redrawn per tick while they are on. Switched off, the last set
+  // drawn would otherwise sit there over a map that has since moved.
+  if (!_contracts.hulls) hullG.selectAll('*').remove();
+  // Once, now, before a frame can be painted: entering elements were given
+  // placeholder coordinates because forceLink had not yet resolved anything,
+  // and a link joined this render still has paths where its endpoints go.
+  paint();
+
+  // How hard to reheat.
+  //
+  // A first paint settles from nothing and needs the full run. A repaint
+  // already has the answer on screen: 0.12 is a nudge, enough for the collision
+  // radii to give when a metric makes some bubbles bigger, and little enough
+  // that nothing travels. The larger reheat is for the changes that genuinely
+  // move everything, which is a different link set, a different node count, or
+  // the clustering force going on or off.
+  const shape = [nodes.length, links.length, _contracts.cluster, _contracts.edges].join('|');
+  const reheat = !surface.reused ? 1 : (surface.shape === shape ? 0.12 : 0.5);
+  surface.shape = shape;
+  sim.alpha(reheat).alphaTarget(0).restart();
 
   // A force layout does not respect the box it is drawn in: with several
   // hundred nodes the clusters push each other past every edge of the SVG and
   // the first thing a reader sees is a map already half off-screen. So once it
   // settles, frame what it produced.
   //
-  // Once, not on every settle: dragging a node restarts the simulation, and
-  // re-fitting when that one ends would yank the view out from under the
-  // person who dragged it.
-  let fitted = false;
+  // Once per surface, not on every settle: dragging a node restarts the
+  // simulation and so does every repaint, and re-fitting when one of those
+  // ends would yank the view out from under the person reading it.
   const fit = () => fitContractMap(svg, zoom, nodes, radius, width, height);
   sim.on('end', () => {
-    if (!fitted) { fitted = true; fit(); }
+    if (!surface.fitted) { surface.fitted = true; fit(); }
     if (_contracts.labels) hideOverlappingLabels(labelEl);
   });
   return fit;
@@ -12087,7 +12322,7 @@ function drawContractChord(ctx) {
     total.set(b, (total.get(b) || 0) + l.weight);
   });
   if (!crossing.length) {
-    ctx.container.querySelector('svg').remove();
+    teardownContractSurface(ctx.container);
     ctx.container.appendChild(el('div', {
       style: { padding: '60px 40px', textAlign: 'center', color: 'var(--fg2)', lineHeight: '1.8' },
     },
