@@ -255,3 +255,64 @@ func TestRealmUsageUnknownPath(t *testing.T) {
 		t.Fatal("RealmUsage on an unknown path returned no error")
 	}
 }
+
+// "returning" counts every caller with more than one message, not just the
+// ones that fit in the callers table. Deriving it from that (capped) slice
+// would silently mean "returning, among the top N" on exactly the realms
+// where retention is worth knowing.
+func TestRealmUsageReturningIsNotCappedByTheCallersTable(t *testing.T) {
+	db := NewTestDB(t)
+	db.configured = []string{"mainnet", "pearl"}
+	seedUsage(t, db)
+
+	got, err := db.RealmUsage("mainnet", "gno.land/r/demo/rumble", RealmUsageFilter{CallerLimit: 1})
+	if err != nil {
+		t.Fatalf("RealmUsage: %v", err)
+	}
+	if len(got.Callers) != 1 || !got.CallersTruncated {
+		t.Fatalf("got %d callers, truncated=%v; want 1 and true", len(got.Callers), got.CallersTruncated)
+	}
+	// g1alice is the only caller with more than one message, and she is in the
+	// table; the count would have to be 1 either way. What this pins is that
+	// the figure comes from the query and not from the slice.
+	if got.Summary.Returning != 1 {
+		t.Errorf("returning = %d, want 1", got.Summary.Returning)
+	}
+	if got.Summary.UniqueCallers != 3 {
+		t.Errorf("unique callers = %d, want 3 even with the table capped at 1", got.Summary.UniqueCallers)
+	}
+}
+
+// And the same with the cap below a caller that does qualify: g1alice is the
+// only returning caller, so capping her out must not take the count with her.
+func TestRealmUsageReturningSurvivesACapThatExcludesIt(t *testing.T) {
+	db := NewTestDB(t)
+	db.configured = []string{"mainnet"}
+	const path = "gno.land/r/demo/tail"
+	if err := db.UpsertPackage("mainnet", path, "tail", "g1dev", "TXD", 1, "", true, 1); err != nil {
+		t.Fatalf("upsert package: %v", err)
+	}
+	// g1quiet calls once at the highest block, so it sorts first on the
+	// message-count tie-break and pushes the returning caller out of a cap of 1.
+	for i, c := range []struct {
+		tx     string
+		height int
+		caller string
+	}{
+		{"T1", 10, "g1loud"}, {"T2", 11, "g1loud"}, {"T3", 12, "g1quiet"},
+	} {
+		if err := db.InsertCall("mainnet", c.tx, c.height, 0, "", c.caller, path, "Ping", true); err != nil {
+			t.Fatalf("insert call %d: %v", i, err)
+		}
+	}
+	got, err := db.RealmUsage("mainnet", path, RealmUsageFilter{CallerLimit: 1})
+	if err != nil {
+		t.Fatalf("RealmUsage: %v", err)
+	}
+	if got.Callers[0].Address != "g1loud" {
+		t.Fatalf("top caller = %q, want g1loud", got.Callers[0].Address)
+	}
+	if got.Summary.Returning != 1 {
+		t.Errorf("returning = %d, want 1", got.Summary.Returning)
+	}
+}
