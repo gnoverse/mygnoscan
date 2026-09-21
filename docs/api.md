@@ -175,7 +175,7 @@ fact.
 | `GET /api/realm/{path...}` | detail for one package: metadata, source files, imports, dependents, callers, MsgRun references. `recent_calls` and `msgrun_refs` are the 50 most recent of each, and carry `block_time` where the syncer knew it (omitted otherwise, so a consumer plotting them on a time axis can say how many it left out) |
 | `GET /api/deps/{path...}` | dependency graph as `{path: [imports]}`. `dir=dependents` reverses direction |
 | `GET /api/storage/{path...}` | storage events for a package. **Requires `network`**: the figures are denominated amounts and blending chains would be meaningless |
-| `GET /api/events/{path...}` | events emitted by a package. Bounded: `limit` defaults to 200, capped at 2000. In all-networks mode it queries every chain and tags each row with its `network` |
+| `GET /api/events/{path...}` | every event tagged with a package's path. Bounded: `limit` defaults to 200, capped at 2000. In all-networks mode it queries every chain and tags each row with its `network`. Unlike `/api/allevents` this is not filtered to `GnoEvent`, so the chain's own `StorageDepositEvent` / `StorageUnlockEvent` for that path are included; the realm page hides those behind a toggle rather than dropping them here |
 
 ### Sync health versus chain liveness
 
@@ -377,7 +377,7 @@ answer it must never give.
 | `GET /api/tx/{hash}` | one transaction: messages, events, errors |
 | `GET /api/blocks` | recent blocks. `limit` |
 | `GET /api/block/{height}` | one block and its transactions. **Requires `network`**: a height alone does not identify a block across chains |
-| `GET /api/allevents` | recent events across all packages. `limit` defaults to 200, capped at 2000. Rows carry their `network` |
+| `GET /api/allevents` | recent `GnoEvent`s across all packages, and only those: the chain's storage bookkeeping is filtered out server-side. `limit` defaults to 200, capped at 2000. Rows carry their `network` |
 
 `total` on `/api/txs` is the size of the fetched window, **not** the chain's
 transaction count. It never could be: the indexer caps a result set at 10,000
