@@ -581,6 +581,25 @@ test('switching the view repaints without refetching', async ({ page }) => {
   expect(requests).toEqual([]);
 });
 
+test('the scale pills only appear where the scale reaches', async ({ page }) => {
+  await openMap(page);
+  // log and linear size a radius, and three of the six layouts draw one. The
+  // packing and the treemap lay out from the summed metric instead, so the
+  // pill never touched them and the count line answered it anyway.
+  await expect(page.getByRole('button', { name: 'log', exact: true })).toBeVisible();
+
+  await page.goto('/contracts?view=treemap&edges=none&metric=gas_used&scale=log');
+  await page.waitForSelector('#contract-map svg rect[data-path]', { timeout: 20_000 });
+  await expect(page.getByRole('button', { name: 'log', exact: true })).toHaveCount(0);
+  await expect(page.locator('#contract-map').getByText(/size = gas/)).not.toContainText('(log)');
+
+  // Still remembered: switching back is one click, not a re-pick.
+  await page.getByRole('button', { name: 'force', exact: true }).click();
+  await page.waitForSelector('#contract-map svg circle[data-path]', { timeout: 20_000 });
+  await expect(page.getByRole('button', { name: 'log', exact: true })).toBeVisible();
+  await expect(page.locator('#contract-map').getByText(/size = gas/)).toContainText('(log)');
+});
+
 test('the grouping pills only appear where they mean something', async ({ page }) => {
   await openMap(page);
   // cluster and outlines are the force layout's own vocabulary: every other

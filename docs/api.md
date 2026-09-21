@@ -212,6 +212,11 @@ two endpoints, and switching view is a repaint, never a refetch:
 contract. `?flow=0` stops the particle animation on `orbit` and `bundled`, which
 is also what `prefers-reduced-motion` does.
 
+`?scale=log` compresses the heavy tail, and reaches the three layouts that size
+a radius (`force`, `orbit`, `bundled`) and no others: `packed` and `treemap` lay
+out from the summed metric itself. The pill is offered only where it does
+something, and the count line no longer says `(log)` over areas that are linear.
+
 `?metric=` decides every area and every radius drawn, so the number behind it is
 printed wherever there is room for it: under the name in each treemap cell and
 each packed circle, beside the namespace on its band, as a total on the count
