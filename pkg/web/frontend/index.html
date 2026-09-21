@@ -1292,6 +1292,14 @@ function fmtBytes(n) {
   if (n >= 1024) return fmtNum(n) + ' bytes (' + (n / 1024).toFixed(2) + ' KB)';
   return fmtNum(n) + ' bytes';
 }
+// The same quantity in the space a treemap cell has. fmtBytes spells out both
+// forms, which is right for a table row and three times too wide for a label
+// drawn inside a rectangle 60 pixels across.
+function shortBytes(n) {
+  if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB';
+  if (n >= 1024) return (n / 1024).toFixed(1) + ' KB';
+  return fmtNum(n) + ' B';
+}
 // Wraps a bare function name so hovering it highlights every other call to
 // the same function on the page, the same way addresses and tx hashes do.
 function funcSpan(name) {
@@ -10400,7 +10408,18 @@ const DASHBOARDS = [
             // A treemap cannot represent a negative area.
             data: rows.filter(r => r.net > 0).map(r => ({ name: r.pkg_path, value: r.net })),
             // Labels are canvas-drawn, not HTML, so a string is safe here.
-            label: { color: '#06231f', fontSize: 11, formatter: p => p.name },
+            //
+            // Name and number, because the rectangle is the number: a treemap
+            // that prints only the name asks the reader to compare areas by
+            // eye and then gives them nothing to put on either side of the
+            // comparison. The number carries no unit because the card title
+            // and the tooltip both say bytes, and ' bytes' on the second line
+            // is the difference between 1.1M and a truncated 1.1M\u2026 in the
+            // cells narrow enough to need it.
+            label: {
+              color: '#06231f', fontSize: 11, lineHeight: 13,
+              formatter: p => p.name + '\n' + dashCompactNumber(p.value),
+            },
             levels: [{ itemStyle: { borderColor: '#0a0a0a', borderWidth: 2, gapWidth: 2 } }],
           }],
         }),
@@ -10961,7 +10980,7 @@ window.addEventListener('resize', () => {
 const CONTRACT_METRICS = {
   calls: { label: 'calls', rank: 'most called', get: n => n.calls, windowed: true },
   unique_callers: { label: 'unique callers', rank: 'most users', get: n => n.unique_callers, windowed: true },
-  storage_bytes: { label: 'storage', rank: 'largest storage', get: n => n.storage_bytes, windowed: false },
+  storage_bytes: { label: 'storage', rank: 'largest storage', get: n => n.storage_bytes, windowed: false, bytes: true },
   gas_used: { label: 'gas', rank: 'most gas', get: n => n.gas_used, windowed: false },
   // How many deployed contracts import this one. The quantity the import graph
   // is about, and the reason that view was unreadable before: sized by calls or
@@ -10971,6 +10990,19 @@ const CONTRACT_METRICS = {
   importers: { label: 'depended on by', rank: 'most depended on', get: n => n.importers, windowed: false },
   imports: { label: 'depends on', rank: 'most dependencies', get: n => n.imports, windowed: false },
 };
+
+// A metric drawn as an area is a comparison and not a reading: a reader can see
+// that this rectangle is twice that one and has no way to say twice of what.
+// So every place the map commits to a size also prints the number behind it:
+// exact where there is room for it (the hover card), compact where there is
+// not (inside the rectangle itself).
+function fmtMetric(m, v) { return m.bytes ? fmtBytes(v || 0) : fmtNum(v || 0); }
+function fmtMetricShort(m, v) { return m.bytes ? shortBytes(v || 0) : dashCompactNumber(v || 0); }
+// The metric summed over a namespace: what its band in the treemap, its circle
+// in the packing and its entry in the legend are all sized by. Not d3's
+// hierarchy value, which carries contractHierarchy's +1 per contract and would
+// report a namespace of 40 uncalled packages as holding 40 calls.
+function nsMetricTotal(d, m) { return d3.sum(d.children || [], c => m.get(c.data.leaf) || 0); }
 
 // The metric each link mode is worth reading with, applied when the reader has
 // not picked one. Switching to imports and seeing the same gas-sized bubbles is
@@ -11667,7 +11699,12 @@ function contractLayer(zoomG, name) {
 // One hover card, shared by every layout, so a bubble on the force map and a
 // leaf in the packing say the same things in the same order.
 function contractTooltip(container) {
+  // The class is the browser test's only handle on this: the card is styled
+  // inline like everything else here, and a test that located it by its
+  // position and its display property would be asserting the layout rather
+  // than the content.
   const tip = el('div', {
+    className: 'map-tip',
     style: {
       position: 'absolute', display: 'none', pointerEvents: 'none', zIndex: '20',
       background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: '3px',
@@ -11689,8 +11726,21 @@ function contractTooltip(container) {
       tip.appendChild(el('div', { style: { color: 'var(--accent)', marginBottom: '3px' } }, d.path));
       tip.appendChild(row('namespace', d.namespace));
       tip.appendChild(row('kind', d.is_realm ? 'realm' : 'pure package'));
-      tip.appendChild(row('calls', fmtNum(d.calls) + ' from ' + fmtNum(d.unique_callers) + ' addresses'));
-      tip.appendChild(row('storage', fmtNum(d.storage_bytes) + ' bytes'));
+      // Every metric the map can be sized by, with the active one marked.
+      // Sized by gas, the quantity the whole picture was drawn from appeared
+      // nowhere on the page: an area says "bigger than that one" and no
+      // amount of looking at it says how much bigger, or of what.
+      //
+      // The window applies to two of the six, so it is spelled out on those
+      // two rather than left to be inferred from a control elsewhere.
+      const win = _contracts.window !== 'all' ? ' (' + _contracts.window + ')' : '';
+      Object.entries(CONTRACT_METRICS).forEach(([key, m]) => {
+        const active = key === _contracts.metric;
+        const line = el('div', { style: { color: active ? 'var(--fg)' : 'var(--fg2)' } },
+          m.label + ': ' + fmtMetric(m, m.get(d)) + (m.windowed ? win : ''));
+        if (active) line.appendChild(el('span', { style: { color: 'var(--accent)' } }, ' \u00b7 size'));
+        tip.appendChild(line);
+      });
       // The account's own name when it has one, abbreviated when it does not,
       // with the identicon: a hover card is exactly where recognising an
       // address at a glance matters, and this is the only place a bubble names
@@ -12274,7 +12324,8 @@ function drawContractPacked(ctx) {
       svg.transition().duration(500).call(zoom.transform,
         d3.zoomIdentity.translate(width / 2, height / 2).scale(k).translate(-(d.x + 4), -(d.y + 4)));
     })
-    .append('title').text(d => d.data.ns + ' \u00b7 ' + d.children.length + ' contracts');
+    .append('title').text(d => d.data.ns + ' \u00b7 ' + d.children.length + ' contracts \u00b7 ' +
+      fmtMetric(metric, nsMetricTotal(d, metric)) + ' ' + metric.label);
 
   const leaves = root.leaves();
   const leafEl = decorateContractShape(
@@ -12316,13 +12367,24 @@ function drawContractPacked(ctx) {
     .attr('text-anchor', 'middle').attr('font-size', 11)
     .attr('fill', d => namespaceColor(d.data.ns))
     .attr('stroke', 'var(--bg)').attr('stroke-width', 3).attr('paint-order', 'stroke')
-    .text(d => namespaceLabel(d.data.ns));
+    .text(d => namespaceLabel(d.data.ns) +
+      (d.r > 44 ? ' \u00b7 ' + fmtMetricShort(metric, nsMetricTotal(d, metric)) : ''));
 
+  // Name on one line, the metric under it, in the circles with room for two
+  // lines. Same reason as the treemap: a packing sized by gas that never
+  // prints a gas figure is a picture of a ranking, not of a quantity.
   const leafLabels = groups.append('g').attr('pointer-events', 'none');
-  leafLabels.selectAll('text').data(leaves.filter(d => d.r > 18)).join('text')
-    .attr('x', d => d.x).attr('y', d => d.y + 3)
+  leafLabels.selectAll('text.name').data(leaves.filter(d => d.r > 18)).join('text')
+    .attr('class', 'name')
+    .attr('x', d => d.x).attr('y', d => d.r > 26 ? d.y - 1 : d.y + 3)
     .attr('text-anchor', 'middle').attr('font-size', 9.5).attr('fill', 'var(--bg)')
     .text(d => d.data.leaf.name);
+  leafLabels.selectAll('text.val').data(leaves.filter(d => d.r > 26)).join('text')
+    .attr('class', 'val')
+    .attr('x', d => d.x).attr('y', d => d.y + 10)
+    .attr('text-anchor', 'middle').attr('font-size', 9).attr('fill', 'var(--bg)')
+    .attr('fill-opacity', 0.75)
+    .text(d => fmtMetricShort(metric, metric.get(d.data.leaf)));
 
   return () => svg.transition().duration(300).call(zoom.transform, d3.zoomIdentity);
 }
@@ -12627,7 +12689,8 @@ function drawContractTreemap(ctx) {
     .attr('fill-opacity', 0.12)
     .attr('stroke', d => namespaceColor(d.data.ns))
     .attr('stroke-opacity', 0.5)
-    .append('title').text(d => d.data.ns + ' \u00b7 ' + d.children.length + ' contracts');
+    .append('title').text(d => d.data.ns + ' \u00b7 ' + d.children.length + ' contracts \u00b7 ' +
+      fmtMetric(metric, nsMetricTotal(d, metric)) + ' ' + metric.label);
 
   const leaves = root.leaves();
   const leafEl = decorateContractShape(
@@ -12638,17 +12701,34 @@ function drawContractTreemap(ctx) {
     .on('click', (e, d) => contractOpen(d.data.leaf));
   contractHover(leafEl, tip, d => d.data.leaf);
 
+  // Names, and under them the number the area was drawn from. The treemap is
+  // the view whose whole claim is that the comparison between two rectangles
+  // is exact, and it was the view that never said what was being compared:
+  // area is the metric, and the metric was nowhere on screen.
+  //
+  // Each label is drawn only where its cell has room for it, so what a dense
+  // chain loses is the value on its smallest cells and never the name. The
+  // hover card carries both for every contract regardless.
   const labels = zoomGT.append('g').attr('pointer-events', 'none');
   labels.selectAll('text.ns').data(nsNodes.filter(d => (d.x1 - d.x0) > 44 && (d.y1 - d.y0) > 26))
     .join('text').attr('class', 'ns')
     .attr('x', d => d.x0 + 4).attr('y', d => d.y0 + 12)
     .attr('font-size', 10).attr('fill', d => namespaceColor(d.data.ns))
-    .text(d => namespaceLabel(d.data.ns));
+    .text(d => namespaceLabel(d.data.ns) +
+      ((d.x1 - d.x0) > 110 ? ' \u00b7 ' + fmtMetricShort(metric, nsMetricTotal(d, metric)) : ''));
   labels.selectAll('text.leaf').data(leaves.filter(d => (d.x1 - d.x0) > 52 && (d.y1 - d.y0) > 14))
     .join('text').attr('class', 'leaf')
     .attr('x', d => d.x0 + 4).attr('y', d => d.y0 + 11)
     .attr('font-size', 9.5).attr('fill', 'var(--bg)')
     .text(d => d.data.leaf.name);
+  // A second line rather than a suffix on the first: the name is what the
+  // reader scans for, and a name truncated by the number glued to it costs
+  // more than the number gains.
+  labels.selectAll('text.val').data(leaves.filter(d => (d.x1 - d.x0) > 52 && (d.y1 - d.y0) >= 26))
+    .join('text').attr('class', 'val')
+    .attr('x', d => d.x0 + 4).attr('y', d => d.y0 + 22)
+    .attr('font-size', 9).attr('fill', 'var(--bg)').attr('fill-opacity', 0.75)
+    .text(d => fmtMetricShort(metric, metric.get(d.data.leaf)));
 
   return () => svg.transition().duration(300).call(zoom.transform, d3.zoomIdentity);
 }
@@ -12798,14 +12878,21 @@ function contractMapChrome(svg, zoom, namespaces, nodes, linkCount, fit) {
   const on = (_contracts.data && _contracts.data.network) ? ' on ' + _contracts.data.network : '';
   const linkWord = linkCount === 1 ? 'link' : 'links';
   const edgeNote = _contracts.edges === 'none' ? '' : ' (' + CONTRACT_EDGE_KINDS[_contracts.edges].label + ')';
+  // The total is what turns "size = gas" from a caption into a scale: every
+  // area on screen is a share of this number, and without it the largest
+  // rectangle on a quiet chain looks exactly like the largest one on a busy
+  // one.
+  const sizeMetric = CONTRACT_METRICS[_contracts.metric];
+  const sizeTotal = d3.sum(nodes, n => sizeMetric.get(n) || 0);
   const count = el('div', {
     style: {
       position: 'absolute', top: '8px', left: '8px', fontSize: '11px', color: 'var(--fg2)',
       background: 'var(--bg2)', padding: '2px 6px', borderRadius: '3px', maxWidth: '62%',
     },
   }, fmtNum(nodes.length) + ' contracts' + on + ' · ' + fmtNum(linkCount) + ' ' + linkWord + edgeNote +
-     ' · size = ' + CONTRACT_METRICS[_contracts.metric].label +
-     (_contracts.scale === 'log' ? ' (log)' : ''));
+     ' · size = ' + sizeMetric.label +
+     (_contracts.scale === 'log' ? ' (log)' : '') +
+     ' · ' + fmtMetricShort(sizeMetric, sizeTotal) + ' total');
   // Each view is a different question, and none of them announces which one on
   // its own. One line, under the count, so switching view says what changed.
   const spec = CONTRACT_LAYOUTS[_contracts.layout] || CONTRACT_LAYOUTS.force;
@@ -12843,6 +12930,9 @@ function contractMapChrome(svg, zoom, namespaces, nodes, linkCount, fit) {
   // Clicking a legend entry isolates that namespace, which is the filter a
   // reader reaches for first and the one the legend is already the natural
   // control for. Clicking the active one clears it.
+  //
+  // Each entry prints the metric it is ranked by, exact in the tooltip: a
+  // legend ordered by a number it does not show reads as an arbitrary order.
   top.forEach(([ns, n]) => {
     const dot = el('span', { style: { display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', background: namespaceColor(ns) } });
     const active = _contracts.namespace === ns;
@@ -12857,8 +12947,9 @@ function contractMapChrome(svg, zoom, namespaces, nodes, linkCount, fit) {
         contractsStateToURL();
         repaintContracts();
       },
-    }, dot, ns + ' (' + n + ')');
-    entry.setAttribute('title', active ? 'show every namespace again' : 'show only ' + ns);
+    }, dot, ns + ' (' + n + ') · ' + fmtMetricShort(legendMetric, weight.get(ns)));
+    entry.setAttribute('title', (active ? 'show every namespace again' : 'show only ' + ns) +
+      ' · ' + fmtMetric(legendMetric, weight.get(ns)) + ' ' + legendMetric.label);
     legend.appendChild(entry);
   });
   if (namespaces.length > top.length) {
