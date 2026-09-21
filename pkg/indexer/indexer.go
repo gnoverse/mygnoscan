@@ -266,16 +266,17 @@ func (c *Client) supportsType(ctx context.Context, typeName string) bool {
 	return supported
 }
 
-// lightFields and fullFields are the transaction selection sets, trimmed to
-// what this indexer actually understands.
+// lightFields, bodyFields and fullFields are the transaction selection sets,
+// trimmed to what this indexer actually understands.
 func (c *Client) lightFields(ctx context.Context) string {
 	return c.trimFields(ctx, txFieldsLight)
 }
 
-// syncFields is the set the sync loop reads with: package file bodies, which it
-// stores, without content_raw, which it does not.
-func (c *Client) syncFields(ctx context.Context) string {
-	return c.trimFields(ctx, txFieldsSync)
+// bodyFields is the set for readers that want package sources and nothing more:
+// the file bodies, without content_raw. Named for what it carries rather than
+// for the sync, because the sync is no longer its only caller.
+func (c *Client) bodyFields(ctx context.Context) string {
+	return c.trimFields(ctx, txFieldsBodies)
 }
 
 func (c *Client) fullFields(ctx context.Context) string {
@@ -821,10 +822,11 @@ func txSelection(fileBodies, contentRaw bool) string {
 var (
 	// txFieldsLight drops file bodies, for list views
 	txFieldsLight = txSelection(false, false)
-	// txFieldsSync carries the file bodies the sync stores, and not content_raw,
-	// which it never reads
-	txFieldsSync = txSelection(true, false)
-	// txFields adds content_raw, for the single transaction detail path
+	// txFieldsBodies carries package file bodies and not content_raw, which
+	// would only repeat them: the sync and the govdao provenance view
+	txFieldsBodies = txSelection(true, false)
+	// txFields adds content_raw, for the single transaction detail path, the
+	// only place SignerAddress has anything to derive from
 	txFields = txSelection(true, true)
 )
 
@@ -900,7 +902,7 @@ func dropTrailingHeight(txs []Transaction) []Transaction {
 // See transactionsFromHeight for the paging contract.
 func (c *Client) GetAllPackages(ctx context.Context, lastHeight *int) ([]Transaction, bool, error) {
 	return c.transactionsFromHeight(ctx, lastHeight,
-		`messages: { value: { MsgAddPackage: {} } }`, c.syncFields(ctx))
+		`messages: { value: { MsgAddPackage: {} } }`, c.bodyFields(ctx))
 }
 
 // GetRecentTransactions fetches the most recent transactions, limited to maxResults.
@@ -1135,7 +1137,7 @@ func (c *Client) GetTransactionsByAddress(ctx context.Context, addr string) ([]T
 // See transactionsFromHeight for the paging contract.
 func (c *Client) GetMsgRunTransactions(ctx context.Context, lastHeight *int) ([]Transaction, bool, error) {
 	return c.transactionsFromHeight(ctx, lastHeight,
-		`messages: { value: { MsgRun: {} } }`, c.syncFields(ctx))
+		`messages: { value: { MsgRun: {} } }`, c.bodyFields(ctx))
 }
 
 type Block struct {
@@ -1444,7 +1446,9 @@ func (c *Client) GetGovDAOTransactions(ctx context.Context, need int) ([]Transac
 const GovDAORealm = "gno.land/r/gov/dao"
 
 // GetGovDAOProposalCreations fetches every transaction that emitted gov/dao's
-// own ProposalCreated event, with full message bodies.
+// own ProposalCreated event, with the message bodies but not content_raw: the
+// rows are MsgRun transactions carrying a whole script, and content_raw would
+// ship each of those scripts a second time for a field this view never reads.
 //
 // This is the only exact link between a proposal ID and the transaction that
 // created it, and it is exact because gov/dao emits the ID as an event
@@ -1470,7 +1474,7 @@ func (c *Client) GetGovDAOProposalCreations(ctx context.Context) ([]Transaction,
 			where: { response: { events: { GnoEvent: { pkg_path: { eq: "%s" }, type: { eq: "ProposalCreated" } } } } }
 			order: { heightAndIndex: DESC }
 		) { %s }
-	}`, gqlEscape(GovDAORealm), c.fullFields(ctx))
+	}`, gqlEscape(GovDAORealm), c.bodyFields(ctx))
 	if err := c.query(ctx, q, nil, &result); err != nil {
 		return nil, err
 	}
