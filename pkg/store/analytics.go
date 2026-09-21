@@ -584,13 +584,13 @@ func (d *DB) GetAnalytics(network string) (*Analytics, error) {
 	}
 
 	// Recent realms
-	recentQ := `SELECT network, path, name, creator, block_height, tx_hash, is_realm, num_files FROM packages WHERE is_realm = 1` + pFilter + ` ORDER BY block_height DESC LIMIT 10`
+	recentQ := `SELECT network, path, name, creator, block_height, COALESCE(block_time, ''), tx_hash, is_realm, num_files FROM packages WHERE is_realm = 1` + pFilter + ` ORDER BY block_height DESC LIMIT 10`
 	rows6, _ := d.db.Query(recentQ)
 	if rows6 != nil {
 		defer rows6.Close()
 		for rows6.Next() {
 			var p PackageInfo
-			rows6.Scan(&p.Network, &p.Path, &p.Name, &p.Creator, &p.BlockHeight, &p.TxHash, &p.IsRealm, &p.NumFiles)
+			rows6.Scan(&p.Network, &p.Path, &p.Name, &p.Creator, &p.BlockHeight, &p.BlockTime, &p.TxHash, &p.IsRealm, &p.NumFiles)
 			a.RecentRealms = append(a.RecentRealms, p)
 		}
 	}
