@@ -7453,6 +7453,19 @@ async function loadGasTxs() {
   });
 }
 
+// StorageDepositEvent / StorageUnlockEvent are the chain's own bookkeeping,
+// not anything a realm chose to emit: the VM posts one per transaction that
+// changed state, they carry no attributes, and their numbers are already the
+// storage tab's subject in a form that actually reads (before / delta / after
+// per realm, plus the running total). Listed beside real events they simply
+// double the table with a row that says "and it stored some bytes", which is
+// why every event list here hides them by default. One owner for the two
+// typenames, so a third kind of chain event only has to be added once.
+const STORAGE_EVENT_TYPENAMES = ['StorageDepositEvent', 'StorageUnlockEvent'];
+function isStorageEvent(ev) {
+  return STORAGE_EVENT_TYPENAMES.includes(ev.__typename);
+}
+
 let _eventsCache = null;
 let _eventsFilter = null;
 
@@ -9206,18 +9219,37 @@ async function loadRealmDetail(path, initialTab) {
           const evData = await api('events/' + eventsPath);
           if (gen !== _detailGen) return;
           eventsEl.textContent = '';
-          if (!(evData || []).length) {
-            eventsEl.appendChild(el('div', { style: { color: 'var(--fg2)', padding: '12px 0' } }, 'no events emitted by this realm'));
+          // /api/events returns every event carrying this pkg_path, which
+          // includes the chain's storage bookkeeping (see isStorageEvent).
+          // Those are hidden here by default, so count both halves first: the
+          // chart and the empty state are about what the realm itself emitted,
+          // and the toggle below needs to say how many rows it would add.
+          let evStorageCount = 0, evGnoCount = 0, evGnoTxCount = 0;
+          for (const item of evData) {
+            let n = 0;
+            for (const ev of (item.events || [])) {
+              if (isStorageEvent(ev)) evStorageCount++; else { evGnoCount++; n++; }
+            }
+            if (n) evGnoTxCount++;
+          }
+          if (!evGnoCount) {
+            eventsEl.appendChild(el('div', { style: { color: 'var(--fg2)', padding: '12px 0' } },
+              evStorageCount
+                ? 'no events emitted by this realm (' + fmtNum(evStorageCount) + ' storage deposits, see the storage tab)'
+                : 'no events emitted by this realm'));
             return;
           }
           // Event mix over time. The rows are nested (one transaction, many
-          // events), and the type is the interesting axis: a realm that emits
-          // nothing but StorageDepositEvent is a different animal from one
-          // emitting Transfer all day, and the table cannot say which without
-          // being read end to end.
+          // events), and the type is the interesting axis: a realm emitting
+          // Transfer all day is a different animal from one emitting a dozen
+          // kinds, and the table cannot say which without being read end to
+          // end. Storage events are left out: the chain posts one per
+          // state-changing transaction, so charting them draws the transaction
+          // count a second time in a taller stack.
           const evRows = [];
           for (const item of evData) {
             for (const ev of (item.events || [])) {
+              if (isStorageEvent(ev)) continue;
               evRows.push({ t: item.block_time, k: ev.type || ev.__typename || 'event' });
             }
           }
@@ -9232,7 +9264,7 @@ async function loadRealmDetail(path, initialTab) {
             const evNames = evFolded ? evKept.concat(['other']) : evKept;
             detailChart(eventsEl, _detailCharts, {
               title: 'events, per ' + evBuckets.unit,
-              note: fmtNum(evRows.length) + ' events over ' + fmtNum(evData.length) + ' transactions' +
+              note: fmtNum(evRows.length) + ' events over ' + fmtNum(evGnoTxCount) + ' transactions' +
                 (evFolded ? ', types past the top ' + evKept.length + ' folded into "other"' : ''),
               data: {
                 labels: evBuckets.labels,
@@ -9250,21 +9282,41 @@ async function loadRealmDetail(path, initialTab) {
               },
             });
           }
-          const evTbl = el('table');
-          evTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'tx'), el('th', {}, 'type'), el('th', {}, 'attributes'), el('th', {}, 'block'))));
-          const evBody = el('tbody');
-          for (const item of evData) {
-            for (const ev of item.events) {
-              const attrStr = (ev.attrs || []).map(a => a.key + '=' + a.value).join(', ');
-              evBody.appendChild(el('tr', {},
-                el('td', {}, txLink(item.tx_hash, item.block_height, null, { showBlock: false })),
-                el('td', {}, badge('realm', ev.type || 'event')),
-                el('td', {}, attrStr ? linkify(attrStr) : el('span', {}, '-')),
-                el('td', {}, blockWithAge(item.block_height, item.block_time))
-              ));
+          // Hidden by default rather than dropped: on a realm whose whole
+          // point is what it costs to store, the raw deposit stream beside the
+          // call that caused it is occasionally the thing you came for.
+          let evShowStorage = false;
+          const evTblWrap = el('div');
+          const renderEvTable = () => {
+            evTblWrap.textContent = '';
+            const evTbl = el('table');
+            evTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'tx'), el('th', {}, 'type'), el('th', {}, 'attributes'), el('th', {}, 'block'))));
+            const evBody = el('tbody');
+            for (const item of evData) {
+              for (const ev of (item.events || [])) {
+                if (!evShowStorage && isStorageEvent(ev)) continue;
+                const attrStr = (ev.attrs || []).map(a => a.key + '=' + a.value).join(', ');
+                evBody.appendChild(el('tr', {},
+                  el('td', {}, txLink(item.tx_hash, item.block_height, null, { showBlock: false })),
+                  el('td', {}, badge('realm', ev.type || ev.__typename || 'event')),
+                  el('td', {}, attrStr ? linkify(attrStr) : el('span', {}, '-')),
+                  el('td', {}, blockWithAge(item.block_height, item.block_time))
+                ));
+              }
             }
+            evTbl.appendChild(evBody); evTblWrap.appendChild(evTbl);
+          };
+          if (evStorageCount) {
+            const evCb = document.createElement('input'); evCb.type = 'checkbox';
+            evCb.addEventListener('change', () => { evShowStorage = evCb.checked; renderEvTable(); });
+            const evLabel = el('label', { style: { display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--fg2)', fontSize: '13px', cursor: 'pointer' } });
+            evLabel.appendChild(evCb);
+            evLabel.appendChild(document.createTextNode('show ' + fmtNum(evStorageCount) + ' storage events'));
+            evLabel.title = 'StorageDepositEvent / StorageUnlockEvent: the chain’s own bookkeeping, one per state-changing transaction. The storage tab reads them properly.';
+            eventsEl.appendChild(el('div', { style: { marginBottom: '8px' } }, evLabel));
           }
-          evTbl.appendChild(evBody); eventsEl.appendChild(evTbl);
+          eventsEl.appendChild(evTblWrap);
+          renderEvTable();
         } catch (err) {
           if (gen !== _detailGen) return;
           eventsEl.textContent = '';
@@ -9687,11 +9739,11 @@ async function loadTxDetail(hash) {
     const msgData = (tx.response?.data || '').split('\n\n').map(s => s.trim()).filter(Boolean);
     // Storage section (dedicated, separate from events) — shown unconditionally
     // above the messages/events tabs below, rather than folded into "events":
-    // it is mygnoscan's own before/delta/after-by-realm view, not a rendering
-    // of the raw StorageDepositEvent/StorageUnlockEvent rows (those still
-    // appear as ordinary events too), and it is useful often enough on a
-    // storage-heavy tx that hiding it behind a click cost more than it saved.
-    const storageEvs = events.filter(ev => ev.__typename === 'StorageDepositEvent' || ev.__typename === 'StorageUnlockEvent');
+    // it is mygnoscan's own before/delta/after-by-realm view rather than a
+    // dump of the raw StorageDepositEvent/StorageUnlockEvent rows, which the
+    // events tab below leaves out entirely, and it is useful often enough on
+    // a storage-heavy tx that hiding it behind a click cost more than it saved.
+    const storageEvs = events.filter(isStorageEvent);
     if (storageEvs.length > 0) {
       container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'storage (' + storageEvs.length + ')'));
       const stTbl = el('table', { style: { width: '100%' } });
