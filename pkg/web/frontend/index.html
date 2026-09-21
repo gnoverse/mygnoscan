@@ -9071,6 +9071,30 @@ async function loadRealmDetail(path, initialTab) {
       tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'path'), el('td', {}, realmPathEl(detail.path))));
       tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'name'), el('td', {}, detail.name)));
       tbl.appendChild(el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'creator'), el('td', {}, addrLink(detail.creator))));
+      // The two accounts every package owns, derived from its path by the
+      // server (pkg/gnoaddr) rather than looked up, because nothing on chain
+      // stores them.
+      //
+      // Unconditional, and that is the point: these exist from the moment the
+      // package does, whether or not anyone has ever sent them a coin. Showing
+      // them only when funded is what made the page read as though an unfunded
+      // realm had no account at all, when what a reader most often wants the
+      // address *for* is to fund it or to watch it.
+      //
+      // Shown in full with a copy button rather than truncated: a partial
+      // address is not useful for either of those.
+      if (detail.address) {
+        const addrRow = el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'address'));
+        addrRow.appendChild(el('td', {}, addrLinkFull(detail.address, detail.network)));
+        addrRow.title = 'the realm\u2019s own account: coins it has been sent and not sent on';
+        tbl.appendChild(addrRow);
+      }
+      if (detail.storage_deposit_address) {
+        const depRow2 = el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'storage deposit'));
+        depRow2.appendChild(el('td', {}, addrLinkFull(detail.storage_deposit_address, detail.network)));
+        depRow2.title = 'a separate account holding the deposit locked against this package\u2019s bytes, refunded when they are freed';
+        tbl.appendChild(depRow2);
+      }
       // tx with block context
       const txRow = el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'tx'));
       txRow.appendChild(el('td', {}, txLink(detail.tx_hash, detail.block_height)));

@@ -370,6 +370,19 @@ func TestRemainingStorageHandlers(t *testing.T) {
 				if d["path"] == nil && d["package"] == nil {
 					t.Errorf("no package in the response: %s", body)
 				}
+				// The two derived accounts travel with the detail rather than
+				// being fetched separately, and they are asserted here because
+				// the frontend has no other way to learn them: a wiring
+				// regression would show up as two rows quietly missing from the
+				// info tab rather than as an error.
+				for field, want := range map[string]string{
+					"address":                 "g1z8w4uey8hth34h390lr27jty30ura3arckrcxz",
+					"storage_deposit_address": "g1vu8rm504764k34taywyszwumenazxztsfwkw5x",
+				} {
+					if got, _ := d[field].(string); got != want {
+						t.Errorf("%s = %q, want %q", field, got, want)
+					}
+				}
 			},
 		},
 		{

@@ -31,6 +31,10 @@ killing whatever is there:
 E2E_PORT_OFFSET=137 npx playwright test
 ```
 
+The offset on its own is enough: `harness/port.mjs` is the single source both the
+config and the harness read, because `use.baseURL` is resolved when the config
+loads and nothing globalSetup does later can reach it.
+
 A failure leaves a screenshot, a video and a trace under `test-results/`:
 
 ```bash
