@@ -228,6 +228,13 @@ test('a window with nothing in it says so instead of drawing one lone dot', asyn
   await page.getByRole('button', { name: '24h', exact: true }).click();
   await expect(page.locator('#dep-graph')).toContainText('activity in the last 24h');
 
+  // And says it in a box sized to the sentence. The 600px floor exists to stop
+  // a force simulation settling in a letterbox; with the dependency lists now
+  // underneath the graph, keeping it for an empty state would put 600px of
+  // nothing between the reader and the only content on the tab.
+  const emptyHeight = await page.locator('#dep-graph').evaluate(n => n.getBoundingClientRect().height);
+  expect(emptyHeight).toBeLessThan(200);
+
   await page.getByRole('button', { name: 'off', exact: true }).click();
   await page.waitForSelector(GRAPH_SVG, { timeout: 20_000 });
   expect(await nodeCount(page)).toBeGreaterThan(10);
