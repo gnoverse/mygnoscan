@@ -42,7 +42,18 @@ const PAGES = [
   ['validators', '/validators'],
   ['analytics', '/analytics'],
   ['gas', '/gas'],
+  // The three list pages the gas summary now links to rather than stacking.
+  ['gas-realms', '/gas/realms'],
+  ['gas-users', '/gas/users'],
+  ['gas-txs', '/gas/txs'],
+  ['govdao', '/govdao'],
+  ['govdao-proposals', '/govdao/proposals'],
+  ['govdao-voters', '/govdao/voters'],
+  ['govdao-options', '/govdao/options'],
   ['params', '/params'],
+  // The rail folded to icons: the section children are gone there, and the
+  // .pagenav strip is the only way through to them.
+  ['rail-collapsed', '/gas'],
   // Two of the four groupings: they differ in what the map is made of, not
   // just in its colours, and a shot of one would not show a change to the
   // payer attribution at all.
@@ -64,6 +75,10 @@ test.describe('screenshots', () => {
   for (const [name, path] of PAGES) {
     test(`capture ${name}`, async ({ page }) => {
       await page.setViewportSize({ width: 1400, height: 900 });
+      if (name === 'rail-collapsed') {
+        await page.goto('/');
+        await page.evaluate(() => localStorage.setItem('mygnoscan-rail', 'collapsed'));
+      }
       await page.goto(path);
       await settle(page);
       // The dependency graph runs a force simulation that keeps moving after
@@ -72,6 +87,9 @@ test.describe('screenshots', () => {
         await page.waitForTimeout(2500);
       }
       await page.screenshot({ path: join(OUT, `${name}.png`), fullPage: true });
+      if (name === 'rail-collapsed') {
+        await page.evaluate(() => localStorage.removeItem('mygnoscan-rail'));
+      }
     });
   }
 });

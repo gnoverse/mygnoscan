@@ -116,19 +116,24 @@ func fetchABCIQuery(ctx context.Context, rpcURL, queryPath, data string) (string
 // gov/dao's render ever gives) against r/sys/users — see
 // resolveGnoUsernameCached.
 type GovDAOProposalSummary struct {
-	ID                 int      `json:"id"`
-	Title              string   `json:"title"`
-	Author             string   `json:"author"`
-	AuthorAddress      string   `json:"author_address,omitempty"`
-	Status             string   `json:"status"`
-	Tiers              []string `json:"tiers"`
-	YesPercent         float64  `json:"yes_percent,omitempty"`
-	NoPercent          float64  `json:"no_percent,omitempty"`
-	AbstainPercent     float64  `json:"abstain_percent,omitempty"`
-	CreatedHeight      int      `json:"created_height,omitempty"`
-	CreatedTime        string   `json:"created_time,omitempty"`
-	LastActivityHeight int      `json:"last_activity_height,omitempty"`
-	LastActivityTime   string   `json:"last_activity_time,omitempty"`
+	ID             int      `json:"id"`
+	Title          string   `json:"title"`
+	Author         string   `json:"author"`
+	AuthorAddress  string   `json:"author_address,omitempty"`
+	Status         string   `json:"status"`
+	Tiers          []string `json:"tiers"`
+	YesPercent     float64  `json:"yes_percent,omitempty"`
+	NoPercent      float64  `json:"no_percent,omitempty"`
+	AbstainPercent float64  `json:"abstain_percent,omitempty"`
+	// The realm whose Execute() the proposal runs. Not on gov/dao's list
+	// render either: it comes from the same per-proposal detail the vote
+	// percentages do, and it is what /govdao/contracts counts to say which
+	// executors governance has actually used.
+	ExecutorPkgPath    string `json:"executor_pkg_path,omitempty"`
+	CreatedHeight      int    `json:"created_height,omitempty"`
+	CreatedTime        string `json:"created_time,omitempty"`
+	LastActivityHeight int    `json:"last_activity_height,omitempty"`
+	LastActivityTime   string `json:"last_activity_time,omitempty"`
 
 	// Audit summary, so a proposal with an inconsistency is visible in the
 	// list rather than only to whoever opens it. Audited separates "the

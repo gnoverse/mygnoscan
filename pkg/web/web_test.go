@@ -238,3 +238,73 @@ func TestAnalyticsScript(t *testing.T) {
 		}
 	})
 }
+
+// The rail is static HTML and the NAV table beside it is JavaScript, and
+// they describe the same navigation twice: the markup so the chrome paints
+// without waiting on two render-blocking CDN scripts, the table so route()
+// knows which parent to light up and pageNav() can build each section's pill
+// strip.
+//
+// Two copies means one can go stale, and the stale one fails quietly. Adding
+// a rail entry and forgetting the table gives a page that navigates fine and
+// has no section strip, which reads as a page that is simply not in a
+// section. Adding it to the table only gives a strip linking to a rail entry
+// that never highlights. Neither throws, neither shows up in a browser test
+// that only checks the page renders.
+//
+// So: same ids, same order, same paths. Parsed textually, which is enough
+// because both sides are written by hand in a fixed shape and a shape change
+// fails here loudly rather than silently.
+func TestRailMatchesNavTable(t *testing.T) {
+	index, err := Index()
+	if err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+	html := string(index)
+
+	rail := between(t, html, "<nav>", "</nav>")
+	navTable := between(t, html, "const NAV = [", "\n];")
+
+	// id and path, in document order, from each side. The rail's <a> carries
+	// both as `navigate('<path>')` and `id="nav-<id>"`; NAV's entries carry
+	// them as `id: '<id>'` and `path: '<path>'`.
+	railRe := regexp.MustCompile(`navigate\('([^']+)'\)" id="nav-([A-Za-z0-9-]+)"`)
+	tableRe := regexp.MustCompile(`id: '([A-Za-z0-9-]+)',[^\n]*?path: '([^']+)'`)
+
+	type entry struct{ id, path string }
+	var fromRail, fromTable []entry
+	for _, m := range railRe.FindAllStringSubmatch(rail, -1) {
+		fromRail = append(fromRail, entry{id: m[2], path: m[1]})
+	}
+	for _, m := range tableRe.FindAllStringSubmatch(navTable, -1) {
+		fromTable = append(fromTable, entry{id: m[1], path: m[2]})
+	}
+
+	if len(fromRail) == 0 || len(fromTable) == 0 {
+		t.Fatalf("parsed %d rail entries and %d table entries — the shape of one of them changed",
+			len(fromRail), len(fromTable))
+	}
+	if len(fromRail) != len(fromTable) {
+		t.Fatalf("the rail has %d entries and NAV has %d:\nrail:  %v\ntable: %v",
+			len(fromRail), len(fromTable), fromRail, fromTable)
+	}
+	for i := range fromRail {
+		if fromRail[i] != fromTable[i] {
+			t.Errorf("entry %d: the rail says %+v, NAV says %+v", i, fromRail[i], fromTable[i])
+		}
+	}
+}
+
+func between(t *testing.T, s, openTag, closeTag string) string {
+	t.Helper()
+	i := strings.Index(s, openTag)
+	if i < 0 {
+		t.Fatalf("index.html has no %q", openTag)
+	}
+	rest := s[i+len(openTag):]
+	j := strings.Index(rest, closeTag)
+	if j < 0 {
+		t.Fatalf("index.html has no %q after %q", closeTag, openTag)
+	}
+	return rest[:j]
+}
