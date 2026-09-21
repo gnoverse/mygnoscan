@@ -4852,10 +4852,20 @@ async function loadCoins() {
     const grid = el('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px', marginTop: '20px' } });
     // minWidth 0 and its own scrollbar, for the same reason .section carries
     // them: these rows are `white-space: nowrap`, so a grid column floors at
-    // the width of its widest row and pushes the whole page wider than the
-    // viewport instead. The leaderboards are sorted on one figure and print
-    // two, so the widest row is not the first one and the column got wider
-    // the moment the lists went from ten rows to fifty.
+    // the width of its widest row, and three of those floors add up past the
+    // 1200px .container — the page grew a horizontal scrollbar and clipped the
+    // third column instead.
+    //
+    // Not caused by the lists going from ten rows to fifty, though that is
+    // when it was noticed: measured on production, the widest row of each
+    // leaderboard is rank 1, and the widest of the first ten equals the widest
+    // of all fifty. What makes a row wide is a registry label printed beside
+    // the address (`@faucet g18qhq2f…kclp`), and those sit at the top.
+    //
+    // Each column still scrolls ~48px internally at every viewport, because
+    // 3x424px does not fit 1160px of content area at any screen width. Closing
+    // that needs the address cell to stop printing both the label and the
+    // address, not more page width.
     const column = (title, rows, cols) => {
       if (!(rows || []).length) return;
       const col = el('div', { style: { minWidth: 0, overflowX: 'auto' } });
