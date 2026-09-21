@@ -70,6 +70,12 @@ const PAGES = [
   ['realm-detail', `/realm/${HUB_ROUTE}`],
   ['realm-graph', `/realm/${HUB_ROUTE}?tab=graph`],
   ['realm-source', `/realm/${HUB_ROUTE}?tab=source`],
+  // The three tabs that carry a chart. Pinned to a network because the
+  // storage tab refuses the all-chains case by design, and a shot of that
+  // refusal would show none of what changed here.
+  ['realm-storage', `/realm/${HUB_ROUTE}?network=alpha&tab=storage`],
+  ['realm-calls', `/realm/${HUB_ROUTE}?network=alpha&tab=calls`],
+  ['realm-events', `/realm/${HUB_ROUTE}?network=alpha&tab=events`],
   ['address-detail', `/address/${BUSY_CALLER}`],
 ];
 

@@ -376,6 +376,12 @@ tr.total-row td { font-weight: bold; color: var(--accent); }
 .dash-chart { width: 100%; height: 300px; }
 .dash-msg { color: var(--fg2); font-size: 12px; padding: 20px 0; }
 .dash-note { color: var(--fg2); font-size: 11px; margin-bottom: 10px; }
+/* Detail-page charts. Narrower than a dashboard card because they sit inside a
+   tab that already has a stats bar and a table above them, and the chart is the
+   summary of that table rather than the page. */
+.detail-chart { margin: 4px 0 18px; }
+.detail-chart-box { position: relative; width: 100%; height: 220px; }
+.detail-chart-note { color: var(--fg2); font-size: 11px; margin-top: 6px; }
 .dash-bar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
 .dash-grp { display: inline-flex; align-items: center; gap: 6px; }
 .dash-bar .label { font-size: 11px; color: var(--fg2); text-transform: uppercase; letter-spacing: 1px; }
@@ -1400,6 +1406,13 @@ function shortBytes(n) {
   if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB';
   if (n >= 1024) return (n / 1024).toFixed(1) + ' KB';
   return fmtNum(n) + ' B';
+}
+// shortBytes assumes a size, which a delta is not: it is signed, and a release
+// is as meaningful as a deposit. Without this an axis tick for two megabytes
+// freed read "-2097152 B", because every branch above tests `>=` against a
+// positive threshold and a negative number falls through all of them.
+function signedBytes(n) {
+  return (n < 0 ? '-' : '') + shortBytes(Math.abs(n));
 }
 // Wraps a bare function name so hovering it highlights every other call to
 // the same function on the page, the same way addresses and tx hashes do.
@@ -2841,6 +2854,7 @@ function route() {
   }
 
   if (view !== 'dashboards' && typeof destroyDashCharts === 'function') destroyDashCharts();
+  if (view !== 'realm-detail' && view !== 'address-detail' && typeof destroyDetailCharts === 'function') destroyDetailCharts();
   switch (view) {
     case 'home': loadHome(); break;
     case 'watch': loadWatchlist(); break;
@@ -2892,6 +2906,186 @@ if (typeof Chart !== 'undefined') {
   Chart.defaults.font.family = "'SF Mono','Cascadia Code','Fira Code',monospace";
   Chart.defaults.font.size = 11;
 }
+
+// --- Detail-page charts ------------------------------------------------------
+//
+// The time series further down are drawn from /api/timeseries/*, where the
+// server has already bucketed by time. These are the other kind: a shape over a
+// payload a detail page has *already* fetched, so they cost no extra request.
+// That is why the realm page could have carried a storage curve since the day
+// /api/storage shipped and did not: nothing was missing but the drawing.
+//
+// detailChart owns the three things the hand-written charts here each got wrong
+// at least once: the CDN guard (a blocked cdn.jsdelivr.net leaves `Chart`
+// undefined, and an unguarded `new Chart` is a ReferenceError that takes the
+// rest of the tab down with it), the dark theme, and pushing the instance onto
+// a registry so the next render pass destroys it rather than leaving it
+// animating into a canvas no longer in the document.
+function detailChart(into, registry, spec) {
+  const wrap = el('div', { className: 'detail-chart' });
+  into.appendChild(wrap);
+  if (typeof Chart === 'undefined') {
+    wrap.appendChild(el('div', { className: 'dash-msg' },
+      (spec.title ? spec.title + ': ' : '') + 'no chart, the chart library did not load'));
+    return null;
+  }
+  const box = el('div', { className: 'detail-chart-box' });
+  if (spec.height) box.style.height = spec.height + 'px';
+  const canvas = document.createElement('canvas');
+  box.appendChild(canvas);
+  wrap.appendChild(box);
+  if (spec.note) wrap.appendChild(el('div', { className: 'detail-chart-note' }, spec.note));
+  const chart = new Chart(canvas, {
+    type: spec.type || 'bar',
+    data: spec.data,
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      // Off deliberately. These series are as long as the realm's history,
+      // and r/gnoland/wugnot posts 4819 storage events, so animating that many
+      // marks buys a second of jank and nothing else.
+      animation: false,
+      interaction: { mode: 'index', intersect: false },
+      elements: { point: { radius: spec.pointRadius || 0, hoverRadius: 4 } },
+      plugins: {
+        legend: { labels: { color: '#888', boxWidth: 12, padding: 10 } },
+        title: { display: !!spec.title, text: spec.title || '', color: '#888' },
+      },
+      scales: spec.scales,
+    },
+  });
+  registry.push(chart);
+  return chart;
+}
+
+// chartAxis is the one scale definition these share, so a new chart cannot
+// quietly ship with the default white-on-dark ticks nothing else uses.
+//
+// `format` is applied to tick labels and is only meaningful on a value axis:
+// on a category axis Chart.js hands the callback an index, not the label.
+function chartAxis(o) {
+  o = o || {};
+  const axis = {
+    beginAtZero: o.beginAtZero !== false,
+    ticks: { color: '#888', maxTicksLimit: o.maxTicks || 8, maxRotation: 0 },
+    grid: { color: '#2a2a2a' },
+  };
+  if (o.format) axis.ticks.callback = o.format;
+  if (o.stacked) axis.stacked = true;
+  // Counts have no halves, and Chart.js will happily label a two-message
+  // bucket 0, 0.5, 1, 1.5, 2 if nobody says so.
+  if (o.integer) axis.ticks.precision = 0;
+  if (o.position) axis.position = o.position;
+  if (o.title) axis.title = { display: true, text: o.title, color: '#888' };
+  // A second value axis draws a second set of horizontal lines over the same
+  // plot area, which reads as a grid misaligned with itself.
+  if (o.grid === false) axis.grid = { drawOnChartArea: false, color: '#2a2a2a' };
+  return axis;
+}
+
+// --- Time bucketing ----------------------------------------------------------
+//
+// A server-side series arrives pre-bucketed. These are built in the browser out
+// of a list of timestamps, so they have to choose a unit themselves: one mark
+// per event is unreadable for a busy realm, and one mark per day is a single
+// mark for a realm deployed this morning. The span decides.
+const TIME_BUCKETS = [
+  { unit: 'minute', step: 60000, upTo: 2 * 3600e3, label: d => d.toISOString().slice(11, 16) + 'Z' },
+  { unit: 'hour', step: 3600e3, upTo: 4 * 86400e3, label: d => d.toISOString().slice(5, 13).replace('T', ' ') + 'h' },
+  { unit: 'day', step: 86400e3, upTo: Infinity, label: d => d.toISOString().slice(0, 10) },
+];
+
+// No series gets more marks than this. The coarsest unit is a day, so without a
+// cap one row carrying a zero timestamp (block_time is nullable, and a row
+// written before the syncer knew the block's time can hold anything) would
+// ask for two thousand years of daily buckets and hang the tab. Widening the
+// step instead keeps a bad row visible as an outlier rather than fatal.
+const MAX_BUCKETS = 400;
+
+// bucketCounts groups rows into gap-free time buckets, split into named series.
+//
+// Gap-free is the point: a realm touched twice a month apart must draw two
+// marks a month apart, not two adjacent ones, or the chart claims steady use of
+// something used twice.
+//
+// Returns { labels, unit, step, series: [{name, data}], dropped }, or null
+// when no row carries a parsable timestamp, which is the honest answer for a
+// payload whose block_time was never filled in, and not something to draw an
+// empty chart about.
+function bucketCounts(rows, timeOf, nameOf, valueOf) {
+  const parsed = [];
+  let dropped = 0;
+  let min = Infinity, max = -Infinity;
+  for (const r of rows || []) {
+    const t = Date.parse(timeOf(r));
+    if (isNaN(t)) { dropped++; continue; }
+    if (t < min) min = t;
+    if (t > max) max = t;
+    parsed.push({ t, name: nameOf(r), v: valueOf ? valueOf(r) : 1 });
+  }
+  if (!parsed.length) return null;
+  const unit = TIME_BUCKETS.find(x => max - min <= x.upTo);
+  let step = unit.step;
+  const want = Math.floor((max - min) / step) + 1;
+  if (want > MAX_BUCKETS) step *= Math.ceil(want / MAX_BUCKETS);
+
+  const floor = t => Math.floor(t / step) * step;
+  const start = floor(min), end = floor(max);
+  const labels = [];
+  const slot = new Map();
+  for (let t = start; t <= end; t += step) {
+    slot.set(t, labels.length);
+    labels.push(unit.label(new Date(t)));
+  }
+  const names = [];
+  const byName = new Map();
+  for (const p of parsed) {
+    if (!byName.has(p.name)) {
+      names.push(p.name);
+      byName.set(p.name, new Array(labels.length).fill(0));
+    }
+    byName.get(p.name)[slot.get(floor(p.t))] += p.v;
+  }
+  return {
+    labels, unit: unit.unit, step, dropped,
+    series: names.map(n => ({ name: n, data: byName.get(n) })),
+  };
+}
+
+// seriesData pulls one named series out of a bucketing, or zeros when the data
+// never produced it, so a chart can fix its dataset order and colours instead
+// of inheriting whichever series happened to appear first.
+function seriesData(bucketed, name) {
+  const s = (bucketed.series || []).find(x => x.name === name);
+  return s ? s.data : new Array(bucketed.labels.length).fill(0);
+}
+
+// seriesTotal is how big a series is over the whole window, for ranking which
+// of them get a colour and which get folded into "other".
+function seriesTotal(bucketed, name) {
+  return seriesData(bucketed, name).reduce((s, v) => s + v, 0);
+}
+
+// runningTotal turns per-bucket deltas into the cumulative curve, which is the
+// question a storage or fee chart is actually asked: not "what moved today" but
+// "how much is in there now".
+function runningTotal(deltas) {
+  let sum = 0;
+  return deltas.map(d => (sum += d));
+}
+
+// A fixed palette for stacked series with no colour of their own (a function
+// name, an event type). Ordered so the first few are distinguishable to the
+// most common forms of colour blindness, and kept away from the red/green pair
+// the added/released and success/failed charts reserve for meaning.
+const SERIES_PALETTE = ['#4ecdc4', '#ffd43b', '#63b3ed', '#f687b3', '#9ae6b4', '#c9a227', '#8fa6c4', '#a0a0a0'];
+
+// A chart of one mark is noise: it spends 220 pixels repeating a number the
+// stats bar above it already prints. And on a realm page that is the common
+// case rather than the edge one: 294 of mainnet's 342 realms have exactly one
+// storage event, the deploy (measured 2026-09-21 from /api/storage/map),
+// so an unguarded chart would be a single bar on six pages out of seven.
+const CHART_MIN_POINTS = 2;
 
 let _tsDays = 30, _tsGranularity = 'daily', _tsChartInstances = [], _analyticsData = null;
 
@@ -8633,6 +8827,30 @@ function docsTabEl(symbols, files, pathForNav) {
   }
   return container;
 }
+// Charts on the detail pages (realm and address), and the generation that owns
+// them. Shared rather than one registry each, because the pages navigate into
+// each other: whichever renders next has to be able to tear down what the last
+// one drew.
+//
+// Two hazards, one counter. apiSWR paints a cached copy and then a fresh one,
+// so a render callback runs up to twice per visit, and route() can have two of
+// them in flight at once. Each pass clear()s its containers, which drops the
+// canvases out of the document but leaves the Chart instances alive, holding a
+// resize observer and a canvas nobody can see; and each pass starts its own
+// async tab loaders, which resume *after* a later pass has rebuilt the
+// container and append a second table into it.
+//
+// _detailGen is bumped at the top of every pass: charts from earlier passes
+// are destroyed, and a loader that finds the generation moved on returns
+// instead of writing into someone else's container.
+let _detailCharts = [];
+let _detailGen = 0;
+
+function destroyDetailCharts() {
+  _detailCharts.forEach(c => c.destroy());
+  _detailCharts = [];
+}
+
 async function loadRealmDetail(path, initialTab) {
   const header = clear('realm-header');
   skeletonBlock(header);
@@ -8652,6 +8870,8 @@ async function loadRealmDetail(path, initialTab) {
       'realm/' + path.replace('gno.land/', ''),
       { path: 'inert/package/' + path.replace('gno.land/', ''), fallback: null },
     ], ([detail, inert], swrMeta) => {
+      const gen = ++_detailGen;
+      destroyDetailCharts();
       header.textContent = '';
       const titleRow = el('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', margin: '16px 0 8px' } },
         el('h2', { style: { margin: 0 } }, detail.path));
@@ -8817,6 +9037,56 @@ async function loadRealmDetail(path, initialTab) {
       callStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'calls'), el('span', { className: 'value' }, fmtNum(detail.call_count))));
       callStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'runs'), el('span', { className: 'value' }, fmtNum(msgRuns.length))));
       calls.appendChild(callStats);
+      // Activity over time, stacked by what was called.
+      //
+      // Drawn from the rows the page already holds, which are capped at 50
+      // calls and 50 MsgRuns by the query behind /api/realm. That cap is
+      // stated in the caption rather than hidden: on a realm with thousands of
+      // calls this is the recent tail, and a chart that looked like the whole
+      // history would be the worst possible version of this feature. An
+      // untruncated one needs a per-realm time series endpoint, which this is
+      // not.
+      const activityRows = [];
+      if (detail.block_time) activityRows.push({ t: detail.block_time, k: 'deploy' });
+      for (const c of directCalls) if (c.block_time) activityRows.push({ t: c.block_time, k: c.func_name || 'call' });
+      for (const r of msgRuns) if (r.block_time) activityRows.push({ t: r.block_time, k: 'MsgRun' });
+      // Top functions only. A realm exporting thirty of them would otherwise
+      // produce thirty stacked series in eight colours, which is a legend
+      // rather than a chart.
+      const fnTotals = new Map();
+      for (const r of activityRows) fnTotals.set(r.k, (fnTotals.get(r.k) || 0) + 1);
+      const ranked = [...fnTotals.entries()].sort((x, y) => y[1] - x[1]).map(e => e[0]);
+      const kept = ranked.slice(0, SERIES_PALETTE.length - 1);
+      const folded = ranked.length > kept.length;
+      if (folded) for (const r of activityRows) if (!kept.includes(r.k)) r.k = 'other';
+      const actBuckets = bucketCounts(activityRows, r => r.t, r => r.k);
+      if (actBuckets && activityRows.length >= CHART_MIN_POINTS) {
+        const names = folded ? kept.concat(['other']) : kept;
+        const note = [fmtNum(activityRows.length) + ' messages plotted'];
+        // detail.call_count is the real total; directCalls is what the query
+        // returned. Saying which one the bars are is the whole point.
+        if (detail.call_count > directCalls.length) {
+          note.push('the ' + fmtNum(directCalls.length) + ' most recent calls of ' + fmtNum(detail.call_count));
+        }
+        detailChart(calls, _detailCharts, {
+          title: 'activity, per ' + actBuckets.unit,
+          note: note.join(' \u00b7 '),
+          data: {
+            labels: actBuckets.labels,
+            datasets: names.map((n, i) => ({
+              label: n,
+              data: seriesData(actBuckets, n),
+              backgroundColor: SERIES_PALETTE[i % SERIES_PALETTE.length] + 'aa',
+              borderColor: SERIES_PALETTE[i % SERIES_PALETTE.length],
+              borderWidth: 1,
+            })),
+          },
+          scales: {
+            x: chartAxis({ stacked: true }),
+            y: chartAxis({ stacked: true, integer: true, title: 'messages' }),
+          },
+        });
+      }
       // Merged table
       const allRows = [];
       // Deploy tx
@@ -8854,10 +9124,51 @@ async function loadRealmDetail(path, initialTab) {
         try {
           const eventsPath = path.replace('gno.land/', '');
           const evData = await api('events/' + eventsPath);
+          if (gen !== _detailGen) return;
           eventsEl.textContent = '';
           if (!(evData || []).length) {
             eventsEl.appendChild(el('div', { style: { color: 'var(--fg2)', padding: '12px 0' } }, 'no events emitted by this realm'));
             return;
+          }
+          // Event mix over time. The rows are nested (one transaction, many
+          // events), and the type is the interesting axis: a realm that emits
+          // nothing but StorageDepositEvent is a different animal from one
+          // emitting Transfer all day, and the table cannot say which without
+          // being read end to end.
+          const evRows = [];
+          for (const item of evData) {
+            for (const ev of (item.events || [])) {
+              evRows.push({ t: item.block_time, k: ev.type || ev.__typename || 'event' });
+            }
+          }
+          const evTotals = new Map();
+          for (const r of evRows) evTotals.set(r.k, (evTotals.get(r.k) || 0) + 1);
+          const evRanked = [...evTotals.entries()].sort((x, y) => y[1] - x[1]).map(e => e[0]);
+          const evKept = evRanked.slice(0, SERIES_PALETTE.length - 1);
+          const evFolded = evRanked.length > evKept.length;
+          if (evFolded) for (const r of evRows) if (!evKept.includes(r.k)) r.k = 'other';
+          const evBuckets = bucketCounts(evRows, r => r.t, r => r.k);
+          if (evBuckets && evRows.length >= CHART_MIN_POINTS) {
+            const evNames = evFolded ? evKept.concat(['other']) : evKept;
+            detailChart(eventsEl, _detailCharts, {
+              title: 'events, per ' + evBuckets.unit,
+              note: fmtNum(evRows.length) + ' events over ' + fmtNum(evData.length) + ' transactions' +
+                (evFolded ? ', types past the top ' + evKept.length + ' folded into "other"' : ''),
+              data: {
+                labels: evBuckets.labels,
+                datasets: evNames.map((n, i) => ({
+                  label: n,
+                  data: seriesData(evBuckets, n),
+                  backgroundColor: SERIES_PALETTE[i % SERIES_PALETTE.length] + 'aa',
+                  borderColor: SERIES_PALETTE[i % SERIES_PALETTE.length],
+                  borderWidth: 1,
+                })),
+              },
+              scales: {
+                x: chartAxis({ stacked: true }),
+                y: chartAxis({ stacked: true, integer: true, title: 'events' }),
+              },
+            });
           }
           const evTbl = el('table');
           evTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'tx'), el('th', {}, 'type'), el('th', {}, 'attributes'), el('th', {}, 'block'))));
@@ -8874,7 +9185,11 @@ async function loadRealmDetail(path, initialTab) {
             }
           }
           evTbl.appendChild(evBody); eventsEl.appendChild(evTbl);
-        } catch (err) { eventsEl.textContent = ''; eventsEl.appendChild(el('div', { style: { color: 'var(--red)' } }, 'Error loading events: ' + err.message)); }
+        } catch (err) {
+          if (gen !== _detailGen) return;
+          eventsEl.textContent = '';
+          eventsEl.appendChild(el('div', { style: { color: 'var(--red)' } }, 'Error loading events: ' + err.message));
+        }
       })();
       // Storage tab (loaded from indexer)
       const storageEl = clear('tab-storage'); if (activeTab === 'storage') storageEl.classList.add('active'); else storageEl.classList.remove('active');
@@ -8894,6 +9209,7 @@ async function loadRealmDetail(path, initialTab) {
         try {
           const storagePath = path.replace('gno.land/', '');
           const sData = await api('storage/' + storagePath);
+          if (gen !== _detailGen) return;
           storageEl.textContent = '';
           const st = sData.storage || {};
           const gs = sData.gas || {};
@@ -8902,10 +9218,97 @@ async function loadRealmDetail(path, initialTab) {
           sStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'net storage'), el('span', { className: 'value' }, fmtNum(st.net_bytes || 0) + ' bytes')));
           sStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'deposited'), el('span', { className: 'value' }, fmtNum(st.total_bytes_deposited || 0) + ' bytes')));
           sStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'deposit fee'), el('span', { className: 'value' }, fmtNum(st.total_fee_deposited || 0) + ' ugnot')));
+          // Only when there is something to refund, so the common realm (which
+          // has never freed a byte) is not given two stats reading zero. When
+          // there is, gross deposits alone are the wrong number to leave a
+          // reader holding: r/gnoland/wugnot had paid 610,466,700 ugnot and got
+          // 491,770,200 back as of 2026-09-21, so its storage has cost it
+          // 118,696,500.
+          if (st.total_fee_refunded) {
+            sStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'refunded'), el('span', { className: 'value' }, fmtNum(st.total_fee_refunded) + ' ugnot')));
+            sStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'net fee'), el('span', { className: 'value' }, fmtNum((st.total_fee_deposited || 0) - st.total_fee_refunded) + ' ugnot')));
+          }
           sStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total gas used'), el('span', { className: 'value' }, fmtNum(gs.total_gas_used || 0))));
           sStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total gas fee'), el('span', { className: 'value' }, fmtNum(gs.total_gas_fee || 0) + ' ugnot')));
           sStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'txs'), el('span', { className: 'value' }, fmtNum(gs.tx_count || 0))));
           storageEl.appendChild(sStats);
+          // Storage evolution. No extra request: bytes_delta is already signed
+          // (the chain emits an unlock's as negative, and #255 stopped us
+          // flipping it), so a running sum over the entries in chronological
+          // order lands exactly on net_bytes. The table below answers "which
+          // transaction"; this answers "is it growing, and since when", which
+          // is the question 4819 rows of r/gnoland/wugnot cannot.
+          const stBuckets = bucketCounts(st.entries || [],
+            e => e.block_time,
+            e => (e.bytes_delta < 0 ? 'released' : 'added'),
+            e => e.bytes_delta);
+          if (stBuckets && (st.entries || []).length >= CHART_MIN_POINTS) {
+            const added = seriesData(stBuckets, 'added');
+            const released = seriesData(stBuckets, 'released');
+            const held = runningTotal(added.map((v, i) => v + released[i]));
+            const note = [fmtNum((st.entries || []).length) + ' storage events'];
+            // The curve is only the whole realm when every event is in it. A
+            // row whose block_time never got filled in cannot be placed on a
+            // time axis, and silently dropping it would leave a line that
+            // stops short of the net figure printed right above it.
+            if (stBuckets.dropped) note.push(fmtNum(stBuckets.dropped) + ' with no block time, not plotted');
+            else note.push('the line is the running total, ending at ' + fmtBytes(st.net_bytes || 0));
+            detailChart(storageEl, _detailCharts, {
+              title: 'storage evolution, per ' + stBuckets.unit,
+              note: note.join(' \u00b7 '),
+              data: {
+                labels: stBuckets.labels,
+                datasets: [
+                  { label: 'bytes added', data: added, backgroundColor: 'rgba(78,205,196,0.55)', borderColor: '#4ecdc4', borderWidth: 1, yAxisID: 'y', order: 3 },
+                  { label: 'bytes released', data: released, backgroundColor: 'rgba(255,107,107,0.55)', borderColor: '#ff6b6b', borderWidth: 1, yAxisID: 'y', order: 3 },
+                  {
+                    label: 'net bytes held', data: held, type: 'line', yAxisID: 'y1',
+                    borderColor: '#ffd43b', backgroundColor: 'rgba(255,212,59,0.08)',
+                    borderWidth: 2, tension: 0.2, fill: true, order: 1,
+                  },
+                ],
+              },
+              scales: {
+                x: chartAxis({ stacked: true }),
+                y: chartAxis({ stacked: true, title: 'change', format: signedBytes }),
+                y1: chartAxis({ position: 'right', grid: false, title: 'held', format: signedBytes }),
+              },
+            });
+          }
+          // Gas, on the same axis of time. Failed transactions are stacked
+          // separately rather than dropped: they burn gas and pay a fee like
+          // any other, and a realm whose reverts cost more than its successes
+          // is exactly what this should be able to show.
+          const gasRows = [];
+          for (const e of (gs.entries || [])) {
+            gasRows.push({ t: e.block_time, k: e.success ? 'used' : 'failed', v: e.gas_used });
+            gasRows.push({ t: e.block_time, k: 'fee', v: e.gas_fee });
+          }
+          const gsBuckets = bucketCounts(gasRows, r => r.t, r => r.k, r => r.v);
+          if (gsBuckets && (gs.entries || []).length >= CHART_MIN_POINTS) {
+            detailChart(storageEl, _detailCharts, {
+              title: 'gas burned, per ' + gsBuckets.unit,
+              note: fmtNum(gs.tx_count || 0) + ' transactions \u00b7 ' + fmtNum(gs.total_gas_used || 0) +
+                ' gas \u00b7 ' + fmtNum(gs.total_gas_fee || 0) + ' ugnot in fees',
+              data: {
+                labels: gsBuckets.labels,
+                datasets: [
+                  { label: 'gas used', data: seriesData(gsBuckets, 'used'), backgroundColor: 'rgba(78,205,196,0.55)', borderColor: '#4ecdc4', borderWidth: 1, yAxisID: 'y', order: 3 },
+                  { label: 'gas used, failed', data: seriesData(gsBuckets, 'failed'), backgroundColor: 'rgba(255,107,107,0.55)', borderColor: '#ff6b6b', borderWidth: 1, yAxisID: 'y', order: 3 },
+                  {
+                    label: 'fees paid, cumulative (ugnot)', data: runningTotal(seriesData(gsBuckets, 'fee')),
+                    type: 'line', yAxisID: 'y1', borderColor: '#ffd43b',
+                    backgroundColor: 'rgba(255,212,59,0.08)', borderWidth: 2, tension: 0.2, fill: true, order: 1,
+                  },
+                ],
+              },
+              scales: {
+                x: chartAxis({ stacked: true }),
+                y: chartAxis({ stacked: true, title: 'gas' }),
+                y1: chartAxis({ position: 'right', grid: false, title: 'ugnot' }),
+              },
+            });
+          }
           // Storage events table
           if ((st.entries || []).length) {
             storageEl.appendChild(el('div', { className: 'section-title', style: { marginTop: '16px' } }, 'storage events'));
@@ -8921,13 +9324,25 @@ async function loadRealmDetail(path, initialTab) {
                 spanTd(stSpans, i, txLink(e.tx_hash, e.block_height, null, { showBlock: false })),
                 el('td', {}, badge(e.type === 'deposit' ? 'pkg' : 'ok', e.type)),
                 el('td', {}, fmtNum(e.bytes_delta)),
-                el('td', {}, fmtNum(e.fee_amount) + ' ' + (e.fee_denom || '')),
+                // Signed like the bytes column beside it, for the same reason:
+                // an unlock's fee is money coming back, and printed bare it is
+                // indistinguishable from money going out, so the column no
+                // longer visibly adds up to its own total row.
+                el('td', {}, fmtNum(e.type === 'unlock' ? -e.fee_amount : e.fee_amount) + ' ' + (e.fee_denom || '')),
                 spanTd(stSpans, i, blockWithAge(e.block_height, e.block_time))
               ));
             });
-            // Total row
+            // Total row.
+            //
+            // bytes_delta arrives signed, so summing it straight gives the net
+            // figure. fee_amount does not: an unlock row carries its *refund*,
+            // and it is positive. Adding it to the deposits totalled money paid
+            // plus money returned, a quantity that describes nothing: on
+            // 2026-09-21 r/gnoland/wugnot read 1,102,236,900 ugnot here against
+            // a real cost of 118,696,500, on a page whose stats bar said
+            // 610,466,700 three rows above. Same family as #255, one layer up.
             const totalBytes = st.entries.reduce((s, e) => s + e.bytes_delta, 0);
-            const totalFee = st.entries.reduce((s, e) => s + e.fee_amount, 0);
+            const totalFee = st.entries.reduce((s, e) => s + (e.type === 'unlock' ? -e.fee_amount : e.fee_amount), 0);
             stBody.appendChild(el('tr', { className: 'total-row' },
               el('td', {}, ''), el('td', {}, 'total'),
               el('td', {}, fmtNum(totalBytes)),
@@ -8972,7 +9387,11 @@ async function loadRealmDetail(path, initialTab) {
           if (!(st.entries || []).length && !(gs.entries || []).length) {
             storageEl.appendChild(el('div', { style: { color: 'var(--fg2)', padding: '12px 0' } }, 'no storage or gas data for this realm'));
           }
-        } catch (err) { storageEl.textContent = ''; storageEl.appendChild(el('div', { style: { color: 'var(--red)' } }, 'Error: ' + err.message)); }
+        } catch (err) {
+          if (gen !== _detailGen) return;
+          storageEl.textContent = '';
+          storageEl.appendChild(el('div', { style: { color: 'var(--red)' } }, 'Error: ' + err.message));
+        }
       })();
       // Deps, and the graph drawn from the same two lists.
       //
@@ -8991,10 +9410,12 @@ async function loadRealmDetail(path, initialTab) {
         try {
           [imports, dependents] = await Promise.all([api('deps/' + depsPath), api('deps/' + depsPath + '?dir=dependents')]);
         } catch (err) {
+          if (gen !== _detailGen) return;
           depsEl.textContent = '';
           depsEl.appendChild(el('div', { style: { color: 'var(--red)' } }, 'Error loading dependencies: ' + err.message));
           return;
         }
+        if (gen !== _detailGen) return;
         depsEl.textContent = '';
         const grid = el('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' } });
         grid.appendChild(buildDepTree('imports (what this uses)', imports, path,
@@ -9392,6 +9813,8 @@ async function loadAddressDetail(addr) {
   skeletonBlock(container);
   try {
     await apiSWR(['address/' + addr, 'blocks?limit=50'], ([data, blocksData], swrMeta) => {
+      ++_detailGen;
+      destroyDetailCharts();
       // Block time lookup
       const blockTime = {};
       for (const b of (Array.isArray(blocksData) ? blocksData : [])) blockTime[b.height] = b.time;
@@ -9512,6 +9935,47 @@ async function loadAddressDetail(addr) {
         extraStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'gas fees'), el('span', { className: 'value' }, fmtNum(Math.floor(totalGasFee / 1000000 * 100) / 100) + ' GNOT')));
       }
       if (hasExtra) container.appendChild(extraStats);
+      // What this account does, over time, split by message kind.
+      //
+      // The three tables below rank *who* and *what*; none of them says when,
+      // and "active for a week two months ago" and "active every day since"
+      // produce identical tables. Drawn from the page's own rows, so it moves
+      // with the pager and says so rather than claiming to be the account's
+      // whole history: /api/address caps a page at 200 and data.total is the
+      // real count.
+      const acctBuckets = bucketCounts(txs, t => t.block_time, t => t.type || 'tx');
+      if (acctBuckets && txs.length >= CHART_MIN_POINTS) {
+        // Every type gets a series, not a top-N: the message vocabulary is
+        // fixed and short (MsgCall, BankMsgSend, MsgAddPackage, MsgRun and the
+        // two inert-lifecycle messages), so there is nothing to fold away and
+        // folding would hide the rare one that is the interesting row.
+        // Ordered biggest first so the palette is stable across pages.
+        const acctNames = acctBuckets.series.map(x => x.name)
+          .sort((x, y) => seriesTotal(acctBuckets, y) - seriesTotal(acctBuckets, x));
+        const acctNote = [fmtNum(txs.length) + ' transactions plotted'];
+        if ((data.total ?? txs.length) > txs.length) {
+          acctNote.push('this page only, of ' + fmtNum(data.total) + ' in all');
+        }
+        if (acctBuckets.dropped) acctNote.push(fmtNum(acctBuckets.dropped) + ' with no block time, not plotted');
+        detailChart(container, _detailCharts, {
+          title: 'activity, per ' + acctBuckets.unit,
+          note: acctNote.join(' \u00b7 '),
+          data: {
+            labels: acctBuckets.labels,
+            datasets: acctNames.map((n, i) => ({
+              label: n,
+              data: seriesData(acctBuckets, n),
+              backgroundColor: SERIES_PALETTE[i % SERIES_PALETTE.length] + 'aa',
+              borderColor: SERIES_PALETTE[i % SERIES_PALETTE.length],
+              borderWidth: 1,
+            })),
+          },
+          scales: {
+            x: chartAxis({ stacked: true }),
+            y: chartAxis({ stacked: true, integer: true, title: 'transactions' }),
+          },
+        });
+      }
       // Top receivers (if >1 with multiple txs)
       const topSentTo = Object.entries(sentTo).sort((a, b) => b[1] - a[1]);
       if (topSentTo.length > 0 && topSentTo[0][1] > 1) {

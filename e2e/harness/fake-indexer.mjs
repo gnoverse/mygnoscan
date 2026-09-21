@@ -34,6 +34,132 @@ const TIP = 1000 + CHAIN_LENGTH - 1;
 export const SUPPLY_CAPACITY_BYTES = 100 * 1024 * 1024 * 1024;
 export const SUPPLY_UGNOT = String(SUPPLY_CAPACITY_BYTES * 100);
 
+// The realm page's storage, gas and events tabs read the *indexer* live, not
+// SQLite, so an empty getTransactions left all three with nothing to draw and
+// no way to assert on any of them. This serves one realm's history to the
+// three queries those tabs make.
+//
+// Heights sit inside the range blocks() covers, so the API's stampBlockTimes
+// resolves a real time for every row and the charts get a real x axis. They
+// are spread across it on purpose: events an hour apart must land in different
+// buckets, or a chart that buckets wrongly still looks right.
+export const TAB_REALM = 'gno.land/r/hub/core';
+export const STORAGE_PRICE = 100;
+
+// Signed the way the chain signs them: an unlock's bytes_delta is negative and
+// its fee_refund positive. Getting that backwards is what #255 fixed one layer
+// down, and what the fee total row got wrong one layer up.
+export const TAB_STORAGE = [
+  { height: 1002, bytes: 4096 },
+  { height: 1006, bytes: 2048 },
+  { height: 1012, bytes: -1024 },
+  { height: 1018, bytes: 8192 },
+  { height: 1030, bytes: -2048 },
+];
+export const TAB_NET_BYTES = TAB_STORAGE.reduce((s, e) => s + e.bytes, 0);
+export const TAB_DEPOSITED_FEE = TAB_STORAGE.filter(e => e.bytes > 0)
+  .reduce((s, e) => s + e.bytes * STORAGE_PRICE, 0);
+export const TAB_REFUNDED_FEE = TAB_STORAGE.filter(e => e.bytes < 0)
+  .reduce((s, e) => s - e.bytes * STORAGE_PRICE, 0);
+export const TAB_NET_FEE = TAB_DEPOSITED_FEE - TAB_REFUNDED_FEE;
+
+// One failed transaction, so the gas chart's failed series is not empty and a
+// chart that silently dropped unsuccessful transactions would be caught.
+export const TAB_GAS = [
+  { height: 1002, used: 90000, wanted: 150000, fee: 800, func: 'Write', success: true },
+  { height: 1006, used: 60000, wanted: 150000, fee: 700, func: 'Write', success: true },
+  { height: 1012, used: 30000, wanted: 150000, fee: 600, func: 'Clear', success: true },
+  { height: 1018, used: 120000, wanted: 150000, fee: 900, func: 'Write', success: true },
+  { height: 1024, used: 10000, wanted: 150000, fee: 500, func: 'Boom', success: false },
+  { height: 1030, used: 40000, wanted: 150000, fee: 400, func: 'Clear', success: true },
+];
+export const TAB_GAS_USED = TAB_GAS.reduce((s, e) => s + e.used, 0);
+export const TAB_GAS_FEE = TAB_GAS.reduce((s, e) => s + e.fee, 0);
+
+export const TAB_EVENTS = [
+  { height: 1002, type: 'Deposit' },
+  { height: 1006, type: 'Deposit' },
+  { height: 1012, type: 'Withdraw' },
+  { height: 1018, type: 'Deposit' },
+  { height: 1030, type: 'Withdraw' },
+];
+
+// The real indexer answers every one of these ordered heightAndIndex DESC, so
+// the fake does too: a consumer that forgot to sort chronologically before a
+// running total draws the realm shrinking as it grew, and only a
+// newest-first fixture catches it.
+function desc(rows) {
+  return rows.slice().reverse();
+}
+
+function storageTxs(pkgPath) {
+  return desc(TAB_STORAGE.map((e, i) => ({
+    hash: `storage-tab-${i}`,
+    block_height: e.height,
+    gas_used: 0,
+    gas_wanted: 0,
+    gas_fee: { amount: 0, denom: 'ugnot' },
+    success: true,
+    response: {
+      events: [e.bytes >= 0 ? {
+        __typename: 'StorageDepositEvent',
+        type: 'StorageDepositEvent',
+        bytes_delta: e.bytes,
+        fee_delta: { amount: e.bytes * STORAGE_PRICE, denom: 'ugnot' },
+        pkg_path: pkgPath,
+      } : {
+        __typename: 'StorageUnlockEvent',
+        type: 'StorageUnlockEvent',
+        bytes_delta: e.bytes,
+        fee_refund: { amount: -e.bytes * STORAGE_PRICE, denom: 'ugnot' },
+        pkg_path: pkgPath,
+      }],
+    },
+  })));
+}
+
+function gasTxs(pkgPath) {
+  return desc(TAB_GAS.map((e, i) => ({
+    hash: `gas-tab-${i}`,
+    block_height: e.height,
+    gas_used: e.used,
+    gas_wanted: e.wanted,
+    gas_fee: { amount: e.fee, denom: 'ugnot' },
+    success: e.success,
+    messages: [{ value: { __typename: 'MsgCall', func: e.func, pkg_path: pkgPath } }],
+  })));
+}
+
+function eventTxs(pkgPath) {
+  return desc(TAB_EVENTS.map((e, i) => ({
+    hash: `event-tab-${i}`,
+    block_height: e.height,
+    gas_used: 0,
+    gas_wanted: 0,
+    gas_fee: { amount: 0, denom: 'ugnot' },
+    success: true,
+    response: {
+      events: [{
+        __typename: 'GnoEvent',
+        type: e.type,
+        pkg_path: pkgPath,
+        attrs: [{ key: 'n', value: String(i) }],
+      }],
+    },
+  })));
+}
+
+// The three queries are told apart by their where clause rather than by the
+// fields they select: GetEventsByPkgPath asks for the storage fragments too,
+// so dispatching on "StorageDepositEvent" appearing anywhere would answer the
+// events query with storage rows.
+const PKG_PATH_RE = /pkg_path: \{ eq: "([^"]+)" \}/;
+
+function askedPath(query) {
+  const m = PKG_PATH_RE.exec(query);
+  return m ? m[1] : '';
+}
+
 function blocks() {
   // Newest first, the order the real indexer returns for this query and the
   // order the frontend's sparkline relies on when it reverses for display.
@@ -72,6 +198,12 @@ export function startFakeIndexer() {
         data = { latestBlockHeight: TIP };
       } else if (query.includes('getBlocks')) {
         data = { getBlocks: blocks() };
+      } else if (query.includes('StorageDepositEvent: { pkg_path: { eq:')) {
+        data = { getTransactions: askedPath(query) === TAB_REALM ? storageTxs(TAB_REALM) : [] };
+      } else if (query.includes('MsgCall: { pkg_path: { eq:')) {
+        data = { getTransactions: askedPath(query) === TAB_REALM ? gasTxs(TAB_REALM) : [] };
+      } else if (query.includes('GnoEvent: { pkg_path: { eq:')) {
+        data = { getTransactions: askedPath(query) === TAB_REALM ? eventTxs(TAB_REALM) : [] };
       } else if (query.includes('getTransactions')) {
         data = { getTransactions: [] };
       } else if (query.includes('getSupply')) {
