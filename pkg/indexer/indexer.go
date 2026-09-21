@@ -700,6 +700,14 @@ type TxEvent struct {
 	BytesDelta int         `json:"bytes_delta,omitempty"`
 	FeeDelta   *Coin       `json:"fee_delta,omitempty"`
 	FeeRefund  *Coin       `json:"fee_refund,omitempty"`
+
+	// TransferEvent. The chain emits one on every bank transfer, a realm's own
+	// banker moves included, which is what makes a balance derivable at all.
+	// Only CoinFlows selects them; the shared field templates do not, so these
+	// are zero on every other fetch.
+	From  string `json:"from,omitempty"`
+	To    string `json:"to,omitempty"`
+	Coins string `json:"coins,omitempty"`
 }
 
 type EventAttr struct {

@@ -837,6 +837,7 @@ func (a *API) HandleFunctionCallHeatmap(w http.ResponseWriter, r *http.Request) 
 func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/stats", a.HandleStats)
 	mux.HandleFunc("GET /api/realms", a.HandleRealms)
+	mux.HandleFunc("GET /api/realm/defi/{path...}", a.HandleRealmDefi)
 	mux.HandleFunc("GET /api/realm/{path...}", a.HandleRealm)
 	mux.HandleFunc("GET /api/packages", a.HandlePackages)
 	mux.HandleFunc("GET /api/tx/{hash}", a.HandleTx)
