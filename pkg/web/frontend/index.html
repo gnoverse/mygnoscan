@@ -4511,7 +4511,7 @@ function sanityDiagnosisSection(ov) {
         const old = n.round_age_seconds > 120;
         roundCell.appendChild(el('div', {
           style: { color: old ? '#ff6b6b' : 'var(--fg2)', fontSize: '11px' },
-        }, 'for ' + fmtAge(n.round_age_seconds)));
+        }, 'for ' + fmtGap(n.round_age_seconds)));
       }
     } else {
       roundCell.append('-');
@@ -4540,9 +4540,16 @@ function sanityDiagnosisSection(ov) {
   return wrap;
 }
 
-// fmtAge renders a gap the way the server does, so the two never disagree on
+// fmtGap renders a gap the way the server does, so the two never disagree on
 // screen.
-function fmtAge(seconds) {
+//
+// Not fmtAge: that name is already taken by the stale chip's formatter, which
+// takes milliseconds. index.html is one script with one global scope, so the
+// later declaration would silently win and the chip would report a 30-second
+// cache as eight hours old. TestFrontendHasNoDuplicateTopLevelDeclarations
+// catches the collision; the distinct name and the unit in the parameter are
+// what stop it being reintroduced.
+function fmtGap(seconds) {
   if (seconds < 60) return seconds + 's';
   if (seconds < 3600) return Math.floor(seconds / 60) + 'm';
   if (seconds < 86400) return Math.floor(seconds / 3600) + 'h';
