@@ -90,6 +90,23 @@ everything newer than the build, so the newest bucket does not lag the timer.
 - **`?network=all`, or omitting the parameter, means no filter** — results span
   every configured network. For anything address- or balance-related this is a
   known source of confusion, because those resolve against a single network.
+- **Storage capacity is arithmetic, not an estimate.** gno.land locks
+  `vm:p:storage_price` ugnot for every byte of realm state, so a chain cannot hold
+  more bytes than its money supply can pay for:
+  `capacity = total_supply / storage_price`. At mainnet's figures on 2026-09-21
+  that is 1,333,000,221,686,563 ugnot over 100 ugnot/byte, or 13.33 TB, the same
+  sum the monorepo does in a comment beside the default price. `/storage` is built
+  on it, and every one of its figures is per chain for that reason.
+- **Local `storage_events` reproduce what the chain reports.** Summing
+  `bytes_delta` per realm matches `vm/qstorage` exactly: checked on mainnet
+  2026-09-21, `gno.land/r/gnoland/blog` sums to 1,278,609 here and the chain
+  answers `storage: 1278609, deposit: 127860900`. Nothing needs a per-realm RPC
+  round trip.
+- **The chain charges the caller, not the realm.**
+  `processStorageDeposit(ctx, caller, ...)` bills whoever sent the message, so a
+  realm anyone can write to is paid for by its users and its deployer may hold
+  almost none of its bytes. `/api/storage/map` reports both attributions
+  separately rather than conflating them.
 
 ## Non-goals
 

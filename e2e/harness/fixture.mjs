@@ -29,6 +29,19 @@ export const PAIR_CALLERS = [
 ];
 export const PAIRED_REALMS = ['gno.land/r/consumer00/app', 'gno.land/r/consumer01/app'];
 
+// Storage. The numbers are round so the /storage assertions can name them:
+// alpha holds 40 MiB across three namespaces, against the fake indexer's
+// 100 GB of capacity, which is 0.04% full.
+//
+// Deliberately uneven across the four attribution branches, because that is the
+// part of the storage map that can be silently wrong: a payer lookup that
+// misses does not error, it reports a plausible address.
+export const STORAGE_TOTAL_BYTES = 40 * 1024 * 1024;
+export const STORAGE_HOG = 'gno.land/r/hog/vault';
+export const STORAGE_HOG_BYTES = 32 * 1024 * 1024;
+export const STORAGE_PAYER = 'g1storagepayer00000000000000000000000';
+export const STORAGE_DEPLOYER = 'g1hogdeployer000000000000000000000000';
+
 const TS = '2026-08-01T12:00:00Z';
 
 export function seed(dbPath) {
@@ -56,11 +69,11 @@ export function seed(dbPath) {
       (network, tx_hash, block_height, block_time, gas_used, gas_wanted, gas_fee, success)
       VALUES (?, ?, ?, ?, ?, ?, ?, 1)`);
 
-    const addPackage = (network, path, creator, height, isRealm) => {
+    const addPackage = (network, path, creator, height, isRealm, txHash) => {
       const name = path.split('/').pop();
-      pkg.run(network, path, name, creator, height, TS, `tx-${network}-${height}`, isRealm ? 1 : 0);
+      pkg.run(network, path, name, creator, height, TS, txHash || `tx-${network}-${height}`, isRealm ? 1 : 0);
       file.run(network, path, `${name}.gno`, `package ${name}\n\nfunc Render(path string) string { return "${name}" }\n`);
-      tx.run(network, `tx-${network}-${height}`, height, TS, 100000, 200000, 1000);
+      tx.run(network, txHash || `tx-${network}-${height}`, height, TS, 100000, 200000, 1000);
     };
 
     let height = 100;
@@ -113,6 +126,45 @@ export function seed(dbPath) {
         'g1recipient00000000000000000000000000', '1000000ugnot');
       tx.run(network, `send-${network}-${i}`, 3000 + i, TS, 40000, 50000, 400);
     }
+
+    // Storage events, the rows /storage is built on. Signed: an unlock
+    // subtracts, so r/hub/core nets out below what it deposited.
+    const storage = db.prepare(`INSERT OR REPLACE INTO storage_events
+      (network, tx_hash, event_index, pkg_path, block_height, block_time, kind, bytes_delta, fee)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    const PRICE = 100;
+    const store = (network, txHash, path, h, bytes, kind) => {
+      storage.run(network, txHash, 0, path, h, TS, kind || (bytes > 0 ? 'deposit' : 'unlock'),
+        bytes, bytes * PRICE);
+      tx.run(network, txHash, h, TS, 90000, 150000, 800);
+    };
+
+    // One realm holding most of the disk, deployed by its own creator: the
+    // "deployer pays" branch, and the run the block map is mostly made of.
+    addPackage('alpha', STORAGE_HOG, STORAGE_DEPLOYER, 4000, true, 'store-hog-deploy');
+    store('alpha', 'store-hog-deploy', STORAGE_HOG, 4000, STORAGE_HOG_BYTES);
+
+    // The hub grows under a MsgCall and then releases part of it: the "direct
+    // caller pays" branch, plus a negative delta.
+    call.run('alpha', 'store-hub-grow', 4001, TS, STORAGE_PAYER, HUB, 'Write');
+    store('alpha', 'store-hub-grow', HUB, 4001, 6 * 1024 * 1024);
+    call.run('alpha', 'store-hub-free', 4002, TS, STORAGE_PAYER, HUB, 'Clear');
+    store('alpha', 'store-hub-free', HUB, 4002, -2 * 1024 * 1024);
+
+    // A cross-realm write: the call targets one realm, another one grows. Only
+    // the "any caller on this transaction" fallback can attribute it.
+    call.run('alpha', 'store-cross', 4003, TS, BUSY_CALLER, HUB, 'Poke');
+    store('alpha', 'store-cross', PAIRED_REALMS[0], 4003, 3 * 1024 * 1024);
+
+    // A MsgRun script that allocates, and an event with nothing at all to
+    // attribute it to, which must show as unattributed rather than as somebody.
+    run.run('alpha', 'store-run', 4004, TS, BUSY_CALLER, 'package main\n');
+    store('alpha', 'store-run', PAIRED_REALMS[1], 4004, 512 * 1024);
+    store('alpha', 'store-orphan', 'gno.land/r/orphan/lost', 4005, 512 * 1024);
+
+    // The same path on the other chain, with different numbers, so anything
+    // that groups by path alone reports a size belonging to neither chain.
+    store('beta', 'store-beta-hog', STORAGE_HOG, 4000, 7 * 1024 * 1024);
 
     db.exec('COMMIT');
   } finally {
