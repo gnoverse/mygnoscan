@@ -837,6 +837,10 @@ func (a *API) HandleFunctionCallHeatmap(w http.ResponseWriter, r *http.Request) 
 func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/stats", a.HandleStats)
 	mux.HandleFunc("GET /api/realms", a.HandleRealms)
+	// Beats the /api/realm/{path...} wildcard below by Go 1.22 mux precedence,
+	// the same way /api/storage/map does. A package path always carries an r/
+	// or p/ element right after gno.land/, so no realm can shadow this.
+	mux.HandleFunc("GET /api/realm/usage/{path...}", a.HandleRealmUsage)
 	mux.HandleFunc("GET /api/realm/{path...}", a.HandleRealm)
 	mux.HandleFunc("GET /api/packages", a.HandlePackages)
 	mux.HandleFunc("GET /api/tx/{hash}", a.HandleTx)

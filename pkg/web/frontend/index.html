@@ -403,6 +403,31 @@ tr.total-row td { font-weight: bold; color: var(--accent); }
 .dash-seg button { background: var(--bg2); color: var(--fg2); border: none; border-left: 1px solid var(--border); padding: 4px 10px; cursor: pointer; font-family: var(--mono); font-size: 11px; }
 .dash-seg button:first-child { border-left: none; }
 .dash-seg button.on { background: var(--accent); color: var(--bg); font-weight: bold; }
+/* Realm calls tab: server-side filters over the whole call history.
+   The controls reuse .dash-seg so "pick a window" looks the same here as on
+   the dashboards; only the pieces with no equivalent elsewhere are new. */
+.usage-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 4px 0 16px; }
+.usage-filter-label { color: var(--fg2); font-size: 11px; }
+.usage-filter-label:not(:first-child) { margin-left: 8px; }
+.usage-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--accent); border-radius: 4px; padding: 2px 6px; font-size: 11px; }
+.usage-chip-label { color: var(--fg2); }
+.usage-chip-x { background: none; border: none; color: var(--fg2); cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; font-family: var(--mono); }
+.usage-chip-x:hover { color: var(--red); }
+.usage-note { color: var(--fg2); font-size: 11px; margin: 6px 0 12px; }
+.usage-section { margin-top: 24px; }
+/* "only" is a filter, the address beside it is a link to another page. They do
+   different things and must not look like one target. */
+.usage-only { background: none; border: 1px solid var(--border); color: var(--fg2); border-radius: 3px; font-family: var(--mono); font-size: 10px; padding: 0 5px; margin-left: 6px; cursor: pointer; opacity: 0; }
+tr:hover .usage-only, .usage-row-on .usage-only { opacity: 1; }
+.usage-only:hover { color: var(--accent); border-color: var(--accent); }
+.usage-row-on { background: rgba(78,205,196,0.08); }
+/* A share bar, so 60% of a realm's traffic and 2% of it do not read alike in a
+   column of bare numbers. The number stays first in the DOM so the table's
+   sort and CSV export still see it. */
+.usage-share { position: relative; display: inline-block; min-width: 90px; }
+.usage-share-fill { position: absolute; left: 0; top: 0; bottom: 0; background: rgba(78,205,196,0.18); border-radius: 2px; }
+.usage-share-n { position: relative; padding-left: 4px; }
+.usage-failed { color: var(--red); }
 /* Info tooltip: a real button so it works on keyboard and touch, not title= */
 .info { position: relative; display: inline-flex; }
 .info-btn { background: none; border: 1px solid var(--border); color: var(--fg2); border-radius: 50%; width: 16px; height: 16px; font-size: 10px; line-height: 1; padding: 0; cursor: help; font-family: var(--mono); }
@@ -8915,6 +8940,382 @@ function destroyDetailCharts() {
   _detailCharts = [];
 }
 
+// --- Realm usage: the calls tab -------------------------------------------
+//
+// One endpoint, /api/realm/usage, answers the whole tab under one filter: a
+// summary, the callers ranked, the functions ranked, and one page of the
+// message feed. The filter is applied server-side to all four, which is what
+// makes "unique callers" mean something once you narrow to a function or a
+// week.
+//
+// State lives here rather than in the tab's DOM because changing a filter
+// refetches: the aggregates are computed in SQL over the whole history, not
+// derived from the rows currently on screen, so there is nothing to filter
+// client-side. (The tables still get the site-wide sort/filter/export
+// enhancement on top, which works on the page in front of you.)
+let _usageFilter = { window: 'all', kind: '', status: '', func: '', caller: '', page: 0 };
+const USAGE_PAGE_SIZE = 50;
+const USAGE_WINDOWS = ['all', '90d', '30d', '7d', '24h'];
+
+function usageQuery() {
+  const q = new URLSearchParams();
+  if (_usageFilter.window && _usageFilter.window !== 'all') q.set('window', _usageFilter.window);
+  if (_usageFilter.kind) q.set('kind', _usageFilter.kind);
+  if (_usageFilter.status) q.set('status', _usageFilter.status);
+  if (_usageFilter.func) q.set('func', _usageFilter.func);
+  if (_usageFilter.caller) q.set('caller', _usageFilter.caller);
+  q.set('limit', String(USAGE_PAGE_SIZE));
+  q.set('offset', String(_usageFilter.page * USAGE_PAGE_SIZE));
+  return q.toString();
+}
+
+// loadRealmUsage fetches and renders the tab, and is re-entered on every
+// filter change. The generation guard is the same one the events and storage
+// tabs use: a slow response for a realm the reader has already navigated away
+// from must not write into the page that replaced it.
+async function loadRealmUsage(host, detail, gen) {
+  const suffix = detail.path.replace('gno.land/', '');
+  try {
+    const usage = await api('realm/usage/' + suffix + '?' + usageQuery());
+    if (gen !== _detailGen) return;
+    renderRealmUsage(host, detail, usage, gen);
+  } catch (e) {
+    if (gen !== _detailGen) return;
+    host.textContent = '';
+    host.appendChild(el('div', { style: { color: 'var(--fg2)', padding: '12px 0' } },
+      'could not load activity: ' + e.message));
+  }
+}
+
+// upgradeExportedPills re-dims the info tab's "exported" pills against the
+// whole call history instead of the 50 rows the detail payload carries.
+//
+// Only when nothing is filtered: under a 7d window "never called" would mean
+// "not called this week", which is a different and much less interesting
+// claim than the one the pill's tooltip makes.
+function upgradeExportedPills(usage) {
+  if (_usageFilter.window !== 'all' || _usageFilter.kind || _usageFilter.status ||
+      _usageFilter.func || _usageFilter.caller) return;
+  const called = new Set((usage.functions || []).map(f => f.name));
+  document.querySelectorAll('#tab-info .fnpill').forEach(pill => {
+    const on = called.has(pill.textContent);
+    pill.classList.toggle('uncalled', !on);
+    pill.title = on ? 'called on this chain — click to find it in the source' : 'exported but never called';
+  });
+}
+
+// usageStat is one figure in the summary strip, with an optional second line
+// of context under the number ("of 54", "3 of 8 exported").
+function usageStat(label, value, sub) {
+  const stat = el('div', { className: 'stat' },
+    el('span', { className: 'label' }, label),
+    el('span', { className: 'value' }, value));
+  if (sub) stat.appendChild(el('span', { style: { color: 'var(--fg2)', fontSize: '11px' } }, sub));
+  return stat;
+}
+
+// usageSeg is a segmented control bound to one key of _usageFilter. Picking a
+// value resets the page: page 7 of an unfiltered feed is not page 7 of a
+// filtered one, and silently keeping the offset is how a filter appears to
+// return nothing.
+function usageSeg(host, detail, gen, key, options) {
+  const seg = el('div', { className: 'dash-seg' });
+  for (const [value, text, title] of options) {
+    const b = el('button', { className: _usageFilter[key] === value ? 'on' : '' }, text);
+    if (title) b.title = title;
+    b.addEventListener('click', () => {
+      if (_usageFilter[key] === value) return;
+      _usageFilter[key] = value;
+      _usageFilter.page = 0;
+      loadRealmUsage(host, detail, gen);
+    });
+    seg.appendChild(b);
+  }
+  return seg;
+}
+
+// usageChip shows an active narrowing filter (one caller, one function) with
+// a way out of it. Without this a reader who clicked a caller has no visible
+// explanation for why every figure on the tab just dropped.
+function usageChip(host, detail, gen, key, label, body) {
+  const chip = el('span', { className: 'usage-chip' }, el('span', { className: 'usage-chip-label' }, label));
+  chip.appendChild(body);
+  const x = el('button', { className: 'usage-chip-x', title: 'clear this filter' }, '×');
+  x.addEventListener('click', () => {
+    _usageFilter[key] = '';
+    _usageFilter.page = 0;
+    loadRealmUsage(host, detail, gen);
+  });
+  chip.appendChild(x);
+  return chip;
+}
+
+// usageNarrow sets one narrowing filter and reloads — what clicking a caller
+// row or a function row does.
+function usageNarrow(host, detail, gen, key, value) {
+  _usageFilter[key] = _usageFilter[key] === value ? '' : value;
+  _usageFilter.page = 0;
+  loadRealmUsage(host, detail, gen);
+}
+
+// shareBar draws a proportion inline in a table cell. A caller with 60% of a
+// realm's traffic and one with 2% read identically as bare numbers in a column
+// sorted by that same number.
+function shareBar(n, total) {
+  const pct = total > 0 ? (n / total) * 100 : 0;
+  const wrap = el('span', { className: 'usage-share' });
+  wrap.appendChild(el('span', { className: 'usage-share-fill', style: { width: Math.max(pct, 1.5) + '%' } }));
+  const label = el('span', { className: 'usage-share-n' }, fmtNum(n));
+  label.title = pct.toFixed(1) + '%';
+  wrap.appendChild(label);
+  return wrap;
+}
+
+// okFailCell puts the failure count next to the success count only when there
+// is one. A "0" in a failures column on every row of every realm is noise that
+// makes the rows that do fail harder to spot.
+function okFailCell(ok, failed) {
+  const span = el('span', {}, fmtNum(ok));
+  if (failed > 0) {
+    span.appendChild(el('span', { style: { color: 'var(--fg2)' } }, ' / '));
+    span.appendChild(el('span', { className: 'usage-failed' }, fmtNum(failed) + ' failed'));
+  }
+  return span;
+}
+
+function renderRealmUsage(host, detail, usage, gen) {
+  host.textContent = '';
+  const s = usage.summary || {};
+  const filtered = !!(_usageFilter.func || _usageFilter.caller || _usageFilter.kind ||
+    _usageFilter.status || (_usageFilter.window && _usageFilter.window !== 'all'));
+  upgradeExportedPills(usage);
+
+  // --- Filters ---
+  const bar = el('div', { className: 'usage-filters' });
+  bar.appendChild(el('span', { className: 'usage-filter-label' }, 'when'));
+  bar.appendChild(usageSeg(host, detail, gen, 'window',
+    USAGE_WINDOWS.map(w => [w === 'all' ? 'all' : w, w === 'all' ? 'all time' : w,
+      w === 'all' ? 'every message since the realm was deployed' : 'the last ' + w])));
+  bar.appendChild(el('span', { className: 'usage-filter-label' }, 'what'));
+  bar.appendChild(usageSeg(host, detail, gen, 'kind', [
+    ['', 'all', 'MsgCall and MsgRun together'],
+    ['call', 'calls', 'MsgCall only — a direct call to an exported function'],
+    ['run', 'runs', 'MsgRun only — a script that imports this realm'],
+  ]));
+  bar.appendChild(el('span', { className: 'usage-filter-label' }, 'result'));
+  bar.appendChild(usageSeg(host, detail, gen, 'status', [
+    ['', 'any', 'succeeded or failed'],
+    ['ok', 'ok', 'succeeded'],
+    ['fail', 'failed', 'reverted — the fee was still paid'],
+  ]));
+  if (_usageFilter.func) {
+    bar.appendChild(usageChip(host, detail, gen, 'func', 'function', funcSpan(_usageFilter.func)));
+  }
+  if (_usageFilter.caller) {
+    bar.appendChild(usageChip(host, detail, gen, 'caller', 'caller', addrLink(_usageFilter.caller, detail.network)));
+  }
+  host.appendChild(bar);
+
+  // --- Summary ---
+  //
+  // Both "messages" and "transactions" are here because they come apart: a
+  // multicall bundles several MsgCalls into one signed transaction, so a realm
+  // with 54 calls from 30 transactions is being driven differently from one
+  // with 54 from 54.
+  const stats = el('div', { className: 'stats-bar', style: { marginBottom: '16px' } });
+  stats.appendChild(usageStat('messages', fmtNum(s.messages || 0),
+    (s.calls || 0) + ' calls · ' + (s.runs || 0) + ' runs'));
+  stats.appendChild(usageStat('transactions', fmtNum(s.txs || 0)));
+  stats.appendChild(usageStat('unique callers', fmtNum(s.unique_callers || 0),
+    (s.returning || 0) + ' came back'));
+  stats.appendChild(usageStat('succeeded', fmtNum(s.ok || 0),
+    s.failed ? s.failed + ' failed' : null));
+  const exported = (detail.exported_funcs || []).length;
+  stats.appendChild(usageStat('functions used', fmtNum(s.functions || 0),
+    exported ? 'of ' + exported + ' exported' : null));
+  if (s.gas_used) stats.appendChild(usageStat('gas used', fmtNum(s.gas_used)));
+  if (s.first_time) {
+    stats.appendChild(usageStat('first', timeEl(s.first_time)));
+    stats.appendChild(usageStat('last', timeEl(s.last_time)));
+  }
+  host.appendChild(stats);
+  if (filtered) {
+    host.appendChild(el('div', { className: 'usage-note' },
+      'every figure above is computed over the filtered set, not over the page below.'));
+  }
+
+  // --- Activity chart ---
+  //
+  // Drawn from the feed page, which is one page of many on a busy realm. The
+  // caption says which, rather than letting a chart of the most recent 50
+  // messages pass for the whole history.
+  const rows = usage.rows || [];
+  const actRows = rows.filter(r => r.block_time)
+    .map(r => ({ t: r.block_time, k: r.kind === 'run' ? 'MsgRun' : (r.func_name || 'call') }));
+  // The deploy is a MsgAddPackage and so not in the feed, but it is where the
+  // realm's history starts and the chart is the one place that reads better
+  // for having it. Only on an unfiltered first page: under a 7d window or a
+  // function filter, a deploy bar would be a message that does not match the
+  // filter every other bar was drawn under.
+  if (!filtered && _usageFilter.page === 0 && detail.block_time) {
+    actRows.push({ t: detail.block_time, k: 'deploy' });
+  }
+  const fnTotals = new Map();
+  for (const r of actRows) fnTotals.set(r.k, (fnTotals.get(r.k) || 0) + 1);
+  const ranked = [...fnTotals.entries()].sort((x, y) => y[1] - x[1]).map(e => e[0]);
+  const kept = ranked.slice(0, SERIES_PALETTE.length - 1);
+  const folded = ranked.length > kept.length;
+  if (folded) for (const r of actRows) if (!kept.includes(r.k)) r.k = 'other';
+  const actBuckets = bucketCounts(actRows, r => r.t, r => r.k);
+  if (actBuckets && actRows.length >= CHART_MIN_POINTS) {
+    const names = folded ? kept.concat(['other']) : kept;
+    const note = [fmtNum(actRows.length) + ' messages plotted'];
+    if ((s.messages || 0) > rows.length) note.push('this page of ' + fmtNum(s.messages));
+    detailChart(host, _detailCharts, {
+      title: 'activity, per ' + actBuckets.unit,
+      note: note.join(' · '),
+      data: {
+        labels: actBuckets.labels,
+        datasets: names.map((n, i) => ({
+          label: n,
+          data: seriesData(actBuckets, n),
+          backgroundColor: SERIES_PALETTE[i % SERIES_PALETTE.length] + 'aa',
+          borderColor: SERIES_PALETTE[i % SERIES_PALETTE.length],
+          borderWidth: 1,
+        })),
+      },
+      scales: {
+        x: chartAxis({ stacked: true }),
+        y: chartAxis({ stacked: true, integer: true, title: 'messages' }),
+      },
+    });
+  }
+
+  // --- Callers ---
+  const callers = usage.callers || [];
+  if (callers.length) {
+    const sec = el('div', { className: 'usage-section usage-callers' });
+    const title = el('div', { className: 'section-title' }, 'callers');
+    title.appendChild(el('span', { style: { color: 'var(--fg2)', fontWeight: 'normal' } },
+      ' · ' + fmtNum(s.unique_callers || 0) + ' addresses, click one to filter everything by it'));
+    sec.appendChild(title);
+    if (usage.callers_truncated) {
+      sec.appendChild(el('div', { className: 'usage-note' },
+        'showing the top ' + fmtNum(callers.length) + ' of ' + fmtNum(s.unique_callers || 0) +
+        ' by message count.'));
+    }
+    const tbl = el('table');
+    tbl.appendChild(el('thead', {}, el('tr', {},
+      el('th', {}, 'address'), el('th', {}, 'messages'), el('th', {}, 'txs'),
+      el('th', {}, 'funcs'), el('th', {}, 'ok'), el('th', {}, 'gas'),
+      el('th', {}, 'first'), el('th', {}, 'last'))));
+    const body = el('tbody');
+    for (const c of callers) {
+      const on = _usageFilter.caller === c.address;
+      const tr = el('tr', { className: on ? 'usage-row-on' : '' });
+      const addrCell = el('td', { className: 'truncate' }, addrLink(c.address, detail.network));
+      // The filter is a separate control from the address link: the link goes
+      // to the address page, which is a different question from "show me only
+      // this address's traffic on this realm".
+      const only = el('button', { className: 'usage-only', title: 'filter this realm by this address' },
+        on ? 'clear' : 'only');
+      only.addEventListener('click', () => usageNarrow(host, detail, gen, 'caller', c.address));
+      addrCell.appendChild(only);
+      tr.appendChild(addrCell);
+      tr.appendChild(el('td', {}, shareBar(c.messages, s.messages || 0)));
+      tr.appendChild(el('td', {}, fmtNum(c.txs)));
+      tr.appendChild(el('td', {}, fmtNum(c.funcs)));
+      tr.appendChild(el('td', {}, okFailCell(c.ok, c.failed)));
+      tr.appendChild(el('td', {}, c.gas_used ? fmtNum(c.gas_used) : '—'));
+      // blockWithAge rather than a bare age: the height is what you click
+      // through on, and dating every printed height is the convention #265
+      // set for every table on the site.
+      tr.appendChild(el('td', {}, blockWithAge(c.first_height, c.first_time, detail.network)));
+      tr.appendChild(el('td', {}, blockWithAge(c.last_height, c.last_time, detail.network)));
+      body.appendChild(tr);
+    }
+    tbl.appendChild(body);
+    sec.appendChild(tbl);
+    host.appendChild(sec);
+  }
+
+  // --- Functions ---
+  const fns = usage.functions || [];
+  if (fns.length) {
+    const sec = el('div', { className: 'usage-section usage-functions' });
+    const title = el('div', { className: 'section-title' }, 'functions');
+    title.appendChild(el('span', { style: { color: 'var(--fg2)', fontWeight: 'normal' } },
+      ' · what has actually been called, click one to filter'));
+    sec.appendChild(title);
+    const tbl = el('table');
+    tbl.appendChild(el('thead', {}, el('tr', {},
+      el('th', {}, 'function'), el('th', {}, 'calls'), el('th', {}, 'callers'),
+      el('th', {}, 'ok'), el('th', {}, 'last'))));
+    const body = el('tbody');
+    for (const f of fns) {
+      const on = _usageFilter.func === f.name;
+      const tr = el('tr', { className: on ? 'usage-row-on' : '' });
+      const nameCell = el('td', {}, funcSpan(f.name));
+      const only = el('button', { className: 'usage-only', title: 'filter this realm by this function' },
+        on ? 'clear' : 'only');
+      only.addEventListener('click', () => usageNarrow(host, detail, gen, 'func', f.name));
+      nameCell.appendChild(only);
+      tr.appendChild(nameCell);
+      tr.appendChild(el('td', {}, shareBar(f.calls, s.calls || 0)));
+      tr.appendChild(el('td', {}, fmtNum(f.callers)));
+      tr.appendChild(el('td', {}, okFailCell(f.ok, f.failed)));
+      tr.appendChild(el('td', {}, blockWithAge(f.last_height, f.last_time, detail.network)));
+      body.appendChild(tr);
+    }
+    tbl.appendChild(body);
+    sec.appendChild(tbl);
+    host.appendChild(sec);
+  }
+
+  // --- Feed ---
+  const sec = el('div', { className: 'usage-section usage-feed' });
+  sec.appendChild(el('div', { className: 'section-title' }, 'messages'));
+  if (rows.length) {
+    const tbl = el('table');
+    tbl.appendChild(el('thead', {}, el('tr', {},
+      el('th', {}, 'tx'), el('th', {}, 'type'), el('th', {}, 'caller'),
+      el('th', {}, 'detail'), el('th', {}, 'status'), el('th', {}, 'block'))));
+    const body = el('tbody');
+    // A multicall produces several rows sharing one tx (and so one block);
+    // span those columns across the group instead of repeating them.
+    const spans = rowSpans(rows, r => r.tx_hash);
+    rows.forEach((r, i) => {
+      body.appendChild(el('tr', {},
+        spanTd(spans, i, txLink(r.tx_hash, r.block_height, null, { showBlock: false })),
+        el('td', {}, r.kind === 'run' ? badge('run', 'run') : badge('call', 'call')),
+        el('td', { className: 'truncate' }, addrLink(r.caller, detail.network)),
+        el('td', {}, r.kind === 'run' ? 'MsgRun' : funcSpan(r.func_name)),
+        el('td', {}, statusBadge(r.success)),
+        // One dated block column instead of a block and an age beside it: the
+        // two said the same thing in two cells.
+        spanTd(spans, i, blockWithAge(r.block_height, r.block_time, detail.network))
+      ));
+    });
+    tbl.appendChild(body);
+    sec.appendChild(tbl);
+    pager(sec, _usageFilter.page, s.messages || 0, (p) => {
+      _usageFilter.page = p;
+      loadRealmUsage(host, detail, gen);
+      host.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  } else {
+    sec.appendChild(el('div', { style: { color: 'var(--fg2)', padding: '12px 0' } },
+      filtered ? 'no messages match this filter' : 'no activity'));
+  }
+  // The deploy is not in the feed — it is a MsgAddPackage, not a call — but a
+  // realm nobody has called yet would otherwise show nothing at all here.
+  sec.appendChild(el('div', { className: 'usage-note' }, [
+    'deployed at block ', String(detail.block_height), ' by ',
+  ].join('')));
+  sec.lastChild.appendChild(addrLink(detail.creator, detail.network));
+  host.appendChild(sec);
+}
+
 async function loadRealmDetail(path, initialTab) {
   const header = clear('realm-header');
   skeletonBlock(header);
@@ -9058,7 +9459,12 @@ async function loadRealmDetail(path, initialTab) {
       // so a realm nobody has used yet advertised nothing at all. Dimmed pills are
       // exported but never called — the useful distinction, and the reason this is
       // not folded into the calls tab.
-      const calledFns = new Set((detail.calls || []).map(c => c.func_name));
+      // detail.calls is a *count* on PackageInfo, not a list — reading it as
+      // one made calledFns permanently empty and dimmed every pill, including
+      // on realms with thousands of calls. The recent rows are the synchronous
+      // answer; the calls tab upgrades this set to the whole history once
+      // /api/realm/usage lands (upgradeExportedPills).
+      const calledFns = new Set((detail.recent_calls || []).map(c => c.func_name));
       const fnRow = el('tr', {}, el('td', { style: { color: 'var(--fg2)' } }, 'exported'));
       const fnTd = el('td');
       for (const fn of (detail.exported_funcs || [])) {
@@ -9127,97 +9533,18 @@ async function loadRealmDetail(path, initialTab) {
           }
         });
       }
-      // Calls + MsgRuns merged into one table
-      const calls = clear('tab-calls'); if (activeTab === 'calls') calls.classList.add('active'); else calls.classList.remove('active');
-      const directCalls = detail.recent_calls || [];
-      const msgRuns = detail.msgrun_refs || [];
-      const totalActivity = detail.call_count + msgRuns.length;
-      // Stats bar
-      const callStats = el('div', { style: { display: 'flex', gap: '24px', marginBottom: '16px', flexWrap: 'wrap' } });
-      callStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total'), el('span', { className: 'value' }, fmtNum(totalActivity))));
-      callStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'calls'), el('span', { className: 'value' }, fmtNum(detail.call_count))));
-      callStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'runs'), el('span', { className: 'value' }, fmtNum(msgRuns.length))));
-      calls.appendChild(callStats);
-      // Activity over time, stacked by what was called.
+      // Calls tab: aggregates over the realm's whole history, with filters.
       //
-      // Drawn from the rows the page already holds, which are capped at 50
-      // calls and 50 MsgRuns by the query behind /api/realm. That cap is
-      // stated in the caption rather than hidden: on a realm with thousands of
-      // calls this is the recent tail, and a chart that looked like the whole
-      // history would be the worst possible version of this feature. An
-      // untruncated one needs a per-realm time series endpoint, which this is
-      // not.
-      const activityRows = [];
-      if (detail.block_time) activityRows.push({ t: detail.block_time, k: 'deploy' });
-      for (const c of directCalls) if (c.block_time) activityRows.push({ t: c.block_time, k: c.func_name || 'call' });
-      for (const r of msgRuns) if (r.block_time) activityRows.push({ t: r.block_time, k: 'MsgRun' });
-      // Top functions only. A realm exporting thirty of them would otherwise
-      // produce thirty stacked series in eight colours, which is a legend
-      // rather than a chart.
-      const fnTotals = new Map();
-      for (const r of activityRows) fnTotals.set(r.k, (fnTotals.get(r.k) || 0) + 1);
-      const ranked = [...fnTotals.entries()].sort((x, y) => y[1] - x[1]).map(e => e[0]);
-      const kept = ranked.slice(0, SERIES_PALETTE.length - 1);
-      const folded = ranked.length > kept.length;
-      if (folded) for (const r of activityRows) if (!kept.includes(r.k)) r.k = 'other';
-      const actBuckets = bucketCounts(activityRows, r => r.t, r => r.k);
-      if (actBuckets && activityRows.length >= CHART_MIN_POINTS) {
-        const names = folded ? kept.concat(['other']) : kept;
-        const note = [fmtNum(activityRows.length) + ' messages plotted'];
-        // detail.call_count is the real total; directCalls is what the query
-        // returned. Saying which one the bars are is the whole point.
-        if (detail.call_count > directCalls.length) {
-          note.push('the ' + fmtNum(directCalls.length) + ' most recent calls of ' + fmtNum(detail.call_count));
-        }
-        detailChart(calls, _detailCharts, {
-          title: 'activity, per ' + actBuckets.unit,
-          note: note.join(' \u00b7 '),
-          data: {
-            labels: actBuckets.labels,
-            datasets: names.map((n, i) => ({
-              label: n,
-              data: seriesData(actBuckets, n),
-              backgroundColor: SERIES_PALETTE[i % SERIES_PALETTE.length] + 'aa',
-              borderColor: SERIES_PALETTE[i % SERIES_PALETTE.length],
-              borderWidth: 1,
-            })),
-          },
-          scales: {
-            x: chartAxis({ stacked: true }),
-            y: chartAxis({ stacked: true, integer: true, title: 'messages' }),
-          },
-        });
-      }
-      // Merged table
-      const allRows = [];
-      // Deploy tx
-      allRows.push({ type: 'deploy', block: detail.block_height, time: detail.block_time, caller: detail.creator, detail: 'MsgAddPackage', success: true, tx: detail.tx_hash });
-      for (const c of directCalls) allRows.push({ type: 'call', block: c.block_height, time: c.block_time, caller: c.caller, detail: c.func_name, success: c.success, tx: c.tx_hash });
-      for (const r of msgRuns) allRows.push({ type: 'run', block: r.block_height, time: r.block_time, caller: r.caller, detail: 'MsgRun', success: r.success, tx: r.tx_hash });
-      allRows.sort((a, b) => b.block - a.block);
-      if (allRows.length) {
-        const callTbl = el('table');
-        callTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'tx'), el('th', {}, 'type'), el('th', {}, 'caller'), el('th', {}, 'detail'), el('th', {}, 'status'), el('th', {}, 'block'))));
-        const callBody = el('tbody');
-        // A multicall produces several call rows sharing one tx (and so one
-        // block); span those columns across the group instead of repeating.
-        const callSpans = rowSpans(allRows, row => row.tx);
-        allRows.forEach((row, i) => {
-          const typeBdg = row.type === 'call' ? badge('realm', 'call') : row.type === 'run' ? badge('ok', 'run') : badge('pkg', 'deploy');
-          callBody.appendChild(el('tr', {},
-            spanTd(callSpans, i, txLink(row.tx, row.block, null, { showBlock: false })),
-            el('td', {}, typeBdg),
-            el('td', { className: 'truncate' }, addrLink(row.caller)),
-            el('td', {}, row.type === 'call' ? funcSpan(row.detail) : row.detail),
-            el('td', {}, statusBadge(row.success)),
-            spanTd(callSpans, i, blockWithAge(row.block, row.time))
-          ));
-        });
-        callTbl.appendChild(callBody); calls.appendChild(callTbl);
-
-      } else {
-        calls.appendChild(el('div', { style: { color: 'var(--fg2)', padding: '12px 0' } }, 'no activity'));
-      }
+      // Everything here comes from /api/realm/usage rather than from the 50
+      // recent rows the detail payload carries. "unique callers", "returning",
+      // "3 of 8 exported functions used" are aggregates that a truncated tail
+      // cannot answer, and the filters reach the aggregates too: narrowing to
+      // one function and reading "12 unique callers" means twelve addresses
+      // called *that*.
+      const calls = clear('tab-calls'); if (activeTab === 'calls') calls.classList.add('active'); else calls.classList.remove('active');
+      skeletonRows(calls, 5, 4);
+      _usageFilter = { window: 'all', kind: '', status: '', func: '', caller: '', page: 0 };
+      loadRealmUsage(calls, detail, gen);
       // Events tab (loaded from indexer)
       const eventsEl = clear('tab-events'); if (activeTab === 'events') eventsEl.classList.add('active'); else eventsEl.classList.remove('active');
       skeletonRows(eventsEl, 4, 3);

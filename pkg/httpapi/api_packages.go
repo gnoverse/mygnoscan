@@ -3,10 +3,12 @@ package httpapi
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/moul/mygnoscan/pkg/analyzer"
 	"github.com/moul/mygnoscan/pkg/config"
@@ -216,6 +218,80 @@ func (a *API) HandleRealm(w http.ResponseWriter, r *http.Request) {
 		PackageDetail: detail,
 		Symbols:       analyzer.ExtractSymbols(files),
 	})
+}
+
+// HandleRealmUsage answers the realm page's calls tab: who has called this
+// realm, how often, with which function, and what the filtered slice of that
+// history looks like.
+//
+// The filters apply to the aggregates as well as to the feed, which is the
+// whole point of the endpoint. `?func=Bid&window=7d` reporting "12 unique
+// callers" means twelve addresses bid in the last week, not twelve addresses
+// touched the realm at some point since genesis.
+func (a *API) HandleRealmUsage(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	path := strings.TrimRight("gno.land/"+r.PathValue("path"), "/")
+	q := r.URL.Query()
+
+	f := store.RealmUsageFilter{
+		Caller: q.Get("caller"),
+		Func:   q.Get("func"),
+		Status: q.Get("status"),
+		Kind:   q.Get("kind"),
+		Since:  usageWindowCutoff(q.Get("window")),
+		Limit:  intParam(q, "limit", 50, 500),
+		Offset: intParam(q, "offset", 0, 0),
+	}
+	// An unknown value is dropped rather than 400'd: these arrive from links
+	// and bookmarks, and an unrecognised one should degrade to "no filter",
+	// not to an error page over a realm that is perfectly readable.
+	if f.Status != "ok" && f.Status != "fail" {
+		f.Status = ""
+	}
+	if f.Kind != "call" && f.Kind != "run" {
+		f.Kind = ""
+	}
+
+	usage, err := a.db.RealmUsage(network, path, f)
+	if err != nil {
+		jsonError(w, "package not found: "+path, 404)
+		return
+	}
+	JSONResponse(w, usage)
+}
+
+// usageWindows are the periods the calls tab offers, matching the vocabulary
+// ACTIVITY_WINDOWS uses on the graphs so the site has one set of names for
+// "recently".
+var usageWindows = map[string]time.Duration{
+	"24h": 24 * time.Hour,
+	"7d":  7 * 24 * time.Hour,
+	"30d": 30 * 24 * time.Hour,
+	"90d": 90 * 24 * time.Hour,
+}
+
+// usageWindowCutoff turns a window name into the RFC3339 lower bound the store
+// compares block_time against. An unknown name, and "all", mean no bound.
+func usageWindowCutoff(window string) string {
+	d, ok := usageWindows[window]
+	if !ok {
+		return ""
+	}
+	return time.Now().UTC().Add(-d).Format(time.RFC3339Nano)
+}
+
+// intParam reads a bounded integer query parameter. max of 0 means unbounded;
+// anything unparseable falls back to def rather than erroring, for the same
+// reason the status filter does.
+func intParam(q url.Values, name string, def, max int) int {
+	v, err := strconv.Atoi(q.Get(name))
+	if err != nil || v < 0 {
+		return def
+	}
+	if max > 0 && v > max {
+		return max
+	}
+	return v
 }
 
 // realmDetailResponse adds the package's parsed symbol table to
