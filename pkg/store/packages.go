@@ -443,7 +443,7 @@ func (d *DB) GetPackageDetail(network, path string) (*PackageDetail, error) {
 
 	// Recent calls
 	callRows, err := d.db.Query(`
-		SELECT tx_hash, block_height, caller, func_name, success
+		SELECT tx_hash, block_height, COALESCE(block_time, ''), caller, func_name, success
 		FROM calls WHERE pkg_path = ? AND network = ?
 		ORDER BY block_height DESC LIMIT 50
 	`, path, p.Network)
@@ -453,7 +453,7 @@ func (d *DB) GetPackageDetail(network, path string) (*PackageDetail, error) {
 	defer callRows.Close()
 	for callRows.Next() {
 		var c CallInfo
-		if err := callRows.Scan(&c.TxHash, &c.BlockHeight, &c.Caller, &c.FuncName, &c.Success); err != nil {
+		if err := callRows.Scan(&c.TxHash, &c.BlockHeight, &c.BlockTime, &c.Caller, &c.FuncName, &c.Success); err != nil {
 			return nil, err
 		}
 		p.Callers = append(p.Callers, c)
@@ -464,7 +464,7 @@ func (d *DB) GetPackageDetail(network, path string) (*PackageDetail, error) {
 
 	// MsgRun references (where source contains import of this path)
 	runRows, err := d.db.Query(`
-		SELECT tx_hash, block_height, caller, success
+		SELECT tx_hash, block_height, COALESCE(block_time, ''), caller, success
 		FROM msg_runs WHERE source LIKE ? AND network = ?
 		ORDER BY block_height DESC LIMIT 50
 	`, "%"+path+"%", p.Network)
@@ -474,7 +474,7 @@ func (d *DB) GetPackageDetail(network, path string) (*PackageDetail, error) {
 	defer runRows.Close()
 	for runRows.Next() {
 		var r MsgRunInfo
-		if err := runRows.Scan(&r.TxHash, &r.BlockHeight, &r.Caller, &r.Success); err != nil {
+		if err := runRows.Scan(&r.TxHash, &r.BlockHeight, &r.BlockTime, &r.Caller, &r.Success); err != nil {
 			return nil, err
 		}
 		p.MsgRunRefs = append(p.MsgRunRefs, r)

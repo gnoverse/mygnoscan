@@ -148,6 +148,22 @@ two `apiSWR` calls into two containers rather than one `Promise.all`, so the fas
 half never waits for the slow one. Same shape on a realm page, where the events,
 storage and dependency tabs each load on their own.
 
+**Detail-page charts are drawn from the payload the page already has**, not from
+`/api/timeseries/*`. A realm's storage curve is a running sum over the
+`storage.entries` array `/api/storage` already returned, so the chart costs no
+request and no endpoint; the same goes for the gas, activity and event-mix
+charts and for the account page. The browser picks its own bucket (minute, hour
+or day) from the span the rows cover, because a chart with one bar per event is
+unreadable on a busy realm and a chart with one bar per day is a single bar on a
+realm deployed this morning.
+
+Their instances live in one registry (`_detailCharts`) with one generation
+counter (`_detailGen`), shared across the realm and account pages because those
+navigate into each other. Every render pass bumps the generation and destroys
+what the last one drew: a Chart left registered holds a resize observer and a
+canvas no longer in the document, and the async tab loaders check the same
+counter so a slow one cannot append into a container a later pass rebuilt.
+
 ## Known weak points
 
 Documented so they are not rediscovered as surprises:
