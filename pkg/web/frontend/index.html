@@ -49,7 +49,11 @@ a:hover { text-decoration: underline; }
 .container { max-width: 1200px; margin: 0 auto; padding: 0 20px; }
 header { border-bottom: 1px solid var(--border); padding: 12px 0; position: sticky; top: 0; background: var(--bg); z-index: 100; }
 #sanity-subbar { display: none; position: sticky; z-index: 90; background: var(--bg); border-bottom: 1px solid var(--border); padding: 6px 0; }
-header .container { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+/* position: relative so the search popup can hang off the container rather than
+   off the 280px input. The rail is fixed at z-index 110 and the header is a
+   stacking context at 100, so a popup anchored to the input and wide enough for
+   a realm path slid *under* the rail; anchored here it simply cannot reach it. */
+header .container { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; position: relative; }
 .logo { font-size: 18px; font-weight: bold; color: var(--accent); cursor: pointer; }
 
 /* The nav rail.
@@ -141,10 +145,29 @@ html.rail-collapsed .rail-toggle svg { transform: scaleX(-1); }
   font-size: 11px; color: var(--fg2); border: 1px solid var(--border); border-radius: 3px;
   padding: 1px 5px; pointer-events: none; background: var(--bg); }
 .search-box input:focus + .kbd-hint, .search-box input:not(:placeholder-shown) + .kbd-hint { display: none; }
-#search-results { position: absolute; top: 100%; left: 0; right: 0; background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; margin-top: 4px; max-height: 340px; overflow-y: auto; display: none; z-index: 200; }
+/* The popup is sized for what it holds, not for the box above it. A realm path
+   is gno.land/r/<40-character address>/<name>, sixty-odd characters that a
+   280px dropdown clipped at exactly the wrong end: two of one deployer's
+   realms, "/bubblerumble" and "/bubblerumble2", rendered as the same row.
+   Anchored to the input's right edge and capped against the viewport, so it can
+   grow left over the page without ever pushing a horizontal scrollbar. */
+#search-results { position: absolute; top: calc(100% + 8px); left: 0; right: 0; max-width: 820px; margin-left: auto; background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; max-height: min(70vh, 560px); overflow-y: auto; overflow-x: hidden; display: none; z-index: 200; box-shadow: 0 10px 30px rgba(0,0,0,0.45); }
 #search-results.open { display: block; }
-.search-section-label { padding: 6px 12px 4px; font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--fg2); }
-.search-loading { padding: 8px 12px; color: var(--fg2); font-size: 12px; }
+.search-section-label { padding: 8px 12px 4px; font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--fg2); }
+.search-loading { padding: 10px 12px; color: var(--fg2); font-size: 12px; }
+.search-result { display: flex; align-items: center; gap: 10px; padding: 9px 12px; cursor: pointer; border-bottom: 1px solid var(--border); }
+.search-result:last-child { border-bottom: none; }
+.search-result:hover { background: var(--bg3); }
+.search-result .badge { flex: none; }
+.search-result-text { flex: 1; min-width: 0; }
+/* What identifies a package is the END of its path, so the two halves give up
+   room in the opposite order to the reading order: the namespace shrinks first
+   (999 against 1) and is the only part that ever shows an ellipsis; the name
+   survives whole until there is genuinely nothing left to take. */
+.search-result-title { display: flex; align-items: baseline; font-family: var(--mono); font-size: 14px; }
+.search-result-prefix { flex: 0 999 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg2); }
+.search-result-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+.search-result-sub { margin-top: 2px; font-size: 12px; color: var(--fg2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .stats-bar { display: flex; gap: 24px; padding: 16px 0; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
 .stat { display: flex; flex-direction: column; }
 .stat .label { font-size: 11px; color: var(--fg2); text-transform: uppercase; letter-spacing: 1px; }
@@ -654,8 +677,8 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
     <div class="search-box">
       <input type="text" id="search-input" placeholder="search...">
       <span class="kbd-hint" aria-hidden="true">/</span>
-      <div id="search-results"></div>
     </div>
+    <div id="search-results"></div>
     <span class="net-swatch" id="network-swatch" title=""></span><select class="network-select" id="network-select" onchange="onNetworkChange()"></select><a class="health-chip" id="health-chip" onclick="navigate('/sanity')" title=""></a>
     <button class="live-btn" id="live-toggle" onclick="toggleLive()"><span class="live-dot"></span><span id="live-label"> live</span></button>
   </div>
@@ -11189,16 +11212,32 @@ let searchTimeout;
 // in flight used to let whichever answered second win, even if it was the
 // stale one - flashing yesterday's query's results into today's box.
 let _searchGen = 0;
+// pathParts splits a package path at its last slash, so the row can render the
+// namespace and the name as two elements that shrink independently.
+//
+// The whole path in one element elides from the right, which on a package path
+// removes the only part that identifies it: searching "bubble" returns
+// gno.land/r/g1leu.../bubblerumble and gno.land/r/g1leu.../bubblerumble2, and
+// clipping the tail makes them the same row twice.
+function pathParts(path) {
+  const cut = String(path).lastIndexOf('/');
+  return cut < 0 ? { name: String(path) } : { prefix: path.slice(0, cut + 1), name: path.slice(cut + 1) };
+}
+// `title` is a string, or the {prefix, name} pathParts returns. Only a package
+// path gets split: a transaction hash is base64 and can contain a slash of its
+// own, which is not a namespace boundary.
 function searchResultRow(badgeType, badgeText, title, subtitle, onClick) {
-  const item = el('div', { style: { padding: '8px 12px', cursor: 'pointer', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '8px' } });
+  const parts = typeof title === 'string' ? { name: title } : title;
+  const item = el('div', { className: 'search-result' });
   item.appendChild(badge(badgeType, badgeText));
-  const text = el('div', {});
-  text.appendChild(el('div', { style: { fontSize: '13px' } }, title));
-  if (subtitle) text.appendChild(el('div', { style: { fontSize: '11px', color: 'var(--fg2)' } }, subtitle));
+  const text = el('div', { className: 'search-result-text' });
+  const titleEl = el('div', { className: 'search-result-title', title: (parts.prefix || '') + parts.name });
+  if (parts.prefix) titleEl.appendChild(el('span', { className: 'search-result-prefix' }, parts.prefix));
+  titleEl.appendChild(el('span', { className: 'search-result-name' }, parts.name));
+  text.appendChild(titleEl);
+  if (subtitle) text.appendChild(el('div', { className: 'search-result-sub' }, subtitle));
   item.appendChild(text);
   item.addEventListener('click', onClick);
-  item.addEventListener('mouseover', () => item.style.background = 'var(--bg3)');
-  item.addEventListener('mouseout', () => item.style.background = '');
   return item;
 }
 document.getElementById('search-input').addEventListener('input', function() {
@@ -11229,14 +11268,14 @@ document.getElementById('search-input').addEventListener('input', function() {
 
       if (!data || !data.length) {
         if (!direct.length) {
-          results.appendChild(el('div', { style: { padding: '8px 12px' } }, 'no results'));
+          results.appendChild(el('div', { style: { padding: '10px 12px' } }, 'no results'));
         }
         return;
       }
       results.appendChild(el('div', { className: 'search-section-label' }, 'packages'));
       for (const r of data) {
         results.appendChild(searchResultRow(r.is_realm ? 'realm' : 'pkg', r.is_realm ? 'realm' : 'package',
-          r.path, 'by ' + shortAddr(r.creator) + (r.status === 'inert' ? ' · parked' : ''),
+          pathParts(r.path), 'by ' + shortAddr(r.creator) + (r.status === 'inert' ? ' · parked' : ''),
           () => { results.classList.remove('open'); navigate('/realm/' + r.path.replace('gno.land/', '')); }));
       }
     } catch (err) {
@@ -11246,7 +11285,10 @@ document.getElementById('search-input').addEventListener('input', function() {
     }
   }, 200);
 });
-document.addEventListener('click', (e) => { if (!e.target.closest('.search-box')) document.getElementById('search-results').classList.remove('open'); });
+// Both, since the results are a sibling of the box rather than a child of it:
+// a click on a result row closes the popup through its own handler, but a click
+// that only scrolls or selects inside it must not.
+document.addEventListener('click', (e) => { if (!e.target.closest('.search-box') && !e.target.closest('#search-results')) document.getElementById('search-results').classList.remove('open'); });
 
 
 // --- Keyboard ---------------------------------------------------------------
