@@ -282,7 +282,7 @@ pre { background: var(--bg2); border: 1px solid var(--border); border-radius: 4p
 .syn-num { color: #d19a66; }
 .syn-imp { color: #98c379; cursor: pointer; text-decoration: underline; text-decoration-style: dotted; }
 .syn-imp:hover { color: var(--accent); }
-#dep-graph { background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; min-height: 600px; position: relative; overflow: hidden; }
+#dep-graph { background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; min-height: 600px; position: relative; overflow: hidden; margin-bottom: 24px; }
 #contract-map { background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; position: relative; overflow: hidden; }
 #contract-map svg { display: block; }
 #dep-graph svg { display: block; }
@@ -769,7 +769,6 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
     <div class="tab-content" id="tab-events"></div>
     <div class="tab-content" id="tab-storage"></div>
     <div class="tab-content" id="tab-deps"></div>
-    <div class="tab-content" id="tab-graph"><div id="dep-graph-controls"></div><div id="dep-graph"></div></div>
     <div class="tab-content" id="tab-inert"></div>
   </main></div>
   <div class="view" id="view-tx-detail"><main><div id="tx-detail-content"></div></main></div>
@@ -8928,8 +8927,13 @@ async function loadRealmDetail(path, initialTab) {
       header.appendChild(provenance);
       _watchTarget = { kind: 'realms', id: detail.path, height: latestCall };
       const tabs = clear('realm-tabs');
-      const tabNames = ['info', 'docs', 'source', 'calls', 'events', 'storage', 'deps', 'graph', 'inert'];
-      const activeTab = initialTab && tabNames.includes(initialTab) ? initialTab : 'info';
+      const tabNames = ['info', 'docs', 'source', 'calls', 'events', 'storage', 'deps', 'inert'];
+      // `deps` absorbed the standalone `graph` tab: both were drawn from the
+      // same two dependency queries, so they were one answer split across two
+      // clicks. Links shared before the merge still carry ?tab=graph, and
+      // dropping them back to `info` would silently strand them.
+      const requestedTab = initialTab === 'graph' ? 'deps' : initialTab;
+      const activeTab = requestedTab && tabNames.includes(requestedTab) ? requestedTab : 'info';
       tabNames.forEach((name) => {
         const tab = el('div', { className: 'tab' + (name === activeTab ? ' active' : ''), onclick: () => switchTab(name, tab) }, name);
         tabs.appendChild(tab);
@@ -9393,7 +9397,8 @@ async function loadRealmDetail(path, initialTab) {
           storageEl.appendChild(el('div', { style: { color: 'var(--red)' } }, 'Error: ' + err.message));
         }
       })();
-      // Deps, and the graph drawn from the same two lists.
+      // Deps: the graph and the two lists, one tab, both drawn from the same
+      // two dependency queries.
       //
       // Loaded on their own, like the events and storage tabs above. They used
       // to be awaited in the middle of this render, so the header, source,
@@ -9402,7 +9407,6 @@ async function loadRealmDetail(path, initialTab) {
       // an await here is also what stops the whole render from being the single
       // synchronous pass apiSWR needs it to be.
       const depsEl = clear('tab-deps'); if (activeTab === 'deps') depsEl.classList.add('active'); else depsEl.classList.remove('active');
-      const graphEl = document.getElementById('tab-graph'); if (activeTab === 'graph') graphEl.classList.add('active'); else graphEl.classList.remove('active');
       skeletonBlock(depsEl);
       const depsPath = path.replace('gno.land/', '');
       (async () => {
@@ -9417,6 +9421,16 @@ async function loadRealmDetail(path, initialTab) {
         }
         if (gen !== _detailGen) return;
         depsEl.textContent = '';
+        // Graph first, lists second. The picture answers "what is this realm
+        // wired into" at a glance; the lists answer "which ones exactly", and
+        // reading them is the follow-up question, not the opening one.
+        //
+        // Both containers are built here rather than sitting in the static
+        // markup because `clear('tab-deps')` empties this element on every
+        // render, so anything the graph code looks up by id has to be put back
+        // before renderDepGraph runs.
+        depsEl.appendChild(el('div', { id: 'dep-graph-controls' }));
+        depsEl.appendChild(el('div', { id: 'dep-graph' }));
         const grid = el('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' } });
         grid.appendChild(buildDepTree('imports (what this uses)', imports, path,
           'what each of these imports in turn'));
@@ -10565,6 +10579,17 @@ function switchTab(name, tabEl) {
   document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
   if (tabEl) tabEl.classList.add('active');
   document.getElementById('tab-' + name).classList.add('active');
+  // The dependency graph is d3, drawn once at a width read from its container,
+  // and a container inside a hidden tab measures 0 — so a graph painted while
+  // another tab was open is stuck at renderDepGraph's 800px fallback. Redraw it
+  // the first time it is actually on screen at a width worth having.
+  if (name === 'deps' && _depGraph.center) {
+    const box = document.getElementById('dep-graph');
+    const svg = box && box.querySelector('svg');
+    if (svg && box.clientWidth && Math.abs(box.clientWidth - Number(svg.getAttribute('width'))) > 1) {
+      renderDepGraph(_depGraph.imports, _depGraph.dependents, _depGraph.center);
+    }
+  }
   // Update URL with tab param without triggering navigation
   const url = new URL(window.location);
   if (name === 'info') url.searchParams.delete('tab');

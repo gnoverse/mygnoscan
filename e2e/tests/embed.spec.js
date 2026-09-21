@@ -7,7 +7,7 @@ import { settle, unexpected, watch } from './helpers.js';
 // content rather than a whole page-in-a-page.
 test('embed mode hides the chrome and keeps the content', async ({ page }) => {
   const seen = watch(page);
-  await page.goto(`/realm/${HUB_ROUTE}?tab=graph&embed=1`);
+  await page.goto(`/realm/${HUB_ROUTE}?tab=deps&embed=1`);
   await settle(page);
 
   await expect(page.locator('header')).toBeHidden();
@@ -25,7 +25,7 @@ test('embed mode hides the chrome and keeps the content', async ({ page }) => {
 // from an inline script before the body exists, which is easy to get wrong in
 // the direction of applying always.
 test('the chrome is present without the flag', async ({ page }) => {
-  await page.goto(`/realm/${HUB_ROUTE}?tab=graph`);
+  await page.goto(`/realm/${HUB_ROUTE}?tab=deps`);
   await settle(page);
 
   await expect(page.locator('header')).toBeVisible();
