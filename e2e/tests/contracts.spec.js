@@ -17,6 +17,20 @@ function bubbles(page) {
   return page.locator('#contract-map svg circle');
 }
 
+// The force layout has to stop before a hover means anything: a bubble still
+// drifting moves out from under the cursor between the hover and the
+// assertion, which fires mouseout and clears the highlight.
+async function waitForMapSettled(page) {
+  await page.waitForFunction(() => {
+    const c = document.querySelector('#contract-map svg circle');
+    if (!c) return false;
+    const now = c.getAttribute('cx');
+    const settled = window.__lastCx === now;
+    window.__lastCx = now;
+    return settled;
+  }, null, { timeout: 30_000, polling: 400 });
+}
+
 test('the map draws one bubble per deployed contract', async ({ page }) => {
   const seen = watch(page);
   await openMap(page);
@@ -65,18 +79,143 @@ test('switching the size metric repaints without refetching the map', async ({ p
 
   const before = await bubbles(page).first().getAttribute('r');
   await page.getByRole('button', { name: 'storage', exact: true }).click();
-  await page.waitForSelector('#contract-map svg circle');
-  const after = await bubbles(page).first().getAttribute('r');
+  // Polled rather than read once: the new radius is transitioned onto the
+  // bubble that is already there, so for the first frames after the click it
+  // is still somewhere between the two values.
+  await expect.poll(() => bubbles(page).first().getAttribute('r')).not.toBe(before);
 
   // Every metric already arrived with the nodes, so a metric switch must not
   // go back to the server. That is the whole reason the endpoint returns all
   // of them at once.
   expect(requests).toEqual([]);
-  expect(after).not.toBe(before);
 
   expect(seen.jsErrors).toEqual([]);
   expect(unexpected(seen.failedRequests)).toEqual([]);
   expect(unexpected(seen.consoleErrors)).toEqual([]);
+});
+
+// --- the repaint moves the map, it does not rebuild it ----------------------
+//
+// Every control on this page used to empty #contract-map and start over: a new
+// SVG, new node objects with no coordinates, and a simulation reseeded from
+// d3's spiral. The map you were reading was gone and an unrelated one settled
+// in its place over several seconds, which made a filter impossible to read as
+// a filter. These four assert the fix from the outside.
+
+// Marks every bubble on screen, so a later count of the survivors says whether
+// the repaint moved these elements or replaced them. A property on the DOM
+// node, not an attribute, precisely so nothing in the page can set it.
+async function markBubbles(page) {
+  return page.evaluate(() => {
+    const els = document.querySelectorAll('#contract-map svg circle[data-path]');
+    els.forEach(c => { c.__marked = true; });
+    return els.length;
+  });
+}
+
+function markedBubbles(page) {
+  return page.evaluate(() => [...document.querySelectorAll('#contract-map svg circle[data-path]')]
+    .filter(c => c.__marked).length);
+}
+
+test('a metric click moves the bubbles that are already on screen', async ({ page }) => {
+  const seen = watch(page);
+  await openMap(page);
+  await waitForMapSettled(page);
+
+  const marked = await markBubbles(page);
+  expect(marked).toBeGreaterThan(50);
+
+  await page.getByRole('button', { name: 'storage', exact: true }).click();
+  await expect.poll(() => bubbles(page).count()).toBe(marked);
+
+  // The node set did not change, so every bubble must be the same element it
+  // was. One survivor short means the map was rebuilt and the layout it had
+  // settled into was thrown away with it.
+  expect(await markedBubbles(page)).toBe(marked);
+  expect(seen.jsErrors).toEqual([]);
+});
+
+test('a repaint keeps the positions rather than reseeding them', async ({ page }) => {
+  await openMap(page);
+  await waitForMapSettled(page);
+
+  const at = () => page.evaluate(() => Object.fromEntries(
+    [...document.querySelectorAll('#contract-map svg circle[data-path]')]
+      .map(c => [c.getAttribute('data-path'), [+c.getAttribute('cx'), +c.getAttribute('cy')]])));
+
+  const before = await at();
+  // Every radius added up, not one bubble's: most of the fixture has never
+  // been called, and a contract at the floor of the scale is at the floor of
+  // both scales.
+  const totalR = () => bubbles(page).evaluateAll(els =>
+    Math.round(els.reduce((a, e) => a + parseFloat(e.getAttribute('r')), 0)));
+  const wasR = await totalR();
+  await page.getByRole('button', { name: 'storage', exact: true }).click();
+  // The radius is what the click changes, so it is what says the repaint has
+  // happened. Waiting on position alone would pass the instant it was clicked,
+  // for the very reason this test exists.
+  await expect.poll(totalR).not.toBe(wasR);
+  await page.evaluate(() => { window.__lastCx = null; });
+  await waitForMapSettled(page);
+  const after = await at();
+
+  // A reseeded layout scatters every contract across a canvas nearly a
+  // thousand pixels wide, so the bar is deliberately generous: this is
+  // "relaxed into the new radii", not "started over somewhere else".
+  const moved = Object.keys(before)
+    .map(p => Math.hypot(after[p][0] - before[p][0], after[p][1] - before[p][1]));
+  expect(Math.max(...moved)).toBeLessThan(120);
+});
+
+test('a link-mode refetch lands on the map instead of replacing it', async ({ page }) => {
+  const seen = watch(page);
+  await openMap(page, '?edges=callers');
+  await waitForMapSettled(page);
+  const marked = await markBubbles(page);
+
+  // The link mode is one of the two controls that has to go back to the
+  // server. The edges change, the contracts do not, so the request must land
+  // on the map already on screen rather than on a skeleton that replaced it.
+  await page.getByRole('button', { name: 'imports', exact: true }).click();
+  await page.waitForFunction(
+    () => document.querySelectorAll('#contract-map svg line').length > 50,
+    null, { timeout: 20_000 });
+
+  expect(await markedBubbles(page)).toBe(marked);
+  expect(seen.jsErrors).toEqual([]);
+});
+
+test('a repaint leaves the zoom where the reader put it', async ({ page }) => {
+  await openMap(page);
+  await waitForMapSettled(page);
+
+  const transform = () => page.locator('#contract-map svg > g').first()
+    .getAttribute('transform');
+  // Both the zoom buttons and the one-off fit that frames a settled map are
+  // animated, so "the transform now" is a value in flight. Two identical reads
+  // in a row is the end of it.
+  const settledTransform = async () => {
+    let last = null;
+    await expect.poll(async () => {
+      const now = await transform();
+      const same = now !== null && now === last;
+      last = now;
+      return same;
+    }, { timeout: 15_000 }).toBe(true);
+    return last;
+  };
+
+  await settledTransform();
+  await page.getByRole('button', { name: '+', exact: true }).click();
+  const zoomed = await settledTransform();
+
+  // Panning and zooming is how anything is read on a map of three hundred
+  // contracts, and a repaint that resets it makes every control cost the
+  // reader their place.
+  await page.getByRole('button', { name: 'labels', exact: true }).click();
+  await expect.poll(() => bubbles(page).count()).toBeGreaterThan(50);
+  expect(await transform()).toBe(zoomed);
 });
 
 test('the controls survive a reload, because they live in the URL', async ({ page }) => {
@@ -231,20 +370,6 @@ test('the scale switches both ways and says which is active', async ({ page }) =
 // Hovering a bubble lights up its row in the cards below, and hovering the row
 // lights up the bubble. Both directions come from the explorer's existing
 // data-hl group, so the test is really asserting the map joined it.
-// The force layout has to stop before a hover means anything: a bubble still
-// drifting moves out from under the cursor between the hover and the
-// assertion, which fires mouseout and clears the highlight.
-async function waitForMapSettled(page) {
-  await page.waitForFunction(() => {
-    const c = document.querySelector('#contract-map svg circle');
-    if (!c) return false;
-    const now = c.getAttribute('cx');
-    const settled = window.__lastCx === now;
-    window.__lastCx = now;
-    return settled;
-  }, null, { timeout: 30_000, polling: 400 });
-}
-
 test('hovering a bubble highlights its ranking row, and the reverse', async ({ page }) => {
   await openMap(page);
   await waitForMapSettled(page);
