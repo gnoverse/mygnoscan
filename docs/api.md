@@ -172,10 +172,21 @@ fact.
 |---|---|
 | `GET /api/realms` | list realms. `limit`, `offset` |
 | `GET /api/packages` | list all packages, realms and pure packages. `limit`, `offset` |
-| `GET /api/realm/{path...}` | detail for one package: metadata, source files, imports, dependents, callers, MsgRun references. `recent_calls` and `msgrun_refs` are the 50 most recent of each, and carry `block_time` where the syncer knew it (omitted otherwise, so a consumer plotting them on a time axis can say how many it left out) |
+| `GET /api/realm/{path...}` | detail for one package: metadata, source files, imports, dependents, callers, MsgRun references. `recent_calls` and `msgrun_refs` are the 50 most recent of each, and carry `block_time` where the syncer knew it (omitted otherwise, so a consumer plotting them on a time axis can say how many it left out). `address` and `storage_deposit_address` are the two accounts the package owns, derived from its path (see below) |
 | `GET /api/deps/{path...}` | dependency graph as `{path: [imports]}`. `dir=dependents` reverses direction |
 | `GET /api/storage/{path...}` | storage events for a package. **Requires `network`**: the figures are denominated amounts and blending chains would be meaningless |
 | `GET /api/events/{path...}` | events emitted by a package. Bounded: `limit` defaults to 200, capped at 2000. In all-networks mode it queries every chain and tags each row with its `network` |
+
+### The two accounts a package owns
+
+`address` and `storage_deposit_address` are not read from anywhere. Both are
+hashes of the path (`pkgPath:<path>` and `pkgPath:<path>.storageDeposit`,
+SHA-256 truncated to 20 bytes, bech32 under `g`), so they exist from the moment
+the package does and are returned whether or not either has ever held a coin.
+The first is the realm's banker; the second holds the deposit locked against its
+bytes. A `gno.land/e/<g1...>/run` path is the exception: its address is embedded
+in the path rather than hashed, and it has no deposit account, so that field is
+omitted. See `pkg/gnoaddr`.
 
 ### Sync health versus chain liveness
 
