@@ -11028,7 +11028,7 @@ const CONTRACT_LAYOUTS = {
   force: {
     label: 'force',
     hint: 'clusters emerge from the links, the bubblemaps read',
-    grouping: true, sized: true,
+    grouping: true, sized: true, scaled: true,
     // The only view that redraws in place. The other five lay out in one
     // deterministic pass over a geometry of their own (rectangles, arcs,
     // bundled splines), so there is no shared set of dots to move and their
@@ -11038,7 +11038,7 @@ const CONTRACT_LAYOUTS = {
   orbit: {
     label: 'orbit',
     hint: 'one contract at the centre, everything it touches around it',
-    needsLinks: true, sized: true, flow: true,
+    needsLinks: true, sized: true, flow: true, scaled: true,
   },
   packed: {
     label: 'packed',
@@ -11048,7 +11048,7 @@ const CONTRACT_LAYOUTS = {
   bundled: {
     label: 'bundled',
     hint: 'every contract on one ring, edges routed through their namespace',
-    needsLinks: true, sized: true, flow: true,
+    needsLinks: true, sized: true, flow: true, scaled: true,
   },
   chord: {
     label: 'chord',
@@ -11377,13 +11377,22 @@ function contractsControls() {
   // a thousandfold, which log compresses to a radius ratio of 0.66: every
   // bubble renders near maximum and 327 of them pack into one solid mass with
   // no structure visible at all. Checked against mainnet, not reasoned about.
-  const scalePills = ['log', 'linear'].map(k =>
-    contractPill(k, _contracts.scale === k, () => {
-      _contracts.scale = k;
-      contractsStateToURL();
-      repaintContracts();
-    }));
-  bar.appendChild(contractControlGroup('scale', scalePills));
+  //
+  // Offered on the three layouts that size a radius, and on those only.
+  // `packed` and `treemap` lay out from the summed metric itself, so the
+  // scale never reaches them: a log pill there is a pill that does nothing,
+  // and worse, the count line used to answer it with "(log)" over areas that
+  // were linear the whole time.
+  const spec = CONTRACT_LAYOUTS[_contracts.layout] || CONTRACT_LAYOUTS.force;
+  if (spec.scaled) {
+    const scalePills = ['log', 'linear'].map(k =>
+      contractPill(k, _contracts.scale === k, () => {
+        _contracts.scale = k;
+        contractsStateToURL();
+        repaintContracts();
+      }));
+    bar.appendChild(contractControlGroup('scale', scalePills));
+  }
 
   const edgePills = Object.entries(CONTRACT_EDGE_KINDS).map(([k, m]) =>
     contractPill(m.label, _contracts.edges === k, () => {
@@ -11427,7 +11436,6 @@ function contractsControls() {
   // Grouping is the force layout's own vocabulary: the other five place a
   // contract by its namespace as a matter of construction, so a pill offering
   // to switch the clustering off would be a pill that does nothing.
-  const spec = CONTRACT_LAYOUTS[_contracts.layout] || CONTRACT_LAYOUTS.force;
   const grouping = [];
   if (spec.grouping) {
     grouping.push(contractPill('cluster', _contracts.cluster, () => {
@@ -12884,6 +12892,9 @@ function contractMapChrome(svg, zoom, namespaces, nodes, linkCount, fit) {
   // one.
   const sizeMetric = CONTRACT_METRICS[_contracts.metric];
   const sizeTotal = d3.sum(nodes, n => sizeMetric.get(n) || 0);
+  // Each view is a different question, and none of them announces which one on
+  // its own. One line, under the count, so switching view says what changed.
+  const spec = CONTRACT_LAYOUTS[_contracts.layout] || CONTRACT_LAYOUTS.force;
   const count = el('div', {
     style: {
       position: 'absolute', top: '8px', left: '8px', fontSize: '11px', color: 'var(--fg2)',
@@ -12891,11 +12902,11 @@ function contractMapChrome(svg, zoom, namespaces, nodes, linkCount, fit) {
     },
   }, fmtNum(nodes.length) + ' contracts' + on + ' · ' + fmtNum(linkCount) + ' ' + linkWord + edgeNote +
      ' · size = ' + sizeMetric.label +
-     (_contracts.scale === 'log' ? ' (log)' : '') +
+     // Only where the scale reaches: packed and treemap lay out from the
+     // summed metric, so "(log)" over their areas was a caption answering a
+     // control that had not touched them.
+     ((_contracts.scale === 'log' && spec.scaled) ? ' (log)' : '') +
      ' · ' + fmtMetricShort(sizeMetric, sizeTotal) + ' total');
-  // Each view is a different question, and none of them announces which one on
-  // its own. One line, under the count, so switching view says what changed.
-  const spec = CONTRACT_LAYOUTS[_contracts.layout] || CONTRACT_LAYOUTS.force;
   count.appendChild(el('div', { style: { color: 'var(--fg2)', opacity: '0.75' } },
     spec.label + ': ' + spec.hint));
   wrap.appendChild(count);
