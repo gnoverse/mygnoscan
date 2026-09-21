@@ -20,6 +20,7 @@ const ROUTES = [
   ['blocks', '/blocks'],
   ['accounts', '/accounts'],
   ['tokens', '/tokens'],
+  ['storage', '/storage'],
   ['validators', '/validators'],
   ['govdao', '/govdao'],
   ['gas', '/gas'],

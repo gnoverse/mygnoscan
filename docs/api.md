@@ -22,9 +22,12 @@ correct: they belong to a chain that no longer exists.
 
 **Some endpoints refuse the unfiltered case rather than guessing.** A block height
 identifies a different block on every chain, and storage figures are denominated
-per chain, so `/api/block/{height}` and `/api/storage/{path...}` answer `400` when
-no network is given. This is deliberate: they used to answer from an arbitrary
-chain, which looked like data and was not.
+per chain, so `/api/block/{height}`, `/api/storage/{path...}` and
+`/api/storage/map` answer `400` when no network is given. This is deliberate:
+they used to answer from an arbitrary chain, which looked like data and was not.
+`/api/storage/map` is the starkest case: its capacity is one chain's money
+supply divided by one chain's price, so used bytes summed over two chains
+against it would be a fullness figure true of neither.
 
 **Aggregates that cannot be summed are split, not blended.** Counts (transactions,
 realms, addresses) add up meaningfully across chains. Denominated amounts do not —
@@ -575,6 +578,7 @@ All accept `days` and `granularity`.
 | `GET /api/timeseries/storage/realms` | realms that have storage data, for populating a selector |
 | `GET /api/timeseries/storage/deltas` | on-chain storage movement per bucket: `deposited`, `released` (negative, as the chain emits it) and `net`, from `storage_events`. `realm=<path>` scopes it to one realm. Distinct from `/api/timeseries/storage`, which counts source bytes added and only ever grows |
 | `GET /api/storage/consumers` | realms ranked by absolute net storage change. `topN` (default 20, max 100). Keyed by `(network, pkg_path)`, so a realm deployed on two chains is two rows |
+| `GET /api/storage/map` | the whole /storage page in one response. **Requires `network`**: capacity is a chain's own supply divided by its own price per byte, so there is no total across several. Returns `capacity` (`price_per_byte`, `price_source` = `chain` or `default`, `supply_ugnot`, `capacity_bytes`, `used_bytes`, `locked_ugnot`, `realms`), `cells` (one row per realm with `namespace`, `deployer`, `bytes`, `fee`, `first_height`, `last_height`), `payers` (per account, attributed to whoever the chain charged) and `cells_truncated`. `limit` (default 2000, max 5000) caps `cells` only, and `capacity.used_bytes` is always the full total. `capacity_bytes` and the supply are **decimal strings**, not numbers: 1.3e15 ugnot is past what JSON can carry exactly |
 | `GET /api/graph/transfers` | value-transfer graph for one chain. **Requires `network`**: values are denominated and an address is a different actor per chain. `topN` (default 100, max 1000), `min_value`, or `ego=<address>` for that address's 1-hop neighbourhood, which ignores `topN`. Returns `{nodes: [{id, volume}], edges: [{from, to, value, tx_count}]}`. There is no `hops` parameter — `ego` is fixed at 1 hop |
 | `GET /api/graph/callers` | caller-to-realm graph for one chain. **Requires `network`**, same reason. `topN` (default 200, max 1000), `min_calls`. Returns `{nodes: [{id, type, calls}], edges: [{caller, pkg_path, calls}]}` where `type` is `"caller"` or `"realm"`. No `ego` support yet |
 | `GET /api/timeseries/blocks` | blocks and transactions per bucket. **Single-network** |

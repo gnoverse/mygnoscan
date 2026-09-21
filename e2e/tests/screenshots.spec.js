@@ -40,6 +40,11 @@ const PAGES = [
   ['analytics', '/analytics'],
   ['gas', '/gas'],
   ['params', '/params'],
+  // Two of the four groupings: they differ in what the map is made of, not
+  // just in its colours, and a shot of one would not show a change to the
+  // payer attribution at all.
+  ['storage', '/storage?network=alpha&group=namespace'],
+  ['storage-payer', '/storage?network=alpha&group=payer&order=size'],
   ['realm-detail', `/realm/${HUB_ROUTE}`],
   ['realm-graph', `/realm/${HUB_ROUTE}?tab=graph`],
   ['realm-source', `/realm/${HUB_ROUTE}?tab=source`],
