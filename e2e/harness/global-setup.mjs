@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 
 import { startFakeIndexer } from './fake-indexer.mjs';
 import { NETWORKS, seed } from './fixture.mjs';
+import { PORT } from './port.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const e2eDir = join(here, '..');
@@ -58,7 +59,7 @@ export default async function globalSetup() {
   const dbPath = join(tmpDir, 'e2e.db');
   for (const suffix of ['', '-wal', '-shm']) rmSync(dbPath + suffix, { force: true });
 
-  const port = 8899 + Number(process.env.E2E_PORT_OFFSET || 0);
+  const port = PORT;
   const baseURL = `http://127.0.0.1:${port}`;
 
   const server = spawn(binary, [
@@ -91,7 +92,9 @@ export default async function globalSetup() {
   // longer than most of the suite takes to run. Nothing has asked yet — the
   // readiness probe above is /api/networks, which reads config rather than the
   // database — but this is worth knowing before adding a probe that does.
-  process.env.E2E_BASE_URL = baseURL;
+  //
+  // Nothing is written back to process.env here: the tests' base URL is settled
+  // in harness/port.mjs, which the config reads long before this runs.
   writeFileSync(join(tmpDir, 'state.json'), JSON.stringify({ pid: server.pid, baseURL }));
 
   server.unref();
