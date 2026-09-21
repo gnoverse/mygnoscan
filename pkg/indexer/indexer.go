@@ -1458,6 +1458,45 @@ func (c *Client) GetGovDAOTransactions(ctx context.Context, need int) ([]Transac
 	})
 }
 
+// GovDAORealm is the realm whose proposal lifecycle the governance views are
+// about. Duplicated from store.GovDAOPathPrefix rather than imported: the
+// indexer package sits below store and must not depend on it.
+const GovDAORealm = "gno.land/r/gov/dao"
+
+// GetGovDAOProposalCreations fetches every transaction that emitted gov/dao's
+// own ProposalCreated event, with full message bodies.
+//
+// This is the only exact link between a proposal ID and the transaction that
+// created it, and it is exact because gov/dao emits the ID as an event
+// attribute. Everything the explorer had before was a guess: MsgRun carries
+// its script in the message rather than in indexed arguments, so "which
+// script created proposal 6" was a substring match over locally synced
+// source text, which matched every script that ever mentioned both gov/dao
+// and the executor package — six candidates on mainnet for proposal 6, five
+// of them belonging to other proposals, one of them 124,770 blocks older
+// than the proposal it was offered for.
+//
+// Unwindowed on purpose, unlike every other list query here. One
+// ProposalCreated event exists per proposal ever created, so the result set
+// is bounded by governance activity (eight rows on mainnet, 2026-09-19)
+// rather than by chain length — and proposal #0 sits at block 36,170, so a
+// windowed scan would have to widen to genesis to find it anyway.
+func (c *Client) GetGovDAOProposalCreations(ctx context.Context) ([]Transaction, error) {
+	var result struct {
+		GetTransactions []Transaction `json:"getTransactions"`
+	}
+	q := fmt.Sprintf(`{
+		getTransactions(
+			where: { response: { events: { GnoEvent: { pkg_path: { eq: "%s" }, type: { eq: "ProposalCreated" } } } } }
+			order: { heightAndIndex: DESC }
+		) { %s }
+	}`, gqlEscape(GovDAORealm), c.fullFields(ctx))
+	if err := c.query(ctx, q, nil, &result); err != nil {
+		return nil, err
+	}
+	return result.GetTransactions, nil
+}
+
 // GetPackageEnableTransactions fetches every MsgEnablePackage this chain has
 // seen — the approval half of the "inert" code-submission policy's package
 // lifecycle (see inert.go). Unlike gov/dao's old substring predicate, these
