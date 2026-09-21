@@ -10655,7 +10655,11 @@ function switchTab(name, tabEl) {
   // the first time it is actually on screen at a width worth having.
   if (name === 'deps' && _depGraph.center) {
     const box = document.getElementById('dep-graph');
-    const svg = box && box.querySelector('svg');
+    // `:scope >` and not a bare `svg`: the legend above the graph draws its
+    // package and realm marks as their own 12px inline <svg>s, so a descendant
+    // match finds one of those, compares the container's width against 12 and
+    // redraws on every single visit to the tab.
+    const svg = box && box.querySelector(':scope > svg');
     if (svg && box.clientWidth && Math.abs(box.clientWidth - Number(svg.getAttribute('width'))) > 1) {
       renderDepGraph(_depGraph.imports, _depGraph.dependents, _depGraph.center);
     }

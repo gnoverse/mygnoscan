@@ -239,3 +239,38 @@ test('a window with nothing in it says so instead of drawing one lone dot', asyn
   await page.waitForSelector(GRAPH_SVG, { timeout: 20_000 });
   expect(await nodeCount(page)).toBeGreaterThan(10);
 });
+
+// The graph is drawn once, at a width read from its container, and it is drawn
+// whether or not the deps tab is the one on screen — a hidden container
+// measures 0, so a graph painted while the reader was on `info` is stuck at
+// renderDepGraph's 800px fallback until something redraws it.
+test('opening deps from another tab redraws the graph at the real width', async ({ page }) => {
+  await page.goto(`/realm/${HUB_ROUTE}`);
+  await page.locator('#realm-tabs .tab', { hasText: /^deps$/ }).click();
+  await page.waitForSelector(GRAPH_SVG, { timeout: 20_000 });
+
+  const { svgWidth, boxWidth } = await page.evaluate(() => {
+    const box = document.querySelector('#dep-graph');
+    return {
+      svgWidth: Number(box.querySelector(':scope > svg').getAttribute('width')),
+      boxWidth: Math.round(box.clientWidth),
+    };
+  });
+  expect(boxWidth).toBeGreaterThan(900);   // otherwise 800 would be right by accident
+  expect(Math.abs(svgWidth - boxWidth)).toBeLessThanOrEqual(1);
+});
+
+// And only then. The legend above the graph draws its two shape marks as their
+// own 12px inline <svg>s, so a width check that matches a descendant rather
+// than a direct child compares the container against 12 and restarts the force
+// simulation on every visit to the tab.
+test('coming back to deps does not restart the simulation', async ({ page }) => {
+  await openGraph(page);
+  await page.evaluate(() => { document.querySelector('#dep-graph > svg').dataset.mark = 'kept'; });
+
+  await page.locator('#realm-tabs .tab', { hasText: /^info$/ }).click();
+  await page.locator('#realm-tabs .tab', { hasText: /^deps$/ }).click();
+
+  const mark = await page.evaluate(() => document.querySelector('#dep-graph > svg').dataset.mark);
+  expect(mark).toBe('kept');
+});
