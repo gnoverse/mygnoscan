@@ -4850,9 +4850,15 @@ async function loadCoins() {
     container.appendChild(bar);
 
     const grid = el('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px', marginTop: '20px' } });
+    // minWidth 0 and its own scrollbar, for the same reason .section carries
+    // them: these rows are `white-space: nowrap`, so a grid column floors at
+    // the width of its widest row and pushes the whole page wider than the
+    // viewport instead. The leaderboards are sorted on one figure and print
+    // two, so the widest row is not the first one and the column got wider
+    // the moment the lists went from ten rows to fifty.
     const column = (title, rows, cols) => {
       if (!(rows || []).length) return;
-      const col = el('div');
+      const col = el('div', { style: { minWidth: 0, overflowX: 'auto' } });
       col.appendChild(el('div', { className: 'section-title' }, title));
       col.appendChild(bankMoverTable(rows, cols));
       grid.appendChild(col);
