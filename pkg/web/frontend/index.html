@@ -267,10 +267,21 @@ html.embed .pagenav { display: none; }
 /* "and the rest of this list is on its own page", under a preview table. */
 .more-link { font-size: 12px; margin: 6px 0 20px; }
 
-.tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
-.tab { padding: 8px 16px; cursor: pointer; color: var(--fg2); font-size: 13px; border-bottom: 2px solid transparent; margin-bottom: -1px; }
-.tab:hover { color: var(--fg); }
-.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+/* Tabs carry an icon from the same sprite the rail uses. A nine-tab row of
+   13px grey words all the same length reads as one grey band -- the shape in
+   front of each label is what makes a tab findable at a glance, and what makes
+   "which one am I on" answerable without comparing two shades of text. The
+   icon is decorative: the label stays, so nothing here depends on recognising
+   a glyph. */
+.tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin-bottom: 16px; flex-wrap: wrap; }
+.tab { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; cursor: pointer; color: var(--fg2);
+       font-size: 13px; border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
+.tab svg { width: 14px; height: 14px; flex: 0 0 14px; stroke: currentColor; fill: none;
+  stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; opacity: 0.85; }
+.tab:hover { color: var(--fg); background: var(--bg2); }
+.tab:hover svg { opacity: 1; }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.tab.active svg { opacity: 1; }
 .tab-content { display: none; }
 .tab-content.active { display: block; }
 pre { background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; padding: 16px; overflow-x: auto; font-size: 13px; line-height: 1.5; white-space: pre; }
@@ -557,6 +568,21 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
 <symbol id="i-gavel" viewBox="0 0 16 16"><path d="M2 14.2h8"/><path d="M6 11.4V6.6"/><path d="M2.6 6.6h6.8"/><path d="M11 1.8 14.4 5.2"/><path d="m9.3 5.2 3.4-3.4"/><path d="M6 6.6 12.7 5.2"/></symbol>
 <symbol id="i-gauge" viewBox="0 0 16 16"><path d="M2 12a6.6 6.6 0 1 1 12 0"/><path d="m8 12 3-4.4"/><circle cx="8" cy="12" r="1"/></symbol>
 <symbol id="i-collapse" viewBox="0 0 16 16"><path d="M9.6 3.4 5 8l4.6 4.6"/><path d="M13.2 2.4v11.2"/></symbol>
+<!-- Tab icons. Same 16x16 stroke grid as the rail's, referenced from the
+     script below through the icon() helper rather than from markup, which is
+     why TestFrontendSpriteHasNoOrphansOrDanglingRefs reads those calls too. -->
+<symbol id="i-info" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2"/><path d="M8 7.3v4"/><path d="M8 4.7h.01"/></symbol>
+<symbol id="i-doc" viewBox="0 0 16 16"><path d="M9.2 1.8H4.2a1 1 0 0 0-1 1v10.4a1 1 0 0 0 1 1h7.6a1 1 0 0 0 1-1V5.4z"/><path d="M9.2 1.8v3.6h3.6"/><path d="M5.8 8.6h4.4"/><path d="M5.8 11h4.4"/></symbol>
+<symbol id="i-code" viewBox="0 0 16 16"><path d="m5.4 5.4-3 2.6 3 2.6"/><path d="m10.6 5.4 3 2.6-3 2.6"/><path d="M9.4 3.2 6.6 12.8"/></symbol>
+<symbol id="i-call" viewBox="0 0 16 16"><path d="M6.4 2.4H3.4a1 1 0 0 0-1 1v9.2a1 1 0 0 0 1 1h3"/><path d="M10.4 5.4 13 8l-2.6 2.6"/><path d="M13 8H6.2"/></symbol>
+<symbol id="i-events" viewBox="0 0 16 16"><circle cx="8" cy="8" r="1.6"/><path d="M4.9 4.9a4.4 4.4 0 0 0 0 6.2"/><path d="M11.1 11.1a4.4 4.4 0 0 0 0-6.2"/><path d="M2.7 2.7a7.5 7.5 0 0 0 0 10.6"/><path d="M13.3 13.3a7.5 7.5 0 0 0 0-10.6"/></symbol>
+<symbol id="i-storage" viewBox="0 0 16 16"><ellipse cx="8" cy="3.8" rx="5.2" ry="2"/><path d="M2.8 3.8v8.4c0 1.1 2.3 2 5.2 2s5.2-.9 5.2-2V3.8"/><path d="M13.2 8c0 1.1-2.3 2-5.2 2s-5.2-.9-5.2-2"/></symbol>
+<symbol id="i-graph" viewBox="0 0 16 16"><circle cx="3.9" cy="12" r="1.9"/><circle cx="12.1" cy="12" r="1.9"/><circle cx="8" cy="3.5" r="1.9"/><path d="M6.8 5 5 10.2"/><path d="m9.2 5 1.8 5.2"/><path d="M5.8 12h4.4"/></symbol>
+<symbol id="i-pause" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2"/><path d="M6.4 5.8v4.4"/><path d="M9.6 5.8v4.4"/></symbol>
+<symbol id="i-list" viewBox="0 0 16 16"><path d="M5.8 4h7.8"/><path d="M5.8 8h7.8"/><path d="M5.8 12h7.8"/><path d="M2.6 4h.01"/><path d="M2.6 8h.01"/><path d="M2.6 12h.01"/></symbol>
+<symbol id="i-pulse" viewBox="0 0 16 16"><path d="M1.6 8h2.9l1.7-3.5 3.2 7.3 1.6-3.8h3.4"/></symbol>
+<symbol id="i-swap" viewBox="0 0 16 16"><path d="M2.6 5.6h9.2"/><path d="m9.4 3.2 2.4 2.4-2.4 2.4"/><path d="M13.4 10.4H4.2"/><path d="m6.6 8-2.4 2.4 2.4 2.4"/></symbol>
+<symbol id="i-message" viewBox="0 0 16 16"><path d="M13.6 9.6a1.6 1.6 0 0 1-1.6 1.6H5.2L2.4 14V4a1.6 1.6 0 0 1 1.6-1.6h8A1.6 1.6 0 0 1 13.6 4z"/></symbol>
 </defs></svg>
 <aside class="rail">
   <div class="rail-top"><span class="logo" onclick="navigate('/')">m<span class="rail-label">ygnoscan</span></span></div>
@@ -684,8 +710,8 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
       <th class="rs" data-sort="newest">added</th></tr></thead><tbody id="realms-list"></tbody></table></div></main></div>
   <div class="view" id="view-packages"><main>
     <div class="tabs" id="packages-subnav">
-      <div class="tab active" data-pv="all" onclick="switchPackagesView('all', this)">all packages</div>
-      <div class="tab" data-pv="inert" onclick="switchPackagesView('inert', this)">inert queue</div>
+      <div class="tab active" data-pv="all" onclick="switchPackagesView('all', this)"><svg aria-hidden="true"><use href="#i-list"/></svg>all packages</div>
+      <div class="tab" data-pv="inert" onclick="switchPackagesView('inert', this)"><svg aria-hidden="true"><use href="#i-pause"/></svg>inert queue</div>
     </div>
     <div id="packages-view-all">
       <div id="packages-stats" class="stats-bar" style="display:none"></div>
@@ -716,8 +742,8 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
   <div class="view" id="view-accounts"><main>
     <div id="accounts-stats" class="stats-bar" style="display:none"></div>
     <div class="tabs" id="accounts-subnav">
-      <div class="tab active" data-av="activity" onclick="switchAccountsView('activity', this)">activity</div>
-      <div class="tab" data-av="balances" onclick="switchAccountsView('balances', this)">balances</div>
+      <div class="tab active" data-av="activity" onclick="switchAccountsView('activity', this)"><svg aria-hidden="true"><use href="#i-pulse"/></svg>activity</div>
+      <div class="tab" data-av="balances" onclick="switchAccountsView('balances', this)"><svg aria-hidden="true"><use href="#i-coin"/></svg>balances</div>
     </div>
     <div id="accounts-view-activity">
       <div class="section"><div class="section-title">active accounts</div>
@@ -799,6 +825,23 @@ function el(tag, attrs, ...children) {
   return e;
 }
 function clear(id) { const e = document.getElementById(id); e.textContent = ''; return e; }
+// A sprite reference as a DOM node. el() cannot build this: SVG lives in its
+// own namespace, and document.createElement('svg') yields an unknown HTML
+// element that renders nothing at all rather than erroring.
+//
+// The name is the symbol id without its `i-` prefix. Keep the argument a
+// string literal: TestFrontendSpriteHasNoOrphansOrDanglingRefs greps these
+// calls to pair every symbol with a user, and a computed name is invisible to
+// it, so the symbol would read as an orphan and fail the build.
+const SVG_NS = 'http://www.w3.org/2000/svg';
+function icon(name) {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('aria-hidden', 'true');
+  const use = document.createElementNS(SVG_NS, 'use');
+  use.setAttribute('href', '#i-' + name);
+  svg.appendChild(use);
+  return svg;
+}
 function badge(type, text) {
   const b = el('span', { className: 'badge badge-' + type }, text);
   b.setAttribute('data-hl', 'badge:' + text);
@@ -8926,6 +8969,16 @@ async function loadRealmDetail(path, initialTab) {
       header.appendChild(provenance);
       _watchTarget = { kind: 'realms', id: detail.path, height: latestCall };
       const tabs = clear('realm-tabs');
+      // Icon per tab, so seven same-length grey words stop reading as one
+      // band. Written out rather than derived from the name because `deps` is
+      // not the obvious noun (it is the node-link picture the tab now leads
+      // with) and because the sprite guard in web_test.go greps these calls
+      // for literals.
+      const tabIcons = {
+        info: () => icon('info'), docs: () => icon('doc'), source: () => icon('code'),
+        calls: () => icon('call'), events: () => icon('events'), storage: () => icon('storage'),
+        deps: () => icon('graph'),
+      };
       const tabNames = ['info', 'docs', 'source', 'calls', 'events', 'storage', 'deps'];
       // `deps` absorbed the standalone `graph` tab: both were drawn from the
       // same two dependency queries, so they were one answer split across two
@@ -8943,7 +8996,7 @@ async function loadRealmDetail(path, initialTab) {
       }
       const activeTab = requestedTab && tabNames.includes(requestedTab) ? requestedTab : 'info';
       tabNames.forEach((name) => {
-        const tab = el('div', { className: 'tab' + (name === activeTab ? ' active' : ''), onclick: () => switchTab(name, tab) }, name);
+        const tab = el('div', { className: 'tab' + (name === activeTab ? ' active' : ''), onclick: () => switchTab(name, tab) }, tabIcons[name](), name);
         tabs.appendChild(tab);
       });
       // Info
@@ -9754,8 +9807,8 @@ async function loadTxDetail(hash) {
       container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'transfers (' + transfers.length + ')'));
       let transferMode = 'all';
       const transferToggle = el('div', { className: 'tabs', style: { marginBottom: '8px' } });
-      const allBtn = el('div', { className: 'tab active' }, 'all');
-      const netBtn = el('div', { className: 'tab' }, 'net');
+      const allBtn = el('div', { className: 'tab active' }, icon('list'), 'all');
+      const netBtn = el('div', { className: 'tab' }, icon('swap'), 'net');
       transferToggle.appendChild(allBtn);
       transferToggle.appendChild(netBtn);
       container.appendChild(transferToggle);
@@ -9786,8 +9839,8 @@ async function loadTxDetail(hash) {
     const msgCount = tx.messages?.length || 0;
     const gnoEvents = events.filter(ev => ev.__typename === 'GnoEvent');
     const tabBar = el('div', { className: 'tabs', style: { marginTop: '24px' } });
-    const msgTabBtn = el('div', { className: 'tab active' }, 'messages (' + msgCount + ')');
-    const evTabBtn = el('div', { className: 'tab' }, 'events (' + gnoEvents.length + ')');
+    const msgTabBtn = el('div', { className: 'tab active' }, icon('message'), 'messages (' + msgCount + ')');
+    const evTabBtn = el('div', { className: 'tab' }, icon('events'), 'events (' + gnoEvents.length + ')');
     tabBar.appendChild(msgTabBtn);
     tabBar.appendChild(evTabBtn);
     container.appendChild(tabBar);
