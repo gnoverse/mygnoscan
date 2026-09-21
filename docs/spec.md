@@ -102,7 +102,10 @@ everything newer than the build, so the newest bucket does not lag the timer.
   namespace is 0.0002% of the disk and the rest are exponents, a column in which
   every row says the same thing. `/storage` states fullness once, for the whole
   chain, in the header; the table's second percentage is the running total of
-  what is in use, which is the question a table sorted by size can answer.
+  what is in use, which is the question a table sorted by size can answer. The
+  ruler offers both scales rather than picking one: log fits the two numbers on
+  one axis but reads as a third full, and max capacity is to scale but draws
+  what is used at a floor of two pixels because the true width is 0.004 of one.
 - **Local `storage_events` reproduce what the chain reports.** Summing
   `bytes_delta` per realm matches `vm/qstorage` exactly: checked on mainnet
   2026-09-21, `gno.land/r/gnoland/blog` sums to 1,278,609 here and the chain

@@ -94,23 +94,20 @@ html.rail-collapsed .rail nav a.has-watch::after { left: calc(50% + 4px); }
 
 /* Sections. The children are a plain indented list under the parent, with
    the guide line doing the work a second icon column would do badly at
-   12.5px. The twisty folds one section away; the section you are currently
-   in is always open regardless (see applyNavGroups), because a rail that
-   hides the page you are on is worse than one that ignores a preference. */
+   12.5px. Every section is always open: the parent row is a link to a real
+   page, and the twisty that used to fold it made the row read as a
+   disclosure header instead, so the label looked unclickable. Six sections
+   of at most four children never needed folding, and dropping it drops the
+   stored preference with it. */
 .rail nav .nav-kids { display: flex; flex-direction: column; gap: 1px;
   margin: 1px 0 4px 21px; padding-left: 4px; border-left: 1px solid var(--border); }
 .rail nav .nav-kids a { padding: 4px 8px; font-size: 12px; }
-.nav-group.closed .nav-kids { display: none; }
-.nav-twisty { margin-left: auto; font-size: 8px; line-height: 1; color: var(--fg2);
-  padding: 3px; border-radius: 3px; transition: transform 0.12s; }
-.nav-twisty:hover { color: var(--fg); background: var(--bg); }
-.nav-group.closed .nav-twisty { transform: rotate(-90deg); }
 /* A parent whose child is the current page. Muted while the labels are
    visible — the child row already carries the accent, and two accents in a
    column read as two selections — and promoted to the full active styling
    once the rail is collapsed and the child row is gone. */
 .rail nav a.in-section { color: var(--fg); }
-html.rail-collapsed .rail nav .nav-kids, html.rail-collapsed .nav-twisty { display: none; }
+html.rail-collapsed .rail nav .nav-kids { display: none; }
 html.rail-collapsed .rail nav a.in-section { color: var(--accent); background: var(--bg3);
   border-left-color: var(--accent); }
 .rail-foot { margin-top: auto; padding: 8px 6px 12px; }
@@ -379,6 +376,12 @@ tr.total-row td { font-weight: bold; color: var(--accent); }
 .dash-chart { width: 100%; height: 300px; }
 .dash-msg { color: var(--fg2); font-size: 12px; padding: 20px 0; }
 .dash-note { color: var(--fg2); font-size: 11px; margin-bottom: 10px; }
+/* Detail-page charts. Narrower than a dashboard card because they sit inside a
+   tab that already has a stats bar and a table above them, and the chart is the
+   summary of that table rather than the page. */
+.detail-chart { margin: 4px 0 18px; }
+.detail-chart-box { position: relative; width: 100%; height: 220px; }
+.detail-chart-note { color: var(--fg2); font-size: 11px; margin-top: 6px; }
 .dash-bar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
 .dash-grp { display: inline-flex; align-items: center; gap: 6px; }
 .dash-bar .label { font-size: 11px; color: var(--fg2); text-transform: uppercase; letter-spacing: 1px; }
@@ -537,7 +540,7 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
   .rail .rail-label { position: absolute; width: 1px; height: 1px; overflow: hidden;
     clip-path: inset(50%); white-space: nowrap; }
   .rail nav a, .rail-toggle { justify-content: center; padding: 6px 0; }
-  .rail nav .nav-kids, .nav-twisty { display: none; }
+  .rail nav .nav-kids { display: none; }
   .rail nav a.in-section { color: var(--accent); background: var(--bg3); border-left-color: var(--accent); }
   .rail-top { justify-content: center; padding: 12px 0 10px; }
   .rail-foot { display: none; }
@@ -548,23 +551,11 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
 <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true"><defs>
 <symbol id="i-home" viewBox="0 0 16 16"><path d="M2 6.5 8 2l6 4.5V13a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z"/><path d="M6.2 14V9.3h3.6V14"/></symbol>
 <symbol id="i-eye" viewBox="0 0 16 16"><path d="M1 8s2.6-4.3 7-4.3S15 8 15 8s-2.6 4.3-7 4.3S1 8 1 8z"/><circle cx="8" cy="8" r="1.9"/></symbol>
-<symbol id="i-layers" viewBox="0 0 16 16"><path d="M8 1.6 14.6 5 8 8.4 1.4 5z"/><path d="m1.4 8 6.6 3.4L14.6 8"/><path d="m1.4 11 6.6 3.4L14.6 11"/></symbol>
-<symbol id="i-box" viewBox="0 0 16 16"><path d="M14 4.8v6.4a1 1 0 0 1-.55.9l-5 2.4a1 1 0 0 1-.9 0l-5-2.4a1 1 0 0 1-.55-.9V4.8"/><path d="M1.6 4.8 8 1.7l6.4 3.1L8 7.9z"/><path d="M8 7.9v6.7"/></symbol>
 <symbol id="i-bubbles" viewBox="0 0 16 16"><circle cx="5" cy="5.4" r="3.1"/><circle cx="11.9" cy="4.6" r="1.9"/><circle cx="10.4" cy="11.4" r="3.1"/><circle cx="3.4" cy="12" r="1.7"/></symbol>
-<symbol id="i-swap" viewBox="0 0 16 16"><path d="M2.4 5.4h11"/><path d="m10.6 2.6 2.8 2.8-2.8 2.8"/><path d="M13.6 10.6h-11"/><path d="m5.4 7.8-2.8 2.8 2.8 2.8"/></symbol>
 <symbol id="i-blocks" viewBox="0 0 16 16"><rect x="1.8" y="1.8" width="5.4" height="5.4" rx="1"/><rect x="8.8" y="1.8" width="5.4" height="5.4" rx="1"/><rect x="1.8" y="8.8" width="5.4" height="5.4" rx="1"/><rect x="8.8" y="8.8" width="5.4" height="5.4" rx="1"/></symbol>
-<symbol id="i-users" viewBox="0 0 16 16"><circle cx="6.2" cy="5" r="2.6"/><path d="M1.6 13.6c0-2.4 2.1-3.9 4.6-3.9s4.6 1.5 4.6 3.9"/><path d="M11 3a2.6 2.6 0 0 1 0 5"/><path d="M12.2 10.2c1.4.5 2.2 1.7 2.2 3.4"/></symbol>
 <symbol id="i-coin" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.4v7.2"/><path d="M10 6.1a2.2 2.2 0 0 0-2-1.1c-1.2 0-2 .7-2 1.7s.8 1.4 2 1.7 2 .7 2 1.7-.8 1.6-2 1.6a2.2 2.2 0 0 1-2-1.1"/></symbol>
-<symbol id="i-disk" viewBox="0 0 16 16"><ellipse cx="8" cy="3.8" rx="5.6" ry="2.1"/><path d="M2.4 3.8v8.4c0 1.2 2.5 2.1 5.6 2.1s5.6-.9 5.6-2.1V3.8"/><path d="M2.4 8c0 1.2 2.5 2.1 5.6 2.1s5.6-.9 5.6-2.1"/></symbol>
-<symbol id="i-shield" viewBox="0 0 16 16"><path d="M8 1.6 13.4 4v4.2c0 3-2.3 5.2-5.4 6.2-3.1-1-5.4-3.2-5.4-6.2V4z"/><path d="m5.7 8 1.7 1.7 3.1-3.4"/></symbol>
 <symbol id="i-gavel" viewBox="0 0 16 16"><path d="M2 14.2h8"/><path d="M6 11.4V6.6"/><path d="M2.6 6.6h6.8"/><path d="M11 1.8 14.4 5.2"/><path d="m9.3 5.2 3.4-3.4"/><path d="M6 6.6 12.7 5.2"/></symbol>
 <symbol id="i-gauge" viewBox="0 0 16 16"><path d="M2 12a6.6 6.6 0 1 1 12 0"/><path d="m8 12 3-4.4"/><circle cx="8" cy="12" r="1"/></symbol>
-<symbol id="i-chart" viewBox="0 0 16 16"><path d="M2 2v12h12"/><path d="m4.4 10.6 2.8-3.4 2.4 2 3.2-4.4"/></symbol>
-<symbol id="i-grid" viewBox="0 0 16 16"><rect x="1.8" y="1.8" width="5.4" height="3.6" rx="1"/><rect x="8.8" y="1.8" width="5.4" height="7" rx="1"/><rect x="1.8" y="7.2" width="5.4" height="7" rx="1"/><rect x="8.8" y="10.6" width="5.4" height="3.6" rx="1"/></symbol>
-<symbol id="i-sliders" viewBox="0 0 16 16"><path d="M2 4.4h12"/><path d="M2 11.6h12"/><circle cx="5.6" cy="4.4" r="1.7"/><circle cx="10.4" cy="11.6" r="1.7"/></symbol>
-<symbol id="i-pulse" viewBox="0 0 16 16"><path d="M1.4 8h3l1.6-4.4 2.8 9L10.9 8h3.7"/></symbol>
-<symbol id="i-bolt" viewBox="0 0 16 16"><path d="M9 1.4 3.2 9.2h4l-.9 5.4L13 6.8H8.6z"/></symbol>
-<symbol id="i-apps" viewBox="0 0 16 16"><rect x="1.8" y="1.8" width="5" height="5" rx="1.4"/><rect x="9.2" y="1.8" width="5" height="5" rx="1.4"/><rect x="1.8" y="9.2" width="5" height="5" rx="1.4"/><path d="M11.7 9.6v4.6"/><path d="M9.4 11.9h4.6"/></symbol>
 <symbol id="i-collapse" viewBox="0 0 16 16"><path d="M9.6 3.4 5 8l4.6 4.6"/><path d="M13.2 2.4v11.2"/></symbol>
 </defs></svg>
 <aside class="rail">
@@ -576,32 +567,40 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
        bottom of this file are render-blocking: building the rail in JS would
        make the whole navigation hostage to cdn.jsdelivr.net being up (#214). -->
   <nav>
-      <div class="nav-group" data-group="home">
-        <a onclick="navigate('/')" id="nav-home" class="active" title="home, analytics, dashboards"><svg aria-hidden="true"><use href="#i-home"/></svg><span class="rail-label">home</span><span class="nav-twisty" onclick="toggleNavGroup(event, 'home')" aria-hidden="true">&#9660;</span></a>
+      <div class="nav-group">
+        <a onclick="navigate('/')" id="nav-home" class="active" title="home, analytics, dashboards"><svg aria-hidden="true"><use href="#i-home"/></svg><span class="rail-label">home</span></a>
         <div class="nav-kids">
           <a onclick="navigate('/analytics')" id="nav-analytics" title="analytics"><span class="rail-label">analytics</span></a>
           <a onclick="navigate('/dashboards')" id="nav-dashboards" title="dashboards"><span class="rail-label">dashboards</span></a>
         </div>
       </div>
-      <div class="nav-group" data-group="contracts">
-        <a onclick="navigate('/contracts')" id="nav-contracts" title="contracts map, realms, packages, apps"><svg aria-hidden="true"><use href="#i-bubbles"/></svg><span class="rail-label">contracts</span><span class="nav-twisty" onclick="toggleNavGroup(event, 'contracts')" aria-hidden="true">&#9660;</span></a>
+      <div class="nav-group">
+        <a onclick="navigate('/contracts')" id="nav-contracts" title="contracts map, realms, packages, apps"><svg aria-hidden="true"><use href="#i-bubbles"/></svg><span class="rail-label">contracts</span></a>
         <div class="nav-kids">
           <a onclick="navigate('/realms')" id="nav-realms" title="realms"><span class="rail-label">realms</span></a>
           <a onclick="navigate('/packages')" id="nav-packages" title="packages"><span class="rail-label">packages</span></a>
           <a onclick="navigate('/apps')" id="nav-apps" title="apps"><span class="rail-label">apps</span></a>
         </div>
       </div>
-      <div class="nav-group" data-group="blocks">
-        <a onclick="navigate('/blocks')" id="nav-blocks" title="blocks, transactions, events"><svg aria-hidden="true"><use href="#i-blocks"/></svg><span class="rail-label">blocks</span><span class="nav-twisty" onclick="toggleNavGroup(event, 'blocks')" aria-hidden="true">&#9660;</span></a>
+      <div class="nav-group">
+        <a onclick="navigate('/blocks')" id="nav-blocks" title="blocks, transactions, events, validators, sanity"><svg aria-hidden="true"><use href="#i-blocks"/></svg><span class="rail-label">blocks</span></a>
         <div class="nav-kids">
           <a onclick="navigate('/txs')" id="nav-txs" title="transactions"><span class="rail-label">txs</span></a>
           <a onclick="navigate('/events')" id="nav-events" title="events"><span class="rail-label">events</span></a>
+          <a onclick="navigate('/validators')" id="nav-validators" title="who is producing blocks, and the valopers registry"><span class="rail-label">validators</span></a>
+          <a onclick="navigate('/sanity')" id="nav-sanity" title="is the chain healthy, and is our sync keeping up"><span class="rail-label">sanity</span></a>
         </div>
       </div>
-      <a onclick="navigate('/accounts')" id="nav-accounts" title="accounts"><svg aria-hidden="true"><use href="#i-users"/></svg><span class="rail-label">accounts</span></a>
-      <a onclick="navigate('/tokens')" id="nav-tokens" title="tokens"><svg aria-hidden="true"><use href="#i-coin"/></svg><span class="rail-label">tokens</span></a>
-      <div class="nav-group" data-group="gas">
-        <a onclick="navigate('/gas')" id="nav-gas" title="gas summary, by realm, by user, top txs, storage"><svg aria-hidden="true"><use href="#i-gauge"/></svg><span class="rail-label">gas</span><span class="nav-twisty" onclick="toggleNavGroup(event, 'gas')" aria-hidden="true">&#9660;</span></a>
+      <div class="nav-group">
+        <a onclick="navigate('/defi')" id="nav-defi" title="the money side: accounts, coins, grc20"><svg aria-hidden="true"><use href="#i-coin"/></svg><span class="rail-label">defi</span></a>
+        <div class="nav-kids">
+          <a onclick="navigate('/accounts')" id="nav-accounts" title="accounts, balances and the rich list"><span class="rail-label">accounts</span></a>
+          <a onclick="navigate('/coins')" id="nav-coins" title="native ugnot: transfers, volume, who moves it"><span class="rail-label">coins</span></a>
+          <a onclick="navigate('/grc20')" id="nav-grc20" title="grc20 assets, supply and holders"><span class="rail-label">grc20</span></a>
+        </div>
+      </div>
+      <div class="nav-group">
+        <a onclick="navigate('/gas')" id="nav-gas" title="gas summary, by realm, by user, top txs, storage"><svg aria-hidden="true"><use href="#i-gauge"/></svg><span class="rail-label">gas</span></a>
         <div class="nav-kids">
           <a onclick="navigate('/gas/realms')" id="nav-gas-realms" title="gas by realm"><span class="rail-label">by realm</span></a>
           <a onclick="navigate('/gas/users')" id="nav-gas-users" title="gas by user"><span class="rail-label">by user</span></a>
@@ -609,8 +608,8 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
           <a onclick="navigate('/storage')" id="nav-storage" title="storage"><span class="rail-label">storage</span></a>
         </div>
       </div>
-      <div class="nav-group" data-group="govdao">
-        <a onclick="navigate('/govdao')" id="nav-govdao" title="govdao overview, proposals, voters, options, params"><svg aria-hidden="true"><use href="#i-gavel"/></svg><span class="rail-label">govdao</span><span class="nav-twisty" onclick="toggleNavGroup(event, 'govdao')" aria-hidden="true">&#9660;</span></a>
+      <div class="nav-group">
+        <a onclick="navigate('/govdao')" id="nav-govdao" title="govdao overview, proposals, voters, options, params"><svg aria-hidden="true"><use href="#i-gavel"/></svg><span class="rail-label">govdao</span></a>
         <div class="nav-kids">
           <a onclick="navigate('/govdao/proposals')" id="nav-govdao-proposals" title="every proposal"><span class="rail-label">proposals</span></a>
           <a onclick="navigate('/govdao/voters')" id="nav-govdao-voters" title="who votes, and who does not"><span class="rail-label">voters</span></a>
@@ -618,9 +617,7 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
           <a onclick="navigate('/govdao/params')" id="nav-params" title="chain parameters"><span class="rail-label">params</span></a>
         </div>
       </div>
-      <a onclick="navigate('/validators')" id="nav-validators" title="validators"><svg aria-hidden="true"><use href="#i-shield"/></svg><span class="rail-label">validators</span></a>
       <a onclick="navigate('/watch')" id="nav-watch" title="watch"><svg aria-hidden="true"><use href="#i-eye"/></svg><span class="rail-label">watch</span></a>
-      <a onclick="navigate('/sanity')" id="nav-sanity" title="sanity"><svg aria-hidden="true"><use href="#i-pulse"/></svg><span class="rail-label">sanity</span></a>
   </nav>
   <div class="rail-foot">
     <button class="rail-toggle" id="rail-toggle" onclick="toggleRail()" aria-label="collapse the navigation"><svg aria-hidden="true"><use href="#i-collapse"/></svg><span class="rail-label">collapse</span></button>
@@ -728,12 +725,13 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
     </div>
     <div id="accounts-view-balances" style="display:none"><div id="accounts-rich-content"></div></div>
   </main></div>
-  <div class="view" id="view-tokens"><main>
-    <div id="tokens-stats" class="stats-bar" style="display:none"></div>
-    <div id="tokens-bank-content"></div>
+  <div class="view" id="view-defi"><main><div id="defi-content"></div></main></div>
+  <div class="view" id="view-coins"><main><div id="coins-content"></div></main></div>
+  <div class="view" id="view-grc20"><main>
+    <div id="grc20-stats" class="stats-bar" style="display:none"></div>
     <div class="section"><div class="section-title">assets (grc20)</div>
     <div class="section-sub">supply and holders are replayed from the Transfer events the chain emits, so both are exact rather than sampled. no price or market value: GNOT is not listed anywhere and there is no oracle on chain, so any figure in dollars would be one this explorer invented.</div>
-    <table><thead><tr><th>asset</th><th>realm</th><th>supply</th><th>holders</th><th>transfers</th><th>24h</th><th>first seen</th></tr></thead><tbody id="tokens-list"></tbody></table></div>
+    <table><thead><tr><th>asset</th><th>realm</th><th>supply</th><th>holders</th><th>transfers</th><th>24h</th><th>first seen</th></tr></thead><tbody id="grc20-list"></tbody></table></div>
     <div id="asset-detail"></div></main></div>
   <div class="view" id="view-validators"><main><div class="section"><div class="section-title">validators</div>
     <div id="validators-content"></div></div></main></div>
@@ -1408,6 +1406,13 @@ function shortBytes(n) {
   if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB';
   if (n >= 1024) return (n / 1024).toFixed(1) + ' KB';
   return fmtNum(n) + ' B';
+}
+// shortBytes assumes a size, which a delta is not: it is signed, and a release
+// is as meaningful as a deposit. Without this an axis tick for two megabytes
+// freed read "-2097152 B", because every branch above tests `>=` against a
+// positive threshold and a negative number falls through all of them.
+function signedBytes(n) {
+  return (n < 0 ? '-' : '') + shortBytes(Math.abs(n));
 }
 // Wraps a bare function name so hovering it highlights every other call to
 // the same function on the page, the same way addresses and tx hashes do.
@@ -2692,9 +2697,14 @@ const NAV = [
   { id: 'blocks', label: 'blocks', path: '/blocks', own: 'blocks', children: [
     { id: 'txs', label: 'txs', path: '/txs' },
     { id: 'events', label: 'events', path: '/events' },
+    { id: 'validators', label: 'validators', path: '/validators' },
+    { id: 'sanity', label: 'sanity', path: '/sanity' },
   ] },
-  { id: 'accounts', label: 'accounts', path: '/accounts' },
-  { id: 'tokens', label: 'tokens', path: '/tokens' },
+  { id: 'defi', label: 'defi', path: '/defi', own: 'overview', children: [
+    { id: 'accounts', label: 'accounts', path: '/accounts' },
+    { id: 'coins', label: 'coins', path: '/coins' },
+    { id: 'grc20', label: 'grc20', path: '/grc20' },
+  ] },
   { id: 'gas', label: 'gas', path: '/gas', own: 'summary', children: [
     { id: 'gas-realms', label: 'by realm', path: '/gas/realms' },
     { id: 'gas-users', label: 'by user', path: '/gas/users' },
@@ -2707,9 +2717,7 @@ const NAV = [
     { id: 'govdao-options', label: 'options', path: '/govdao/options' },
     { id: 'params', label: 'params', path: '/govdao/params' },
   ] },
-  { id: 'validators', label: 'validators', path: '/validators' },
   { id: 'watch', label: 'watch', path: '/watch' },
-  { id: 'sanity', label: 'sanity', path: '/sanity' },
 ];
 
 // view id -> the section it belongs to, parents included (a section is in
@@ -2720,37 +2728,6 @@ for (const s of NAV) {
   if (!s.children) continue;
   NAV_SECTION[s.id] = s;
   for (const c of s.children) NAV_SECTION[c.id] = s;
-}
-
-// Sections the reader has folded away by hand. The section they are
-// currently in is forced open on top of this (applyNavGroups), so a stored
-// preference can never hide the page being looked at.
-let _navClosed = new Set();
-try {
-  _navClosed = new Set(JSON.parse(localStorage.getItem('mygnoscan-nav-closed') || '[]'));
-} catch (e) { /* denied or malformed storage just means every section is open */ }
-
-function toggleNavGroup(ev, id) {
-  // The twisty lives inside the parent's <a>, which navigates. Folding a
-  // section is not a request to go there.
-  ev.stopPropagation();
-  ev.preventDefault();
-  if (_navClosed.has(id)) _navClosed.delete(id); else _navClosed.add(id);
-  try { localStorage.setItem('mygnoscan-nav-closed', JSON.stringify([..._navClosed])); } catch (e) { /* not persisting is fine */ }
-  applyNavGroups(currentNavSection());
-}
-
-function currentNavSection() {
-  const active = document.querySelector('.rail nav a.active, .rail nav a.in-section');
-  if (!active) return null;
-  const s = NAV_SECTION[active.id.replace(/^nav-/, '')];
-  return s ? s.id : null;
-}
-
-function applyNavGroups(openID) {
-  document.querySelectorAll('.rail nav .nav-group').forEach(g => {
-    g.classList.toggle('closed', _navClosed.has(g.dataset.group) && g.dataset.group !== openID);
-  });
 }
 
 // pageNav builds the section strip for a view, or returns null when the view
@@ -2813,7 +2790,12 @@ function route() {
   else if (path === '/txs') { view = 'txs'; }
   else if (path === '/blocks') { view = 'blocks'; }
   else if (path === '/accounts') { view = 'accounts'; }
-  else if (path === '/tokens') { view = 'tokens'; }
+  else if (path === '/defi') { view = 'defi'; }
+  else if (path === '/coins') { view = 'coins'; }
+  // /tokens was this page's URL when it was one page carrying both the bank
+  // figures and the GRC20 ledger. It answers as the GRC20 half, which is the
+  // larger one and the one the name means; the coin figures are one pill away.
+  else if (path === '/grc20' || path === '/tokens') { view = 'grc20'; }
   else if (path === '/validators') { view = 'validators'; }
   else if (path.startsWith('/validator/')) { view = 'validator-detail'; data = path.slice(11); }
   else if (path === '/govdao') { view = 'govdao'; }
@@ -2859,7 +2841,6 @@ function route() {
     const parent = document.getElementById('nav-' + section.id);
     if (parent) parent.classList.add('in-section');
   }
-  applyNavGroups(section ? section.id : null);
   mountPageNav(view);
 
   const subbar = document.getElementById('sanity-subbar');
@@ -2873,6 +2854,7 @@ function route() {
   }
 
   if (view !== 'dashboards' && typeof destroyDashCharts === 'function') destroyDashCharts();
+  if (view !== 'realm-detail' && view !== 'address-detail' && typeof destroyDetailCharts === 'function') destroyDetailCharts();
   switch (view) {
     case 'home': loadHome(); break;
     case 'watch': loadWatchlist(); break;
@@ -2883,7 +2865,9 @@ function route() {
     case 'txs': loadTxs(); break;
     case 'blocks': loadBlocks(); break;
     case 'accounts': enterAccounts(urlAv); break;
-    case 'tokens': loadTokens(); break;
+    case 'defi': loadDefi(); break;
+    case 'coins': loadCoins(); break;
+    case 'grc20': loadGRC20(); break;
     case 'validators': loadValidators(); break;
     case 'validator-detail': loadValidatorDetail(data); break;
     case 'govdao': loadGovDAO(); break;
@@ -2922,6 +2906,186 @@ if (typeof Chart !== 'undefined') {
   Chart.defaults.font.family = "'SF Mono','Cascadia Code','Fira Code',monospace";
   Chart.defaults.font.size = 11;
 }
+
+// --- Detail-page charts ------------------------------------------------------
+//
+// The time series further down are drawn from /api/timeseries/*, where the
+// server has already bucketed by time. These are the other kind: a shape over a
+// payload a detail page has *already* fetched, so they cost no extra request.
+// That is why the realm page could have carried a storage curve since the day
+// /api/storage shipped and did not: nothing was missing but the drawing.
+//
+// detailChart owns the three things the hand-written charts here each got wrong
+// at least once: the CDN guard (a blocked cdn.jsdelivr.net leaves `Chart`
+// undefined, and an unguarded `new Chart` is a ReferenceError that takes the
+// rest of the tab down with it), the dark theme, and pushing the instance onto
+// a registry so the next render pass destroys it rather than leaving it
+// animating into a canvas no longer in the document.
+function detailChart(into, registry, spec) {
+  const wrap = el('div', { className: 'detail-chart' });
+  into.appendChild(wrap);
+  if (typeof Chart === 'undefined') {
+    wrap.appendChild(el('div', { className: 'dash-msg' },
+      (spec.title ? spec.title + ': ' : '') + 'no chart, the chart library did not load'));
+    return null;
+  }
+  const box = el('div', { className: 'detail-chart-box' });
+  if (spec.height) box.style.height = spec.height + 'px';
+  const canvas = document.createElement('canvas');
+  box.appendChild(canvas);
+  wrap.appendChild(box);
+  if (spec.note) wrap.appendChild(el('div', { className: 'detail-chart-note' }, spec.note));
+  const chart = new Chart(canvas, {
+    type: spec.type || 'bar',
+    data: spec.data,
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      // Off deliberately. These series are as long as the realm's history,
+      // and r/gnoland/wugnot posts 4819 storage events, so animating that many
+      // marks buys a second of jank and nothing else.
+      animation: false,
+      interaction: { mode: 'index', intersect: false },
+      elements: { point: { radius: spec.pointRadius || 0, hoverRadius: 4 } },
+      plugins: {
+        legend: { labels: { color: '#888', boxWidth: 12, padding: 10 } },
+        title: { display: !!spec.title, text: spec.title || '', color: '#888' },
+      },
+      scales: spec.scales,
+    },
+  });
+  registry.push(chart);
+  return chart;
+}
+
+// chartAxis is the one scale definition these share, so a new chart cannot
+// quietly ship with the default white-on-dark ticks nothing else uses.
+//
+// `format` is applied to tick labels and is only meaningful on a value axis:
+// on a category axis Chart.js hands the callback an index, not the label.
+function chartAxis(o) {
+  o = o || {};
+  const axis = {
+    beginAtZero: o.beginAtZero !== false,
+    ticks: { color: '#888', maxTicksLimit: o.maxTicks || 8, maxRotation: 0 },
+    grid: { color: '#2a2a2a' },
+  };
+  if (o.format) axis.ticks.callback = o.format;
+  if (o.stacked) axis.stacked = true;
+  // Counts have no halves, and Chart.js will happily label a two-message
+  // bucket 0, 0.5, 1, 1.5, 2 if nobody says so.
+  if (o.integer) axis.ticks.precision = 0;
+  if (o.position) axis.position = o.position;
+  if (o.title) axis.title = { display: true, text: o.title, color: '#888' };
+  // A second value axis draws a second set of horizontal lines over the same
+  // plot area, which reads as a grid misaligned with itself.
+  if (o.grid === false) axis.grid = { drawOnChartArea: false, color: '#2a2a2a' };
+  return axis;
+}
+
+// --- Time bucketing ----------------------------------------------------------
+//
+// A server-side series arrives pre-bucketed. These are built in the browser out
+// of a list of timestamps, so they have to choose a unit themselves: one mark
+// per event is unreadable for a busy realm, and one mark per day is a single
+// mark for a realm deployed this morning. The span decides.
+const TIME_BUCKETS = [
+  { unit: 'minute', step: 60000, upTo: 2 * 3600e3, label: d => d.toISOString().slice(11, 16) + 'Z' },
+  { unit: 'hour', step: 3600e3, upTo: 4 * 86400e3, label: d => d.toISOString().slice(5, 13).replace('T', ' ') + 'h' },
+  { unit: 'day', step: 86400e3, upTo: Infinity, label: d => d.toISOString().slice(0, 10) },
+];
+
+// No series gets more marks than this. The coarsest unit is a day, so without a
+// cap one row carrying a zero timestamp (block_time is nullable, and a row
+// written before the syncer knew the block's time can hold anything) would
+// ask for two thousand years of daily buckets and hang the tab. Widening the
+// step instead keeps a bad row visible as an outlier rather than fatal.
+const MAX_BUCKETS = 400;
+
+// bucketCounts groups rows into gap-free time buckets, split into named series.
+//
+// Gap-free is the point: a realm touched twice a month apart must draw two
+// marks a month apart, not two adjacent ones, or the chart claims steady use of
+// something used twice.
+//
+// Returns { labels, unit, step, series: [{name, data}], dropped }, or null
+// when no row carries a parsable timestamp, which is the honest answer for a
+// payload whose block_time was never filled in, and not something to draw an
+// empty chart about.
+function bucketCounts(rows, timeOf, nameOf, valueOf) {
+  const parsed = [];
+  let dropped = 0;
+  let min = Infinity, max = -Infinity;
+  for (const r of rows || []) {
+    const t = Date.parse(timeOf(r));
+    if (isNaN(t)) { dropped++; continue; }
+    if (t < min) min = t;
+    if (t > max) max = t;
+    parsed.push({ t, name: nameOf(r), v: valueOf ? valueOf(r) : 1 });
+  }
+  if (!parsed.length) return null;
+  const unit = TIME_BUCKETS.find(x => max - min <= x.upTo);
+  let step = unit.step;
+  const want = Math.floor((max - min) / step) + 1;
+  if (want > MAX_BUCKETS) step *= Math.ceil(want / MAX_BUCKETS);
+
+  const floor = t => Math.floor(t / step) * step;
+  const start = floor(min), end = floor(max);
+  const labels = [];
+  const slot = new Map();
+  for (let t = start; t <= end; t += step) {
+    slot.set(t, labels.length);
+    labels.push(unit.label(new Date(t)));
+  }
+  const names = [];
+  const byName = new Map();
+  for (const p of parsed) {
+    if (!byName.has(p.name)) {
+      names.push(p.name);
+      byName.set(p.name, new Array(labels.length).fill(0));
+    }
+    byName.get(p.name)[slot.get(floor(p.t))] += p.v;
+  }
+  return {
+    labels, unit: unit.unit, step, dropped,
+    series: names.map(n => ({ name: n, data: byName.get(n) })),
+  };
+}
+
+// seriesData pulls one named series out of a bucketing, or zeros when the data
+// never produced it, so a chart can fix its dataset order and colours instead
+// of inheriting whichever series happened to appear first.
+function seriesData(bucketed, name) {
+  const s = (bucketed.series || []).find(x => x.name === name);
+  return s ? s.data : new Array(bucketed.labels.length).fill(0);
+}
+
+// seriesTotal is how big a series is over the whole window, for ranking which
+// of them get a colour and which get folded into "other".
+function seriesTotal(bucketed, name) {
+  return seriesData(bucketed, name).reduce((s, v) => s + v, 0);
+}
+
+// runningTotal turns per-bucket deltas into the cumulative curve, which is the
+// question a storage or fee chart is actually asked: not "what moved today" but
+// "how much is in there now".
+function runningTotal(deltas) {
+  let sum = 0;
+  return deltas.map(d => (sum += d));
+}
+
+// A fixed palette for stacked series with no colour of their own (a function
+// name, an event type). Ordered so the first few are distinguishable to the
+// most common forms of colour blindness, and kept away from the red/green pair
+// the added/released and success/failed charts reserve for meaning.
+const SERIES_PALETTE = ['#4ecdc4', '#ffd43b', '#63b3ed', '#f687b3', '#9ae6b4', '#c9a227', '#8fa6c4', '#a0a0a0'];
+
+// A chart of one mark is noise: it spends 220 pixels repeating a number the
+// stats bar above it already prints. And on a realm page that is the common
+// case rather than the edge one: 294 of mainnet's 342 realms have exactly one
+// storage event, the deploy (measured 2026-09-21 from /api/storage/map),
+// so an unguarded chart would be a single bar on six pages out of seven.
+const CHART_MIN_POINTS = 2;
 
 let _tsDays = 30, _tsGranularity = 'daily', _tsChartInstances = [], _analyticsData = null;
 
@@ -3057,65 +3221,146 @@ function destroyStorageChart() {
 }
 
 // realm = '' means all; realm = 'gno.land/r/...' means specific realm
+// renderStorageChart draws the storage-growth panel on /sanity.
+//
+// It reads two series that measure different things, and the whole point of
+// the panel is that they can disagree:
+//
+//   - timeseries/storage counts *source* bytes from package_files. A proxy,
+//     and one that only ever grows: deleting realm state does not un-deploy
+//     the source.
+//   - timeseries/storage/deltas is what the chain actually charged and
+//     refunded, from storage_events. This is the only one on which "bytes
+//     recovered" exists at all, which is why the recovered bars come from
+//     here and not from the series above.
+//
+// So the bars are the chain's own accounting (deposited up, recovered down,
+// as the chain emits them) and the lines are the two running totals. A
+// cumulative net that flattens or falls while the source line keeps climbing
+// is the signal: state is being released, and the source proxy cannot see it.
 async function renderStorageChart(container, realm) {
   destroyStorageChart();
   container.textContent = '';
 
   const realmQ = realm ? '&realm=' + encodeURIComponent(realm) : '';
   const q = 'days=' + _sanityDays + '&granularity=' + _sanityGranularity + realmQ;
-  let data;
+  let data, deltas;
   try {
-    data = await api('timeseries/storage?' + q);
+    // The deltas half is optional: a deployment that has not synced
+    // storage_events yet still gets the source series rather than an error
+    // panel where a chart used to be.
+    [data, deltas] = await Promise.all([
+      api('timeseries/storage?' + q),
+      api('timeseries/storage/deltas?' + q).catch(() => []),
+    ]);
   } catch (err) {
     container.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '12px' } }, 'no storage data yet'));
     return;
   }
 
+  // Aligned on the source series' buckets: both come from the same bucketing
+  // helper with the same days and granularity, but a realm with no storage
+  // events returns a shorter array, and zipping by index would slide the
+  // recovered bars onto the wrong days.
+  const byTime = new Map((deltas || []).map(d => [d.time, d]));
+  const at = (p, field) => (byTime.get(p.time) || {})[field] || 0;
+
   let cumulative = 0;
-  const cumulativeData = data.map(p => { cumulative += p.bytes_added; return cumulative; });
+  const cumulativeSource = data.map(p => { cumulative += p.bytes_added; return cumulative; });
+  let net = 0;
+  const cumulativeNet = data.map(p => { net += at(p, 'net'); return net; });
+
+  const deposited = data.map(p => at(p, 'deposited'));
+  // Released arrives negative, which is how the chain emits it, and is drawn
+  // that way: recovery is the bar below the axis, not a second bar above it
+  // that a reader has to remember to subtract.
+  const recovered = data.map(p => at(p, 'released'));
+  const anyMovement = deposited.concat(recovered).some(v => v !== 0);
+  const totalRecovered = recovered.reduce((a, b) => a + b, 0);
+
+  const head = el('div', { className: 'section-sub' });
+  if (anyMovement) {
+    head.append('bars are what the chain charged and refunded (storage_events); the grey line is source bytes, '
+      + 'a proxy that only ever grows. ' + fmtSize(Math.abs(totalRecovered)) + ' recovered in this window.');
+  } else {
+    // Said out loud, because two empty bar series and a climbing line is
+    // otherwise indistinguishable from "nothing was ever released".
+    head.append('no storage events in this window' + (realm ? ' for ' + realm : '')
+      + ', so there is nothing the chain charged or refunded to draw. the line is source bytes from package_files, '
+      + 'which is a proxy and only ever grows.');
+  }
+  container.appendChild(head);
 
   const wrap = el('div', { style: { position: 'relative', height: '240px' } });
   const canvas = document.createElement('canvas');
   wrap.appendChild(canvas);
   container.appendChild(wrap);
 
+  const datasets = [
+    {
+      label: 'deposited',
+      data: deposited,
+      backgroundColor: 'rgba(78,205,196,0.5)',
+      borderColor: '#4ecdc4',
+      borderWidth: 1,
+      order: 3,
+    },
+    {
+      label: 'recovered',
+      data: recovered,
+      backgroundColor: 'rgba(255,107,107,0.5)',
+      borderColor: '#ff6b6b',
+      borderWidth: 1,
+      order: 3,
+    },
+    {
+      label: 'cumulative net',
+      data: cumulativeNet,
+      type: 'line',
+      borderColor: '#ffd43b',
+      backgroundColor: 'rgba(255,212,59,0.08)',
+      tension: 0.3,
+      fill: true,
+      pointRadius: 2,
+      order: 1,
+    },
+    {
+      label: 'cumulative source bytes',
+      data: cumulativeSource,
+      type: 'line',
+      borderColor: '#888',
+      borderDash: [4, 3],
+      tension: 0.3,
+      fill: false,
+      pointRadius: 0,
+      order: 2,
+    },
+  ];
+
   const scaleOpts = {
     x: { ticks: { color: '#888', maxTicksLimit: 10, maxRotation: 0 }, grid: { color: '#2a2a2a' } },
-    y: { ticks: { color: '#888' }, grid: { color: '#2a2a2a' }, beginAtZero: true }
+    // Not beginAtZero: recovered bars are negative and a zero-floored axis
+    // would clip them out of the chart entirely.
+    //
+    // Fractional ticks are dropped rather than formatted. On an empty window
+    // Chart.js falls back to a 0..1 axis, and fmtSize rounds 0.2, 0.4 and 0.6
+    // all to "0 B", which reads as a broken axis rather than as no data.
+    y: {
+      ticks: { color: '#888', callback: v => (Number.isInteger(v) ? fmtSize(Math.abs(v)) : '') },
+      grid: { color: '#2a2a2a' },
+    },
   };
 
   _storageChartInstances.push(new Chart(canvas, {
     type: 'bar',
-    data: {
-      labels: data.map(p => p.time),
-      datasets: [
-        {
-          label: 'bytes added',
-          data: data.map(p => p.bytes_added),
-          backgroundColor: 'rgba(78,205,196,0.5)',
-          borderColor: '#4ecdc4',
-          borderWidth: 1,
-          order: 2,
-        },
-        {
-          label: 'cumulative bytes',
-          data: cumulativeData,
-          type: 'line',
-          borderColor: '#ffd43b',
-          backgroundColor: 'rgba(255,212,59,0.08)',
-          tension: 0.3,
-          fill: true,
-          pointRadius: 2,
-          order: 1,
-        },
-      ]
-    },
+    data: { labels: data.map(p => p.time), datasets },
     options: {
       responsive: true, maintainAspectRatio: false,
       interaction: { mode: 'index', intersect: false },
       plugins: {
         legend: { labels: { color: '#888', boxWidth: 12, padding: 10 } },
-        title: { display: true, text: 'source storage growth (bytes)' + (realm ? ' — ' + realm : ''), color: '#888' },
+        title: { display: true, text: 'storage growth (bytes)' + (realm ? ' — ' + realm : ''), color: '#888' },
+        tooltip: { callbacks: { label: c => c.dataset.label + ': ' + fmtSize(Math.abs(c.parsed.y)) } },
       },
       scales: { x: scaleOpts.x, y: scaleOpts.y },
       elements: { point: { radius: 2, hoverRadius: 4 } },
@@ -4112,12 +4357,21 @@ function renderRichList(container, data) {
     return;
   }
 
+  const section = el('div', { className: 'section', style: { marginTop: '16px' } });
+  section.appendChild(el('div', { className: 'section-title' }, 'balances'));
+  section.appendChild(richListTable(entries, data.network));
+  container.appendChild(section);
+}
+
+// richListTable is the ranked-balance table, shared by /accounts and by the
+// five-row preview on /defi.
+function richListTable(entries, network) {
   const tbody = el('tbody');
   for (const e of entries) {
     const info = addrInfo(e.address);
     tbody.appendChild(el('tr', {},
       el('td', {}, '#' + e.rank),
-      el('td', {}, addrLink(e.address, data.network)),
+      el('td', {}, addrLink(e.address, network)),
       // The provenance of the name beside it, from the curated registry.
       // Without a label column the top of any chain's rich list is
       // infrastructure that reads as whales.
@@ -4126,14 +4380,11 @@ function renderRichList(container, data) {
       el('td', { style: { color: 'var(--fg2)', fontSize: '11px' } }, e.height ? 'at block ' + fmtNum(e.height) : ''),
       el('td', {}, e.fetched_at ? timeEl(e.fetched_at) : '')));
   }
-  const section = el('div', { className: 'section', style: { marginTop: '16px' } });
-  section.appendChild(el('div', { className: 'section-title' }, 'balances'));
-  section.appendChild(el('table', {},
+  return el('table', {},
     el('thead', {}, el('tr', {},
       el('th', {}, 'rank'), el('th', {}, 'address'), el('th', {}, 'label'),
       el('th', {}, 'balance'), el('th', {}, 'as of'), el('th', {}, 'read'))),
-    tbody));
-  container.appendChild(section);
+    tbody);
 }
 
 async function loadAccounts() {
@@ -4197,7 +4448,7 @@ function fmtTokenUnits(v) {
 }
 
 function renderAssetRows(assets) {
-  const tbody = clear('tokens-list');
+  const tbody = clear('grc20-list');
   for (const t of assets) {
     // An asset whose transfers carry no amount is not a balance ledger, and
     // printing 0 for supply and holders would read as "empty" rather than as
@@ -4309,106 +4560,201 @@ function assetTransfersSection(data) {
   return xfers;
 }
 
-async function loadTokens() {
-  skeletonRows(clear('tokens-list'), 3, 5);
-  const statsBar = document.getElementById('tokens-stats');
-  const bankContent = document.getElementById('tokens-bank-content');
+// --- defi: accounts, coins, grc20 -------------------------------------------
+//
+// /tokens was one page carrying two unrelated ledgers: the native ugnot bank
+// (who sent what to whom, in the chain's own coin) and the GRC20 asset ledger
+// (supply and holders replayed from Transfer events). They share an endpoint
+// pair and nothing else: different denominations, different sources,
+// different questions. Split, with /accounts joining them under one section,
+// because the three together are the money side of the chain and each one is
+// the first place a reader looks after the other two.
+
+// gnotAmount formats a ugnot figure as GNOT, floored. Whole GNOT is the unit
+// every balance on the chain is talked about in, and six decimal places of
+// ugnot in a table column is noise.
+function gnotAmount(ugnot) {
+  return fmtNum(Math.floor((ugnot || 0) / 1000000)) + ' GNOT';
+}
+
+// bankVolumeStats appends the volume figures to a stats bar. Volume is
+// denominated per chain, so a single blended figure across networks describes
+// nothing: one chain's GNOT is not another's. In all-networks mode the split
+// is shown instead of the sum.
+function bankVolumeStats(bar, bank) {
+  if (bank.by_network && Object.keys(bank.by_network).length > 1) {
+    const entries = Object.entries(bank.by_network).sort((a, b) => b[1].total_volume - a[1].total_volume);
+    for (const [net, slice] of entries) {
+      const stat = el('div', { className: 'stat' });
+      const label = el('span', { className: 'label' });
+      label.appendChild(netDotEl(net));
+      label.appendChild(document.createTextNode(net + ' volume'));
+      stat.appendChild(label);
+      stat.appendChild(el('span', { className: 'value' }, gnotAmount(slice.total_volume)));
+      bar.appendChild(stat);
+    }
+  } else {
+    bar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'volume'), el('span', { className: 'value' }, gnotAmount(bank.total_volume))));
+  }
+}
+
+// bankMoverTable is one of the three "who moves the coin" columns. `cols`
+// names the two figure columns in the order they are drawn.
+function bankMoverTable(rows, cols) {
+  const tbl = el('table');
+  tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'address'), el('th', {}, cols[0]), el('th', {}, cols[1]))));
+  const body = el('tbody');
+  for (const s of rows) {
+    const count = el('td', {}, fmtNum(s.count));
+    const volume = el('td', {}, gnotAmount(s.total));
+    body.appendChild(netRow(s.network,
+      el('td', {}, addrLink(s.address, s.network)),
+      cols[0] === 'txs' ? count : volume,
+      cols[0] === 'txs' ? volume : count));
+  }
+  tbl.appendChild(body);
+  return tbl;
+}
+
+// --- /defi: the overview ----------------------------------------------------
+
+async function loadDefi() {
+  const container = clear('defi-content');
+  skeletonBlock(container);
+  // Four payloads, all of them ones a child page reads too, so arriving here
+  // first makes the rest of the section instant rather than costing an extra
+  // round trip.
+  await apiSWR(['bankstats', 'assets', 'accounts/population', 'accounts/rich'], ([bank, assetsResp, pop, rich]) => {
+    container.textContent = '';
+    const assets = (assetsResp && assetsResp.assets) || [];
+    const transfers = assets.reduce((s, t) => s + (t.transfers || 0), 0);
+
+    const nums = el('div', { className: 'bignums' });
+    // "addresses seen", never "accounts". gno cannot enumerate the auth
+    // module over RPC, so a true account count is unavailable at any price
+    // and this number under that name would be a different figure wearing it.
+    nums.appendChild(bigNum('addresses seen', fmtCompact(pop.known), {
+      title: fmtNum(pop.known) + ' distinct addresses seen on chain, in any role. not the number of accounts that exist',
+      sub: fmtNum(pop.monthly_active) + ' active in 30d',
+      to: '/accounts',
+    }));
+    nums.appendChild(bigNum('gnot moved', fmtCompact(Math.floor((bank.total_volume || 0) / 1000000)), {
+      title: fmtNum(bank.total_volume) + ' ugnot across ' + fmtNum(bank.total_sends) + ' transfers',
+      sub: fmtNum(bank.total_sends) + ' transfers',
+      to: '/coins',
+    }));
+    nums.appendChild(bigNum('grc20 assets', fmtNum(assets.length), {
+      sub: fmtNum(transfers) + ' transfers',
+      to: '/grc20',
+    }));
+    nums.appendChild(bigNum('senders', fmtCompact(bank.unique_senders), {
+      title: fmtNum(bank.unique_senders) + ' addresses have sent, ' + fmtNum(bank.unique_receivers) + ' have received',
+      sub: fmtNum(bank.unique_receivers) + ' receivers',
+      to: '/coins',
+    }));
+    container.appendChild(nums);
+
+    const entries = (rich && rich.entries) || [];
+    if (entries.length) {
+      container.appendChild(el('div', { className: 'section-title' }, 'largest balances'));
+      container.appendChild(el('div', { className: 'section-sub' },
+        'ranked over the ' + fmtNum((rich.coverage || {}).swept || 0) + ' addresses whose balance has been read, not over every account: gno offers no way to enumerate them.'));
+      container.appendChild(richListTable(entries.slice(0, 5), rich.network));
+      container.appendChild(moreLink('the full rich list', '/accounts?av=balances'));
+    }
+
+    if ((bank.top_senders || []).length) {
+      container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'who moves the coin'));
+      container.appendChild(bankMoverTable(bank.top_senders.slice(0, 5), ['txs', 'volume']));
+      container.appendChild(moreLink('senders, receivers and volume', '/coins'));
+    }
+
+    if (assets.length) {
+      container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'grc20 assets'));
+      // Its own small table rather than renderAssetRows: that one writes into
+      // the grc20 view's tbody and its rows open a detail panel that lives
+      // there too, which from here would render into a hidden view.
+      const tbl = el('table');
+      tbl.appendChild(el('thead', {}, el('tr', {},
+        el('th', {}, 'asset'), el('th', {}, 'realm'), el('th', {}, 'supply'), el('th', {}, 'holders'), el('th', {}, 'transfers'))));
+      const body = el('tbody');
+      const dim = { style: { color: 'var(--fg2)' } };
+      for (const t of assets.slice(0, 5)) {
+        body.appendChild(netRow(t.network,
+          el('td', {}, link(t.display_symbol || t.symbol || t.token, () => navigate('/grc20'))),
+          el('td', {}, t.pkg_path ? realmPathEl(t.pkg_path, t.network) : el('span', dim, 'unknown')),
+          el('td', {}, t.fungible ? fmtTokenUnits(t.supply) : el('span', dim, 'n/a')),
+          el('td', {}, t.fungible ? fmtNum(t.holders || 0) : el('span', dim, 'n/a')),
+          el('td', {}, fmtNum(t.transfers || 0))));
+      }
+      tbl.appendChild(body);
+      container.appendChild(tbl);
+      container.appendChild(moreLink('all ' + fmtNum(assets.length) + ' assets', '/grc20'));
+    }
+  }).catch(err => failBlock(container, err, loadDefi));
+}
+
+// --- /coins: the native ugnot ledger ----------------------------------------
+
+async function loadCoins() {
+  const container = clear('coins-content');
+  skeletonBlock(container);
+  await apiSWR('bankstats', (bank) => {
+    container.textContent = '';
+    container.appendChild(el('div', { className: 'section-title' }, 'coins'));
+    container.appendChild(el('div', { className: 'section-sub' },
+      'the chain\'s own coin, from BankMsgSend alone. a realm that moves ugnot inside a call is not a bank send and is not counted here: ' +
+      'those show up as gas and as realm activity instead.'));
+
+    const bar = el('div', { className: 'stats-bar' });
+    const stat = (label, value) => bar.appendChild(el('div', { className: 'stat' },
+      el('span', { className: 'label' }, label), el('span', { className: 'value' }, value)));
+    stat('transfers', fmtNum(bank.total_sends));
+    bankVolumeStats(bar, bank);
+    stat('unique addresses', fmtNum(bank.unique_addresses));
+    stat('senders', fmtNum(bank.unique_senders));
+    stat('receivers', fmtNum(bank.unique_receivers));
+    container.appendChild(bar);
+
+    const grid = el('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px', marginTop: '20px' } });
+    const column = (title, rows, cols) => {
+      if (!(rows || []).length) return;
+      const col = el('div');
+      col.appendChild(el('div', { className: 'section-title' }, title));
+      col.appendChild(bankMoverTable(rows, cols));
+      grid.appendChild(col);
+    };
+    column('top senders', bank.top_senders, ['txs', 'volume']);
+    column('top receivers (volume)', bank.top_receivers_volume, ['volume', 'txs']);
+    column('top receivers (count)', bank.top_receivers_count, ['txs', 'volume']);
+    if (grid.childNodes.length) container.appendChild(grid);
+  }).catch(err => failBlock(container, err, loadCoins));
+}
+
+// --- /grc20: the asset ledger -----------------------------------------------
+
+async function loadGRC20() {
+  skeletonRows(clear('grc20-list'), 3, 5);
+  const statsBar = document.getElementById('grc20-stats');
   statsBar.style.display = 'none';
-  bankContent.textContent = '';
-  skeletonBlock(bankContent);
   try {
-    await apiSWR(['assets', 'bankstats'], ([assetsResp, bank], swrMeta) => {
+    await apiSWR('assets', (assetsResp) => {
       const assets = (assetsResp && assetsResp.assets) || [];
-      // Stats: merge token + bank
       const totalTransfers = assets.reduce((s, t) => s + (t.transfers || 0), 0);
+      const holders = assets.reduce((s, t) => s + (t.holders || 0), 0);
       statsBar.textContent = ''; statsBar.style.display = 'flex';
-      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'grc20 assets'), el('span', { className: 'value' }, fmtNum(assets.length))));
-      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'grc20 transfers'), el('span', { className: 'value' }, fmtNum(totalTransfers))));
-      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'bank transfers'), el('span', { className: 'value' }, fmtNum(bank.total_sends))));
-      // Volume is denominated per chain, so a single blended figure across
-      // networks describes nothing — one chain's GNOT is not another's. In
-      // all-networks mode the split is shown instead of the sum.
-      const vol = v => fmtNum(Math.floor(v / 1000000)) + ' GNOT';
-      if (bank.by_network && Object.keys(bank.by_network).length > 1) {
-        const entries = Object.entries(bank.by_network).sort((a, b) => b[1].total_volume - a[1].total_volume);
-        for (const [net, slice] of entries) {
-          const stat = el('div', { className: 'stat' });
-          const label = el('span', { className: 'label' });
-          label.appendChild(netDotEl(net));
-          label.appendChild(document.createTextNode(net + ' volume'));
-          stat.appendChild(label);
-          stat.appendChild(el('span', { className: 'value' }, vol(slice.total_volume)));
-          statsBar.appendChild(stat);
-        }
-      } else {
-        statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'volume'), el('span', { className: 'value' }, vol(bank.total_volume))));
-      }
-      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'unique addresses'), el('span', { className: 'value' }, fmtNum(bank.unique_addresses))));
-      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'senders'), el('span', { className: 'value' }, fmtNum(bank.unique_senders))));
-      statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'receivers'), el('span', { className: 'value' }, fmtNum(bank.unique_receivers))));
-
-      // Bank analytics
-      bankContent.textContent = '';
-      const grid = el('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px', marginBottom: '24px' } });
-
-      // Top senders
-      if ((bank.top_senders || []).length) {
-        const col = el('div');
-        col.appendChild(el('div', { className: 'section-title' }, 'top senders'));
-        const tbl = el('table');
-        tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'address'), el('th', {}, 'txs'), el('th', {}, 'volume'))));
-        const body = el('tbody');
-        for (const s of bank.top_senders) {
-          body.appendChild(netRow(s.network,
-            el('td', {}, addrLink(s.address, s.network)),
-            el('td', {}, fmtNum(s.count)),
-            el('td', {}, fmtNum(Math.floor(s.total / 1000000)) + ' GNOT')
-          ));
-        }
-        tbl.appendChild(body); col.appendChild(tbl); grid.appendChild(col);
-      }
-
-      // Top receivers by volume
-      if ((bank.top_receivers_volume || []).length) {
-        const col = el('div');
-        col.appendChild(el('div', { className: 'section-title' }, 'top receivers (volume)'));
-        const tbl = el('table');
-        tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'address'), el('th', {}, 'volume'), el('th', {}, 'txs'))));
-        const body = el('tbody');
-        for (const s of bank.top_receivers_volume) {
-          body.appendChild(netRow(s.network,
-            el('td', {}, addrLink(s.address, s.network)),
-            el('td', {}, fmtNum(Math.floor(s.total / 1000000)) + ' GNOT'),
-            el('td', {}, fmtNum(s.count))
-          ));
-        }
-        tbl.appendChild(body); col.appendChild(tbl); grid.appendChild(col);
-      }
-
-      // Top receivers by count
-      if ((bank.top_receivers_count || []).length) {
-        const col = el('div');
-        col.appendChild(el('div', { className: 'section-title' }, 'top receivers (count)'));
-        const tbl = el('table');
-        tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'address'), el('th', {}, 'txs'), el('th', {}, 'volume'))));
-        const body = el('tbody');
-        for (const s of bank.top_receivers_count) {
-          body.appendChild(netRow(s.network,
-            el('td', {}, addrLink(s.address, s.network)),
-            el('td', {}, fmtNum(s.count)),
-            el('td', {}, fmtNum(Math.floor(s.total / 1000000)) + ' GNOT')
-          ));
-        }
-        tbl.appendChild(body); col.appendChild(tbl); grid.appendChild(col);
-      }
-
-      bankContent.appendChild(grid);
-
+      const stat = (label, value) => statsBar.appendChild(el('div', { className: 'stat' },
+        el('span', { className: 'label' }, label), el('span', { className: 'value' }, fmtNum(value))));
+      stat('assets', assets.length);
+      stat('transfers', totalTransfers);
+      // Summed across assets, so an address holding three tokens counts three
+      // times. Named "holdings" rather than "holders" for exactly that reason.
+      stat('holdings', holders);
       renderAssetRows(assets);
     });
   } catch (err) {
     console.error(err);
-    failRows(clear('tokens-list'), 3, err, loadTokens);
+    failRows(clear('grc20-list'), 3, err, loadGRC20);
   }
 }
 
@@ -5838,6 +6184,15 @@ function renderApps(container, data) {
         const ext = el('a', { href: app.url, target: '_blank', rel: 'noopener noreferrer' }, app.url);
         descCell.appendChild(el('div', { style: { marginTop: '4px', fontSize: '11px' } }, ext));
       }
+      // A blurb is mostly durable, but the one volatile fact inside it is what
+      // a reader acts on. Showing the date lets them weigh it, the same way an
+      // inferred address label carries its measurement date.
+      if (app.checked) {
+        descCell.appendChild(el('div', {
+          style: { marginTop: '4px', fontSize: '11px', color: 'var(--fg2)' },
+          title: 'the volatile part of this description was last confirmed on this date',
+        }, 'checked ' + app.checked));
+      }
       tbody.appendChild(el('tr', {}, nameCell, pathCell, descCell));
     }
     section.appendChild(el('table', {},
@@ -5973,7 +6328,10 @@ async function loadSanity() {
     });
     storageHeader.appendChild(realmSel);
     storageSection.appendChild(storageHeader);
-    storageChartsDiv = el('div');
+    // Identified so the browser test can read the panel's own summary line.
+    // The series themselves live in a canvas and cannot be asserted on; the
+    // note under the header is where the chart states what it found.
+    storageChartsDiv = el('div', { id: 'sanity-storage' });
     storageSection.appendChild(storageChartsDiv);
     container.appendChild(storageSection);
 
@@ -6047,7 +6405,20 @@ const STORAGE_WINDOWS = (() => {
   return out.sort((a, b) => a - b);
 })();
 
-let _storage = { group: 'namespace', window: 'auto', order: 'alloc', focus: null };
+// How the used-against-capacity ruler is drawn. Both are honest and neither is
+// honest alone, which is why this is a toggle and not a decision.
+const STORAGE_SCALES = {
+  log: {
+    label: 'log',
+    hint: 'one tick per factor of 1024: the only scale that fits what is used and the whole capacity on one axis',
+  },
+  linear: {
+    label: 'max capacity',
+    hint: 'the same bar drawn to scale against the full capacity, where what is in use is a sliver of a pixel',
+  },
+};
+
+let _storage = { group: 'namespace', window: 'auto', order: 'alloc', focus: null, scale: 'log' };
 
 function fmtSize(n) {
   const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
@@ -6203,6 +6574,7 @@ function storageSyncURL() {
   q.set('group', _storage.group);
   if (_storage.order !== 'alloc') q.set('order', _storage.order); else q.delete('order');
   if (_storage.window !== 'auto') q.set('window', String(_storage.window)); else q.delete('window');
+  if (_storage.scale !== 'log') q.set('scale', _storage.scale); else q.delete('scale');
   if (_storage.focus) q.set('focus', _storage.focus); else q.delete('focus');
   history.replaceState({}, '', window.location.pathname + '?' + q.toString());
 }
@@ -6214,6 +6586,7 @@ function storageStateFromURL() {
   const w = q.get('window');
   if (w === 'auto') _storage.window = 'auto';
   else if (w && Number(w) > 0) _storage.window = Number(w);
+  if (STORAGE_SCALES[q.get('scale')]) _storage.scale = q.get('scale');
   if (q.has('focus')) _storage.focus = q.get('focus');
 }
 
@@ -6261,12 +6634,17 @@ function storageWindow(used, capacity) {
   return capacity || Math.max(need, 1);
 }
 
-// The log ruler: the only view that can show used and capacity at once.
+// Used against capacity, at two scales, because neither one is honest alone.
 //
-// A linear bar is the obvious thing and it is useless here — 47 MB against
-// 13.33 TB is a third of a pixel on a 1000px bar, so the honest drawing and the
-// broken one look identical. Six decades on a log axis fit, and the ticks are
-// labelled so nobody reads the fill as "a third full".
+// Log is the default. 43.9 MB against 12.1 TB is 300,000 to 1, and six decades
+// on one axis is the only way to get both numbers into one picture. What it
+// costs is that the fill *looks* like a third of the bar, and a reader who does
+// not stop to read the ticks comes away thinking the chain is a third full.
+//
+// Max capacity is the correction: the same bar to scale, where what is in use
+// is a fraction of one pixel. Useless as a measurement and exactly right as the
+// answer to "yes, but how full is it really", which is why it is a toggle and
+// not a replacement for the log view.
 function storageRuler(used, capacity) {
   const wrap = el('div', { style: { padding: '4px 0 18px' } });
   if (!capacity) {
@@ -6274,57 +6652,121 @@ function storageRuler(used, capacity) {
       'capacity unknown, so there is nothing to measure the used bytes against.'));
     return wrap;
   }
+  wrap.appendChild(el('div', {
+    style: { display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'center', padding: '0 0 12px' },
+  }, contractControlGroup('scale', Object.entries(STORAGE_SCALES).map(
+    ([k, sc]) => storagePill(sc.label, _storage.scale === k, () => {
+      _storage.scale = k;
+      storageSyncURL();
+      loadStorage();
+    }, sc.hint)))));
 
+  if (_storage.scale === 'linear') storageRulerLinear(wrap, used, capacity);
+  else storageRulerLog(wrap, used, capacity);
+  return wrap;
+}
+
+// Both scales draw the same furniture, and a tick that only one of them knew
+// how to draw is how the two views start disagreeing about where the end is.
+function storageRulerTrack() {
+  return el('div', {
+    className: 'storage-ruler-track',
+    style: {
+      position: 'relative', height: '26px', background: 'var(--bg3)',
+      border: '1px solid var(--border)', borderRadius: '3px', overflow: 'hidden',
+    },
+  });
+}
+
+function storageRulerFill(widthPct, minWidth) {
+  const fill = el('div', {
+    className: 'storage-ruler-fill',
+    style: {
+      position: 'absolute', left: '0', top: '0', bottom: '0',
+      width: widthPct.toFixed(4) + '%',
+      background: 'linear-gradient(90deg, rgba(78,205,196,0.25), var(--accent))',
+    },
+  });
+  if (minWidth) fill.style.minWidth = minWidth;
+  return fill;
+}
+
+function storageRulerTick(track, frac, isEnd) {
+  track.appendChild(el('div', {
+    style: {
+      position: 'absolute', top: '0', bottom: '0', left: (frac * 100).toFixed(3) + '%',
+      width: '1px', background: isEnd ? 'var(--fg2)' : 'var(--border)',
+    },
+  }));
+}
+
+function storageRulerLabels(marks) {
+  const labels = el('div', { style: { position: 'relative', height: '16px', fontSize: '10px', color: 'var(--fg2)' } });
+  for (const [frac, text] of marks) {
+    labels.appendChild(el('span', {
+      style: {
+        position: 'absolute', left: (frac * 100).toFixed(3) + '%', whiteSpace: 'nowrap',
+        transform: frac > 0.9 ? 'translateX(-100%)' : frac > 0 ? 'translateX(-50%)' : 'none',
+      },
+    }, text));
+  }
+  return labels;
+}
+
+function storageRulerLog(wrap, used, capacity) {
   const lo = 1024 * 1024; // 1 MB: below this the axis is all empty decades
   const pos = v => {
     if (v <= lo) return 0;
     return Math.min(1, Math.log(v / lo) / Math.log(capacity / lo));
   };
 
-  const track = el('div', {
-    style: {
-      position: 'relative', height: '26px', background: 'var(--bg3)',
-      border: '1px solid var(--border)', borderRadius: '3px', overflow: 'hidden',
-    },
-  });
-  track.appendChild(el('div', {
-    style: {
-      position: 'absolute', left: '0', top: '0', bottom: '0',
-      width: (pos(used) * 100).toFixed(3) + '%',
-      background: 'linear-gradient(90deg, rgba(78,205,196,0.25), var(--accent))',
-    },
-  }));
+  const track = storageRulerTrack();
+  track.appendChild(storageRulerFill(pos(used) * 100));
 
   const decades = [];
   for (let v = lo; v <= capacity; v *= 1024) decades.push(v);
   if (decades[decades.length - 1] !== capacity) decades.push(capacity);
-  for (const v of decades) {
-    const isEnd = v === capacity;
-    track.appendChild(el('div', {
-      style: {
-        position: 'absolute', top: '0', bottom: '0', left: (pos(v) * 100).toFixed(3) + '%',
-        width: '1px', background: isEnd ? 'var(--fg2)' : 'var(--border)',
-      },
-    }));
-  }
+  for (const v of decades) storageRulerTick(track, pos(v), v === capacity);
   wrap.appendChild(track);
-
-  const labels = el('div', { style: { position: 'relative', height: '16px', fontSize: '10px', color: 'var(--fg2)' } });
-  for (const v of decades) {
-    const p = pos(v);
-    labels.appendChild(el('span', {
-      style: {
-        position: 'absolute', left: (p * 100).toFixed(3) + '%', whiteSpace: 'nowrap',
-        transform: p > 0.9 ? 'translateX(-100%)' : p > 0 ? 'translateX(-50%)' : 'none',
-      },
-    }, v === capacity ? fmtSize(v) + ' capacity' : fmtSize(v)));
-  }
-  wrap.appendChild(labels);
+  wrap.appendChild(storageRulerLabels(decades.map(
+    v => [pos(v), v === capacity ? fmtSize(v) + ' capacity' : fmtSize(v)])));
 
   wrap.appendChild(el('div', { style: { fontSize: '11px', color: 'var(--fg2)', marginTop: '6px' } },
     'log scale, one tick per factor of 1024. ' + fmtSize(used) + ' of ' + fmtSize(capacity) +
-    ' is ' + storagePct(used, capacity) + ' — a linear bar would draw it as nothing at all.'));
-  return wrap;
+    ' is ' + storagePct(used, capacity) + ' \u2014 switch to max capacity to see that drawn to scale.'));
+}
+
+function storageRulerLinear(wrap, used, capacity) {
+  const track = storageRulerTrack();
+  // Two pixels, not none. The true width rounds to zero on any display anyone
+  // owns, and a bar with no fill at all reads as "no data" rather than as "not
+  // much": the caption below says what the real figure is, so the floor
+  // misleads nobody and the mark stays findable.
+  track.appendChild(storageRulerFill((used / capacity) * 100, '2px'));
+  const quarters = [0, 0.25, 0.5, 0.75, 1];
+  for (const f of quarters) storageRulerTick(track, f, f === 1);
+  wrap.appendChild(track);
+  wrap.appendChild(storageRulerLabels(quarters.map(
+    f => [f, f === 1 ? fmtSize(capacity) + ' capacity' : fmtSize(capacity * f)])));
+
+  const note = el('div', { style: { fontSize: '11px', color: 'var(--fg2)', marginTop: '6px' } });
+  note.append('to scale: the whole bar is ' + fmtSize(capacity) + ' and ' + fmtSize(used) +
+    ' in use is ' + storagePct(used, capacity) + ' of it');
+  // How small that is has to be measured rather than asserted: it depends on
+  // how wide the browser actually drew the bar, which depends on the window.
+  const measured = el('span');
+  note.appendChild(measured);
+  note.append('. the log scale is the one that can show both numbers at once.');
+  wrap.appendChild(note);
+
+  requestAnimationFrame(() => {
+    const w = track.getBoundingClientRect().width;
+    if (!w) return;
+    const px = (used / capacity) * w;
+    measured.textContent = ', which across these ' + Math.round(w) + ' pixels is ' +
+      (px >= 1 ? px.toFixed(1) + ' pixels' : px.toFixed(4) + ' of one pixel') +
+      ', so the fill is drawn at a floor of two';
+  });
 }
 
 // The block map. One cell is a fixed number of bytes; a run of cells is one
@@ -8385,6 +8827,30 @@ function docsTabEl(symbols, files, pathForNav) {
   }
   return container;
 }
+// Charts on the detail pages (realm and address), and the generation that owns
+// them. Shared rather than one registry each, because the pages navigate into
+// each other: whichever renders next has to be able to tear down what the last
+// one drew.
+//
+// Two hazards, one counter. apiSWR paints a cached copy and then a fresh one,
+// so a render callback runs up to twice per visit, and route() can have two of
+// them in flight at once. Each pass clear()s its containers, which drops the
+// canvases out of the document but leaves the Chart instances alive, holding a
+// resize observer and a canvas nobody can see; and each pass starts its own
+// async tab loaders, which resume *after* a later pass has rebuilt the
+// container and append a second table into it.
+//
+// _detailGen is bumped at the top of every pass: charts from earlier passes
+// are destroyed, and a loader that finds the generation moved on returns
+// instead of writing into someone else's container.
+let _detailCharts = [];
+let _detailGen = 0;
+
+function destroyDetailCharts() {
+  _detailCharts.forEach(c => c.destroy());
+  _detailCharts = [];
+}
+
 async function loadRealmDetail(path, initialTab) {
   const header = clear('realm-header');
   skeletonBlock(header);
@@ -8404,6 +8870,8 @@ async function loadRealmDetail(path, initialTab) {
       'realm/' + path.replace('gno.land/', ''),
       { path: 'inert/package/' + path.replace('gno.land/', ''), fallback: null },
     ], ([detail, inert], swrMeta) => {
+      const gen = ++_detailGen;
+      destroyDetailCharts();
       header.textContent = '';
       const titleRow = el('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', margin: '16px 0 8px' } },
         el('h2', { style: { margin: 0 } }, detail.path));
@@ -8569,6 +9037,56 @@ async function loadRealmDetail(path, initialTab) {
       callStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'calls'), el('span', { className: 'value' }, fmtNum(detail.call_count))));
       callStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'runs'), el('span', { className: 'value' }, fmtNum(msgRuns.length))));
       calls.appendChild(callStats);
+      // Activity over time, stacked by what was called.
+      //
+      // Drawn from the rows the page already holds, which are capped at 50
+      // calls and 50 MsgRuns by the query behind /api/realm. That cap is
+      // stated in the caption rather than hidden: on a realm with thousands of
+      // calls this is the recent tail, and a chart that looked like the whole
+      // history would be the worst possible version of this feature. An
+      // untruncated one needs a per-realm time series endpoint, which this is
+      // not.
+      const activityRows = [];
+      if (detail.block_time) activityRows.push({ t: detail.block_time, k: 'deploy' });
+      for (const c of directCalls) if (c.block_time) activityRows.push({ t: c.block_time, k: c.func_name || 'call' });
+      for (const r of msgRuns) if (r.block_time) activityRows.push({ t: r.block_time, k: 'MsgRun' });
+      // Top functions only. A realm exporting thirty of them would otherwise
+      // produce thirty stacked series in eight colours, which is a legend
+      // rather than a chart.
+      const fnTotals = new Map();
+      for (const r of activityRows) fnTotals.set(r.k, (fnTotals.get(r.k) || 0) + 1);
+      const ranked = [...fnTotals.entries()].sort((x, y) => y[1] - x[1]).map(e => e[0]);
+      const kept = ranked.slice(0, SERIES_PALETTE.length - 1);
+      const folded = ranked.length > kept.length;
+      if (folded) for (const r of activityRows) if (!kept.includes(r.k)) r.k = 'other';
+      const actBuckets = bucketCounts(activityRows, r => r.t, r => r.k);
+      if (actBuckets && activityRows.length >= CHART_MIN_POINTS) {
+        const names = folded ? kept.concat(['other']) : kept;
+        const note = [fmtNum(activityRows.length) + ' messages plotted'];
+        // detail.call_count is the real total; directCalls is what the query
+        // returned. Saying which one the bars are is the whole point.
+        if (detail.call_count > directCalls.length) {
+          note.push('the ' + fmtNum(directCalls.length) + ' most recent calls of ' + fmtNum(detail.call_count));
+        }
+        detailChart(calls, _detailCharts, {
+          title: 'activity, per ' + actBuckets.unit,
+          note: note.join(' \u00b7 '),
+          data: {
+            labels: actBuckets.labels,
+            datasets: names.map((n, i) => ({
+              label: n,
+              data: seriesData(actBuckets, n),
+              backgroundColor: SERIES_PALETTE[i % SERIES_PALETTE.length] + 'aa',
+              borderColor: SERIES_PALETTE[i % SERIES_PALETTE.length],
+              borderWidth: 1,
+            })),
+          },
+          scales: {
+            x: chartAxis({ stacked: true }),
+            y: chartAxis({ stacked: true, integer: true, title: 'messages' }),
+          },
+        });
+      }
       // Merged table
       const allRows = [];
       // Deploy tx
@@ -8606,10 +9124,51 @@ async function loadRealmDetail(path, initialTab) {
         try {
           const eventsPath = path.replace('gno.land/', '');
           const evData = await api('events/' + eventsPath);
+          if (gen !== _detailGen) return;
           eventsEl.textContent = '';
           if (!(evData || []).length) {
             eventsEl.appendChild(el('div', { style: { color: 'var(--fg2)', padding: '12px 0' } }, 'no events emitted by this realm'));
             return;
+          }
+          // Event mix over time. The rows are nested (one transaction, many
+          // events), and the type is the interesting axis: a realm that emits
+          // nothing but StorageDepositEvent is a different animal from one
+          // emitting Transfer all day, and the table cannot say which without
+          // being read end to end.
+          const evRows = [];
+          for (const item of evData) {
+            for (const ev of (item.events || [])) {
+              evRows.push({ t: item.block_time, k: ev.type || ev.__typename || 'event' });
+            }
+          }
+          const evTotals = new Map();
+          for (const r of evRows) evTotals.set(r.k, (evTotals.get(r.k) || 0) + 1);
+          const evRanked = [...evTotals.entries()].sort((x, y) => y[1] - x[1]).map(e => e[0]);
+          const evKept = evRanked.slice(0, SERIES_PALETTE.length - 1);
+          const evFolded = evRanked.length > evKept.length;
+          if (evFolded) for (const r of evRows) if (!evKept.includes(r.k)) r.k = 'other';
+          const evBuckets = bucketCounts(evRows, r => r.t, r => r.k);
+          if (evBuckets && evRows.length >= CHART_MIN_POINTS) {
+            const evNames = evFolded ? evKept.concat(['other']) : evKept;
+            detailChart(eventsEl, _detailCharts, {
+              title: 'events, per ' + evBuckets.unit,
+              note: fmtNum(evRows.length) + ' events over ' + fmtNum(evData.length) + ' transactions' +
+                (evFolded ? ', types past the top ' + evKept.length + ' folded into "other"' : ''),
+              data: {
+                labels: evBuckets.labels,
+                datasets: evNames.map((n, i) => ({
+                  label: n,
+                  data: seriesData(evBuckets, n),
+                  backgroundColor: SERIES_PALETTE[i % SERIES_PALETTE.length] + 'aa',
+                  borderColor: SERIES_PALETTE[i % SERIES_PALETTE.length],
+                  borderWidth: 1,
+                })),
+              },
+              scales: {
+                x: chartAxis({ stacked: true }),
+                y: chartAxis({ stacked: true, integer: true, title: 'events' }),
+              },
+            });
           }
           const evTbl = el('table');
           evTbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'tx'), el('th', {}, 'type'), el('th', {}, 'attributes'), el('th', {}, 'block'))));
@@ -8626,7 +9185,11 @@ async function loadRealmDetail(path, initialTab) {
             }
           }
           evTbl.appendChild(evBody); eventsEl.appendChild(evTbl);
-        } catch (err) { eventsEl.textContent = ''; eventsEl.appendChild(el('div', { style: { color: 'var(--red)' } }, 'Error loading events: ' + err.message)); }
+        } catch (err) {
+          if (gen !== _detailGen) return;
+          eventsEl.textContent = '';
+          eventsEl.appendChild(el('div', { style: { color: 'var(--red)' } }, 'Error loading events: ' + err.message));
+        }
       })();
       // Storage tab (loaded from indexer)
       const storageEl = clear('tab-storage'); if (activeTab === 'storage') storageEl.classList.add('active'); else storageEl.classList.remove('active');
@@ -8646,6 +9209,7 @@ async function loadRealmDetail(path, initialTab) {
         try {
           const storagePath = path.replace('gno.land/', '');
           const sData = await api('storage/' + storagePath);
+          if (gen !== _detailGen) return;
           storageEl.textContent = '';
           const st = sData.storage || {};
           const gs = sData.gas || {};
@@ -8654,10 +9218,97 @@ async function loadRealmDetail(path, initialTab) {
           sStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'net storage'), el('span', { className: 'value' }, fmtNum(st.net_bytes || 0) + ' bytes')));
           sStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'deposited'), el('span', { className: 'value' }, fmtNum(st.total_bytes_deposited || 0) + ' bytes')));
           sStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'deposit fee'), el('span', { className: 'value' }, fmtNum(st.total_fee_deposited || 0) + ' ugnot')));
+          // Only when there is something to refund, so the common realm (which
+          // has never freed a byte) is not given two stats reading zero. When
+          // there is, gross deposits alone are the wrong number to leave a
+          // reader holding: r/gnoland/wugnot had paid 610,466,700 ugnot and got
+          // 491,770,200 back as of 2026-09-21, so its storage has cost it
+          // 118,696,500.
+          if (st.total_fee_refunded) {
+            sStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'refunded'), el('span', { className: 'value' }, fmtNum(st.total_fee_refunded) + ' ugnot')));
+            sStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'net fee'), el('span', { className: 'value' }, fmtNum((st.total_fee_deposited || 0) - st.total_fee_refunded) + ' ugnot')));
+          }
           sStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total gas used'), el('span', { className: 'value' }, fmtNum(gs.total_gas_used || 0))));
           sStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total gas fee'), el('span', { className: 'value' }, fmtNum(gs.total_gas_fee || 0) + ' ugnot')));
           sStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'txs'), el('span', { className: 'value' }, fmtNum(gs.tx_count || 0))));
           storageEl.appendChild(sStats);
+          // Storage evolution. No extra request: bytes_delta is already signed
+          // (the chain emits an unlock's as negative, and #255 stopped us
+          // flipping it), so a running sum over the entries in chronological
+          // order lands exactly on net_bytes. The table below answers "which
+          // transaction"; this answers "is it growing, and since when", which
+          // is the question 4819 rows of r/gnoland/wugnot cannot.
+          const stBuckets = bucketCounts(st.entries || [],
+            e => e.block_time,
+            e => (e.bytes_delta < 0 ? 'released' : 'added'),
+            e => e.bytes_delta);
+          if (stBuckets && (st.entries || []).length >= CHART_MIN_POINTS) {
+            const added = seriesData(stBuckets, 'added');
+            const released = seriesData(stBuckets, 'released');
+            const held = runningTotal(added.map((v, i) => v + released[i]));
+            const note = [fmtNum((st.entries || []).length) + ' storage events'];
+            // The curve is only the whole realm when every event is in it. A
+            // row whose block_time never got filled in cannot be placed on a
+            // time axis, and silently dropping it would leave a line that
+            // stops short of the net figure printed right above it.
+            if (stBuckets.dropped) note.push(fmtNum(stBuckets.dropped) + ' with no block time, not plotted');
+            else note.push('the line is the running total, ending at ' + fmtBytes(st.net_bytes || 0));
+            detailChart(storageEl, _detailCharts, {
+              title: 'storage evolution, per ' + stBuckets.unit,
+              note: note.join(' \u00b7 '),
+              data: {
+                labels: stBuckets.labels,
+                datasets: [
+                  { label: 'bytes added', data: added, backgroundColor: 'rgba(78,205,196,0.55)', borderColor: '#4ecdc4', borderWidth: 1, yAxisID: 'y', order: 3 },
+                  { label: 'bytes released', data: released, backgroundColor: 'rgba(255,107,107,0.55)', borderColor: '#ff6b6b', borderWidth: 1, yAxisID: 'y', order: 3 },
+                  {
+                    label: 'net bytes held', data: held, type: 'line', yAxisID: 'y1',
+                    borderColor: '#ffd43b', backgroundColor: 'rgba(255,212,59,0.08)',
+                    borderWidth: 2, tension: 0.2, fill: true, order: 1,
+                  },
+                ],
+              },
+              scales: {
+                x: chartAxis({ stacked: true }),
+                y: chartAxis({ stacked: true, title: 'change', format: signedBytes }),
+                y1: chartAxis({ position: 'right', grid: false, title: 'held', format: signedBytes }),
+              },
+            });
+          }
+          // Gas, on the same axis of time. Failed transactions are stacked
+          // separately rather than dropped: they burn gas and pay a fee like
+          // any other, and a realm whose reverts cost more than its successes
+          // is exactly what this should be able to show.
+          const gasRows = [];
+          for (const e of (gs.entries || [])) {
+            gasRows.push({ t: e.block_time, k: e.success ? 'used' : 'failed', v: e.gas_used });
+            gasRows.push({ t: e.block_time, k: 'fee', v: e.gas_fee });
+          }
+          const gsBuckets = bucketCounts(gasRows, r => r.t, r => r.k, r => r.v);
+          if (gsBuckets && (gs.entries || []).length >= CHART_MIN_POINTS) {
+            detailChart(storageEl, _detailCharts, {
+              title: 'gas burned, per ' + gsBuckets.unit,
+              note: fmtNum(gs.tx_count || 0) + ' transactions \u00b7 ' + fmtNum(gs.total_gas_used || 0) +
+                ' gas \u00b7 ' + fmtNum(gs.total_gas_fee || 0) + ' ugnot in fees',
+              data: {
+                labels: gsBuckets.labels,
+                datasets: [
+                  { label: 'gas used', data: seriesData(gsBuckets, 'used'), backgroundColor: 'rgba(78,205,196,0.55)', borderColor: '#4ecdc4', borderWidth: 1, yAxisID: 'y', order: 3 },
+                  { label: 'gas used, failed', data: seriesData(gsBuckets, 'failed'), backgroundColor: 'rgba(255,107,107,0.55)', borderColor: '#ff6b6b', borderWidth: 1, yAxisID: 'y', order: 3 },
+                  {
+                    label: 'fees paid, cumulative (ugnot)', data: runningTotal(seriesData(gsBuckets, 'fee')),
+                    type: 'line', yAxisID: 'y1', borderColor: '#ffd43b',
+                    backgroundColor: 'rgba(255,212,59,0.08)', borderWidth: 2, tension: 0.2, fill: true, order: 1,
+                  },
+                ],
+              },
+              scales: {
+                x: chartAxis({ stacked: true }),
+                y: chartAxis({ stacked: true, title: 'gas' }),
+                y1: chartAxis({ position: 'right', grid: false, title: 'ugnot' }),
+              },
+            });
+          }
           // Storage events table
           if ((st.entries || []).length) {
             storageEl.appendChild(el('div', { className: 'section-title', style: { marginTop: '16px' } }, 'storage events'));
@@ -8673,13 +9324,25 @@ async function loadRealmDetail(path, initialTab) {
                 spanTd(stSpans, i, txLink(e.tx_hash, e.block_height, null, { showBlock: false })),
                 el('td', {}, badge(e.type === 'deposit' ? 'pkg' : 'ok', e.type)),
                 el('td', {}, fmtNum(e.bytes_delta)),
-                el('td', {}, fmtNum(e.fee_amount) + ' ' + (e.fee_denom || '')),
+                // Signed like the bytes column beside it, for the same reason:
+                // an unlock's fee is money coming back, and printed bare it is
+                // indistinguishable from money going out, so the column no
+                // longer visibly adds up to its own total row.
+                el('td', {}, fmtNum(e.type === 'unlock' ? -e.fee_amount : e.fee_amount) + ' ' + (e.fee_denom || '')),
                 spanTd(stSpans, i, blockWithAge(e.block_height, e.block_time))
               ));
             });
-            // Total row
+            // Total row.
+            //
+            // bytes_delta arrives signed, so summing it straight gives the net
+            // figure. fee_amount does not: an unlock row carries its *refund*,
+            // and it is positive. Adding it to the deposits totalled money paid
+            // plus money returned, a quantity that describes nothing: on
+            // 2026-09-21 r/gnoland/wugnot read 1,102,236,900 ugnot here against
+            // a real cost of 118,696,500, on a page whose stats bar said
+            // 610,466,700 three rows above. Same family as #255, one layer up.
             const totalBytes = st.entries.reduce((s, e) => s + e.bytes_delta, 0);
-            const totalFee = st.entries.reduce((s, e) => s + e.fee_amount, 0);
+            const totalFee = st.entries.reduce((s, e) => s + (e.type === 'unlock' ? -e.fee_amount : e.fee_amount), 0);
             stBody.appendChild(el('tr', { className: 'total-row' },
               el('td', {}, ''), el('td', {}, 'total'),
               el('td', {}, fmtNum(totalBytes)),
@@ -8724,7 +9387,11 @@ async function loadRealmDetail(path, initialTab) {
           if (!(st.entries || []).length && !(gs.entries || []).length) {
             storageEl.appendChild(el('div', { style: { color: 'var(--fg2)', padding: '12px 0' } }, 'no storage or gas data for this realm'));
           }
-        } catch (err) { storageEl.textContent = ''; storageEl.appendChild(el('div', { style: { color: 'var(--red)' } }, 'Error: ' + err.message)); }
+        } catch (err) {
+          if (gen !== _detailGen) return;
+          storageEl.textContent = '';
+          storageEl.appendChild(el('div', { style: { color: 'var(--red)' } }, 'Error: ' + err.message));
+        }
       })();
       // Deps, and the graph drawn from the same two lists.
       //
@@ -8743,10 +9410,12 @@ async function loadRealmDetail(path, initialTab) {
         try {
           [imports, dependents] = await Promise.all([api('deps/' + depsPath), api('deps/' + depsPath + '?dir=dependents')]);
         } catch (err) {
+          if (gen !== _detailGen) return;
           depsEl.textContent = '';
           depsEl.appendChild(el('div', { style: { color: 'var(--red)' } }, 'Error loading dependencies: ' + err.message));
           return;
         }
+        if (gen !== _detailGen) return;
         depsEl.textContent = '';
         const grid = el('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' } });
         grid.appendChild(buildDepTree('imports (what this uses)', imports, path,
@@ -9144,6 +9813,8 @@ async function loadAddressDetail(addr) {
   skeletonBlock(container);
   try {
     await apiSWR(['address/' + addr, 'blocks?limit=50'], ([data, blocksData], swrMeta) => {
+      ++_detailGen;
+      destroyDetailCharts();
       // Block time lookup
       const blockTime = {};
       for (const b of (Array.isArray(blocksData) ? blocksData : [])) blockTime[b.height] = b.time;
@@ -9264,6 +9935,47 @@ async function loadAddressDetail(addr) {
         extraStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'gas fees'), el('span', { className: 'value' }, fmtNum(Math.floor(totalGasFee / 1000000 * 100) / 100) + ' GNOT')));
       }
       if (hasExtra) container.appendChild(extraStats);
+      // What this account does, over time, split by message kind.
+      //
+      // The three tables below rank *who* and *what*; none of them says when,
+      // and "active for a week two months ago" and "active every day since"
+      // produce identical tables. Drawn from the page's own rows, so it moves
+      // with the pager and says so rather than claiming to be the account's
+      // whole history: /api/address caps a page at 200 and data.total is the
+      // real count.
+      const acctBuckets = bucketCounts(txs, t => t.block_time, t => t.type || 'tx');
+      if (acctBuckets && txs.length >= CHART_MIN_POINTS) {
+        // Every type gets a series, not a top-N: the message vocabulary is
+        // fixed and short (MsgCall, BankMsgSend, MsgAddPackage, MsgRun and the
+        // two inert-lifecycle messages), so there is nothing to fold away and
+        // folding would hide the rare one that is the interesting row.
+        // Ordered biggest first so the palette is stable across pages.
+        const acctNames = acctBuckets.series.map(x => x.name)
+          .sort((x, y) => seriesTotal(acctBuckets, y) - seriesTotal(acctBuckets, x));
+        const acctNote = [fmtNum(txs.length) + ' transactions plotted'];
+        if ((data.total ?? txs.length) > txs.length) {
+          acctNote.push('this page only, of ' + fmtNum(data.total) + ' in all');
+        }
+        if (acctBuckets.dropped) acctNote.push(fmtNum(acctBuckets.dropped) + ' with no block time, not plotted');
+        detailChart(container, _detailCharts, {
+          title: 'activity, per ' + acctBuckets.unit,
+          note: acctNote.join(' \u00b7 '),
+          data: {
+            labels: acctBuckets.labels,
+            datasets: acctNames.map((n, i) => ({
+              label: n,
+              data: seriesData(acctBuckets, n),
+              backgroundColor: SERIES_PALETTE[i % SERIES_PALETTE.length] + 'aa',
+              borderColor: SERIES_PALETTE[i % SERIES_PALETTE.length],
+              borderWidth: 1,
+            })),
+          },
+          scales: {
+            x: chartAxis({ stacked: true }),
+            y: chartAxis({ stacked: true, integer: true, title: 'transactions' }),
+          },
+        });
+      }
       // Top receivers (if >1 with multiple txs)
       const topSentTo = Object.entries(sentTo).sort((a, b) => b[1] - a[1]);
       if (topSentTo.length > 0 && topSentTo[0][1] > 1) {
@@ -12609,6 +13321,11 @@ function renderContractMap() {
   // Only the force map knows how to redraw into what is already there. The
   // other five are handed an empty canvas, the way they always were.
   if (!spec.morph) zoomG.selectAll('*').remove();
+  // The zoom handler belongs to whichever layout is about to draw. Cleared
+  // here rather than in the teardown because the surface survives a repaint
+  // and a metric switch would otherwise leave the previous render's closure
+  // deciding what the new one labels.
+  surface.onZoom = null;
   const fit = draw(ctx) || (() => svg.transition().duration(300).call(zoom.transform, d3.zoomIdentity));
 
   // A draw function is allowed to give up and tear the surface down (the chord
@@ -12645,11 +13362,9 @@ function contractSurface(container, layoutKey, width, height) {
   const svg = d3.select(container).append('svg').attr('width', width).attr('height', height)
     .attr('role', 'img').attr('aria-label', 'map of deployed contracts');
   const zoomG = svg.append('g');
-  const zoom = d3.zoom().scaleExtent([0.15, 6]).on('zoom', e => zoomG.attr('transform', e.transform));
-  svg.call(zoom);
   const chrome = el('div');
   const next = {
-    container, layoutKey, width, height, svg, zoomG, zoom,
+    container, layoutKey, width, height, svg, zoomG, zoom: null,
     tip: contractTooltip(container), chrome,
     // Both of these are per surface rather than per render. fitted, because
     // framing the map is right the first time it settles and wrong on every
@@ -12657,7 +13372,21 @@ function contractSurface(container, layoutKey, width, height) {
     // it. shape, because how hard to reheat the simulation depends on what
     // changed since the last render, which only the surface remembers.
     fitted: false, shape: null, sim: null, reused: false,
+    // onZoom is how a layout gets told the scale changed, so it can re-decide
+    // what it draws instead of only being magnified. Set by the draw function
+    // that wants it and cleared before every draw, because a surface outlives
+    // a repaint and a stale handler would be re-deciding against the last
+    // render's data.
+    onZoom: null,
   };
+  // 12, not 6: the ceiling is what "zoom in enough" means, and the packing's
+  // smallest bubbles are 3.5px at rest. At 6 they are 21px across and only the
+  // shortest names fit; at 12 every contract on the map can be read.
+  next.zoom = d3.zoom().scaleExtent([0.15, 12]).on('zoom', e => {
+    zoomG.attr('transform', e.transform);
+    if (next.onZoom) next.onZoom(e.transform);
+  });
+  svg.call(next.zoom);
   container.appendChild(chrome);
   _contracts.surface = next;
   return next;
@@ -12784,6 +13513,37 @@ function contractHover(sel, tip, get) {
 
 function contractOpen(d) { navigate('/realm/' + d.path.replace('gno.land/', '')); }
 
+// contractEdgePath draws a link as a curve that starts and ends on the two
+// bubbles' borders rather than at their centres.
+//
+// Centre to centre is what every one of these views drew, and it is wrong in a
+// way that gets worse the further the metric spreads the radii: the visible end
+// of an edge is wherever the circle it disappears under happens to stop, so the
+// same weight reads as a shorter link into a large contract than into a small
+// one, and on the import view the arrowhead that says which way the dependency
+// points is buried inside the package it points at.
+//
+// Trimmed along the tangent and not along the chord: a quadratic curve leaves
+// its start point in the direction of its control point and arrives at its end
+// from that same direction, so that is the only direction in which stepping the
+// radius lands back on the curve. Passing the midpoint as the control point
+// draws a straight line.
+function contractEdgePath(ax, ay, bx, by, ar, br, cx, cy) {
+  const step = (x, y, r, tx, ty) => {
+    const d = Math.hypot(tx - x, ty - y) || 1;
+    return [x + ((tx - x) / d) * r, y + ((ty - y) / d) * r];
+  };
+  const [sx, sy] = step(ax, ay, ar, cx, cy);
+  const [ex, ey] = step(bx, by, br, cx, cy);
+  // Circles that touch or overlap have no gap between them to draw a link in:
+  // a packing puts siblings in contact, and the force map lets bubbles overlap
+  // while it settles. Both trims then run past each other and the curve doubles
+  // back, which draws as a stray hook pointing the wrong way. A zero-length
+  // path draws nothing and still answers getTotalLength for the flow particles.
+  if ((ex - sx) * (bx - ax) + (ey - sy) * (by - ay) <= 0) return 'M' + sx + ',' + sy;
+  return 'M' + sx + ',' + sy + 'Q' + cx + ',' + cy + ' ' + ex + ',' + ey;
+}
+
 // The hierarchy four of the layouts share: root, one child per namespace, one
 // leaf per contract, valued by the selected metric.
 //
@@ -12843,8 +13603,12 @@ function drawContractForce(ctx) {
   svg.selectAll('defs').remove();
   if (showArrows) {
     svg.append('defs').append('marker')
+      // refX 10, the tip of the marker's own path: the line now stops at the
+      // target's border, so the tip lands there too. It was 14 to claw back
+      // some of the overlap from a line that ran to the centre, by a fixed
+      // amount that was right for one radius and wrong for every other.
       .attr('id', 'contract-arrow').attr('viewBox', '0 -5 10 10')
-      .attr('refX', 14).attr('refY', 0).attr('markerWidth', 3).attr('markerHeight', 3)
+      .attr('refX', 10).attr('refY', 0).attr('markerWidth', 3).attr('markerHeight', 3)
       .attr('orient', 'auto')
       .append('path').attr('d', 'M0,-5L10,0L0,5').attr('fill', 'var(--fg2)');
   }
@@ -12977,8 +13741,22 @@ function drawContractForce(ctx) {
 
   const byNamespace = d3.group(nodes, d => d.namespace);
   const paint = () => {
-    linkEl.attr('x1', l => l.source.x).attr('y1', l => l.source.y)
-      .attr('x2', l => l.target.x).attr('y2', l => l.target.y);
+    // Border to border, for the reason contractEdgePath spells out. Written as
+    // one each() rather than four attr() passes because this runs on every tick
+    // of the simulation, and four passes is four walks of the same selection.
+    linkEl.each(function (l) {
+      const dx = l.target.x - l.source.x, dy = l.target.y - l.source.y;
+      const len = Math.hypot(dx, dy) || 1;
+      // Clamped at the midpoint each side: two bubbles closer than their radii
+      // have no gap between them to draw a link in, and trimming past each
+      // other would draw the line, and its arrowhead, backwards.
+      const t0 = Math.min(radius(l.source) / len, 0.5);
+      const t1 = Math.max(1 - radius(l.target) / len, 0.5);
+      this.setAttribute('x1', l.source.x + dx * t0);
+      this.setAttribute('y1', l.source.y + dy * t0);
+      this.setAttribute('x2', l.source.x + dx * t1);
+      this.setAttribute('y2', l.source.y + dy * t1);
+    });
     nodeEl.attr('cx', d => d.x).attr('cy', d => d.y);
     if (_contracts.hulls) drawNamespaceHulls(hullG, byNamespace, radius);
     if (_contracts.labels) labelEl.attr('x', d => d.x).attr('y', d => d.y - radius(d) - 3);
@@ -13100,9 +13878,18 @@ function drawContractOrbit(ctx) {
   ring1.forEach(r => place(r, R1));
   ring2List.forEach(r => place(r, R2));
 
-  const pos = new Map([[focus.path, { x: cx, y: cy }]]);
-  ring1.forEach(r => pos.set(r.node.path, { x: r.x, y: r.y }));
-  ring2List.forEach(r => pos.set(r.node.path, { x: r.x, y: r.y }));
+  // The centre is drawn at a fixed large radius rather than by the metric: it
+  // is the subject of the view, and a focus that shrank when you switched
+  // metric would read as having been deselected.
+  const focusR = Math.max(20, ctx.rMax * 0.8);
+  const ringR = (node, ring) => ring === 0 ? focusR
+    : Math.max(5, radius(node) * (ring === 1 ? 0.9 : 0.7));
+
+  // Radius alongside position, because the links are trimmed to the borders
+  // and a border is a radius away from a centre.
+  const pos = new Map([[focus.path, { x: cx, y: cy, r: focusR }]]);
+  ring1.forEach(r => pos.set(r.node.path, { x: r.x, y: r.y, r: ringR(r.node, 1) }));
+  ring2List.forEach(r => pos.set(r.node.path, { x: r.x, y: r.y, r: ringR(r.node, 2) }));
 
   // Faint guide rings, so "one step out" and "two steps out" are readable
   // without counting. The second one only when something is on it: an empty
@@ -13127,8 +13914,8 @@ function drawContractOrbit(ctx) {
     const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
     const dx = mx - cx, dy = my - cy, len = Math.hypot(dx, dy) || 1;
     const bow = Math.hypot(b.x - a.x, b.y - a.y) * 0.18;
-    return 'M' + a.x + ',' + a.y + 'Q' + (mx + (dx / len) * bow) + ',' + (my + (dy / len) * bow) +
-      ' ' + b.x + ',' + b.y;
+    return contractEdgePath(a.x, a.y, b.x, b.y, a.r, b.r,
+      mx + (dx / len) * bow, my + (dy / len) * bow);
   };
   const touchesFocus = l => l.source === focus.path || l.target === focus.path;
   const linkEl = zoomG.append('g').attr('fill', 'none').selectAll('path').data(drawn).join('path')
@@ -13164,10 +13951,7 @@ function drawContractOrbit(ctx) {
   const nodeEl = decorateContractShape(
     zoomG.append('g').selectAll('circle').data(ringData).join('circle'), d => d.node)
     .attr('cx', d => d.x).attr('cy', d => d.y)
-    // The centre is drawn at a fixed large radius rather than by the metric:
-    // it is the subject of the view, and a focus that shrank when you switched
-    // metric would read as having been deselected.
-    .attr('r', d => d.ring === 0 ? Math.max(20, ctx.rMax * 0.8) : Math.max(5, radius(d.node) * (d.ring === 1 ? 0.9 : 0.7)))
+    .attr('r', d => ringR(d.node, d.ring))
     .attr('stroke', d => d.ring === 0 ? 'var(--accent)' : (d.node.parked ? 'var(--accent2)' : 'rgba(0,0,0,0.45)'))
     .attr('stroke-width', d => d.ring === 0 ? 2 : 1)
     // Clicking re-centres, which is the whole interaction. The centre is the
@@ -13188,8 +13972,8 @@ function drawContractOrbit(ctx) {
     .text(d => shortContractLabel(d.node))
     .attr('x', d => d.x)
     .attr('y', d => d.ring === 0
-      ? cy + Math.max(20, ctx.rMax * 0.8) + 13
-      : d.y - Math.max(5, radius(d.node) * 0.9) - 4)
+      ? cy + focusR + 13
+      : d.y - ringR(d.node, d.ring) - 4)
     .attr('text-anchor', 'middle')
     .attr('font-size', d => d.ring === 0 ? 12 : 9.5)
     .attr('fill', d => d.ring === 0 ? 'var(--accent)' : 'var(--fg)')
@@ -13198,7 +13982,7 @@ function drawContractOrbit(ctx) {
   const dropped = adj.get(focus.path).length - ring1.length;
   if (dropped > 0) {
     zoomG.append('text')
-      .attr('x', cx).attr('y', cy + Math.max(20, ctx.rMax * 0.8) + 27)
+      .attr('x', cx).attr('y', cy + focusR + 27)
       .attr('text-anchor', 'middle').attr('font-size', 10).attr('fill', 'var(--fg2)')
       .text('+' + fmtNum(dropped) + ' weaker links not drawn');
   }
@@ -13310,7 +14094,7 @@ function drawContractPacked(ctx) {
     // map is panned with rather than a second, private notion of "zoomed in".
     .on('click', (e, d) => {
       e.stopPropagation();
-      const k = Math.min(6, Math.min(width, height) / (2.2 * d.r));
+      const k = Math.min(12, Math.min(width, height) / (2.2 * d.r));
       svg.transition().duration(500).call(zoom.transform,
         d3.zoomIdentity.translate(width / 2, height / 2).scale(k).translate(-(d.x + 4), -(d.y + 4)));
     })
@@ -13340,41 +14124,103 @@ function drawContractPacked(ctx) {
     const mine = neighbours.get(d.data.leaf.path) || [];
     overlay.selectAll('path').data(mine.filter(l => at.has(l.source) && at.has(l.target)))
       .join('path')
+      // Border to border. The bow is the one the arc had: an SVG arc of radius
+      // 0.9 chords deviates from its chord by 0.1517 of it, and a quadratic
+      // deviates by half its control offset, so 0.303 perpendicular is the
+      // same curve written in the form that can be trimmed.
       .attr('d', l => {
         const a = at.get(l.source), b = at.get(l.target);
-        return 'M' + a.x + ',' + a.y + 'A' + (Math.hypot(b.x - a.x, b.y - a.y) * 0.9) + ',' +
-          (Math.hypot(b.x - a.x, b.y - a.y) * 0.9) + ' 0 0,1 ' + b.x + ',' + b.y;
+        const dx = b.x - a.x, dy = b.y - a.y, dist = Math.hypot(dx, dy) || 1;
+        return contractEdgePath(a.x, a.y, b.x, b.y, a.r, b.r,
+          (a.x + b.x) / 2 + (dy / dist) * dist * 0.303,
+          (a.y + b.y) / 2 - (dx / dist) * dist * 0.303);
       })
       .attr('stroke', 'var(--accent)').attr('stroke-opacity', 0.75).attr('stroke-width', 1.6);
   }).on('mouseleave.edges', () => overlay.selectAll('path').remove());
 
-  // A namespace is named when its circle has room for the name, and the ones
-  // that do not are the long tail of single-contract namespaces that the
-  // legend already covers.
+  // Labels decided by the zoom, not by the layout.
+  //
+  // A packing of nine hundred contracts has room to name about twenty of them
+  // at rest. That is the honest answer at that scale, and it used to be the
+  // answer at every scale: the threshold was the radius d3.pack computed, so
+  // zooming in magnified the circles and the text together and never revealed a
+  // single new name. Deciding against the radius *on screen* is what turns
+  // zooming from magnifying into reading, and it is the whole point of a view
+  // whose bubbles are two hundred times apart in area.
+  //
+  // Counter-scaled by 1/k, so a name is the same size on screen at every zoom
+  // level and a circle passes the threshold by growing under fixed text rather
+  // than by carrying text that grew with it. Joined on the labels that fit, not
+  // drawn once and hidden, so the DOM holds the twenty showing and not one per
+  // contract.
+  const NAME_PX = 9.5, VAL_PX = 9, NS_PX = 11;
+  // Rough on purpose: getBBox per label would be a layout per label per frame,
+  // and there is one frame per wheel notch. 0.55em per character over-estimates
+  // slightly for this font, which errs toward dropping a label rather than
+  // letting it spill out of its circle.
+  const fits = (text, px, rScreen) => text.length * px * 0.55 <= rScreen * 1.8;
   const nsLabels = groups.append('g').attr('pointer-events', 'none');
-  nsLabels.selectAll('text').data(nsNodes.filter(d => d.r > 26)).join('text')
-    .attr('x', d => d.x).attr('y', d => d.y - d.r + 11)
-    .attr('text-anchor', 'middle').attr('font-size', 11)
-    .attr('fill', d => namespaceColor(d.data.ns))
-    .attr('stroke', 'var(--bg)').attr('stroke-width', 3).attr('paint-order', 'stroke')
-    .text(d => namespaceLabel(d.data.ns) +
-      (d.r > 44 ? ' \u00b7 ' + fmtMetricShort(metric, nsMetricTotal(d, metric)) : ''));
-
-  // Name on one line, the metric under it, in the circles with room for two
-  // lines. Same reason as the treemap: a packing sized by gas that never
-  // prints a gas figure is a picture of a ranking, not of a quantity.
   const leafLabels = groups.append('g').attr('pointer-events', 'none');
-  leafLabels.selectAll('text.name').data(leaves.filter(d => d.r > 18)).join('text')
-    .attr('class', 'name')
-    .attr('x', d => d.x).attr('y', d => d.r > 26 ? d.y - 1 : d.y + 3)
-    .attr('text-anchor', 'middle').attr('font-size', 9.5).attr('fill', 'var(--bg)')
-    .text(d => d.data.leaf.name);
-  leafLabels.selectAll('text.val').data(leaves.filter(d => d.r > 26)).join('text')
-    .attr('class', 'val')
-    .attr('x', d => d.x).attr('y', d => d.y + 10)
-    .attr('text-anchor', 'middle').attr('font-size', 9).attr('fill', 'var(--bg)')
-    .attr('fill-opacity', 0.75)
-    .text(d => fmtMetricShort(metric, metric.get(d.data.leaf)));
+
+  const relabel = t => {
+    const k = t.k, s = 1 / k;
+    // Only what is on screen. Past about 6x nearly every circle has room for
+    // its name and all but a few percent of them are outside the viewport, so
+    // without this the browser carries a thousand text nodes to show a dozen.
+    // The +4 is the translate the packing is drawn under.
+    const onScreen = d => {
+      const rs = d.r * k, sx = t.applyX(d.x + 4), sy = t.applyY(d.y + 4);
+      return sx + rs > -40 && sx - rs < width + 40 && sy + rs > -40 && sy - rs < height + 40;
+    };
+
+    // A namespace is named when its circle has room for the name, and the ones
+    // that do not are the long tail of single-contract namespaces that the
+    // legend already covers.
+    const nsShown = nsNodes.filter(d => d.r * k > 26 && onScreen(d));
+    nsLabels.selectAll('text').data(nsShown, d => d.data.ns).join('text')
+      .attr('x', d => d.x).attr('y', d => d.y - d.r + NS_PX * s)
+      .attr('text-anchor', 'middle').attr('font-size', NS_PX * s)
+      .attr('fill', d => namespaceColor(d.data.ns))
+      .attr('stroke', 'var(--bg)').attr('stroke-width', 3 * s).attr('paint-order', 'stroke')
+      .text(d => namespaceLabel(d.data.ns) +
+        (d.r * k > 44 ? ' \u00b7 ' + fmtMetricShort(metric, nsMetricTotal(d, metric)) : ''));
+
+    // Name on one line, the metric under it, in the circles with room for two
+    // lines. Same reason as the treemap: a packing sized by gas that never
+    // prints a gas figure is a picture of a ranking, not of a quantity.
+    const val = d => fmtMetricShort(metric, metric.get(d.data.leaf));
+    const named = leaves.filter(d => d.r * k >= 7 && onScreen(d) &&
+      fits(d.data.leaf.name, NAME_PX, d.r * k));
+    const twoLine = new Set(named
+      .filter(d => d.r * k >= 22 && fits(val(d), VAL_PX, d.r * k))
+      .map(d => d.data.leaf.path));
+    leafLabels.selectAll('text.name').data(named, d => d.data.leaf.path).join('text')
+      .attr('class', 'name')
+      .attr('x', d => d.x)
+      .attr('y', d => d.y + (twoLine.has(d.data.leaf.path) ? -1 : 3.2) * s)
+      .attr('text-anchor', 'middle').attr('font-size', NAME_PX * s).attr('fill', 'var(--bg)')
+      .text(d => d.data.leaf.name);
+    leafLabels.selectAll('text.val').data(named.filter(d => twoLine.has(d.data.leaf.path)),
+      d => d.data.leaf.path).join('text')
+      .attr('class', 'val')
+      .attr('x', d => d.x).attr('y', d => d.y + 10 * s)
+      .attr('text-anchor', 'middle').attr('font-size', VAL_PX * s).attr('fill', 'var(--bg)')
+      .attr('fill-opacity', 0.75)
+      .text(val);
+  };
+
+  // Synchronously for the first paint, so the map is never on screen unlabelled
+  // for a frame, and against the live transform rather than a captured one
+  // because the surface may already have been panned before this repaint.
+  relabel(d3.zoomTransform(svg.node()));
+  // One relabel per frame at most. A wheel gesture delivers zoom events faster
+  // than the browser paints, and re-joining a thousand-leaf packing per event
+  // is work thrown away before anyone sees it.
+  let frame = null;
+  ctx.surface.onZoom = () => {
+    if (frame) return;
+    frame = requestAnimationFrame(() => { frame = null; relabel(d3.zoomTransform(svg.node())); });
+  };
 
   return () => svg.transition().duration(300).call(zoom.transform, d3.zoomIdentity);
 }

@@ -278,14 +278,20 @@ func (d *DB) MaxBlockHeight(network string) (int, error) {
 type CallInfo struct {
 	TxHash      string `json:"tx_hash"`
 	BlockHeight int    `json:"block_height"`
-	Caller      string `json:"caller"`
-	FuncName    string `json:"func_name"`
-	Success     bool   `json:"success"`
+	// BlockTime is nullable in the calls table and omitted when empty: rows
+	// written before the syncer knew a block's timestamp carry none. A
+	// consumer plotting these on a time axis has to say so rather than
+	// treating a missing stamp as the epoch.
+	BlockTime string `json:"block_time,omitempty"`
+	Caller    string `json:"caller"`
+	FuncName  string `json:"func_name"`
+	Success   bool   `json:"success"`
 }
 
 type MsgRunInfo struct {
 	TxHash      string `json:"tx_hash"`
 	BlockHeight int    `json:"block_height"`
+	BlockTime   string `json:"block_time,omitempty"`
 	Caller      string `json:"caller"`
 	Success     bool   `json:"success"`
 }
@@ -298,7 +304,7 @@ func (d *DB) GovDAORelatedMsgRuns(network, executorPkgPath string) ([]MsgRunInfo
 	defer d.mu.RUnlock()
 
 	rows, err := d.db.Query(`
-		SELECT tx_hash, block_height, caller, success
+		SELECT tx_hash, block_height, COALESCE(block_time, ''), caller, success
 		FROM msg_runs
 		WHERE source LIKE ? AND source LIKE ? AND network = ?
 		ORDER BY block_height ASC LIMIT 20
@@ -311,7 +317,7 @@ func (d *DB) GovDAORelatedMsgRuns(network, executorPkgPath string) ([]MsgRunInfo
 	var out []MsgRunInfo
 	for rows.Next() {
 		var r MsgRunInfo
-		if err := rows.Scan(&r.TxHash, &r.BlockHeight, &r.Caller, &r.Success); err != nil {
+		if err := rows.Scan(&r.TxHash, &r.BlockHeight, &r.BlockTime, &r.Caller, &r.Success); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

@@ -43,6 +43,9 @@ const PAGES = [
   ['transactions', '/txs'],
   ['blocks', '/blocks'],
   ['accounts', '/accounts'],
+  ['defi', '/defi'],
+  ['coins', '/coins'],
+  ['grc20', '/grc20'],
   ['validators', '/validators'],
   ['analytics', '/analytics'],
   ['gas', '/gas'],
@@ -55,6 +58,7 @@ const PAGES = [
   ['govdao-voters', '/govdao/voters'],
   ['govdao-options', '/govdao/options'],
   ['params', '/params'],
+  ['sanity', '/sanity'],
   // The rail folded to icons: the section children are gone there, and the
   // .pagenav strip is the only way through to them.
   ['rail-collapsed', '/gas'],
@@ -66,6 +70,12 @@ const PAGES = [
   ['realm-detail', `/realm/${HUB_ROUTE}`],
   ['realm-graph', `/realm/${HUB_ROUTE}?tab=graph`],
   ['realm-source', `/realm/${HUB_ROUTE}?tab=source`],
+  // The three tabs that carry a chart. Pinned to a network because the
+  // storage tab refuses the all-chains case by design, and a shot of that
+  // refusal would show none of what changed here.
+  ['realm-storage', `/realm/${HUB_ROUTE}?network=alpha&tab=storage`],
+  ['realm-calls', `/realm/${HUB_ROUTE}?network=alpha&tab=calls`],
+  ['realm-events', `/realm/${HUB_ROUTE}?network=alpha&tab=events`],
   ['address-detail', `/address/${BUSY_CALLER}`],
 ];
 

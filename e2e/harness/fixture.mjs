@@ -42,7 +42,18 @@ export const STORAGE_HOG_BYTES = 32 * 1024 * 1024;
 export const STORAGE_PAYER = 'g1storagepayer00000000000000000000000';
 export const STORAGE_DEPLOYER = 'g1hogdeployer000000000000000000000000';
 
-const TS = '2026-08-01T12:00:00Z';
+// Block times, one per height, rather than one constant for the whole fixture.
+//
+// A single timestamp is merely dull in a table and fatal in a chart: every
+// time series drawn over this fixture collapsed into a single bucket, so a
+// chart that bucketed correctly and one that did not drew the same picture and
+// no assertion could tell them apart. One minute per block, which is roughly
+// gno.land's own cadence, and the same cadence the fake indexer's blocks use.
+const GENESIS_MS = Date.UTC(2026, 7, 1, 12, 0, 0);
+export const BLOCK_MS = 60000;
+export function blockTime(height) {
+  return new Date(GENESIS_MS + height * BLOCK_MS).toISOString();
+}
 
 export function seed(dbPath) {
   const db = new DatabaseSync(dbPath);
@@ -71,9 +82,9 @@ export function seed(dbPath) {
 
     const addPackage = (network, path, creator, height, isRealm, txHash) => {
       const name = path.split('/').pop();
-      pkg.run(network, path, name, creator, height, TS, txHash || `tx-${network}-${height}`, isRealm ? 1 : 0);
+      pkg.run(network, path, name, creator, height, blockTime(height), txHash || `tx-${network}-${height}`, isRealm ? 1 : 0);
       file.run(network, path, `${name}.gno`, `package ${name}\n\nfunc Render(path string) string { return "${name}" }\n`);
-      tx.run(network, txHash || `tx-${network}-${height}`, height, TS, 100000, 200000, 1000);
+      tx.run(network, txHash || `tx-${network}-${height}`, height, blockTime(height), 100000, 200000, 1000);
     };
 
     let height = 100;
@@ -104,27 +115,27 @@ export function seed(dbPath) {
     for (let i = 0; i < 40; i++) {
       const network = NETWORKS[i % 2];
       const h = 1000 + i;
-      call.run(network, `call-${network}-${i}`, h, TS, BUSY_CALLER, HUB, 'Render');
-      tx.run(network, `call-${network}-${i}`, h, TS, 90000, 150000, 800);
+      call.run(network, `call-${network}-${i}`, h, blockTime(h), BUSY_CALLER, HUB, 'Render');
+      tx.run(network, `call-${network}-${i}`, h, blockTime(h), 90000, 150000, 800);
     }
     let pairHeight = 1500;
     for (const caller of PAIR_CALLERS) {
       for (const path of PAIRED_REALMS) {
-        call.run('alpha', `pair-${caller}-${pairHeight}`, pairHeight, TS, caller, path, 'Render');
-        tx.run('alpha', `pair-${caller}-${pairHeight}`, pairHeight, TS, 90000, 150000, 800);
+        call.run('alpha', `pair-${caller}-${pairHeight}`, pairHeight, blockTime(pairHeight), caller, path, 'Render');
+        tx.run('alpha', `pair-${caller}-${pairHeight}`, pairHeight, blockTime(pairHeight), 90000, 150000, 800);
         pairHeight++;
       }
     }
 
     for (let i = 0; i < 5; i++) {
-      run.run('alpha', `run-${i}`, 2000 + i, TS, BUSY_CALLER, 'package main\n\nfunc main() {}\n');
-      tx.run('alpha', `run-${i}`, 2000 + i, TS, 50000, 60000, 500);
+      run.run('alpha', `run-${i}`, 2000 + i, blockTime(2000 + i), BUSY_CALLER, 'package main\n\nfunc main() {}\n');
+      tx.run('alpha', `run-${i}`, 2000 + i, blockTime(2000 + i), 50000, 60000, 500);
     }
     for (let i = 0; i < 20; i++) {
       const network = NETWORKS[i % 2];
-      send.run(network, `send-${network}-${i}`, 3000 + i, TS, BUSY_CALLER,
+      send.run(network, `send-${network}-${i}`, 3000 + i, blockTime(3000 + i), BUSY_CALLER,
         'g1recipient00000000000000000000000000', '1000000ugnot');
-      tx.run(network, `send-${network}-${i}`, 3000 + i, TS, 40000, 50000, 400);
+      tx.run(network, `send-${network}-${i}`, 3000 + i, blockTime(3000 + i), 40000, 50000, 400);
     }
 
     // Storage events, the rows /storage is built on. Signed: an unlock
@@ -134,9 +145,9 @@ export function seed(dbPath) {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     const PRICE = 100;
     const store = (network, txHash, path, h, bytes, kind) => {
-      storage.run(network, txHash, 0, path, h, TS, kind || (bytes > 0 ? 'deposit' : 'unlock'),
+      storage.run(network, txHash, 0, path, h, blockTime(h), kind || (bytes > 0 ? 'deposit' : 'unlock'),
         bytes, bytes * PRICE);
-      tx.run(network, txHash, h, TS, 90000, 150000, 800);
+      tx.run(network, txHash, h, blockTime(h), 90000, 150000, 800);
     };
 
     // One realm holding most of the disk, deployed by its own creator: the
@@ -146,19 +157,19 @@ export function seed(dbPath) {
 
     // The hub grows under a MsgCall and then releases part of it: the "direct
     // caller pays" branch, plus a negative delta.
-    call.run('alpha', 'store-hub-grow', 4001, TS, STORAGE_PAYER, HUB, 'Write');
+    call.run('alpha', 'store-hub-grow', 4001, blockTime(4001), STORAGE_PAYER, HUB, 'Write');
     store('alpha', 'store-hub-grow', HUB, 4001, 6 * 1024 * 1024);
-    call.run('alpha', 'store-hub-free', 4002, TS, STORAGE_PAYER, HUB, 'Clear');
+    call.run('alpha', 'store-hub-free', 4002, blockTime(4002), STORAGE_PAYER, HUB, 'Clear');
     store('alpha', 'store-hub-free', HUB, 4002, -2 * 1024 * 1024);
 
     // A cross-realm write: the call targets one realm, another one grows. Only
     // the "any caller on this transaction" fallback can attribute it.
-    call.run('alpha', 'store-cross', 4003, TS, BUSY_CALLER, HUB, 'Poke');
+    call.run('alpha', 'store-cross', 4003, blockTime(4003), BUSY_CALLER, HUB, 'Poke');
     store('alpha', 'store-cross', PAIRED_REALMS[0], 4003, 3 * 1024 * 1024);
 
     // A MsgRun script that allocates, and an event with nothing at all to
     // attribute it to, which must show as unattributed rather than as somebody.
-    run.run('alpha', 'store-run', 4004, TS, BUSY_CALLER, 'package main\n');
+    run.run('alpha', 'store-run', 4004, blockTime(4004), BUSY_CALLER, 'package main\n');
     store('alpha', 'store-run', PAIRED_REALMS[1], 4004, 512 * 1024);
     store('alpha', 'store-orphan', 'gno.land/r/orphan/lost', 4005, 512 * 1024);
 

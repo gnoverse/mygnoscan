@@ -197,3 +197,67 @@ test('address groupings carry the identicon and the name in the legend', async (
   await chip.hover();
   await expect(page.locator('#storage-content .storage-readout .identicon')).toHaveCount(1);
 });
+
+// The ruler has to be able to say both things: the log scale is the only one
+// that fits 40 MiB and 100 GiB on one axis, and it is also the one that looks
+// like the chain is a third full. The toggle is the answer to that, so it has
+// to survive a reload like every other control on this page.
+test('the ruler scale toggles between log and max capacity, and stays in the URL', async ({ page }) => {
+  const seen = watch(page);
+  await page.goto('/storage?network=alpha');
+  await settle(page);
+
+  const ruler = page.locator('#storage-content .section').filter({ hasText: 'used against capacity' });
+  await expect(ruler).toContainText('log scale, one tick per factor of 1024');
+
+  await page.getByRole('button', { name: 'max capacity', exact: true }).click();
+  await settle(page);
+  await expect(page).toHaveURL(/scale=linear/);
+  await expect(ruler).toContainText('to scale: the whole bar is 100 GB');
+  await expect(ruler).not.toContainText('log scale, one tick');
+
+  await page.reload();
+  await settle(page);
+  await expect(ruler).toContainText('to scale: the whole bar is 100 GB');
+
+  // And back, which has to clear the parameter rather than leave scale=log in
+  // every link copied off this page.
+  await page.getByRole('button', { name: 'log', exact: true }).click();
+  await settle(page);
+  await expect(page).not.toHaveURL(/scale=/);
+  await expect(ruler).toContainText('log scale, one tick per factor of 1024');
+
+  expect(seen.jsErrors).toEqual([]);
+  expect(unexpected(seen.consoleErrors)).toEqual([]);
+});
+
+// The point of the second scale is that the fill is invisibly small, so the one
+// thing that would break it is a fill drawn at some readable width anyway.
+test('the max capacity scale draws the fill to scale, on a two-pixel floor', async ({ page }) => {
+  await page.goto('/storage?network=alpha&scale=linear');
+  await settle(page);
+
+  const track = page.locator('#storage-content .storage-ruler-track').first();
+  const fill = page.locator('#storage-content .storage-ruler-fill').first();
+  const trackBox = await track.boundingBox();
+  const fillBox = await fill.boundingBox();
+
+  // 40 MiB of 100 GiB is 0.039%, which is well under a pixel on any width this
+  // suite runs at, so the floor is what should be showing.
+  expect(STORAGE_TOTAL_BYTES / SUPPLY_CAPACITY_BYTES).toBeLessThan(0.001);
+  expect(fillBox.width).toBeGreaterThan(0);
+  expect(fillBox.width).toBeLessThanOrEqual(4);
+  expect(fillBox.width / trackBox.width).toBeLessThan(0.01);
+
+  // And the caption says so, with the measurement it actually took.
+  await expect(page.locator('#storage-content .section').filter({ hasText: 'used against capacity' }))
+    .toContainText(/of one pixel, so the fill is drawn at a floor of two/);
+
+  // The log scale, by contrast, fills a real part of the bar: that is the whole
+  // reason it needs the caption it carries.
+  await page.goto('/storage?network=alpha');
+  await settle(page);
+  const logFill = await page.locator('#storage-content .storage-ruler-fill').first().boundingBox();
+  const logTrack = await page.locator('#storage-content .storage-ruler-track').first().boundingBox();
+  expect(logFill.width / logTrack.width).toBeGreaterThan(0.1);
+});

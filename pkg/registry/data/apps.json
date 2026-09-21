@@ -10,20 +10,23 @@
       "path": "gno.land/r/gnoland/boards2/v0",
       "name": "Boards2",
       "category": "content",
-      "description": "The discussion forum: threads, reposts and replies, grouped into boards that are each self governed. A board is either invite only or open, and an open board asks a poster to hold a minimum GNOT balance (3000 by default) instead of an invite."
+      "description": "The discussion forum: threads, reposts and replies, grouped into boards that are each self governed. A board is either invite only or open, and an open board asks a poster to hold a minimum GNOT balance (3000 by default) instead of an invite.",
+      "checked": "2026-09-21"
     },
     {
       "path": "gno.land/r/g1ecsuj0q572jr0dhu29q9njtnmw03hyu7tyyvv6/kourt",
       "name": "Kourt",
       "category": "content",
       "description": "Fact staking: buy a court's own coin on a bonding curve, stake it YES or NO on a claim, and earn newly minted coin plus standing for being right. The stake itself is locked rather than transferred, so it always returns 1x; only an answer or dispute bond can lose money. This is the generation kourt.xyz serves, and it is one way: payments are burned and there is no redemption.",
-      "url": "https://kourt.xyz"
+      "url": "https://kourt.xyz",
+      "checked": "2026-09-21"
     },
     {
       "path": "gno.land/r/g1leu8d2vsplhehcfkjg50mwgdpxdkt8tztu95wr/kourtv3",
       "name": "Kourt v3",
       "category": "content",
-      "description": "The second live generation of the same design, founded two way: a tenth of each payment burns and the rest is held as that court's reserve, which Redeem pays out against pro rata. Court coin is transferable here, and wrappable for a DEX. Deployed 2026-09-19; kourt.xyz still serves the v1 realm above."
+      "description": "The second live generation of the same design, founded two way: a tenth of each payment burns and the rest is held as that court's reserve, which Redeem pays out against pro rata. Court coin is transferable here, and wrappable for a DEX. Deployed 2026-09-19; kourt.xyz still serves the v1 realm above.",
+      "checked": "2026-09-21"
     },
     {
       "path": "gno.land/r/gnoland/wugnot",
