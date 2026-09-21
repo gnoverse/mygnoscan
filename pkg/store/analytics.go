@@ -334,6 +334,14 @@ type BankSlice struct {
 	TotalVolume int64 `json:"total_volume"`
 }
 
+// bankTopRead is how long each of the three /coins leaderboards is. Ten fit on
+// one screen but answered almost nothing: the page is asked "who moves the
+// coin", and the tail is where the answer stops being the two faucets everybody
+// already knows. Kept well under bankTopRollupLimit so a per-network read is
+// never short.
+
+const bankTopRead = 50
+
 func (d *DB) GetBankStats(network string) (*BankStats, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -373,7 +381,7 @@ func (d *DB) GetBankStats(network string) (*BankStats, error) {
 		top := func(kind, order string) []AddrStat {
 			return d.queryAddrStats(`SELECT network, address, count, total FROM bank_top_rollup
 				WHERE kind = '` + kind + `' AND ` + d.networkFilter("network", network) + `
-				ORDER BY ` + order + ` DESC LIMIT 10`)
+				ORDER BY ` + order + ` DESC LIMIT ` + strconv.Itoa(bankTopRead))
 		}
 		s.TopSenders = top("sender", "count")
 		s.TopReceiversVol = top("receiver_volume", "total")
@@ -407,9 +415,10 @@ func (d *DB) GetBankStats(network string) (*BankStats, error) {
 	d.db.QueryRow(`SELECT COUNT(*) FROM (SELECT DISTINCT from_address, network FROM bank_sends` + nFilter + `)`).Scan(&s.UniqueSenders)
 	d.db.QueryRow(`SELECT COUNT(*) FROM (SELECT DISTINCT to_address, network FROM bank_sends` + nFilter + `)`).Scan(&s.UniqueReceivers)
 
-	s.TopSenders = d.queryAddrStats(`SELECT network, from_address, COUNT(*), ` + amountExpr + ` FROM bank_sends` + nFilter + ` GROUP BY network, from_address ORDER BY COUNT(*) DESC LIMIT 10`)
-	s.TopReceiversVol = d.queryAddrStats(`SELECT network, to_address, COUNT(*), ` + amountExpr + ` FROM bank_sends` + nFilter + ` GROUP BY network, to_address ORDER BY ` + amountExpr + ` DESC LIMIT 10`)
-	s.TopReceiversCnt = d.queryAddrStats(`SELECT network, to_address, COUNT(*), ` + amountExpr + ` FROM bank_sends` + nFilter + ` GROUP BY network, to_address ORDER BY COUNT(*) DESC LIMIT 10`)
+	lim := ` LIMIT ` + strconv.Itoa(bankTopRead)
+	s.TopSenders = d.queryAddrStats(`SELECT network, from_address, COUNT(*), ` + amountExpr + ` FROM bank_sends` + nFilter + ` GROUP BY network, from_address ORDER BY COUNT(*) DESC` + lim)
+	s.TopReceiversVol = d.queryAddrStats(`SELECT network, to_address, COUNT(*), ` + amountExpr + ` FROM bank_sends` + nFilter + ` GROUP BY network, to_address ORDER BY ` + amountExpr + ` DESC` + lim)
+	s.TopReceiversCnt = d.queryAddrStats(`SELECT network, to_address, COUNT(*), ` + amountExpr + ` FROM bank_sends` + nFilter + ` GROUP BY network, to_address ORDER BY COUNT(*) DESC` + lim)
 
 	return &s, nil
 }
@@ -574,14 +583,20 @@ func (d *DB) GetAnalytics(network string) (*Analytics, error) {
 		}
 	}
 
-	// Recent realms
-	recentQ := `SELECT network, path, name, creator, block_height, tx_hash, is_realm, num_files FROM packages WHERE is_realm = 1` + pFilter + ` ORDER BY block_height DESC LIMIT 10`
+	// Recent realms.
+	//
+	// `p`-aliased because pFilter is `AND p.network = ...`, written for the two
+	// joined queries above. Unaliased this was `no such column: p.network`, the
+	// error went into a `_`, and the handler answered `recent_realms: null` on
+	// every network of every deployment. Renaming the alias needs all three
+	// changed together.
+	recentQ := `SELECT p.network, p.path, p.name, p.creator, p.block_height, COALESCE(p.block_time, ''), p.tx_hash, p.is_realm, p.num_files FROM packages p WHERE p.is_realm = 1` + pFilter + ` ORDER BY p.block_height DESC LIMIT 10`
 	rows6, _ := d.db.Query(recentQ)
 	if rows6 != nil {
 		defer rows6.Close()
 		for rows6.Next() {
 			var p PackageInfo
-			rows6.Scan(&p.Network, &p.Path, &p.Name, &p.Creator, &p.BlockHeight, &p.TxHash, &p.IsRealm, &p.NumFiles)
+			rows6.Scan(&p.Network, &p.Path, &p.Name, &p.Creator, &p.BlockHeight, &p.BlockTime, &p.TxHash, &p.IsRealm, &p.NumFiles)
 			a.RecentRealms = append(a.RecentRealms, p)
 		}
 	}

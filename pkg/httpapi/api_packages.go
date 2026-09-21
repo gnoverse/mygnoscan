@@ -10,6 +10,7 @@ import (
 
 	"github.com/moul/mygnoscan/pkg/analyzer"
 	"github.com/moul/mygnoscan/pkg/config"
+	"github.com/moul/mygnoscan/pkg/gnoaddr"
 	"github.com/moul/mygnoscan/pkg/indexer"
 	"github.com/moul/mygnoscan/pkg/store"
 )
@@ -213,8 +214,10 @@ func (a *API) HandleRealm(w http.ResponseWriter, r *http.Request) {
 	// already imports store for DB access), the same reason ExportedFuncs
 	// stayed a plain []string instead of something structured.
 	JSONResponse(w, &realmDetailResponse{
-		PackageDetail: detail,
-		Symbols:       analyzer.ExtractSymbols(files),
+		PackageDetail:         detail,
+		Symbols:               analyzer.ExtractSymbols(files),
+		Address:               gnoaddr.Derive(detail.Path),
+		StorageDepositAddress: gnoaddr.DeriveStorageDeposit(detail.Path),
 	})
 }
 
@@ -224,6 +227,17 @@ func (a *API) HandleRealm(w http.ResponseWriter, r *http.Request) {
 type realmDetailResponse struct {
 	*store.PackageDetail
 	Symbols analyzer.PackageSymbols `json:"symbols"`
+	// Address and StorageDepositAddress are the two accounts every package owns.
+	//
+	// Derived rather than stored, and unconditional rather than reported only
+	// when funded: both are pure functions of the path, so they exist from the
+	// moment the package does. Half of mainnet's realms have never been sent a
+	// coin, and hiding the address behind a non-zero balance is what made the
+	// page read as though those realms had no account rather than an empty one.
+	//
+	// Empty for the paths that genuinely have no such account: see gnoaddr.
+	Address               string `json:"address,omitempty"`
+	StorageDepositAddress string `json:"storage_deposit_address,omitempty"`
 }
 
 // normalizeTxHash accepts a transaction hash in either encoding in circulation

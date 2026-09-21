@@ -84,6 +84,14 @@ export const TAB_EVENTS = [
   { height: 1030, type: 'Withdraw' },
 ];
 
+// Every one of those transactions also changed state, so the chain posted a
+// storage deposit for the realm on each: GetEventsByPkgPath filters on
+// pkg_path and not on typename, so they come back in the events payload too.
+// Verified against mainnet on 2026-09-22: every row of
+// /api/events/r/g1leu.../bubblerumble2 carries exactly this pair. The realm
+// page hides them, and it can only be shown to hide them if they are here.
+export const TAB_EVENT_STORAGE_BYTES = 2048;
+
 // One package lifecycle, so the realm page's info tab has a submission history
 // to draw and the fold of the old inert tab into info is assertable.
 //
@@ -192,6 +200,12 @@ function eventTxs(pkgPath) {
         type: e.type,
         pkg_path: pkgPath,
         attrs: [{ key: 'n', value: String(i) }],
+      }, {
+        __typename: 'StorageDepositEvent',
+        type: 'StorageDepositEvent',
+        bytes_delta: TAB_EVENT_STORAGE_BYTES,
+        fee_delta: { amount: TAB_EVENT_STORAGE_BYTES * STORAGE_PRICE, denom: 'ugnot' },
+        pkg_path: pkgPath,
       }],
     },
   })));

@@ -172,11 +172,22 @@ fact.
 |---|---|
 | `GET /api/realms` | list realms. `limit`, `offset` |
 | `GET /api/packages` | list all packages, realms and pure packages. `limit`, `offset` |
-| `GET /api/realm/{path...}` | detail for one package: metadata, source files, imports, dependents, callers, MsgRun references. `recent_calls` and `msgrun_refs` are the 50 most recent of each, and carry `block_time` where the syncer knew it (omitted otherwise, so a consumer plotting them on a time axis can say how many it left out) |
+| `GET /api/realm/{path...}` | detail for one package: metadata, source files, imports, dependents, callers, MsgRun references. `recent_calls` and `msgrun_refs` are the 50 most recent of each, and carry `block_time` where the syncer knew it (omitted otherwise, so a consumer plotting them on a time axis can say how many it left out). `address` and `storage_deposit_address` are the two accounts the package owns, derived from its path (see below) |
 | `GET /api/deps/{path...}` | dependency graph as `{path: [imports]}`. `dir=dependents` reverses direction |
 | `GET /api/realm/cousage/{path...}` | co-usage: what else the addresses that called this realm also called. `{path, network, window, callers, partners[], truncated}`, each partner `{path, shared, calls, callers}` ordered by `shared` descending. `window` = `all` (default), `90d`, `30d`, `7d`, `24h`, unknown values are a 400. `limit` defaults to 100, capped at 1000. **Resolves a single network** the same way the contracts map does |
 | `GET /api/storage/{path...}` | storage events for a package. **Requires `network`**: the figures are denominated amounts and blending chains would be meaningless |
-| `GET /api/events/{path...}` | events emitted by a package. Bounded: `limit` defaults to 200, capped at 2000. In all-networks mode it queries every chain and tags each row with its `network` |
+| `GET /api/events/{path...}` | every event tagged with a package's path. Bounded: `limit` defaults to 200, capped at 2000. In all-networks mode it queries every chain and tags each row with its `network`. Unlike `/api/allevents` this is not filtered to `GnoEvent`, so the chain's own `StorageDepositEvent` / `StorageUnlockEvent` for that path are included; the realm page hides those behind a toggle rather than dropping them here |
+
+### The two accounts a package owns
+
+`address` and `storage_deposit_address` are not read from anywhere. Both are
+hashes of the path (`pkgPath:<path>` and `pkgPath:<path>.storageDeposit`,
+SHA-256 truncated to 20 bytes, bech32 under `g`), so they exist from the moment
+the package does and are returned whether or not either has ever held a coin.
+The first is the realm's banker; the second holds the deposit locked against its
+bytes. A `gno.land/e/<g1...>/run` path is the exception: its address is embedded
+in the path rather than hashed, and it has no deposit account, so that field is
+omitted. See `pkg/gnoaddr`.
 
 ### Co-usage is not the contracts map's edge query at realm scale
 
@@ -432,7 +443,7 @@ answer it must never give.
 | `GET /api/tx/{hash}` | one transaction: messages, events, errors |
 | `GET /api/blocks` | recent blocks. `limit` |
 | `GET /api/block/{height}` | one block and its transactions. **Requires `network`**: a height alone does not identify a block across chains |
-| `GET /api/allevents` | recent events across all packages. `limit` defaults to 200, capped at 2000. Rows carry their `network` |
+| `GET /api/allevents` | recent `GnoEvent`s across all packages, and only those: the chain's storage bookkeeping is filtered out server-side. `limit` defaults to 200, capped at 2000. Rows carry their `network` |
 
 `total` on `/api/txs` is the size of the fetched window, **not** the chain's
 transaction count. It never could be: the indexer caps a result set at 10,000
@@ -648,7 +659,7 @@ All accept `days` and `granularity`.
 | `GET /api/timeseries/storage/realms` | realms that have storage data, for populating a selector |
 | `GET /api/timeseries/storage/deltas` | on-chain storage movement per bucket: `deposited`, `released` (negative, as the chain emits it) and `net`, from `storage_events`. `realm=<path>` scopes it to one realm. Distinct from `/api/timeseries/storage`, which counts source bytes added and only ever grows |
 | `GET /api/storage/consumers` | realms ranked by absolute net storage change. `topN` (default 20, max 100). Keyed by `(network, pkg_path)`, so a realm deployed on two chains is two rows |
-| `GET /api/storage/map` | the whole /storage page in one response. **Requires `network`**: capacity is a chain's own supply divided by its own price per byte, so there is no total across several. Returns `capacity` (`price_per_byte`, `price_source` = `chain` or `default`, `supply_ugnot`, `capacity_bytes`, `used_bytes`, `locked_ugnot`, `realms`), `cells` (one row per realm with `namespace`, `deployer`, `bytes`, `fee`, `first_height`, `last_height`), `payers` (per account, attributed to whoever the chain charged) and `cells_truncated`. `limit` (default 2000, max 5000) caps `cells` only, and `capacity.used_bytes` is always the full total. `capacity_bytes` and the supply are **decimal strings**, not numbers: 1.3e15 ugnot is past what JSON can carry exactly |
+| `GET /api/storage/map` | the whole /storage page in one response. **Requires `network`**: capacity is a chain's own supply divided by its own price per byte, so there is no total across several. Returns `capacity` (`price_per_byte`, `price_source` = `chain` or `default`, `supply_ugnot`, `capacity_bytes`, `used_bytes`, `locked_ugnot`, `realms`), `cells` (one row per realm with `namespace`, `deployer`, `bytes`, `fee`, `first_height`, `first_time`, `last_height`), `payers` (per account, attributed to whoever the chain charged) and `cells_truncated`. `limit` (default 2000, max 5000) caps `cells` only, and `capacity.used_bytes` is always the full total. `capacity_bytes` and the supply are **decimal strings**, not numbers: 1.3e15 ugnot is past what JSON can carry exactly |
 | `GET /api/graph/transfers` | value-transfer graph for one chain. **Requires `network`**: values are denominated and an address is a different actor per chain. `topN` (default 100, max 1000), `min_value`, or `ego=<address>` for that address's 1-hop neighbourhood, which ignores `topN`. Returns `{nodes: [{id, volume}], edges: [{from, to, value, tx_count}]}`. There is no `hops` parameter — `ego` is fixed at 1 hop |
 | `GET /api/graph/callers` | caller-to-realm graph for one chain. **Requires `network`**, same reason. `topN` (default 200, max 1000), `min_calls`. Returns `{nodes: [{id, type, calls}], edges: [{caller, pkg_path, calls}]}` where `type` is `"caller"` or `"realm"`. No `ego` support yet |
 | `GET /api/graph/active` | the package paths that saw activity in a window: called at least once, or deployed inside it. `window` = `all` (default), `90d`, `30d`, `7d`, `24h`; unknown windows are a 400. Returns `{network, window, paths: []}`, sorted. **Does not require `network`**, unlike the two above: it returns paths rather than per-chain quantities, so an absent network is the union over every configured chain, which is what `/api/deps` answers for too. Backs the activity filter on the dependency graph, which is drawn from `dependencies` and has no call data of its own |

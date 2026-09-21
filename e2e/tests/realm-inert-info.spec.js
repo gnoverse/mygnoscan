@@ -22,7 +22,11 @@ test('the realm page has no inert tab, and draws its lifecycle in info', async (
   await page.goto(`/realm/${HUB_ROUTE}?network=alpha`);
   await settle(page);
 
-  await expect(page.locator('#realm-tabs .tab')).toHaveText(TABS);
+  // By data-tab rather than by text: the strip now appends a count to a tab
+  // that has one, so "which tabs, in which order" is no longer the same
+  // question as "what do they read".
+  expect(await page.locator('#realm-tabs .tab').evaluateAll(
+    els => els.map(e => e.dataset.tab))).toEqual(TABS);
   expect(await page.locator('#tab-inert').count()).toBe(0);
 
   const info = page.locator('#tab-info');
