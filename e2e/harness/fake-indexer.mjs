@@ -84,6 +84,18 @@ export const TAB_EVENTS = [
   { height: 1030, type: 'Withdraw' },
 ];
 
+// One package lifecycle, so the realm page's info tab has a submission history
+// to draw and the fold of the old inert tab into info is assertable.
+//
+// Only the GraphQL half of /api/inert/package reaches this. The status half is
+// a live vm/qpkgmeta_json read, and no RPC is configured here, so the handler
+// reports "absent" and the info table's submission row is correctly left out
+// — which is the other half of what the test checks.
+export const LIFECYCLE_SUBMITTED_HEIGHT = 1001;
+export const LIFECYCLE_ENABLED_HEIGHT = 1004;
+export const LIFECYCLE_CREATOR = 'g1lifecyclecreator000000000000000000';
+export const LIFECYCLE_APPROVER = 'g1lifecycleapprover00000000000000000';
+
 // The real indexer answers every one of these ordered heightAndIndex DESC, so
 // the fake does too: a consumer that forgot to sort chronologically before a
 // running total draws the realm shrinking as it grew, and only a
@@ -128,6 +140,42 @@ function gasTxs(pkgPath) {
     success: e.success,
     messages: [{ value: { __typename: 'MsgCall', func: e.func, pkg_path: pkgPath } }],
   })));
+}
+
+function lifecycleTxs(pkgPath) {
+  return desc([
+    {
+      hash: 'lifecycle-submitted',
+      block_height: LIFECYCLE_SUBMITTED_HEIGHT,
+      gas_used: 0,
+      gas_wanted: 0,
+      gas_fee: { amount: 0, denom: 'ugnot' },
+      success: true,
+      messages: [{
+        value: {
+          __typename: 'MsgAddPackage',
+          creator: LIFECYCLE_CREATOR,
+          package: { name: 'core', path: pkgPath, files: [] },
+        },
+      }],
+    },
+    {
+      hash: 'lifecycle-enabled',
+      block_height: LIFECYCLE_ENABLED_HEIGHT,
+      gas_used: 0,
+      gas_wanted: 0,
+      gas_fee: { amount: 0, denom: 'ugnot' },
+      success: true,
+      messages: [{
+        value: {
+          __typename: 'MsgEnablePackage',
+          pkg_path: pkgPath,
+          approver: LIFECYCLE_APPROVER,
+          pkg_height: LIFECYCLE_SUBMITTED_HEIGHT,
+        },
+      }],
+    },
+  ]);
 }
 
 function eventTxs(pkgPath) {
@@ -204,6 +252,11 @@ export function startFakeIndexer() {
         data = { getTransactions: askedPath(query) === TAB_REALM ? gasTxs(TAB_REALM) : [] };
       } else if (query.includes('GnoEvent: { pkg_path: { eq:')) {
         data = { getTransactions: askedPath(query) === TAB_REALM ? eventTxs(TAB_REALM) : [] };
+      } else if (query.includes('MsgEnablePackage: { pkg_path: { eq:')) {
+        // One path's lifecycle, not the chain-wide enable/reject feed behind
+        // /api/inert/history: that one asks for `MsgEnablePackage: {}` with no
+        // path filter, so it still falls through to the empty answer below.
+        data = { getTransactions: askedPath(query) === TAB_REALM ? lifecycleTxs(TAB_REALM) : [] };
       } else if (query.includes('getTransactions')) {
         data = { getTransactions: [] };
       } else if (query.includes('getSupply')) {
