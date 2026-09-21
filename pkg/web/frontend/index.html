@@ -1288,7 +1288,14 @@ function fmtCoins(s) {
     return m ? fmtNum(Number(m[1])) + ' ' + m[2] : part.trim();
   }).join(', ');
 }
+// The exact count, with a human-sized reading beside it. The reading steps
+// through MB and GB rather than stopping at KB: mainnet's largest realm holds
+// 10.6 million bytes, which the KB-only version rendered as "10380.59 KB", a
+// figure nobody can size at a glance and the one place this formatter was
+// worse than no formatter at all.
 function fmtBytes(n) {
+  if (n >= 1073741824) return fmtNum(n) + ' bytes (' + (n / 1073741824).toFixed(2) + ' GB)';
+  if (n >= 1048576) return fmtNum(n) + ' bytes (' + (n / 1048576).toFixed(2) + ' MB)';
   if (n >= 1024) return fmtNum(n) + ' bytes (' + (n / 1024).toFixed(2) + ' KB)';
   return fmtNum(n) + ' bytes';
 }
