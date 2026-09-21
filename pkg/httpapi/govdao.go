@@ -22,6 +22,13 @@ import (
 // enough that a page load never waits on more than one live RPC round trip.
 const govDAOCacheTTL = 30 * time.Second
 
+// govDAOListAuditLimit caps how many proposals the overview page audits in
+// full. gov/dao has eight proposals on mainnet, so this is not a limit
+// anyone hits today; it exists so a chain that accumulates hundreds does not
+// turn one list page into hundreds of ABCI round trips. The newest IDs win,
+// since those are the ones with a vote still open.
+const govDAOListAuditLimit = 25
+
 // fetchGovDAORender runs a vm/qrender ABCI query and returns the realm's
 // rendered markdown for the given query string (e.g. "gno.land/r/gov/dao:4").
 func fetchGovDAORender(ctx context.Context, rpcURL, query string) (string, error) {
@@ -122,6 +129,16 @@ type GovDAOProposalSummary struct {
 	CreatedTime        string   `json:"created_time,omitempty"`
 	LastActivityHeight int      `json:"last_activity_height,omitempty"`
 	LastActivityTime   string   `json:"last_activity_time,omitempty"`
+
+	// Audit summary, so a proposal with an inconsistency is visible in the
+	// list rather than only to whoever opens it. Audited separates "the
+	// audit ran and found nothing" from "the audit did not run", which an
+	// empty pair of counts cannot: the second must never read as a clean
+	// bill of health.
+	Audited   bool   `json:"audited"`
+	Alerts    int    `json:"alerts,omitempty"`
+	Warnings  int    `json:"warnings,omitempty"`
+	TopSignal string `json:"top_signal,omitempty"`
 }
 
 // GovDAOMember is one row of the memberstore's member list.
@@ -164,7 +181,18 @@ type GovDAOProposalDetail struct {
 	Votes           []GovDAOVote        `json:"votes"`
 	RelatedCalls    []GovDAORelatedCall `json:"related_calls"`
 	RelatedMsgRuns  []store.MsgRunInfo  `json:"related_msgruns"`
-	Errors          []string            `json:"errors,omitempty"`
+
+	// Provenance and audit, all filled by AuditGovDAOProposal from data
+	// gov/dao's own render does not carry. See govdao_audit.go for why each
+	// of these exists; in short, the render says what a proposal is called
+	// and who voted, and nothing about what it would do or who wrote it.
+	Code         *ProposalCode         `json:"code,omitempty"`
+	ParamChanges []ProposalParamChange `json:"param_changes,omitempty"`
+	Addresses    []ProposalAddress     `json:"addresses,omitempty"`
+	Timeline     []ProposalStep        `json:"timeline,omitempty"`
+	Signals      []ProposalSignal      `json:"signals,omitempty"`
+
+	Errors []string `json:"errors,omitempty"`
 }
 
 // GovDAOVote is one recorded vote. gov/dao's own render never gives a

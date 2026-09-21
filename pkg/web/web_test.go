@@ -3,10 +3,14 @@ package web
 import (
 	"bytes"
 	"compress/gzip"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"sort"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -103,4 +107,50 @@ func TestIndexIsCompressedAndRevalidatable(t *testing.T) {
 			t.Errorf("deep link got %d and %d bytes", rec.Code, rec.Body.Len())
 		}
 	})
+}
+
+// Two `function` declarations sharing a name are not an error in JavaScript.
+// The later one wins, silently, for every caller including the earlier one's
+// own — so a function written for one page starts answering calls made by
+// another, with a different signature, and the first symptom is a TypeError
+// deep inside unrelated rendering.
+//
+// That is not hypothetical. `paramValueEl` was written twice: once by the
+// /params page for a parameter object, once by the govdao proposal diff for a
+// bare string. Each pull request was green on its own base. They merged eight
+// seconds apart, and /params was dead on main from that moment, because the
+// diff's one-argument version was hoisted over the page's own.
+//
+// Nothing else catches this. The frontend is one file in one global scope with
+// no build step, no module boundary and no bundler to warn; the Go tests never
+// execute the JavaScript, and a browser test only finds it if a test happens to
+// exercise the losing caller. So the guard is textual and deliberately cheap.
+//
+// `const` and `let` need no guard: redeclaring either is a SyntaxError, which
+// takes the whole script down and cannot reach main unnoticed.
+func TestFrontendHasNoDuplicateTopLevelDeclarations(t *testing.T) {
+	index, err := Index()
+	if err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+
+	// Anchored at column zero on purpose: that is what "top level" means in
+	// this file, and it keeps every nested closure and method out.
+	decl := regexp.MustCompile(`(?m)^(?:function|var)\s+([A-Za-z0-9_$]+)`)
+	seen := map[string]int{}
+	for _, m := range decl.FindAllSubmatch(index, -1) {
+		seen[string(m[1])]++
+	}
+
+	var dupes []string
+	for name, n := range seen {
+		if n > 1 {
+			dupes = append(dupes, fmt.Sprintf("%s (%d declarations)", name, n))
+		}
+	}
+	sort.Strings(dupes)
+	if len(dupes) > 0 {
+		t.Errorf("declared more than once at the top level of index.html, so the last one silently wins everywhere: %s",
+			strings.Join(dupes, ", "))
+	}
 }
