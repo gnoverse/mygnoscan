@@ -14,10 +14,14 @@ type selectionSet struct {
 	contentRaw bool
 }
 
+// fileSelections is how many message fragments select package files:
+// MsgAddPackage and MsgRun.
+const fileSelections = 2
+
 func selectionSets() []selectionSet {
 	return []selectionSet{
 		{"light", txFieldsLight, false, false},
-		{"sync", txFieldsSync, true, false},
+		{"bodies", txFieldsBodies, true, false},
 		{"full", txFields, true, true},
 	}
 }
@@ -33,12 +37,19 @@ func TestSelectionSets_ContentRawOnlyOnTheSingleTransactionPath(t *testing.T) {
 				t.Errorf("content_raw present = %v, want %v", got, tc.contentRaw)
 			}
 
-			if got := strings.Contains(tc.fields, "files { name body }"); got != tc.fileBodies {
-				t.Errorf("file bodies present = %v, want %v", got, tc.fileBodies)
+			// Both file selections, MsgAddPackage's and MsgRun's, or a set
+			// that grew bodies on one of them would pass a Contains check
+			// while fetching half of what its caller reads.
+			want := 0
+			if tc.fileBodies {
+				want = fileSelections
+			}
+			if got := strings.Count(tc.fields, "files { name body }"); got != want {
+				t.Errorf("file body selections = %d, want %d", got, want)
 			}
 
-			if !tc.fileBodies && !strings.Contains(tc.fields, "files { name }") {
-				t.Error("a set without file bodies must still select file names")
+			if !tc.fileBodies && strings.Count(tc.fields, "files { name }") != fileSelections {
+				t.Errorf("a set without file bodies must still select all %d file name sets", fileSelections)
 			}
 		})
 	}
@@ -86,6 +97,24 @@ func TestTrimFields_StripsBothGroupsFromEverySet(t *testing.T) {
 					t.Errorf("trimmed set still contains %q", unwanted)
 				}
 			}
+		})
+	}
+}
+
+// The sets render through fmt.Sprintf. go vet catches a stray verb in the
+// template while it is a constant, but not an escaped one: %% renders to a
+// literal percent, which is not valid GraphQL and fails at runtime on every
+// call, with an indexer error that says nothing about a format string.
+func TestSelectionSets_RenderWithoutALeftoverVerb(t *testing.T) {
+	for _, tc := range selectionSets() {
+		t.Run(tc.name, func(t *testing.T) {
+			i := strings.Index(tc.fields, "%")
+			if i < 0 {
+				return
+			}
+
+			end := min(i+24, len(tc.fields))
+			t.Errorf("rendered set carries a percent at offset %d: %q", i, tc.fields[i:end])
 		})
 	}
 }
