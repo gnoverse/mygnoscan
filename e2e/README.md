@@ -23,6 +23,14 @@ npx playwright test --headed              # watch it happen
 npx playwright test --debug               # step through it
 ```
 
+The harness binds `127.0.0.1:8899`. If something else on the machine already
+has it (a `gnodev`, another checkout's suite), shift the whole run rather than
+killing whatever is there:
+
+```bash
+E2E_PORT_OFFSET=137 npx playwright test
+```
+
 A failure leaves a screenshot, a video and a trace under `test-results/`:
 
 ```bash

@@ -53,6 +53,15 @@ Break these and things go wrong in ways that are hard to see:
   filled is how you get two of everything) and must not `await` (an await
   reopens the interleaving that rebuilding exists to close). Kick long work off
   in an async IIFE with a generation guard, the way `renderTsCharts` does.
+- **The nav is described twice, and a test keeps the two identical.** The rail
+  is static HTML in `index.html`; the `NAV` table in the script beside it drives
+  the `.pagenav` section strips and `route()`'s active-state bookkeeping. The
+  rail is not generated from the table because the two CDN `<script>` tags at
+  the bottom of the file are render-blocking, and a generated rail would make
+  the whole navigation hostage to a reachable CDN. Add an entry to both, in the
+  same order, or `TestRailMatchesNavTable` fails. Left to drift it fails
+  silently: a rail entry missing from the table navigates fine and simply has no
+  section strip.
 - **Never commit the built binary.** `mygnoscan` and `*.db` are gitignored.
 
 ## Conventions
