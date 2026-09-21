@@ -150,3 +150,85 @@ test('the graph svg is present and non-trivial', async ({ page }) => {
   await expect(svg).toBeVisible();
   expect(await svg.locator('line').count()).toBeGreaterThan(0);
 });
+
+// --- The activity filter ---------------------------------------------------
+//
+// Same control as the contracts map, over a graph that has no call data of its
+// own: `dependencies` records what a package imports and knows nothing about
+// whether the chain still runs it, so this one asks /api/graph/active for the
+// set and filters against it.
+
+// Nodes, not circles. A realm is drawn as a diamond and only a pure package
+// gets a circle, so counting circles counts p/ packages — and the whole point
+// of this filter is that they are exactly what it removes first. Counting them
+// alone reports a working filter as zero nodes.
+const GRAPH_NODES = `${GRAPH_SVG} circle, ${GRAPH_SVG} polygon`;
+
+function nodeCount(page) {
+  return page.locator(GRAPH_NODES).count();
+}
+
+test('the activity filter narrows the graph to what has been called', async ({ page }) => {
+  const seen = watch(page);
+  await openGraph(page);
+  const all = await nodeCount(page);
+  expect(all).toBeGreaterThan(10);
+
+  await page.getByRole('button', { name: 'ever', exact: true }).click();
+  await page.waitForFunction(
+    total => document.querySelectorAll(
+      '#dep-graph > svg circle, #dep-graph > svg polygon').length < total,
+    all, { timeout: 20_000 });
+
+  const active = await nodeCount(page);
+  // The hub is the centre and is never dropped, and two of its sixty
+  // dependents are the realms the paired callers use. Everything else in this
+  // fixture has never been called, including all twelve p/common packages.
+  expect(active).toBeGreaterThan(0);
+  expect(active).toBeLessThan(all / 2);
+  expect(seen.jsErrors).toEqual([]);
+});
+
+test('the graph says how much it is hiding', async ({ page }) => {
+  await openGraph(page);
+  const all = await nodeCount(page);
+
+  await page.getByRole('button', { name: 'ever', exact: true }).click();
+  await expect(page.locator('#dep-graph-controls')).toContainText(`of ${all} shown`);
+});
+
+test('following the imports brings the packages behind the active realms back', async ({ page }) => {
+  const seen = watch(page);
+  await openGraph(page);
+
+  await page.getByRole('button', { name: 'ever', exact: true }).click();
+  await page.waitForFunction(
+    () => document.querySelectorAll(
+      '#dep-graph > svg circle, #dep-graph > svg polygon').length > 0, null, { timeout: 20_000 });
+  const direct = await nodeCount(page);
+
+  // The three survivors are all realms, so the graph at this point holds no
+  // packages at all. The closure is what brings the twelve p/common packages
+  // the hub is built on back.
+  await page.getByRole('button', { name: '+ imports', exact: true }).click();
+  await page.waitForFunction(
+    before => document.querySelectorAll(
+      '#dep-graph > svg circle, #dep-graph > svg polygon').length > before,
+    direct, { timeout: 20_000 });
+
+  expect(await nodeCount(page)).toBeGreaterThan(direct);
+  expect(await page.locator(`${GRAPH_SVG} circle`).count()).toBeGreaterThan(0);
+  expect(seen.jsErrors).toEqual([]);
+});
+
+test('a window with nothing in it says so instead of drawing one lone dot', async ({ page }) => {
+  await openGraph(page);
+  // Every fixture row is months old, so nothing at all is active in a day, and
+  // the graph falls to the centre alone.
+  await page.getByRole('button', { name: '24h', exact: true }).click();
+  await expect(page.locator('#dep-graph')).toContainText('activity in the last 24h');
+
+  await page.getByRole('button', { name: 'off', exact: true }).click();
+  await page.waitForSelector(GRAPH_SVG, { timeout: 20_000 });
+  expect(await nodeCount(page)).toBeGreaterThan(10);
+});

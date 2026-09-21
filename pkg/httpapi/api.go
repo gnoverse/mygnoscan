@@ -860,6 +860,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/storage/map", a.HandleStorageMap)
 	mux.HandleFunc("GET /api/graph/transfers", a.HandleGraphTransfers)
 	mux.HandleFunc("GET /api/graph/callers", a.HandleGraphCallers)
+	mux.HandleFunc("GET /api/graph/active", a.HandleGraphActive)
 	mux.HandleFunc("GET /api/sanity/overview", a.HandleSanityOverview)
 	mux.HandleFunc("GET /api/timeseries/health", a.HandleTimeSeriesHealth)
 	mux.HandleFunc("GET /api/timeseries/active-addresses", a.HandleTimeSeriesActiveAddresses)

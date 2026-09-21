@@ -225,7 +225,10 @@ func TestParseContractWindow(t *testing.T) {
 		{"24h", true, false},
 		{"7d", true, false},
 		{"30d", true, false},
-		{"90d", false, true},
+		// 90d was rejected until the activity filter needed the map's window
+		// vocabulary to match the dashboards', which have always offered it.
+		{"90d", true, false},
+		{"1y", false, true},
 		{"nonsense", false, true},
 	}
 	for _, tt := range tests {

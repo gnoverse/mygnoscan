@@ -35,6 +35,10 @@ const PAGES = [
   // zero, so a shot of that metric cannot show whether the cells print their
   // value at all, which is half of what this view now draws.
   ['contracts-treemap', '/contracts?view=treemap&edges=none&metric=calls'],
+  // The activity filter, in the view it exists for: the import graph with the
+  // closure on. Without '+ imports' this is a handful of dots, which is the
+  // regression a shot of the default view would never catch.
+  ['contracts-active', '/contracts?view=bundled&edges=imports&metric=importers&flow=0&active=1&deps=1'],
   ['apps', '/apps'],
   ['transactions', '/txs'],
   ['blocks', '/blocks'],
