@@ -1758,12 +1758,24 @@ function shortAge(t) {
   if (s < 31536000) return Math.floor(s / 2592000) + 'mo';
   return Math.floor(s / 31536000) + 'y';
 }
-// A block height linked to its block, with its age in short form beside it —
-// "added" and "last call" both show this shape.
+// A block height linked to its block, with its age in parentheses beside it.
+//
+// This is the only shape a height should ever be drawn in: a bare number
+// answers "which block" and leaves "when" to a page load, which is the
+// question a reader of a table actually had. Anywhere a column already
+// carries its own timestamp (/blocks, the home tx feed) the age is redundant
+// and that column stays as it is.
+//
+// data-age lets the ticker below refresh it, so a tab left open does not keep
+// claiming a block is 2m old an hour later.
 function blockWithAge(height, time, network) {
   const span = el('span');
   span.appendChild(blockLink(height, network));
-  if (time) span.appendChild(el('span', { className: 'block-ctx' }, ' ' + shortAge(time)));
+  if (time) {
+    const age = el('span', { className: 'block-ctx' }, ' (' + shortAge(time) + ')');
+    age.setAttribute('data-age', time);
+    span.appendChild(age);
+  }
   return span;
 }
 function timeEl(t) {
@@ -1776,6 +1788,10 @@ setInterval(() => {
   document.querySelectorAll('[data-time]').forEach(s => {
     const t = s.getAttribute('data-time');
     if (t) s.textContent = timeAgo(t);
+  });
+  document.querySelectorAll('[data-age]').forEach(s => {
+    const t = s.getAttribute('data-age');
+    if (t) s.textContent = ' (' + shortAge(t) + ')';
   });
 }, 10000);
 function blockLabel(h) { return h === 0 ? 'genesis' : fmtNum(h); }
@@ -3717,7 +3733,7 @@ async function loadHome() {
           el('td', {}, usageLink(r, 'imports')),
           el('td', {}, fmtNum(r.calls || 0)),
           el('td', {}, addrLink(r.creator, r.network)),
-          el('td', {}, blockLink(r.block_height, r.network))
+          el('td', {}, blockWithAge(r.block_height, r.block_time, r.network))
         ));
       }
       const txBody = clear('recent-txs');
@@ -3839,7 +3855,7 @@ async function loadPackages(page) {
           el('td', {}, countCell(p.imports)),
           el('td', {}, countCell(p.unique_users)),
           el('td', {}, countCell(p.gas_used)),
-          el('td', {}, blockLink(p.block_height, p.network)), el('td', {}, String(p.num_files))
+          el('td', {}, blockWithAge(p.block_height, p.block_time, p.network)), el('td', {}, String(p.num_files))
         ));
       }
       pager(section, page, data.total || 0, loadPackages);
@@ -3981,7 +3997,7 @@ async function loadInertQueue() {
         eBody.appendChild(el('tr', {},
           el('td', {}, realmPathEl(e.pkg_path)),
           el('td', {}, addrLink(e.actor)),
-          el('td', {}, e.submitted_height ? blockLink(e.submitted_height) : '–'),
+          el('td', {}, e.submitted_height ? blockWithAge(e.submitted_height, e.submitted_time) : '–'),
           el('td', {}, blockWithAge(e.block_height, e.block_time)),
           el('td', {}, e.wait_seconds ? fmtDuration(e.wait_seconds) : (e.wait_blocks ? fmtNum(e.wait_blocks) + ' blocks' : '–')),
           el('td', {}, txLink(e.tx_hash, e.block_height, null, { showBlock: false }))
@@ -4159,7 +4175,7 @@ function renderTxRows(data) {
     list.appendChild(liveTagRow(netRow(tx.network,
       el('td', {}, txLink(tx.hash, tx.block_height, tx.network, { showBlock: false })),
       el('td', {}, signerCell(tx, tx.network)),
-      el('td', {}, blockLink(tx.block_height, tx.network)),
+      el('td', {}, blockWithAge(tx.block_height, tx.block_time, tx.network)),
       el('td', {}, type),
       el('td', {}, detail),
       el('td', {}, statusBadge(tx.success))
@@ -5395,7 +5411,7 @@ async function loadAnalytics() {
         rcbody.appendChild(netRow(r.network,
           el('td', {}, realmPathEl(r.path, r.network)),
           el('td', {}, addrLink(r.creator, r.network)),
-          el('td', {}, blockLink(r.block_height, r.network))
+          el('td', {}, blockWithAge(r.block_height, r.block_time, r.network))
         ));
       }
       rctbl.appendChild(rcbody); recentCol.appendChild(rctbl); grid.appendChild(recentCol);
@@ -6647,13 +6663,17 @@ function storageRuns(data, groupKey) {
     const key = g.key(r);
     let run = by.get(key);
     if (!run) {
-      run = { key, bytes: 0, fee: 0, members: 0, first: Infinity, last: 0, sample: r };
+      run = { key, bytes: 0, fee: 0, members: 0, first: Infinity, firstTime: '', last: 0, sample: r };
       by.set(key, run);
     }
     run.bytes += r.bytes || 0;
     run.fee += r.fee || 0;
     run.members += g.from === 'payers' ? (r.realms || 0) : 1;
-    if (r.first_height) run.first = Math.min(run.first, r.first_height);
+    // firstTime tracks the height it belongs to, not the earliest timestamp
+    // seen: a row synced before storage_events carried block_time has a height
+    // and no time, and taking the two from different rows would date the run
+    // wrong.
+    if (r.first_height && r.first_height < run.first) { run.first = r.first_height; run.firstTime = r.first_time || ''; }
     if (r.last_height) run.last = Math.max(run.last, r.last_height);
   }
   const runs = [...by.values()];
@@ -7053,7 +7073,7 @@ function storageTable(runs, used, capacity, network) {
     row.appendChild(el('td', {}, fmtGnotAmount(run.fee)));
     row.appendChild(el('td', {}, fmtNum(run.members)));
     if (g.from !== 'payers') {
-      row.appendChild(el('td', {}, Number.isFinite(run.first) ? blockLink(run.first, network) : '-'));
+      row.appendChild(el('td', {}, Number.isFinite(run.first) ? blockWithAge(run.first, run.firstTime, network) : '-'));
     }
     body.appendChild(row);
   }
@@ -7478,6 +7498,7 @@ async function loadEvents() {
         for (const ev of (item.events || [])) {
           _eventsFlat.push({
             block: item.block_height,
+            time: item.block_time,
             tx: item.tx_hash,
             success: item.success,
             network: item.network,
@@ -7587,7 +7608,7 @@ function renderEventRows() {
       : el('span', {}, '-');
     if (ev.pkg_path) realmLink.setAttribute('data-hl', 'realm:' + ev.pkg_path);
     list.appendChild(netRow(ev.network,
-      el('td', {}, blockLink(ev.block, ev.network)),
+      el('td', {}, blockWithAge(ev.block, ev.time, ev.network)),
       el('td', {}, realmLink),
       el('td', {}, badge('realm', ev.type)),
       el('td', {}, attrStr ? linkify(attrStr) : el('span', {}, '-')),
@@ -8583,7 +8604,7 @@ async function loadGovDAODetail(id) {
             el('td', {}, txLink(r.tx_hash, r.block_height, null, { showBlock: false })),
             el('td', {}, addrLink(r.caller)),
             el('td', {}, statusBadge(r.success)),
-            el('td', {}, blockLink(r.block_height))
+            el('td', {}, blockWithAge(r.block_height, r.block_time))
           ));
         }
         rmTbl.appendChild(rmBody);
@@ -9170,9 +9191,9 @@ async function loadRealmDetail(path, initialTab) {
       // Merged table
       const allRows = [];
       // Deploy tx
-      allRows.push({ type: 'deploy', block: detail.block_height, caller: detail.creator, detail: 'MsgAddPackage', success: true, tx: detail.tx_hash });
-      for (const c of directCalls) allRows.push({ type: 'call', block: c.block_height, caller: c.caller, detail: c.func_name, success: c.success, tx: c.tx_hash });
-      for (const r of msgRuns) allRows.push({ type: 'run', block: r.block_height, caller: r.caller, detail: 'MsgRun', success: r.success, tx: r.tx_hash });
+      allRows.push({ type: 'deploy', block: detail.block_height, time: detail.block_time, caller: detail.creator, detail: 'MsgAddPackage', success: true, tx: detail.tx_hash });
+      for (const c of directCalls) allRows.push({ type: 'call', block: c.block_height, time: c.block_time, caller: c.caller, detail: c.func_name, success: c.success, tx: c.tx_hash });
+      for (const r of msgRuns) allRows.push({ type: 'run', block: r.block_height, time: r.block_time, caller: r.caller, detail: 'MsgRun', success: r.success, tx: r.tx_hash });
       allRows.sort((a, b) => b.block - a.block);
       if (allRows.length) {
         const callTbl = el('table');
@@ -9189,7 +9210,7 @@ async function loadRealmDetail(path, initialTab) {
             el('td', { className: 'truncate' }, addrLink(row.caller)),
             el('td', {}, row.type === 'call' ? funcSpan(row.detail) : row.detail),
             el('td', {}, statusBadge(row.success)),
-            spanTd(callSpans, i, blockLink(row.block))
+            spanTd(callSpans, i, blockWithAge(row.block, row.time))
           ));
         });
         callTbl.appendChild(callBody); calls.appendChild(callTbl);
@@ -9955,7 +9976,7 @@ async function loadAddressDetail(addr) {
         const label = (data.total > txs.length) ? 'oldest here' : 'first seen';
         const fbEl = el('div', { className: 'stat' }, el('span', { className: 'label' }, label));
         const fbVal = el('span', { className: 'value' });
-        fbVal.appendChild(blockLink(data.oldest_on_page, data.transactions?.[0]?.network));
+        fbVal.appendChild(blockWithAge(data.oldest_on_page, data.oldest_on_page_time, data.transactions?.[0]?.network));
         fbEl.appendChild(fbVal);
         statsBar.appendChild(fbEl);
       }
@@ -11591,7 +11612,7 @@ function onLiveTx(tx) {
     const tr = el('tr', { className: 'live-new' },
       el('td', {}, txLink(tx.hash, tx.block_height, tx.network, { showBlock: false })),
       el('td', {}, signerCell(tx, tx.network)),
-      el('td', {}, blockLink(tx.block_height, tx.network)),
+      el('td', {}, blockWithAge(tx.block_height, tx.block_time || new Date().toISOString(), tx.network)),
       el('td', {}, typeBadge(msg?.value?.__typename, msg)),
       el('td', {}, txDetailEl(msg)),
       el('td', {}, statusBadge(tx.success))
