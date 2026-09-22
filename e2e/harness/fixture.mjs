@@ -18,6 +18,67 @@ export const SHARED_PACKAGES = 12;
 
 export const HUB_CREATOR = 'g1hubcreator00000000000000000000000000';
 
+// A pure package with a symbol table worth an outline. Kept beside the source
+// it is generated from so the two cannot drift: the counts below are what the
+// analyzer extracts from LIBRARY_SOURCE, and a test asserts they still are.
+export const LIBRARY = 'gno.land/p/hub/toolkit';
+export const LIBRARY_ROUTE = 'p/hub/toolkit';
+export const LIBRARY_SOURCE = `// Package toolkit is the fixture's large package.
+package toolkit
+
+// MaxDepth bounds a walk.
+const MaxDepth = 32
+
+// MinDepth is the floor.
+const MinDepth = 1
+
+// Registry is the package-level store.
+var Registry = map[string]int{}
+
+// Fallback is used when a lookup misses.
+var Fallback = "none"
+
+// Tree is a sorted map.
+type Tree struct{ root *node }
+
+// Get returns the value at key.
+func (t *Tree) Get(key string) (int, bool) { return 0, false }
+
+// Set writes a value.
+func (t *Tree) Set(key string, value int) {}
+
+// Size counts the entries.
+func (t *Tree) Size() int { return 0 }
+
+// Iterator walks a Tree.
+type Iterator struct{ pos int }
+
+// Next advances the iterator.
+func (i *Iterator) Next() bool { return false }
+
+// Reset returns the iterator to the start.
+func (i *Iterator) Reset() {}
+
+// NewTree builds an empty Tree.
+func NewTree() *Tree { return nil }
+
+// Walk visits every entry.
+func Walk(t *Tree, cb func(string, int)) {}
+
+// Merge combines two trees.
+func Merge(a *Tree, b *Tree) *Tree { return nil }
+
+// Validate reports whether a tree is well formed.
+func Validate(t *Tree) error { return nil }
+
+func unexportedHelper() {}
+`;
+
+// What LIBRARY_SOURCE declares: 2 consts, 2 vars, 2 types with 3 and 2 methods,
+// 4 exported functions and 1 unexported one.
+export const LIBRARY_EXPORTED_SYMBOLS = 2 + 2 + 2 + 3 + 2 + 4;
+export const LIBRARY_UNEXPORTED_SYMBOLS = 1;
+
 // The hub's own account, as pkg/gnoaddr derives it from HUB. Pinned rather than
 // computed because the fixture is JavaScript and the derivation is Go: if the
 // two ever disagree, the defi tab's assertions are what says so.
@@ -133,17 +194,29 @@ export function seed(dbPath) {
       (network, tx_hash, block_height, block_time, gas_used, gas_wanted, gas_fee, success)
       VALUES (?, ?, ?, ?, ?, ?, ?, 1)`);
 
-    const addPackage = (network, path, creator, height, isRealm, txHash) => {
+    const addPackage = (network, path, creator, height, isRealm, txHash, body) => {
       const name = path.split('/').pop();
       const hash = txHash || `tx-${network}-${height}`;
       pkg.run(network, path, name, creator, height, blockTime(height), hash, isRealm ? 1 : 0);
       sub.run(network, hash, path, name, creator, height, blockTime(height), isRealm ? 1 : 0);
-      file.run(network, path, `${name}.gno`, `package ${name}\n\nfunc Render(path string) string { return "${name}" }\n`);
+      file.run(network, path, `${name}.gno`,
+        body || `package ${name}\n\nfunc Render(path string) string { return "${name}" }\n`);
       tx.run(network, txHash || `tx-${network}-${height}`, height, blockTime(height), 100000, 200000, 1000);
     };
 
     let height = 100;
     addPackage('alpha', HUB, HUB_CREATOR, height++, true);
+
+    // A package big enough to need navigating.
+    //
+    // Every other package here declares one function, which is a docs page
+    // that fits on a screen and therefore exercises none of the machinery that
+    // exists for the ones that do not. On mainnet r/gnoswap/staker declares 444
+    // symbols across 25 types. This is the small version of that problem: each
+    // kind of declaration, methods on two different types, and an unexported
+    // one, so the outline, the nesting and the unexported toggle all have
+    // something to act on.
+    addPackage('alpha', LIBRARY, HUB_CREATOR, height++, false, null, LIBRARY_SOURCE);
 
     const shared = [];
     for (let i = 0; i < SHARED_PACKAGES; i++) {

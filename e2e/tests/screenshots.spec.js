@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import { test } from '@playwright/test';
 
-import { HUB_ROUTE, BUSY_CALLER } from '../harness/fixture.mjs';
+import { HUB_ROUTE, BUSY_CALLER, LIBRARY_ROUTE } from '../harness/fixture.mjs';
 import { settle } from './helpers.js';
 
 // Screenshots for review, captured against the seeded fixture.
@@ -74,6 +74,9 @@ const PAGES = [
   ['realm-detail', `/realm/${HUB_ROUTE}`],
   ['realm-deps', `/realm/${HUB_ROUTE}?tab=deps`],
   ['realm-source', `/realm/${HUB_ROUTE}?tab=source`],
+  // The two-column layout: a package with enough declarations to need a symbol
+  // outline beside them. `realm-docs` above is the one-column case.
+  ['realm-docs-outline', `/realm/${LIBRARY_ROUTE}?tab=docs`],
   // The docs tab, and the same tab arrived at from symbol search: ?sym= opens
   // the collapse if it has to and highlights the declaration, which is the
   // half of symbol search that is not a JSON response.
