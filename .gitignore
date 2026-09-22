@@ -30,6 +30,11 @@ mygnoscan.db
 # local dev server config (machine-specific paths)
 .claude/launch.json
 
+# Per-machine agent settings. Not shared: the contents are one developer's
+# allow-list, naming their own paths and their own hosts, and a repo is the
+# wrong place to keep either.
+.claude/settings.local.json
+
 # browser tests: dependencies and per-run output. e2e/package-lock.json is
 # committed, everything else here is generated.
 e2e/node_modules/

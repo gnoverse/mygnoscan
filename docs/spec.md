@@ -116,6 +116,51 @@ everything newer than the build, so the newest bucket does not lag the timer.
   realm anyone can write to is paid for by its users and its deployer may hold
   almost none of its bytes. `/api/storage/map` reports both attributions
   separately rather than conflating them.
+- **The URL is the view, filters included.** Every control that narrows a page
+  writes itself into the query string, and every page seeds its controls from it
+  on entry. The full map is in [The URL is the view](#the-url-is-the-view) below.
+
+## The URL is the view
+
+A filter is part of what the reader is looking at, so it belongs in the URL and
+not only in a module variable. Every control that narrows a page writes itself
+into the query string with `replaceState`, and every page seeds its controls from
+the query string on entry, so a reload and a pasted link both land on what the
+sender was actually looking at rather than on the unfiltered page the sender was
+deliberately not reading.
+
+| Page | Parameters |
+|---|---|
+| everywhere | `network`, and `embed=1` |
+| any table of 8 rows or more | `f.<table>`, `s.<table>` (add `:desc` for descending) |
+| `/packages`, `/accounts` | `pv`, `av` |
+| `/dashboards` | `section`, `window` |
+| `/txs` | `type`, `status`, `page` |
+| `/blocks` | `txs` |
+| `/events` | `type`, `page` |
+| `/govdao/proposals` | `status` |
+| `/validators` | `failed` |
+| realm detail | `tab`, and `file` / `line` / `fn` on the source tab |
+| realm `?tab=calls` | `window`, `kind`, `status`, `func`, `caller`, `page`, `by` |
+| realm `?tab=events` | `storage` |
+
+Four rules hold across all of them:
+
+- **Values are the reader's words, not the wire's.** `?type=deploy`, never
+  `?type=MsgAddPackage`.
+- **A default is deleted rather than spelled out**, so an untouched page has a
+  clean URL and every parameter present means something was chosen.
+- **`replaceState`, never `pushState`.** A filter box fires per keystroke, and a
+  history entry per character makes the back button useless. Back leaves the page
+  rather than undoing the filter.
+- **`navigate()` pushes a bare path**, so a real navigation drops all of them and
+  nothing has to clean up after itself.
+
+A table is keyed on the slug of its header row, not on a positional index:
+several pages draw their second table only when it has rows, so an index means a
+different table depending on data the link's recipient may not have. The
+contracts map and the realm dependency graph are the two surfaces not covered:
+their controls are a viewport plus half a dozen knobs rather than a list filter.
 
 ## Non-goals
 
