@@ -127,12 +127,20 @@ export const LIFECYCLE_ENABLED_HEIGHT = 1004;
 export const LIFECYCLE_CREATOR = 'g1lifecyclecreator000000000000000000';
 export const LIFECYCLE_APPROVER = 'g1lifecycleapprover00000000000000000';
 
-// The real indexer answers every one of these ordered heightAndIndex DESC, so
-// the fake does too: a consumer that forgot to sort chronologically before a
-// running total draws the realm shrinking as it grew, and only a
-// newest-first fixture catches it.
+// Most of these are asked ordered heightAndIndex DESC, so the fake answers them
+// that way: a consumer that forgot to sort chronologically before a running
+// total draws the realm shrinking as it grew, and only a newest-first fixture
+// catches it.
 function desc(rows) {
   return rows.slice().reverse();
+}
+
+// The coin-flow walk is the exception: it asks ASC, because that is the only
+// direction a block-height cursor can resume in. Honouring the order the query
+// actually asked for is what keeps the fixture from quietly proving the
+// opposite of what production does.
+function ordered(rows, query) {
+  return query.includes('ASC') ? rows.slice() : desc(rows);
 }
 
 function storageTxs(pkgPath) {
@@ -161,8 +169,8 @@ function storageTxs(pkgPath) {
   })));
 }
 
-function transferTxs() {
-  return desc(TAB_TRANSFERS.map((t, i) => ({
+function transferTxs(query) {
+  return ordered(TAB_TRANSFERS.map((t, i) => ({
     hash: `transfer-${i}`,
     block_height: t.height,
     success: true,
@@ -174,7 +182,7 @@ function transferTxs() {
         coins: `${t.amount}ugnot`,
       }],
     },
-  })));
+  })), query);
 }
 
 function gasTxs(pkgPath) {
@@ -312,7 +320,7 @@ export function startFakeIndexer() {
       } else if (query.includes('TransferEvent: {')) {
         data = {
           getTransactions: askedTransferAddress(query) === TAB_REALM_ADDRESS
-            ? transferTxs() : [],
+            ? transferTxs(query) : [],
         };
       } else if (query.includes('StorageDepositEvent: { pkg_path: { eq:')) {
         data = { getTransactions: askedPath(query) === TAB_REALM ? storageTxs(TAB_REALM) : [] };
