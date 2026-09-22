@@ -103,7 +103,7 @@ func (d *DB) refreshRollups() error {
 			    ON t.network = c.network AND t.tx_hash = c.tx_hash AND ` + scope + `
 			UNION
 			SELECT DISTINCT t.network, p.path, t.tx_hash, t.gas_used, t.gas_fee
-			  FROM packages p JOIN transactions t
+			  FROM package_submissions p JOIN transactions t
 			    ON t.network = p.network AND t.tx_hash = p.tx_hash AND ` + scope + `
 			UNION
 			SELECT DISTINCT t.network, 'MsgRun by ' || m.caller, t.tx_hash, t.gas_used, t.gas_fee
@@ -139,7 +139,7 @@ func (d *DB) refreshRollups() error {
 			    ON t.network = c.network AND t.tx_hash = c.tx_hash AND ` + scope + `
 			UNION
 			SELECT DISTINCT t.network, p.creator AS caller, t.tx_hash, t.gas_used, t.gas_fee
-			  FROM packages p JOIN transactions t
+			  FROM package_submissions p JOIN transactions t
 			    ON t.network = p.network AND t.tx_hash = p.tx_hash AND ` + scope + `
 			UNION
 			SELECT DISTINCT t.network, m.caller AS caller, t.tx_hash, t.gas_used, t.gas_fee
