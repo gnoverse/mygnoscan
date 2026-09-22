@@ -85,8 +85,13 @@ func keysOf(m map[string]store.SymbolRow) []string {
 // SQL, which TestSourceKeyMatchesTheSQLExpression is about.
 func TestSourceKeyOf(t *testing.T) {
 	a := []indexer.MemFile{{Name: "a.gno", Body: "package a"}, {Name: "b.gno", Body: "package a\n"}}
-	if SourceKeyOf("tx1", 10, a) != SourceKeyOf("tx1", 10, a) {
-		t.Fatal("not deterministic")
+	// Deterministic across two separately built slices, not across two calls
+	// with the same variable: the key is compared against one SQL built
+	// somewhere else, so what matters is that equal inputs give equal output,
+	// not that the function is pure.
+	same := []indexer.MemFile{{Name: "a.gno", Body: "package a"}, {Name: "b.gno", Body: "package a\n"}}
+	if SourceKeyOf("tx1", 10, a) != SourceKeyOf("tx1", 10, same) {
+		t.Fatal("equal inputs gave different keys")
 	}
 	// A redeploy is a new transaction, which is what actually changes a body.
 	if SourceKeyOf("tx1", 10, a) == SourceKeyOf("tx2", 11, a) {
