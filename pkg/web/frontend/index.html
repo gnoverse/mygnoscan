@@ -9317,7 +9317,7 @@ function renderRealmUsage(host, detail, usage, gen) {
     const sec = el('div', { className: 'usage-section usage-callers' });
     const title = el('div', { className: 'section-title' }, 'callers');
     title.appendChild(el('span', { style: { color: 'var(--fg2)', fontWeight: 'normal' } },
-      ' · ' + fmtNum(s.unique_callers || 0) + ' addresses, click one to filter everything by it'));
+      ' · ' + fmtNum(s.unique_callers || 0) + ' addresses · "only" narrows every figure on this tab to one of them'));
     sec.appendChild(title);
     if (usage.callers_truncated) {
       sec.appendChild(el('div', { className: 'usage-note' },
@@ -9365,7 +9365,8 @@ function renderRealmUsage(host, detail, usage, gen) {
     const sec = el('div', { className: 'usage-section usage-functions' });
     const title = el('div', { className: 'section-title' }, 'functions');
     title.appendChild(el('span', { style: { color: 'var(--fg2)', fontWeight: 'normal' } },
-      ' · what has actually been called, click one to filter'));
+      ' · what anyone has actually called, of ' +
+      fmtNum((detail.exported_funcs || []).length) + ' exported · "only" filters by one'));
     sec.appendChild(title);
     const tbl = el('table');
     tbl.appendChild(el('thead', {}, el('tr', {},
