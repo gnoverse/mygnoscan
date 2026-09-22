@@ -71,7 +71,7 @@ for (const [name, path] of ROUTES) {
 
 // The realm page's tabs are separate render paths behind one route, and a
 // broken one is invisible until someone clicks it.
-const TABS = ['info', 'source', 'calls', 'events', 'storage', 'deps'];
+const TABS = ['info', 'source', 'state', 'calls', 'events', 'storage', 'deps'];
 
 for (const tab of TABS) {
   test(`realm ${tab} tab renders without errors`, async ({ page }) => {
