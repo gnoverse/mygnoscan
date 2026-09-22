@@ -2,10 +2,18 @@ package indexer
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 )
+
+// coinFlowMaxTransactions bounds one CoinFlows walk.
+//
+// The walk itself is unbounded by construction, so something has to say when a
+// realm's history stops being a page and starts being a dataset. At 5 legs per
+// transaction this is a quarter of a million rows, which no browser wants and
+// no reader asked for; past it the answer is the local ledger, not a longer
+// round trip to the indexer.
+const coinFlowMaxTransactions = 50000
 
 // CoinFlows fetches every successful transaction that moved native coins to or
 // from one of the given addresses, newest first.
@@ -24,10 +32,13 @@ import (
 // approximate. For an address that *signs* transactions the same sum is short by
 // exactly its gas spend, so do not reuse this as an account-page balance.
 //
-// Returns `truncated` when the indexer capped the result set. The rows are the
-// newest ones in that case, because the order is DESC: a caller anchoring on the
-// live balance and walking backwards still gets a correct recent history, and
-// only loses how far back it reaches.
+// ⚠️ This used to be one unpaginated query, which put a hard ceiling of
+// ElementCap (10,000) transactions on any realm's whole history, and a realm
+// that crossed it did not fail, it returned its newest 10,000 and reported
+// `truncated`, at which point the derived total silently stopped matching
+// bank/balances. r/…/bubblerumble3 reached 28% of that ceiling in its first day.
+// So it walks the height cursor instead, the same way the syncer does, and
+// `truncated` now means only that a realm is past coinFlowMaxTransactions.
 func (c *Client) CoinFlows(ctx context.Context, addrs []string) (txs []Transaction, truncated bool, err error) {
 	clauses := make([]string, 0, len(addrs)*2)
 	for _, a := range addrs {
@@ -45,31 +56,59 @@ func (c *Client) CoinFlows(ctx context.Context, addrs []string) (txs []Transacti
 	// success: true rather than filtering afterwards. A reverted transaction
 	// still reports its events, and counting those would invent transfers that
 	// never settled.
-	q := fmt.Sprintf(`{
-		getTransactions(
-			where: {
-				success: { eq: true }
-				response: { events: { _or: [%s] } }
-			}
-			order: { heightAndIndex: DESC }
-		) {
-			hash
-			block_height
-			response { events { __typename ... on TransferEvent { from to coins } } }
-		}
-	}`, strings.Join(clauses, " "))
+	where := fmt.Sprintf(`
+		success: { eq: true }
+		response: { events: { _or: [%s] } }`, strings.Join(clauses, " "))
+	const fields = `
+		hash
+		block_height
+		response { events { __typename ... on TransferEvent { from to coins } } }`
 
-	var result struct {
-		GetTransactions []Transaction `json:"getTransactions"`
-	}
-	if err := c.query(ctx, q, nil, &result); err != nil {
-		// A cap is partial data plus an error, not an empty answer. Reporting
-		// the rows and saying they are short beats reporting nothing: the page
-		// can still draw the recent history and say where it stops.
-		if errors.Is(err, ErrQueryTooLarge) {
-			return result.GetTransactions, true, nil
+	// Ascending, because that is the only direction a height cursor can resume
+	// in: the indexer's cap keeps the *first* rows it iterated, so ASC hands
+	// back the contiguous next page above the cursor and DESC would hand back
+	// the newest rows and orphan everything between. transactionsFromHeight
+	// owns that detail, including dropping the trailing height a cap may have
+	// cut in half.
+	var cursor *int
+	for {
+		page, capped, err := c.transactionsFromHeight(ctx, cursor, where, fields)
+		if err != nil {
+			// Partial data plus an error beats nothing: the page can still draw
+			// the history it has and say where it stops. The one case
+			// transactionsFromHeight cannot resume from is a single block
+			// holding more than ElementCap matching transactions, and it
+			// reports that as an error rather than an empty page.
+			if len(txs) > 0 {
+				return reversed(txs), true, nil
+			}
+			return nil, false, err
 		}
-		return nil, false, err
+		txs = append(txs, page...)
+		if !capped {
+			break
+		}
+		if len(txs) >= coinFlowMaxTransactions {
+			return reversed(txs), true, nil
+		}
+		if len(page) == 0 {
+			break
+		}
+		next := page[len(page)-1].BlockHeight
+		cursor = &next
 	}
-	return result.GetTransactions, false, nil
+	// Newest first, which is what every caller renders and what the display
+	// sort then assumes. Reversing an ascending walk keeps the within-block
+	// ordering the old DESC query produced, where a later transaction in a
+	// block sorts above an earlier one.
+	return reversed(txs), false, nil
+}
+
+// reversed flips a slice in place and returns it. The walk collects ascending
+// because the cursor demands it; every reader wants descending.
+func reversed(txs []Transaction) []Transaction {
+	for i, j := 0, len(txs)-1; i < j; i, j = i+1, j-1 {
+		txs[i], txs[j] = txs[j], txs[i]
+	}
+	return txs
 }
