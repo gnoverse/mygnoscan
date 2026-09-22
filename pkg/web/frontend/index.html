@@ -12494,7 +12494,7 @@ function loadRealmDefi(path, detail, gen) {
   (async () => {
     let d;
     try {
-      d = await api('realm/defi/' + path.replace('gno.land/', ''));
+      d = await api(defiPath(path, 0));
     } catch (err) {
       if (gen !== _detailGen) return;
       into.textContent = '';
@@ -12503,11 +12503,22 @@ function loadRealmDefi(path, detail, gen) {
     }
     if (gen !== _detailGen) return;
     into.textContent = '';
-    renderRealmDefi(into, d);
+    renderRealmDefi(into, d, path);
   })();
 }
 
-function renderRealmDefi(into, d) {
+// DEFI_FLOWS_PAGE matches coinFlowMaxLimit in pkg/httpapi/defi.go, the largest
+// page the endpoint will serve. Asking for the maximum rather than the default
+// means every realm on mainnet today arrives whole in the first request, and
+// only a realm past 5,000 transfer legs ever sees the pager below.
+const DEFI_FLOWS_PAGE = 5000;
+
+function defiPath(path, offset) {
+  return 'realm/defi/' + path.replace('gno.land/', '')
+    + '?flows_limit=' + DEFI_FLOWS_PAGE + (offset ? '&flows_offset=' + offset : '');
+}
+
+function renderRealmDefi(into, d, path) {
   const flows = d.flows || [];
   const banker = flows.filter(f => f.account === 'banker');
   const tokens = d.tokens || [];
@@ -12572,8 +12583,8 @@ function renderRealmDefi(into, d) {
     const before = live - shown;
     const held = runningTotal(received.map((v, i) => v + sent[i])).map(v => v + before);
     const chartNote = [fmtNum(asc.length) + ' transfers plotted'];
-    if (d.flows_total > d.flows_shown) {
-      chartNote.push('the ' + fmtNum(d.flows_shown) + ' most recent of ' + fmtNum(d.flows_total));
+    if (d.flows_total > flows.length) {
+      chartNote.push('the ' + fmtNum(flows.length) + ' most recent of ' + fmtNum(d.flows_total));
     }
     if (buckets.dropped) chartNote.push(fmtNum(buckets.dropped) + ' with no block time, not plotted');
     chartNote.push('the line ends at ' + fmtGnotAmount(live));
@@ -12622,15 +12633,54 @@ function renderRealmDefi(into, d) {
     }
     tbl.appendChild(body);
     into.appendChild(tbl);
-    if (d.flows_total > d.flows_shown) {
-      into.appendChild(el('div', { className: 'detail-chart-note' },
-        'showing the ' + fmtNum(d.flows_shown) + ' most recent of ' + fmtNum(d.flows_total)
-        + '. The balance above is computed over all of them.'));
+    if (d.flows_total > flows.length) {
+      into.appendChild(defiFlowsPagerEl(into, d, path, flows));
     }
   } else {
     into.appendChild(el('div', { style: { color: 'var(--fg2)', padding: '12px 0' } },
       'no coin has ever moved through this realm’s account'));
   }
+}
+
+// defiFlowsPagerEl says how much of the history is on screen, and loads the rest.
+//
+// The page used to stop at 500 legs with a sentence explaining that it had, and
+// no way to see the other 2,595, which on a realm one day old is most of what a
+// reader came for. Each press appends the next page and redraws, so the chart
+// grows with the table rather than staying pinned to the first window.
+//
+// ⚠️ Every page costs the server a full walk of the realm's history from the
+// indexer, because the flows are derived per request rather than stored. That is
+// what the local coin_transfers ledger is for; until it exists, pressing this
+// twice on a large realm is two full derivations, and the response cache is the
+// only thing keeping it from being two per reader.
+function defiFlowsPagerEl(into, d, path, flows) {
+  const remaining = d.flows_total - flows.length;
+  const wrap = el('div', { className: 'detail-chart-note' });
+  wrap.appendChild(el('span', {},
+    'showing the ' + fmtNum(flows.length) + ' most recent of ' + fmtNum(d.flows_total)
+    + '. The balance above is computed over all of them. '));
+  const btn = el('button', { className: 'pager-btn', style: { marginLeft: '8px' } },
+    'load ' + fmtNum(Math.min(remaining, DEFI_FLOWS_PAGE)) + ' older');
+  btn.onclick = async () => {
+    btn.disabled = true;
+    btn.textContent = 'loading…';
+    let next;
+    try {
+      next = await api(defiPath(path, flows.length));
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = 'could not load: ' + err.message;
+      return;
+    }
+    // Merged into the object the caller holds, so a third press continues from
+    // where the second stopped instead of re-fetching the same offset.
+    d.flows = flows.concat(next.flows || []);
+    into.textContent = '';
+    renderRealmDefi(into, d, path);
+  };
+  wrap.appendChild(btn);
+  return wrap;
 }
 
 // defiTokensEl is the GRC20 half: what the contract holds in tokens, and the
