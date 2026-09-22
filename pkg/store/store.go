@@ -177,7 +177,14 @@ type AddrStat struct {
 	Total   int64  `json:"total"`
 }
 
-const amountExpr = `COALESCE(SUM(CAST(REPLACE(REPLACE(amount, 'ugnot', ''), '"', '') AS INTEGER)), 0)`
+// amountExpr sums ugnot over bank_sends.
+//
+// It reads the column parsed at write time rather than the coin string. The
+// string cannot be summed in SQL: there is no split, so the denom had to come
+// out with REPLACE, and CAST(... AS INTEGER) takes the leading numeric prefix
+// and silently discards the rest rather than erroring. That read "5foo,100ugnot"
+// as 5 and "5foo" as 5, neither of which is a ugnot figure at all.
+const amountExpr = `COALESCE(SUM(ugnot_amount), 0)`
 
 type ImportRank struct {
 	Network string `json:"network,omitempty"`

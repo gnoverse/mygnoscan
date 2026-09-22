@@ -21,6 +21,23 @@ func TestParseUgnot(t *testing.T) {
 		{"5foocoin,100ugnot", 100},
 		{"5foocoin", 0},
 		{"not a balance", 0},
+		// A denom that merely starts with the native one is a different coin.
+		// Pattern-matching `\d+ugnot` out of the string counted this as 5.
+		{"5ugnotx", 0},
+		{"5wugnot", 0},
+		{"1000000ugnot,5wugnot", 1000000},
+		// A list may name the same denom twice; stopping at the first match
+		// reported half of it.
+		{"100ugnot,100ugnot", 200},
+		{"ugnot", 0},
+		{"100", 0},
+		// A JSON-encoded coin arriving unwrapped, and a list with spaces.
+		{`"100ugnot"`, 100},
+		{" 100ugnot , 5foocoin ", 100},
+		// Past int64. A malformed row rather than a large one, so it is
+		// skipped rather than guessed at.
+		{"999999999999999999999ugnot", 0},
+		{"999999999999999999999ugnot,7ugnot", 7},
 	}
 	for _, tt := range tests {
 		if got := ParseUgnot(tt.in); got != tt.want {
