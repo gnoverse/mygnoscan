@@ -310,7 +310,7 @@ func TestRealmCountsAgreeAcrossEndpoints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetStats: %v", err)
 	}
-	directory, err := db.CountPackages("", true)
+	directory, err := db.CountPackages("", PackageFilter{Kind: KindRealm})
 	if err != nil {
 		t.Fatalf("CountPackages: %v", err)
 	}
@@ -338,11 +338,11 @@ func TestRealmCountsAgreeAcrossEndpoints(t *testing.T) {
 func TestRealmListMatchesItsTotal(t *testing.T) {
 	db := newScopedDB(t)
 
-	total, err := db.CountPackages("", true)
+	total, err := db.CountPackages("", PackageFilter{Kind: KindRealm})
 	if err != nil {
 		t.Fatalf("CountPackages: %v", err)
 	}
-	rows, err := db.ListPackages("", true, 100, 0, "")
+	rows, err := db.ListPackages("", PackageFilter{Kind: KindRealm}, 100, 0, "")
 	if err != nil {
 		t.Fatalf("ListPackages: %v", err)
 	}

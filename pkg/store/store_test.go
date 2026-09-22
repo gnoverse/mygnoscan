@@ -2275,7 +2275,7 @@ func TestListPackagesUniqueUsers(t *testing.T) {
 		t.Fatalf("seed call: %v", err)
 	}
 
-	rows, err := db.ListPackages("gnoland1", true, 100, 0, "users")
+	rows, err := db.ListPackages("gnoland1", PackageFilter{Kind: KindRealm}, 100, 0, "users")
 	if err != nil {
 		t.Fatalf("ListPackages: %v", err)
 	}
@@ -2312,7 +2312,7 @@ func TestListPackagesLastCallSort(t *testing.T) {
 		t.Fatalf("seed call: %v", err)
 	}
 
-	rows, err := db.ListPackages("gnoland1", true, 100, 0, "last_call")
+	rows, err := db.ListPackages("gnoland1", PackageFilter{Kind: KindRealm}, 100, 0, "last_call")
 	if err != nil {
 		t.Fatalf("ListPackages: %v", err)
 	}
@@ -2361,7 +2361,7 @@ func TestAddressTransactionsIncludesEveryPackageResubmission(t *testing.T) {
 
 	// packages itself only ever kept the latest — confirms the premise, not
 	// just the fix.
-	pkgs, err := db.ListPackages("gnoland1", true, 100, 0, "newest")
+	pkgs, err := db.ListPackages("gnoland1", PackageFilter{Kind: KindRealm}, 100, 0, "newest")
 	if err != nil {
 		t.Fatalf("ListPackages: %v", err)
 	}
@@ -2610,7 +2610,7 @@ func TestRealmListCarriesGasAndSortsByIt(t *testing.T) {
 		}
 	}
 
-	rows, err := db.ListPackages("alpha", true, 100, 0, "gas")
+	rows, err := db.ListPackages("alpha", PackageFilter{Kind: KindRealm}, 100, 0, "gas")
 	if err != nil {
 		t.Fatalf("ListPackages: %v", err)
 	}
@@ -2657,7 +2657,7 @@ func TestStorageEventsRollUpPerRealmNetOfUnlocks(t *testing.T) {
 		t.Fatalf("RefreshRollups: %v", err)
 	}
 
-	rows, err := db.ListPackages("alpha", true, 100, 0, "storage")
+	rows, err := db.ListPackages("alpha", PackageFilter{Kind: KindRealm}, 100, 0, "storage")
 	if err != nil {
 		t.Fatalf("ListPackages: %v", err)
 	}

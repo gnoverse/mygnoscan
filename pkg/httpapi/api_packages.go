@@ -64,18 +64,33 @@ func stampPackageTimes(ctx context.Context, client *indexer.Client, pkgs []store
 // stores block_time, so the indexer is only consulted for whatever is not
 // already known locally.
 
-func (a *API) handleListPackages(w http.ResponseWriter, r *http.Request, realmOnly bool) {
+func (a *API) handleListPackages(w http.ResponseWriter, r *http.Request, kind store.PackageKind) {
 	network := a.networkParam(r)
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	offset, _ := strconv.Atoi(q.Get("offset"))
 	if limit == 0 {
 		limit = 50
 	}
-	sortBy := r.URL.Query().Get("sort")
-	total, _ := a.db.CountPackages(network, realmOnly)
+	sortBy := q.Get("sort")
+
+	// /api/realms and /api/packages each pin one kind; /api/packages accepts a
+	// kind parameter on top, which is how "everything" is reachable at all.
+	// A route that pins its kind ignores the parameter rather than letting a
+	// query string turn /api/realms into a list of pure packages.
+	filter := store.PackageFilter{Kind: kind, Namespace: q.Get("namespace")}
+	if kind == store.KindAll {
+		parsed, ok := store.ParsePackageKind(q.Get("kind"))
+		if !ok {
+			jsonError(w, "unknown kind: "+q.Get("kind"), 400)
+			return
+		}
+		filter.Kind = parsed
+	}
+	total, _ := a.db.CountPackages(network, filter)
 
 	if network != "" {
-		items, err := a.db.ListPackages(network, realmOnly, limit, offset, sortBy)
+		items, err := a.db.ListPackages(network, filter, limit, offset, sortBy)
 		if err != nil {
 			jsonError(w, err.Error(), 500)
 			return
@@ -89,7 +104,7 @@ func (a *API) handleListPackages(w http.ResponseWriter, r *http.Request, realmOn
 	var merged []store.PackageInfo
 	for _, items := range fanOut(r.Context(), a.networks, a.clients, a.health,
 		func(ctx context.Context, n config.NetworkConfig, c *indexer.Client) ([]store.PackageInfo, error) {
-			items, err := a.db.ListPackages(n.ID, realmOnly, limit+offset, 0, sortBy)
+			items, err := a.db.ListPackages(n.ID, filter, limit+offset, 0, sortBy)
 			if err != nil {
 				return nil, err
 			}
@@ -116,6 +131,14 @@ func (a *API) handleListPackages(w http.ResponseWriter, r *http.Request, realmOn
 // chains are not comparable, so the default ordering is by timestamp with height
 // only as a tiebreaker within rows that have none.
 
+// sortMergedPackages re-orders the all-networks listing after the per-network
+// queries have each sorted their own slice.
+//
+// Every key packageSortClause understands has to appear here too. Three did
+// not: gas, storage and symbols fell through to the default, so asking the
+// all-chains view for "most gas" sorted the merged rows by block time and
+// answered a different question without saying so. The per-network view was
+// correct the whole time, which is what made it invisible.
 func sortMergedPackages(pkgs []store.PackageInfo, sortBy string) {
 	switch sortBy {
 	case "calls":
@@ -126,6 +149,12 @@ func sortMergedPackages(pkgs []store.PackageInfo, sortBy string) {
 		sort.SliceStable(pkgs, func(i, j int) bool { return pkgs[i].Imports > pkgs[j].Imports })
 	case "users":
 		sort.SliceStable(pkgs, func(i, j int) bool { return pkgs[i].UniqueUsers > pkgs[j].UniqueUsers })
+	case "gas":
+		sort.SliceStable(pkgs, func(i, j int) bool { return pkgs[i].GasUsed > pkgs[j].GasUsed })
+	case "storage":
+		sort.SliceStable(pkgs, func(i, j int) bool { return pkgs[i].StorageDeposit > pkgs[j].StorageDeposit })
+	case "symbols":
+		sort.SliceStable(pkgs, func(i, j int) bool { return pkgs[i].Symbols > pkgs[j].Symbols })
 	case "last_call":
 		sort.SliceStable(pkgs, func(i, j int) bool {
 			ti, tj := pkgs[i].LastCallTime, pkgs[j].LastCallTime
@@ -186,11 +215,42 @@ func (a *API) stampInertStatus(ctx context.Context, items []store.PackageInfo) {
 }
 
 func (a *API) HandleRealms(w http.ResponseWriter, r *http.Request) {
-	a.handleListPackages(w, r, true)
+	a.handleListPackages(w, r, store.KindRealm)
 }
 
+// HandlePackages is the faceted directory.
+//
+// It used to be "the pure half", the complement of /api/realms. It still
+// defaults to that for every existing caller, because ?kind= is what widens it
+// and an absent parameter keeps the old meaning.
 func (a *API) HandlePackages(w http.ResponseWriter, r *http.Request) {
-	a.handleListPackages(w, r, false)
+	if r.URL.Query().Get("kind") == "" && r.URL.Query().Get("namespace") == "" {
+		a.handleListPackages(w, r, store.KindPure)
+		return
+	}
+	a.handleListPackages(w, r, store.KindAll)
+}
+
+// HandlePackageFacets answers the counts a facet control shows beside each
+// option, for the current filter.
+func (a *API) HandlePackageFacets(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+	q := r.URL.Query()
+	kind, ok := store.ParsePackageKind(q.Get("kind"))
+	if !ok {
+		jsonError(w, "unknown kind: "+q.Get("kind"), 400)
+		return
+	}
+	kinds, namespaces, err := a.db.PackageFacets(network,
+		store.PackageFilter{Kind: kind, Namespace: q.Get("namespace")})
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	if namespaces == nil {
+		namespaces = []store.NamespaceFacet{}
+	}
+	JSONResponse(w, map[string]any{"kinds": kinds, "namespaces": namespaces})
 }
 
 func (a *API) HandleRealm(w http.ResponseWriter, r *http.Request) {

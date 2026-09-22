@@ -61,6 +61,11 @@ func run() error {
 		// service that is not there would put a broken tile on every row.
 		gnoshotURL = flag.String("gnoshot", "",
 			"base URL of a gnoshot capture service, e.g. http://127.0.0.1:8890 (empty = no realm screenshots)")
+		// Exposed because the right value depends on how fast the corpus moves,
+		// and because a test fixture seeded after startup needs the next pass
+		// sooner than a production chain does.
+		symbolIndexEvery = flag.Duration("symbol-index-interval", symbolIndexInterval,
+			"how often to re-index package symbols; the staleness check is one query, so this is cheap")
 	)
 	flag.Parse()
 
@@ -218,7 +223,7 @@ func run() error {
 			}
 		}
 		pass()
-		ticker := time.NewTicker(symbolIndexInterval)
+		ticker := time.NewTicker(*symbolIndexEvery)
 		defer ticker.Stop()
 		for {
 			select {

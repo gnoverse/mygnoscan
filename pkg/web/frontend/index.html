@@ -400,6 +400,22 @@ tr.total-row td { font-weight: bold; color: var(--accent); }
    arrives, so a listing jumps under the reader's cursor as fifty of them
    resolve. The skeleton background is what fills the box until then, and it is
    the same pulse every other pending thing on the site uses. */
+/* Facet controls. Rows of chips rather than dropdowns: the counts are the
+   point, and a dropdown hides them until it is opened. */
+.facets { display: flex; flex-direction: column; gap: 6px; margin: 0 0 12px; }
+.facet-row { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; }
+.facet-label { color: var(--fg2); font-size: 11px; text-transform: uppercase;
+               letter-spacing: .06em; min-width: 72px; }
+.facet { border: 1px solid var(--border); border-radius: 12px; padding: 2px 10px;
+         font-size: 12px; cursor: pointer; background: none; color: var(--fg);
+         font-family: inherit; }
+.facet:hover { border-color: var(--accent); }
+.facet.active { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+.facet .facet-count { color: var(--fg2); margin-left: 6px; font-size: 11px; }
+.facet .facet-name { white-space: nowrap; }
+.facet.active .facet-count { color: var(--bg); opacity: .75; }
+.facet-more { background: none; border: none; color: var(--fg2); font-size: 12px;
+              cursor: pointer; font-family: inherit; text-decoration: underline; }
 .shot { display: block; position: relative; overflow: hidden; border-radius: 6px;
         background: var(--bg3); border: 1px solid var(--border); }
 .shot img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top left;
@@ -868,8 +884,10 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
     </div>
     <div id="packages-view-all">
       <div id="packages-stats" class="stats-bar" style="display:none"></div>
-      <div class="section"><div class="section-title">all packages</div>
+      <div id="packages-facets" class="facets"></div>
+      <div class="section"><div class="section-title" id="packages-title">all packages</div>
         <table><thead><tr><th class="shot-cell"></th><th>path</th><th>creator</th>
+          <th class="rs" data-sort="symbols">symbols</th>
           <th class="rs" data-sort="calls">calls</th>
           <th class="rs" data-sort="importers">dependents</th>
           <th class="rs" data-sort="imports">dependencies</th>
@@ -4158,11 +4176,110 @@ async function loadRealms(page) {
 }
 
 let _packagesSort = 'newest';
+// The directory's two facets, in the URL so a filtered view is a link.
+//
+// `kind` is which half of the directory (everything, realms, or the pure
+// packages other code imports); `namespace` is whose it is. Both are read from
+// the URL rather than held in a variable, for the same reason every other
+// control here is: a reader who filtered to one namespace and sent the link
+// should not have to explain which controls to click.
+const PACKAGE_KINDS = [
+  { key: 'all', label: 'everything', count: 'all' },
+  { key: 'realm', label: 'realms', count: 'realm' },
+  { key: 'pure', label: 'pure packages', count: 'pure' },
+];
+// How many namespaces to show before the "show all" link. Mainnet has a dozen
+// or so with more than one package and a long tail of one-package addresses,
+// and the tail is exactly what makes the control unreadable.
+const NAMESPACE_FACET_LIMIT = 12;
+function packageFacetState() {
+  const kind = urlParam('kind') || '';
+  return {
+    // An absent kind means the route's own default, which for /packages is the
+    // pure half. Stated rather than defaulted, because "" and "pure" reach the
+    // backend as different requests.
+    kind: PACKAGE_KINDS.some(k => k.key === kind) ? kind : '',
+    namespace: urlParam('namespace') || '',
+  };
+}
+function packageFacetQuery() {
+  const st = packageFacetState();
+  const q = new URLSearchParams();
+  if (st.kind) q.set('kind', st.kind);
+  if (st.namespace) q.set('namespace', st.namespace);
+  const s = q.toString();
+  return s ? '&' + s : '';
+}
+// renderPackageFacets draws the two control rows from the counts the server
+// computed for the current filter.
+//
+// Built with el() and a frozen option list, never from keys the server chose:
+// a namespace is a chain-authored string, so it is text content and a query
+// parameter, never a class name and never part of a selector.
+function renderPackageFacets(facets, showAllNamespaces) {
+  const host = clear('packages-facets');
+  const st = packageFacetState();
+  const kinds = (facets && facets.kinds) || {};
+  const namespaces = (facets && facets.namespaces) || [];
+
+  // The label goes in its own span rather than as a bare text node beside the
+  // count. Without it the two run together in textContent, so "common" with 12
+  // packages reads as "common12" to anything that reads the chip rather than
+  // looks at it: a screen reader, a copy-paste, a test.
+  const chip = (label, count, active, onClick) => {
+    const b = el('button', { className: 'facet' + (active ? ' active' : ''), type: 'button' },
+      el('span', { className: 'facet-name' }, label));
+    if (count !== null && count !== undefined) {
+      b.appendChild(el('span', { className: 'facet-count' }, fmtNum(count)));
+    }
+    b.addEventListener('click', onClick);
+    return b;
+  };
+
+  const kindRow = el('div', { className: 'facet-row' }, el('span', { className: 'facet-label' }, 'show'));
+  for (const k of PACKAGE_KINDS) {
+    // "pure" is also what an absent kind means on this route, so it reads as
+    // active either way rather than leaving the row with nothing selected.
+    const active = st.kind === k.key || (st.kind === '' && k.key === 'pure');
+    kindRow.appendChild(chip(k.label, kinds[k.count], active, () => {
+      urlSetParams({ kind: k.key, offset: null });
+      loadPackages(0);
+    }));
+  }
+  host.appendChild(kindRow);
+
+  if (namespaces.length) {
+    const nsRow = el('div', { className: 'facet-row' }, el('span', { className: 'facet-label' }, 'namespace'));
+    nsRow.appendChild(chip('any', null, st.namespace === '', () => {
+      urlSetParams({ namespace: null });
+      loadPackages(0);
+    }));
+    const shown = showAllNamespaces ? namespaces : namespaces.slice(0, NAMESPACE_FACET_LIMIT);
+    for (const ns of shown) {
+      nsRow.appendChild(chip(ns.namespace, ns.packages, st.namespace === ns.namespace, () => {
+        urlSetParams({ namespace: ns.namespace });
+        loadPackages(0);
+      }));
+    }
+    if (namespaces.length > shown.length) {
+      const more = el('button', { className: 'facet-more', type: 'button' },
+        'show all ' + fmtNum(namespaces.length));
+      more.addEventListener('click', () => renderPackageFacets(facets, true));
+      nsRow.appendChild(more);
+    } else if (showAllNamespaces && namespaces.length > NAMESPACE_FACET_LIMIT) {
+      const less = el('button', { className: 'facet-more', type: 'button' }, 'show fewer');
+      less.addEventListener('click', () => renderPackageFacets(facets, false));
+      nsRow.appendChild(less);
+    }
+    host.appendChild(nsRow);
+  }
+}
+
 async function loadPackages(page) {
   page = page || 0;
   const section = document.querySelector('#view-packages .section');
   const tbody = clear('packages-list');
-  skeletonRows(tbody, 10, 10);
+  skeletonRows(tbody, 11, 10);
   section.querySelectorAll('.pager').forEach(p => p.remove());
   const statsBar = document.getElementById('packages-stats');
   // Sorting is server-side: ordering only the current page would rank 50 rows
@@ -4174,13 +4291,36 @@ async function loadPackages(page) {
     th.onclick = () => { _packagesSort = key; loadPackages(0); };
   });
   try {
-    await apiSWR('packages?limit=' + PAGE_SIZE + '&offset=' + (page * PAGE_SIZE) + '&sort=' + _packagesSort, (data, swrMeta) => {
+    // Facets travel with the listing request, so the two cannot describe
+    // different filters. apiSWR renders up to twice and both passes read the
+    // same pair.
+    await apiSWR([
+      'packages?limit=' + PAGE_SIZE + '&offset=' + (page * PAGE_SIZE) + '&sort=' + _packagesSort + packageFacetQuery(),
+      { path: 'packages/facets?' + packageFacetQuery().replace(/^&/, ''), fallback: null },
+    ], ([data, facets], swrMeta) => {
       // See loadRealms: the pager has to be cleared per render pass, not once
       // per loader call.
       section.querySelectorAll('.pager').forEach(p => p.remove());
+      // Rebuilt every pass, not appended to: a render runs on cached data and
+      // again on fresh, and controls drawn by the first have to be gone before
+      // the second draws its own.
+      renderPackageFacets(facets, false);
+      const st = packageFacetState();
+      const titleEl = document.getElementById('packages-title');
+      if (titleEl) {
+        const kindLabel = (PACKAGE_KINDS.find(k => k.key === (st.kind || 'pure')) || {}).label || 'packages';
+        titleEl.textContent = st.namespace ? kindLabel + ' in ' + st.namespace : 'all ' + kindLabel;
+      }
       if (page === 0) {
         statsBar.textContent = ''; statsBar.style.display = 'flex';
         statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'total packages'), el('span', { className: 'value' }, fmtNum(data.total || 0))));
+        // What the directory declares, which is the one figure that says
+        // anything about the pure half: gas, calls and unique users are zero
+        // for every library by construction.
+        const declared = (data.items || []).reduce((n, p) => n + (p.symbols || 0), 0);
+        if (declared) {
+          statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'symbols (page)'), el('span', { className: 'value' }, fmtNum(declared))));
+        }
       }
       const list = clear('packages-list');
       for (const p of (data.items || [])) {
@@ -4191,6 +4331,12 @@ async function loadPackages(page) {
           el('td', { className: 'shot-cell' }, shotEl(p.path, { network: p.network, v: p.block_height, row: p })),
           pathTd,
           el('td', {}, addrLink(p.creator)),
+          // Links into the docs tab rather than printing a number nobody can
+          // act on: the count is only interesting as a door to the API it
+          // counts.
+          el('td', {}, p.symbols
+            ? link(fmtNum(p.symbols), () => navigate('/realm/' + p.path.replace('gno.land/', '') + '?tab=docs'))
+            : countCell(0)),
           el('td', {}, countCell(p.calls)),
           el('td', {}, countCell(p.importers)),
           el('td', {}, countCell(p.imports)),
@@ -4203,7 +4349,7 @@ async function loadPackages(page) {
     });
   } catch (err) {
     console.error(err);
-    failRows(clear('packages-list'), 10, err, loadPackages);
+    failRows(clear('packages-list'), 11, err, loadPackages);
   }
 }
 
@@ -11944,7 +12090,24 @@ function makeSortable(table) {
   headers.forEach((th, colIdx) => {
     th.classList.add('sortable');
     th.addEventListener('click', () => {
-      const asc = !th.classList.contains('sort-asc');
+      // Which way to go is read from the URL, not from the header's own
+      // sort- classes, for the same reason registerTableRestore below does:
+      // a `th[data-sort]` header has a second handler on it, the loader's, and
+      // that one stamps `sort-desc` on the active column *synchronously*
+      // before this listener runs. Reading the class here therefore reads what
+      // the loader just wrote rather than what the reader last chose, and the
+      // direction never flips.
+      //
+      // And the first click on a server-sorted column goes descending, because
+      // its loader refetches the whole set ordered descending and this handler
+      // then reorders the fifty rows on screen. Starting ascending made the two
+      // disagree on the very first click: asking a directory for "most calls"
+      // fetched exactly the right rows and displayed them fewest-first, which
+      // reads as the opposite of what the header promises. Clicking again still
+      // flips it, for every table.
+      const col = slugify(th.textContent);
+      const [savedCol, savedDir] = (param ? urlParam(param) || '' : '').split(':');
+      const asc = savedCol === col ? savedDir === 'desc' : !th.hasAttribute('data-sort');
       sortBy(colIdx, asc);
       if (param) urlSetParam(param, slugify(th.textContent) + (asc ? '' : ':desc'));
     });

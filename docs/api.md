@@ -171,6 +171,7 @@ fact.
 | endpoint | description |
 |---|---|
 | `GET /api/realms` | list realms. `limit`, `offset` |
+| `GET /api/packages/facets` | counts per kind and per namespace, for the current filter |
 | `GET /api/symbols/search` | find a declaration by name. `q`, `network`, `limit` |
 | `GET /api/symbols/status` | what the symbol index covers |
 | `GET /api/packages` | list all packages, realms and pure packages. `limit`, `offset` |
@@ -879,6 +880,50 @@ The UI covers the rest without asking the server: an address, a transaction hash
 or a block height is recognised by shape and offered as a direct destination
 above the package matches. A bare number is offered only when a network is
 selected, since a height identifies a different block on every chain.
+
+### Faceting the directory
+
+```
+GET /api/packages?kind=all|realm|pure&namespace=<ns>&sort=symbols
+GET /api/packages/facets?kind=&namespace=
+```
+
+`/api/realms` and `/api/packages` were each one half of the directory and
+neither could answer "everything", which is the listing a reader browsing the
+chain wants first. `?kind=` is what widens it.
+
+- **`/api/realms` pins its kind** and ignores `?kind=`. A query string must not
+  be able to turn it into a list of pure packages.
+- **`/api/packages` with no parameters keeps its old meaning**, the pure half,
+  so every existing caller is unaffected. Passing `kind` or `namespace` opts
+  into the faceted behaviour.
+- **An unknown kind is a 400**, not a silent "everything". `stdlib` is the one
+  worth refusing by name: it is a real facet that has not shipped, so answering
+  it with the full directory would be a lie with a plausible name.
+
+`namespace` is the element after the `r/` or `p/` marker, the same key
+`NamespaceOf` derives everywhere else on the site. It is derived in SQL rather
+than stored, because a column would be a second copy of a fact the path already
+carries; the two derivations are pinned against each other by a test over every
+path shape that occurs on a chain.
+
+`sort=symbols` orders by how much a package declares. It is the only ordering
+that ranks the pure half at all: a library burns no gas, receives no calls and
+has no unique users, so every other sort puts the whole `p/` namespace at zero.
+
+`/api/packages/facets` returns the counts a control shows beside each option:
+
+```json
+{
+  "kinds": {"all": 369, "realm": 210, "pure": 159},
+  "namespaces": [{"namespace": "gnoswap", "packages": 31, "realms": 22, "pure": 9}]
+}
+```
+
+Each facet's counts honour the *other* facet and not itself. Picking a namespace
+narrows the kind counts, because otherwise the control describes a listing the
+reader is not looking at; picking a kind leaves every kind still counted,
+because otherwise there is no way to see what switching would give you.
 
 ### Symbol search
 

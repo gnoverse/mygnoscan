@@ -76,6 +76,10 @@ export default async function globalSetup() {
     '-sync=false',
     '-listen', `127.0.0.1:${port}`,
     '-gnoshot', shots.url,
+    // The fixture is seeded after the binary starts, so the index pass that
+    // runs at startup finds an empty corpus. Production waits ten minutes for
+    // the next one; the suite cannot.
+    '-symbol-index-interval', '1s',
   ], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] });
 
   const log = [];
