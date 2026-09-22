@@ -268,3 +268,27 @@ func TestDecodeObjectFlattens(t *testing.T) {
 		t.Errorf("keys = %q, %q; want a, b", n.Children[0].Name, n.Children[1].Name)
 	}
 }
+
+// TestFlattenAVLUnreachableRoot pins the shape a tree takes when the walk ran
+// out of budget before its root. It must still read as a tree: flipping
+// between "entries" and a raw struct depending on how busy the page was makes
+// the same field look like two different types.
+func TestFlattenAVLUnreachableRoot(t *testing.T) {
+	fx := &avlFixture{objects: map[string]string{
+		"t:0": treeObj("t:0", "n:gone"),
+	}}
+	tree, err := DecodePackage([]byte(avlPkg), fx, Limits{})
+	if err != nil {
+		t.Fatalf("DecodePackage: %v", err)
+	}
+	posts := find(tree.Nodes, "posts")
+	if posts == nil {
+		t.Fatal("posts missing")
+	}
+	if posts.Kind != KindMap {
+		t.Errorf("kind = %q, want map even with an unreachable root", posts.Kind)
+	}
+	if !strings.Contains(posts.Value, "partially loaded") {
+		t.Errorf("value = %q, want it to admit the tree was not fully read", posts.Value)
+	}
+}

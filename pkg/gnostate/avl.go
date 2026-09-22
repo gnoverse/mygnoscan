@@ -1,5 +1,7 @@
 package gnostate
 
+import "strconv"
+
 // Recognizing avl.Tree is what separates a state explorer from a picture of
 // the VM's heap.
 //
@@ -38,11 +40,19 @@ func flattenTree(n Node) (Node, bool) {
 	if n.Kind != KindStruct || len(n.Children) != 1 || n.Children[0].Name != "node" {
 		return n, false
 	}
-	root := n.Children[0]
 	// An empty tree is `node == nil`, which is a legitimate tree and must
-	// render as an empty map rather than be left as a struct holding a nil.
-	if root.Kind != KindNil && !isAVLNode(root) {
-		return n, false
+	// render as an empty map rather than as a struct holding a nil. A root the
+	// walker could not reach is recognized too, and flattens to an empty
+	// partial map: a tree that renders as entries when the budget allowed it
+	// and as a raw struct when it did not would look like two different types
+	// of field depending on how busy the page was.
+	root := n.Children[0]
+	switch root.Kind {
+	case KindNil, KindRef, KindCycle, KindTruncated:
+	default:
+		if !isAVLNode(root) {
+			return n, false
+		}
 	}
 
 	out := Node{
@@ -123,19 +133,5 @@ func plural(n int) string {
 	if n == 1 {
 		return "1 entry"
 	}
-	return itoa(n) + " entries"
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var b [20]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(b[i:])
+	return strconv.Itoa(n) + " entries"
 }
