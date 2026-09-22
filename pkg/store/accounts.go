@@ -482,7 +482,7 @@ func (d *DB) WatchAddresses(network string, items []WatchRequest) ([]WatchedAddr
 
 		d.db.QueryRow(`SELECT COUNT(*) FROM calls WHERE caller = ? AND `+nf, item.ID).Scan(&w.Calls)
 		// package_submissions, not packages — see AddressTransactions' own
-		// comment on the same swap (gno-meta#126): packages only ever keeps
+		// comment on the same swap: packages only ever keeps
 		// the latest submission per path.
 		d.db.QueryRow(`SELECT COUNT(*) FROM package_submissions WHERE creator = ? AND `+nf, item.ID).Scan(&w.Deploys)
 		d.db.QueryRow(`SELECT COUNT(*) FROM bank_sends WHERE from_address = ? AND `+nf, item.ID).Scan(&w.Sends)
@@ -555,8 +555,8 @@ func (d *DB) AddressTransactions(network, addr string, limit, offset int) ([]Sto
 		// package_submissions, not packages: packages is a current-state
 		// projection (one row per path, overwritten by a later submission at
 		// the same path), so it silently drops every resubmission but the
-		// newest from a creator's own history — the bug gno-meta#126
-		// reported (187 MsgAddPackage shown against 256 on-chain). Real
+		// newest from a creator's own history, which showed 187 MsgAddPackage
+		// against 256 on-chain on the account that surfaced it. Real
 		// per-submission success now, not a hardcoded 1.
 		branch(`network, tx_hash, block_height, COALESCE(block_time,''), 'MsgAddPackage',
 		        creator, path, success`, "package_submissions", "creator = ?"),
@@ -653,7 +653,7 @@ func (d *DB) WatchTransactions(network string, realms, addresses []string, limit
 			args = append(args, r)
 		}
 		// package_submissions, not packages — see AddressTransactions'
-		// comment on the same swap (gno-meta#126).
+		// comment on the same swap.
 		branches = append(branches, branch(`network, tx_hash, block_height, COALESCE(block_time,'') bt, 'MsgAddPackage' typ,
 		        creator who, path detail, success`,
 			"package_submissions", "path IN "+inClause(len(realms))))

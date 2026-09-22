@@ -2327,8 +2327,8 @@ func TestListPackagesLastCallSort(t *testing.T) {
 	}
 }
 
-// TestAddressTransactionsIncludesEveryPackageResubmission is a regression
-// test for github.com/moul/gno-meta/issues/126: packages is a current-state
+// TestAddressTransactionsIncludesEveryPackageResubmission is a regression test:
+// packages is a current-state
 // projection keyed by (network, path) — INSERT OR REPLACE, one row per path
 // — so a creator who resubmits at the same path (routine under the "inert"
 // code submission policy: a parked package is invisible to every liveness

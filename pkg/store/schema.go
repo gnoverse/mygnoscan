@@ -399,7 +399,8 @@ func initSchema(db *sql.DB) error {
 		-- packages, which made a creator's own AddPackage history undercount
 		-- (187 shown against 256 on-chain, on the account that surfaced this),
 		-- vanished the earlier submission from /txs filtered by MsgAddPackage,
-		-- and from watch. See github.com/moul/gno-meta/issues/126.
+		-- and from watch. TestAddressTransactionsIncludesEveryPackageResubmission
+		-- and TestNewPackagesCountsFirstSubmissionNotLatest pin both halves.
 		CREATE TABLE IF NOT EXISTS package_submissions (
 			network TEXT NOT NULL DEFAULT 'gnoland1',
 			tx_hash TEXT NOT NULL,
