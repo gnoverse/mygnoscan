@@ -173,6 +173,7 @@ fact.
 | `GET /api/realms` | list realms. `limit`, `offset` |
 | `GET /api/packages` | list all packages, realms and pure packages. `limit`, `offset` |
 | `GET /api/realm/{path...}` | detail for one package: metadata, source files, imports, dependents, callers, MsgRun references. `recent_calls` and `msgrun_refs` are the 50 most recent of each, and carry `block_time` where the syncer knew it (omitted otherwise, so a consumer plotting them on a time axis can say how many it left out). `address` and `storage_deposit_address` are the two accounts the package owns, derived from its path (see below) |
+| `GET /api/realm/usage/{path...}` | who calls one realm, aggregated over its whole history, plus one page of the message feed. See below |
 | `GET /api/deps/{path...}` | dependency graph as `{path: [imports]}`. `dir=dependents` reverses direction |
 | `GET /api/realm/cousage/{path...}` | co-usage: what else the addresses that called this realm also called. `{path, network, window, callers, partners[], truncated}`, each partner `{path, shared, calls, callers}` ordered by `shared` descending. `window` = `all` (default), `90d`, `30d`, `7d`, `24h`, unknown values are a 400. `limit` defaults to 100, capped at 1000. **Resolves a single network** the same way the contracts map does |
 | `GET /api/storage/{path...}` | storage events for a package. **Requires `network`**: the figures are denominated amounts and blending chains would be meaningless |
@@ -235,6 +236,57 @@ Neither touches a realm's banker, which is why the realm case is exact.
 GRC20 positions come from the local transfer ledger, which only ever saw what the
 syncer walked: `token_ledger_from` is the oldest row on that chain, and a
 position is a floor rather than a figure whenever it postdates the deploy.
+
+### Realm usage
+
+`/api/realm/usage/{path...}` is what the realm page's calls tab is built on,
+and the reason it exists separately from `/api/realm/{path...}`: that endpoint
+carries the 50 most recent calls, and the interesting questions about a realm
+(how many distinct addresses have used it, how many came back, which exported
+functions anyone actually calls) are aggregates over the whole history that a
+truncated tail cannot answer.
+
+One response, four parts:
+
+| key | what it is |
+|---|---|
+| `summary` | `messages`, `calls`, `runs`, `txs`, `unique_callers`, `returning`, `ok`, `failed`, `functions`, `first_time`, `last_time`, `gas_used`, `gas_fee` |
+| `callers` | one row per address: messages, txs, distinct funcs, ok/failed, first/last seen, gas. Ranked by message count, capped at 500 with `callers_truncated` saying so |
+| `functions` | one row per called function: calls, distinct callers, ok/failed, last |
+| `rows` | one page of the message feed, newest first, `kind` being `call` or `run` |
+
+`messages` and `txs` are both there because they come apart: a multicall bundles
+several `MsgCall`s into one signed transaction, so 54 calls from 30 transactions
+is a realm being driven differently from 54 from 54. Gas is summed over distinct
+transactions, the attribution `gas_realm_rollup` uses, so a multicall's
+transaction is not billed once per message.
+
+| filter | effect |
+|---|---|
+| `caller=g1...` | exact address |
+| `func=Name` | exact function. Excludes every `MsgRun`, which has no function name |
+| `status=ok\|fail` | |
+| `kind=call\|run` | |
+| `window=24h\|7d\|30d\|90d` | anything else, including `all`, means no bound. Rows with no `block_time` fall outside every window |
+| `limit`, `offset` | the feed only, `limit` capped at 500 |
+
+Cost: the aggregates are five grouped scans over the realm's whole call
+history, so they scale with the realm rather than with the page. Measured
+2026-09-22 on a Xeon D-1531: **24ms** for a typical realm (500 calls, 50
+callers), **2.3s** for one the size of the busiest on mainnet (50k calls, 5k
+callers). The response cache in front of it (30s TTL, stale-while-revalidate)
+means only the first reader after a sync pass pays that. `BenchmarkRealmUsage`
+in `pkg/store` is the guard: an earlier version answered "this caller's
+earliest timestamp" with a correlated subquery per caller group and took 151
+seconds at the larger size, which neither the unit tests nor the browser suite
+could see because both run against a fixture of single digits.
+
+**Filters apply to the aggregates, not only to the feed.** That is the point of
+the endpoint: `?func=Bid&window=7d` reporting 12 unique callers means twelve
+addresses bid in the last week, not twelve addresses touched the realm since
+genesis. An unrecognised `status` or `kind` is dropped rather than rejected:
+these arrive from links and bookmarks, and should degrade to "no filter" rather
+than to an error page over a perfectly readable realm.
 
 ### Sync health versus chain liveness
 
