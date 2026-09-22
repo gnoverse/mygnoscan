@@ -23,6 +23,11 @@ import (
 var gitHash = "dev"       // set via -ldflags at build time
 var buildTime = "unknown" // set via -ldflags at build time
 
+// symbolIndexInterval is how often the symbol index re-walks the corpus. Longer
+// than the rollups: a package's declarations change only when somebody deploys,
+// and a new package being searchable a few minutes later is not a defect.
+const symbolIndexInterval = 10 * time.Minute
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -189,6 +194,38 @@ func run() error {
 				return
 			case <-ticker.C:
 				refresh()
+			}
+		}
+	}()
+
+	// The symbol index: what every package declares, extracted from the source
+	// already in the database so search can answer "which package has
+	// IterateByOffset" rather than only "which path contains that string".
+	//
+	// On its own timer rather than inside the sync pass. It is derived data
+	// with no deadline, the skip for an unchanged package is one indexed lookup
+	// and one hash, and a corpus walk has no business inside the loop that
+	// keeps the chain current.
+	go func() {
+		db.WaitBackground()
+		pass := func() {
+			res, err := analyzer.RefreshSymbolIndex(ctx)
+			if err != nil && ctx.Err() == nil {
+				log.Printf("symbol index: %v", err)
+			}
+			if res.Indexed > 0 || res.Errors > 0 {
+				log.Printf("symbol index: %s", res)
+			}
+		}
+		pass()
+		ticker := time.NewTicker(symbolIndexInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				pass()
 			}
 		}
 	}()

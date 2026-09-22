@@ -696,6 +696,57 @@ func initSchema(db *sql.DB) error {
 			PRIMARY KEY (network, bucket, kind, addr)
 		) WITHOUT ROWID;
 
+		-- The symbol index: one row per declaration in every package's current
+		-- source, so a search can answer "which package declares
+		-- IterateByOffset" rather than only "which path contains that string".
+		--
+		-- Derived, not authoritative. package_files is the source and this is a
+		-- projection of it, rebuilt for a package whenever that package's files
+		-- change. Keyed on the package rather than on the submission, because
+		-- package_files itself holds current bodies only: a redeploy overwrites
+		-- them, so the bodies an older submission was compiled from are simply
+		-- not here. An API diff between two deploys of the same path therefore
+		-- still needs a spine of its own, and this table is not it.
+		--
+		-- recv is the receiver type for a method and empty for everything else.
+		-- It is in the primary key because Get on two different types is two
+		-- different symbols, and without it one silently replaces the other.
+		CREATE TABLE IF NOT EXISTS symbols (
+			network      TEXT NOT NULL,
+			package_path TEXT NOT NULL,
+			kind         TEXT NOT NULL,   -- const | var | type | func | method
+			recv         TEXT NOT NULL DEFAULT '',
+			name         TEXT NOT NULL,
+			signature    TEXT NOT NULL DEFAULT '',
+			doc          TEXT NOT NULL DEFAULT '',
+			file         TEXT NOT NULL DEFAULT '',
+			line         INTEGER NOT NULL DEFAULT 0,
+			exported     BOOLEAN NOT NULL DEFAULT 0,
+			PRIMARY KEY (network, package_path, kind, recv, name)
+		);
+
+		-- Name first, because every query this table exists for filters on it.
+		-- Prefix matches use the index; the substring fallback does not, which
+		-- is why the search asks for a prefix first and only widens if that
+		-- came back short.
+		CREATE INDEX IF NOT EXISTS symbols_name ON symbols(name);
+		CREATE INDEX IF NOT EXISTS symbols_pkg ON symbols(network, package_path);
+
+		-- What the index was built from, so a rebuild can be skipped.
+		--
+		-- The fingerprint is over the package's file names and bodies, not over
+		-- its deploy height: a resync can rewrite rows at the same height, and
+		-- a height-keyed check would then leave the index describing source
+		-- nobody can see any more.
+		CREATE TABLE IF NOT EXISTS symbol_index (
+			network      TEXT NOT NULL,
+			package_path TEXT NOT NULL,
+			fingerprint  TEXT NOT NULL,
+			symbol_count INTEGER NOT NULL DEFAULT 0,
+			indexed_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (network, package_path)
+		);
+
 		CREATE TABLE IF NOT EXISTS sync_state (
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL

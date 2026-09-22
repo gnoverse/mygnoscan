@@ -9554,6 +9554,10 @@ function fileLineLinkEl(sym, pathForNav) {
 }
 function symbolEl(sym, pathForNav) {
   const div = el('div', { className: 'card', style: { marginBottom: '8px' } });
+  // The anchor symbol search lands on. A plain attribute rather than an id:
+  // a package can declare Get as a function and String on four types, and ids
+  // have to be unique in a document that also holds a source tab.
+  div.setAttribute('data-sym', sym.name);
   const sigRow = el('div', { style: { display: 'flex', alignItems: 'baseline' } });
   sigRow.appendChild(el('span', { style: { fontFamily: 'var(--mono)', fontSize: '13px', whiteSpace: 'pre-wrap' } }, sym.signature));
   const fl = fileLineLinkEl(sym, pathForNav);
@@ -9567,6 +9571,7 @@ function symbolEl(sym, pathForNav) {
 // the type it belongs to reads the way calling it actually works.
 function typeSymbolEl(t, showUnexported, pathForNav) {
   const wrap = el('div', { className: 'card', style: { marginBottom: '8px' } });
+  wrap.setAttribute('data-sym', t.name);
   const sigRow = el('div', { style: { display: 'flex', alignItems: 'baseline' } });
   sigRow.appendChild(el('span', { style: { fontFamily: 'var(--mono)', fontSize: '13px', whiteSpace: 'pre-wrap' } }, t.signature));
   const flt = fileLineLinkEl(t, pathForNav);
@@ -9575,6 +9580,10 @@ function typeSymbolEl(t, showUnexported, pathForNav) {
   if (t.doc) wrap.appendChild(el('div', { style: { color: 'var(--fg2)', fontSize: '13px', marginTop: '4px' } }, t.doc));
   for (const m of (t.methods || []).filter(m => m.exported || showUnexported)) {
     const mEl = el('div', { style: { marginLeft: '16px', marginTop: '8px', paddingTop: '8px', borderTop: '1px solid var(--border)' } });
+    // Qualified as well as bare, because a method's name alone collides with
+    // every other type's method of the same name and with a top-level func.
+    mEl.setAttribute('data-sym', m.name);
+    mEl.setAttribute('data-sym-qualified', t.name + '.' + m.name);
     const mRow = el('div', { style: { display: 'flex', alignItems: 'baseline' } });
     mRow.appendChild(el('span', { style: { fontFamily: 'var(--mono)', fontSize: '13px', whiteSpace: 'pre-wrap' } }, m.signature));
     const flm = fileLineLinkEl(m, pathForNav);
@@ -9596,7 +9605,29 @@ function typeSymbolEl(t, showUnexported, pathForNav) {
 function findReadme(files) {
   return (files || []).find(f => /^readme(\.md)?$/i.test(f.name));
 }
-function docsTabEl(symbols, files, pathForNav) {
+// cssEscape quotes a value for an attribute selector.
+//
+// The value is a declaration name that came off the chain, so it can hold a
+// quote or a backslash, and a selector built by concatenation would then either
+// throw or match something else. CSS.escape is for identifiers; this is the
+// string-literal form, which is what an attribute selector wants.
+function cssEscape(v) { return String(v).replace(/["\\]/g, '\\$&'); }
+
+// isUnexportedSymbol answers whether a focused name is behind the collapse.
+// Checked against the table rather than by testing the first letter: a name
+// starting lowercase might simply not exist in this package, and opening the
+// toggle for a name that is not there is noise.
+function isUnexportedSymbol(symbols, name) {
+  const flat = [...(symbols.consts || []), ...(symbols.vars || []), ...(symbols.funcs || [])];
+  for (const t of (symbols.types || [])) {
+    flat.push(t);
+    for (const m of (t.methods || [])) flat.push(m);
+  }
+  const hit = flat.find(sy => sy.name === name);
+  return !!hit && !hit.exported;
+}
+
+function docsTabEl(symbols, files, pathForNav, focus) {
   const container = el('div');
   const consts = symbols.consts || [], vars = symbols.vars || [], types = symbols.types || [], funcs = symbols.funcs || [];
 
@@ -9622,7 +9653,11 @@ function docsTabEl(symbols, files, pathForNav) {
     if (!t.exported) unexportedCount++;
     for (const m of (t.methods || [])) if (!m.exported) unexportedCount++;
   }
-  let showUnexported = false;
+  // Symbol search finds unexported declarations too — they are real, and worth
+  // finding when you are reading the source. Landing on one behind a collapsed
+  // toggle would look like the search lied, so arriving with a focus that is
+  // not exported opens the toggle.
+  let showUnexported = !!(focus && isUnexportedSymbol(symbols, focus));
   const body = el('div');
   container.appendChild(body);
   const render = () => {
@@ -10595,7 +10630,20 @@ async function loadRealmDetail(path, initialTab) {
       // parked badge already lives in the shared header above these tabs, so a
       // docs page for an inert package carries it without any extra work here.
       const docsEl = clear('tab-docs'); if (activeTab === 'docs') docsEl.classList.add('active'); else docsEl.classList.remove('active');
-      docsEl.appendChild(docsTabEl(detail.symbols || {}, detail.files, detail.path.replace('gno.land/', '')));
+      // ?sym= is where symbol search lands. Passed in rather than read inside,
+      // because the toggle that hides unexported declarations has to be open
+      // before the card is drawn, not scrolled to afterwards.
+      const symParam = new URLSearchParams(window.location.search).get('sym');
+      docsEl.appendChild(docsTabEl(detail.symbols || {}, detail.files, detail.path.replace('gno.land/', ''), symParam));
+      if (symParam && activeTab === 'docs') {
+        requestAnimationFrame(() => {
+          const card = docsEl.querySelector('[data-sym-qualified="' + cssEscape(symParam) + '"]')
+            || docsEl.querySelector('[data-sym="' + cssEscape(symParam) + '"]');
+          if (!card) return;
+          card.style.background = 'rgba(78,205,196,0.10)';
+          card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
+      }
       // Source
       const src = clear('tab-source'); if (activeTab === 'source') src.classList.add('active'); else src.classList.remove('active');
       for (const f of (detail.files || [])) {
@@ -13639,9 +13687,14 @@ document.getElementById('search-input').addEventListener('input', function() {
       // tokens collapses to one package row, which is the confusion the
       // per-asset page exists to undo. Optional, so an old backend that has
       // no such route still answers with packages.
-      const [data, assets] = await Promise.all([
+      // Symbols come from their own endpoint for the same reason assets do:
+      // /api/search answers with packages and every caller treats it as an
+      // array. Optional in the same way, so an older backend that has no such
+      // route still answers with packages.
+      const [data, assets, symbols] = await Promise.all([
         api('search?q=' + encodeURIComponent(q)),
         api('assets/search?q=' + encodeURIComponent(q)).catch(() => null),
+        api('symbols/search?q=' + encodeURIComponent(q) + '&limit=8').catch(() => null),
       ]);
       if (gen !== _searchGen) return;
       loading.remove();
@@ -13656,8 +13709,28 @@ document.getElementById('search-input').addEventListener('input', function() {
         }
       }
 
+      // Symbols before packages. Somebody typing a CamelCase identifier wants
+      // the declaration, not the four paths whose text happens to contain it,
+      // and a package match for a symbol query is the weaker answer of the two.
+      const syms = (symbols && symbols.symbols) || [];
+      if (syms.length) {
+        results.appendChild(el('div', { className: 'search-section-label' }, 'symbols'));
+        for (const sym of syms) {
+          const sub = (sym.doc || sym.signature || '').trim() || (sym.kind + ' in ' + sym.path);
+          results.appendChild(searchResultRow('', sym.kind, sym.display, sub,
+            () => {
+              results.classList.remove('open');
+              // Straight to the declaration: the docs tab, anchored on the
+              // symbol. Landing on the realm's overview and making the reader
+              // find it again is most of why symbol search was worth having.
+              navigate('/realm/' + sym.path.replace('gno.land/', '')
+                + '?tab=docs&sym=' + encodeURIComponent(sym.name));
+            }));
+        }
+      }
+
       if (!data || !data.length) {
-        if (!direct.length && !tokens.length) {
+        if (!direct.length && !tokens.length && !syms.length) {
           results.appendChild(el('div', { style: { padding: '10px 12px' } }, 'no results'));
         }
         return;
