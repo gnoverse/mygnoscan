@@ -206,8 +206,8 @@ func activeAddrPoints(
 	granularity string,
 	step time.Duration,
 	truncFn func(time.Time) time.Time,
+	now time.Time,
 ) []ActiveAddressTimePoint {
-	now := time.Now().UTC()
 	start := truncFn(now.AddDate(0, 0, -days))
 	end := truncFn(now)
 	var out []ActiveAddressTimePoint
