@@ -13,8 +13,8 @@ import (
 func (d *DB) InsertBankSend(network, txHash string, blockHeight int, blockTime, from, to, amount string, success bool) error {
 	d.writeMu.Lock()
 	defer d.writeMu.Unlock()
-	_, err := d.db.Exec(`INSERT OR IGNORE INTO bank_sends (network, tx_hash, block_height, block_time, from_address, to_address, amount, success) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		network, txHash, blockHeight, blockTime, from, to, amount, success)
+	_, err := d.db.Exec(`INSERT OR IGNORE INTO bank_sends (network, tx_hash, block_height, block_time, from_address, to_address, amount, ugnot_amount, success) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		network, txHash, blockHeight, blockTime, from, to, amount, ParseUgnot(amount), success)
 	return err
 }
 
@@ -1098,9 +1098,9 @@ func (d *DB) GetHealthTimeSeries(network, granularity string, days int) ([]Healt
 	return out, nil
 }
 
-func (d *DB) activeAddrSeriesLive(network, granularity string, days int) ([]ActiveAddressTimePoint, error) {
+func (d *DB) activeAddrSeriesLive(network, granularity string, days int, now time.Time) ([]ActiveAddressTimePoint, error) {
 	sqlFmt, step, truncFn := timeseriesFormat(granularity)
-	startTime := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
+	startTime := now.AddDate(0, 0, -days).Format(time.RFC3339)
 
 	// Scope to the configured networks, always.
 	//
@@ -1195,7 +1195,7 @@ func (d *DB) activeAddrSeriesLive(network, granularity string, days int) ([]Acti
 		return nil, err
 	}
 
-	return activeAddrPoints(buckets, days, granularity, step, truncFn), nil
+	return activeAddrPoints(buckets, days, granularity, step, truncFn, now), nil
 }
 
 // activeAddrSeriesRolledUp answers the same question from the stored tuples,
@@ -1211,10 +1211,10 @@ func (d *DB) activeAddrSeriesLive(network, granularity string, days int) ([]Acti
 // (bucket, typ, count) shape the live path already returns. Callers hold the
 // read lock.
 
-func (d *DB) activeAddrSeriesRolledUp(network, granularity string, days int, boundary time.Time) ([]ActiveAddressTimePoint, error) {
+func (d *DB) activeAddrSeriesRolledUp(network, granularity string, days int, boundary, now time.Time) ([]ActiveAddressTimePoint, error) {
 	_, step, truncFn := timeseriesFormat(granularity)
 
-	start := time.Now().UTC().AddDate(0, 0, -days)
+	start := now.AddDate(0, 0, -days)
 	netFilter := d.networkFilter("network", network)
 
 	// The window opens at an instant — "now minus 30 days" — and the stored
@@ -1316,7 +1316,7 @@ func (d *DB) activeAddrSeriesRolledUp(network, granularity string, days int, bou
 		return nil, err
 	}
 
-	return activeAddrPoints(buckets, days, granularity, step, truncFn), nil
+	return activeAddrPoints(buckets, days, granularity, step, truncFn, now), nil
 }
 
 // activeAddrBucketLayout is the stored bucket format: a UTC hour, fixed width so

@@ -186,7 +186,7 @@ func (d *DB) GetActiveAccounts(network, sortBy string, limit, offset int) ([]Acc
 	//
 	// The consequence is that an address can appear once per chain it is active
 	// on. That is the honest shape; the network column says which is which.
-	amountSum := `SUM(CAST(REPLACE(REPLACE(amount, 'ugnot', ''), '"', '') AS INTEGER))`
+	amountSum := `SUM(ugnot_amount)`
 	q := `
 		SELECT address, network, SUM(call_count), SUM(call_tx_count), SUM(deploy_count), SUM(run_count), SUM(send_count), SUM(sent_amount), SUM(received_amount)
 		FROM (
@@ -311,13 +311,42 @@ type ActiveAddressTimePoint struct {
 }
 
 func (d *DB) GetActiveAddressTimeSeries(network, granularity string, days int) ([]ActiveAddressTimePoint, error) {
+	return d.activeAddressTimeSeriesAt(network, granularity, days, time.Now().UTC())
+}
+
+// activeAddressTimeSeriesAt is the same read with the window's instant handed
+// in rather than taken.
+//
+// A 7-day window opens at "now minus 7 days", to the second, and both paths
+// used to call time.Now() for themselves, twice each counting the dense-series
+// fill. Production never noticed: one request's reads land microseconds apart.
+// A test that reads the series twice and compares them notices, because a
+// rollup build runs between the two reads, and a minute boundary crossed in
+// there moves the window a minute later and drops exactly one seeded address
+// out of the first bucket.
+//
+// So the instant is a parameter, and every read inside one call derives from
+// it. Behaviour is unchanged; what changes is that "the window" is now one
+// value rather than four samples of a clock.
+func (d *DB) activeAddressTimeSeriesAt(network, granularity string, days int, now time.Time) ([]ActiveAddressTimePoint, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
 	if boundary, ok := d.activeAddrRollupBoundary(); ok {
-		return d.activeAddrSeriesRolledUp(network, granularity, days, boundary)
+		return d.activeAddrSeriesRolledUp(network, granularity, days, boundary, now)
 	}
-	return d.activeAddrSeriesLive(network, granularity, days)
+	return d.activeAddrSeriesLive(network, granularity, days, now)
+}
+
+// activeAddressTimeSeriesLiveAt forces the reference path, whatever the rollup
+// holds. Only the tests want this: the rolled-up path is correct exactly when
+// it agrees with the live one, and once a rollup exists there is otherwise no
+// way to ask for the thing it is being compared against.
+func (d *DB) activeAddressTimeSeriesLiveAt(network, granularity string, days int, now time.Time) ([]ActiveAddressTimePoint, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	return d.activeAddrSeriesLive(network, granularity, days, now)
 }
 
 // activeAddrSeriesLive computes the series from calls, packages and bank_sends.

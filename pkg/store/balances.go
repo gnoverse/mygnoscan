@@ -2,7 +2,6 @@ package store
 
 import (
 	"database/sql"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -48,24 +47,48 @@ type BalanceRow struct {
 	FetchedAt string `json:"fetched_at"`
 }
 
-// ugnotAmount pulls the ugnot component out of a coin string.
+// ParseUgnot sums the ugnot in a coin string.
 //
-// The chain answers with a comma-separated coin list ("100ugnot,5foo"), and
-// only the native denom is rankable: two chains' non-native coins are not
-// comparable and summing across denominations would invent a number.
-var ugnotAmount = regexp.MustCompile(`(\d+)ugnot`)
-
+// The chain writes a coin *list*, not a coin: "100ugnot", "100ugnot,5foo".
+// Each entry is a decimal amount immediately followed by its denom, entries
+// joined by commas. Only entries whose denom is exactly ugnot count, because
+// two denominations summed together invent a number, and a non-native coin
+// belongs outside a ugnot total rather than coerced into one.
+//
+// Read entry by entry rather than by pattern-matching the denom out of the
+// whole string. A pattern finds `ugnot` wherever it appears, which is one
+// character away from also finding it inside a denom that merely ends in it,
+// and it stops at the first match, so a list carrying ugnot twice reports the
+// first entry as the total.
 func ParseUgnot(amount string) int64 {
-	m := ugnotAmount.FindStringSubmatch(amount)
-	if m == nil {
-		return 0
+	var total int64
+	for _, entry := range strings.Split(amount, ",") {
+		// The quotes are a JSON-encoded coin arriving unwrapped, which some
+		// params responses do. Stripping them here keeps the callers from
+		// having to know.
+		entry = strings.Trim(strings.TrimSpace(entry), `"`)
+
+		digits := 0
+		for digits < len(entry) && entry[digits] >= '0' && entry[digits] <= '9' {
+			digits++
+		}
+		if digits == 0 || entry[digits:] != ugnotDenom {
+			continue
+		}
+
+		// Nothing on any gno chain is within three orders of magnitude of
+		// overflowing an int64, so a parse failure here is a malformed row
+		// rather than a large one: skip it instead of guessing at a value.
+		v, err := strconv.ParseInt(entry[:digits], 10, 64)
+		if err != nil {
+			continue
+		}
+		total += v
 	}
-	v, err := strconv.ParseInt(m[1], 10, 64)
-	if err != nil {
-		return 0
-	}
-	return v
+	return total
 }
+
+const ugnotDenom = "ugnot"
 
 // UpsertBalances writes a sweep's results in one transaction.
 //

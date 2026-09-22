@@ -371,8 +371,15 @@ func TestWindowOpeningHourMatchesLive(t *testing.T) {
 	db := NewTestDB(t)
 	db.SetConfiguredNetworks([]config.NetworkConfig{{ID: "a"}})
 
+	// One instant for the whole test: the seeding, both reads, and the window
+	// each path computes from it. Without that, RefreshRollups() running between
+	// the two reads is enough wall clock for a minute boundary to pass, which
+	// moves the window a minute later and drops exactly one of the addresses
+	// seeded below out of the first bucket. 24 became 23 on main on 2026-09-21.
+	now := time.Now().UTC()
+
 	const days = 7
-	openingHour := time.Now().UTC().AddDate(0, 0, -days).Truncate(time.Hour)
+	openingHour := now.AddDate(0, 0, -days).Truncate(time.Hour)
 	for i := -60; i <= 60; i++ {
 		when := openingHour.Add(time.Duration(i) * time.Minute)
 		if err := db.InsertCall("a", fmt.Sprintf("edge%d", i), 1, 0,
@@ -382,15 +389,20 @@ func TestWindowOpeningHourMatchesLive(t *testing.T) {
 		}
 	}
 
+	if err := db.RefreshRollups(); err != nil {
+		t.Fatalf("RefreshRollups: %v", err)
+	}
+
+	// The live read is taken through the live-only seam rather than through the
+	// public reader. The public reader prefers the rollup as soon as one exists,
+	// so building it once and then asking twice compared the rolled-up path
+	// against itself: the daily case asserted nothing at all.
 	for _, granularity := range []string{"hourly", "daily"} {
-		live, err := db.GetActiveAddressTimeSeries("", granularity, days)
+		live, err := db.activeAddressTimeSeriesLiveAt("", granularity, days, now)
 		if err != nil {
 			t.Fatalf("live %s: %v", granularity, err)
 		}
-		if err := db.RefreshRollups(); err != nil {
-			t.Fatalf("RefreshRollups: %v", err)
-		}
-		rolled, err := db.GetActiveAddressTimeSeries("", granularity, days)
+		rolled, err := db.activeAddressTimeSeriesAt("", granularity, days, now)
 		if err != nil {
 			t.Fatalf("rolled %s: %v", granularity, err)
 		}

@@ -115,9 +115,13 @@ export function seed(dbPath) {
     const run = db.prepare(`INSERT OR REPLACE INTO msg_runs
       (network, tx_hash, block_height, block_time, caller, source, success)
       VALUES (?, ?, ?, ?, ?, ?, 1)`);
+    // ugnot_amount is the coin string parsed, and the fixture writes it
+    // because the seed lands after the server has already opened the database:
+    // the backfill migration that fills it on a real deployment has run by
+    // then, so a row inserted here without it would sum as zero.
     const send = db.prepare(`INSERT OR REPLACE INTO bank_sends
-      (network, tx_hash, block_height, block_time, from_address, to_address, amount, success)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 1)`);
+      (network, tx_hash, block_height, block_time, from_address, to_address, amount, ugnot_amount, success)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`);
     const tx = db.prepare(`INSERT OR REPLACE INTO transactions
       (network, tx_hash, block_height, block_time, gas_used, gas_wanted, gas_fee, success)
       VALUES (?, ?, ?, ?, ?, ?, ?, 1)`);
@@ -176,7 +180,7 @@ export function seed(dbPath) {
     for (let i = 0; i < 20; i++) {
       const network = NETWORKS[i % 2];
       send.run(network, `send-${network}-${i}`, 3000 + i, blockTime(3000 + i), BUSY_CALLER,
-        'g1recipient00000000000000000000000000', '1000000ugnot');
+        'g1recipient00000000000000000000000000', '1000000ugnot', 1000000);
       tx.run(network, `send-${network}-${i}`, 3000 + i, blockTime(3000 + i), 40000, 50000, 400);
     }
 
