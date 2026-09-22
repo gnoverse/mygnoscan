@@ -19,9 +19,17 @@ func seedGas(t *testing.T, db *store.DB, network string, realms int) {
 	when := time.Now().UTC().Format(time.RFC3339)
 	for i := 0; i < realms; i++ {
 		hash := fmt.Sprintf("%s-deploy-%d", network, i)
-		if err := db.UpsertPackage(network, fmt.Sprintf("gno.land/r/%s/pkg%d", network, i), "pkg",
-			"g1creator", hash, 200+i, when, true, 2); err != nil {
+		path := fmt.Sprintf("gno.land/r/%s/pkg%d", network, i)
+		if err := db.UpsertPackage(network, path, "pkg", "g1creator", hash, 200+i, when, true, 2); err != nil {
 			t.Fatalf("UpsertPackage: %v", err)
+		}
+		// A real deploy writes both: packages for what is live now, and
+		// package_submissions for the message that put it there. Seeding only
+		// the first models a chain that cannot exist, and gas attribution
+		// reads the second.
+		if err := db.InsertPackageSubmission(network, hash, 0, path, "pkg",
+			"g1creator", 200+i, when, true, 2, true); err != nil {
+			t.Fatalf("InsertPackageSubmission: %v", err)
 		}
 		if err := db.UpsertTransaction(network, hash, 200+i, when, 1000*(i+1), 2000*(i+1), 100, true); err != nil {
 			t.Fatalf("UpsertTransaction: %v", err)
