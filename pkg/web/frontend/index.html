@@ -1224,13 +1224,13 @@ function identicon(addr, px) {
   return span;
 }
 
-function addrLinkImpl(addr, network, fallback) {
+function addrLinkImpl(addr, network, fallback, plain) {
   const info = addrInfo(addr);
   const span = el('span');
   span.setAttribute('data-hl', addr);
   const icon = identicon(addr);
   if (icon) span.appendChild(icon);
-  const a = link(info ? info.label : fallback, () => navigate('/address/' + addr + netSuffix(network)));
+  const a = link(info && !plain ? info.label : fallback, () => navigate('/address/' + addr + netSuffix(network)));
   a.setAttribute('data-hl', addr);
   a.title = addr;
   span.appendChild(a);
@@ -1249,7 +1249,13 @@ function addrLinkImpl(addr, network, fallback) {
       mark.title = info.mark.hint + (info.why ? '\n' + info.why : '');
       span.appendChild(mark);
     }
-    span.appendChild(el('span', { className: 'block-ctx' }, ' ' + fallback));
+    // In plain mode the label is what gave way, so it has to be the first
+    // thing the tooltip says — otherwise a reader who recognises @faucet by
+    // name has no way left to find it. The inferred mark stays either way: it
+    // costs a few pixels and it is the one part of a label that asks to be
+    // taken on trust.
+    if (plain) a.title = info.label + '\n' + a.title;
+    else span.appendChild(el('span', { className: 'block-ctx' }, ' ' + fallback));
   }
   return span;
 }
@@ -1332,6 +1338,14 @@ function addrLink(addr, network) {
   // crowds out the content beside it. The full value stays in the tooltip, and
   // the link target is unchanged.
   return addrLinkImpl(addr, network, truncAddr(addr));
+}
+// addrLinkPlain is addrLink without the registry label beside the address —
+// for a table packed three-up across the page, where label and address together
+// are wider than the column has to give and the number in the next cell is what
+// gets clipped. moul picked the address over the label for that cell; the label
+// moves into the tooltip rather than disappearing.
+function addrLinkPlain(addr, network) {
+  return addrLinkImpl(addr, network, truncAddr(addr), true);
 }
 // addrLinkFull is addrLink but never truncates — for tables with only one or
 // two other columns (top senders/receivers on an address page, say) where
@@ -4767,8 +4781,10 @@ function bankVolumeStats(bar, bank) {
 }
 
 // bankMoverTable is one of the three "who moves the coin" columns. `cols`
-// names the two figure columns in the order they are drawn.
-function bankMoverTable(rows, cols) {
+// names the two figure columns in the order they are drawn. `plain` drops the
+// registry label from the address cell, which /coins needs to fit three of
+// these side by side and /defi, showing one at full width, does not.
+function bankMoverTable(rows, cols, plain) {
   const tbl = el('table');
   tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'address'), el('th', {}, cols[0]), el('th', {}, cols[1]))));
   const body = el('tbody');
@@ -4776,7 +4792,7 @@ function bankMoverTable(rows, cols) {
     const count = el('td', {}, fmtNum(s.count));
     const volume = el('td', {}, gnotAmount(s.total));
     body.appendChild(netRow(s.network,
-      el('td', {}, addrLink(s.address, s.network)),
+      el('td', {}, plain ? addrLinkPlain(s.address, s.network) : addrLink(s.address, s.network)),
       cols[0] === 'txs' ? count : volume,
       cols[0] === 'txs' ? volume : count));
   }
@@ -4897,15 +4913,15 @@ async function loadCoins() {
     // of all fifty. What makes a row wide is a registry label printed beside
     // the address (`@faucet g18qhq2f…kclp`), and those sit at the top.
     //
-    // Each column still scrolls ~48px internally at every viewport, because
-    // 3x424px does not fit 1160px of content area at any screen width. Closing
-    // that needs the address cell to stop printing both the label and the
-    // address, not more page width.
+    // Which is why the address cell here is addrLinkPlain: 3x424px does not fit
+    // 1160px of content area at any screen width, and the ~55px a label costs
+    // beside the address was the only slack there was to find. The scrollbar
+    // stays as the backstop for a label-free row that is still too wide.
     const column = (title, rows, cols) => {
       if (!(rows || []).length) return;
       const col = el('div', { style: { minWidth: 0, overflowX: 'auto' } });
       col.appendChild(el('div', { className: 'section-title' }, title));
-      col.appendChild(bankMoverTable(rows, cols));
+      col.appendChild(bankMoverTable(rows, cols, true));
       grid.appendChild(col);
     };
     column('top senders', bank.top_senders, ['txs', 'volume']);
