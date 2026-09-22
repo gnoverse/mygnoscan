@@ -171,6 +171,8 @@ fact.
 | endpoint | description |
 |---|---|
 | `GET /api/realms` | list realms. `limit`, `offset` |
+| `GET /api/symbols/search` | find a declaration by name. `q`, `network`, `limit` |
+| `GET /api/symbols/status` | what the symbol index covers |
 | `GET /api/packages` | list all packages, realms and pure packages. `limit`, `offset` |
 | `GET /api/realm/{path...}` | detail for one package: metadata, source files, imports, dependents, callers, MsgRun references. `recent_calls` and `msgrun_refs` are the 50 most recent of each, and carry `block_time` where the syncer knew it (omitted otherwise, so a consumer plotting them on a time axis can say how many it left out). `address` and `storage_deposit_address` are the two accounts the package owns, derived from its path (see below) |
 | `GET /api/realm/usage/{path...}` | who calls one realm, aggregated over its whole history, plus one page of the message feed. See below |
@@ -877,6 +879,73 @@ The UI covers the rest without asking the server: an address, a transaction hash
 or a block height is recognised by shape and offered as a direct destination
 above the package matches. A bare number is offered only when a network is
 selected, since a height identifies a different block on every chain.
+
+### Symbol search
+
+```
+GET /api/symbols/search?q=<query>&network=<id>&limit=<n>
+GET /api/symbols/status
+```
+
+Finds a package by **what it declares**, which is the thing `/api/search` cannot
+do: `IterateByOffset` is a real thing somebody types into the box, and matching
+a path, a name or a creator never finds it.
+
+A second endpoint rather than a third group inside `/api/search`, for the same
+reason `/api/assets/search` is its own: that response is an array of packages
+and every caller treats it as one. The frontend asks for all three in parallel.
+
+```json
+{
+  "query": "Iterate",
+  "symbols": [
+    {
+      "path": "gno.land/p/nt/avl/v0", "is_realm": false,
+      "kind": "func", "name": "IterateByOffset", "display": "IterateByOffset",
+      "signature": "func IterateByOffset(offset, count int, cb IterCbFn) bool",
+      "doc": "IterateByOffset walks count entries from offset.",
+      "file": "tree.gno", "line": 118, "exported": true
+    }
+  ]
+}
+```
+
+`kind` is one of `const`, `var`, `type`, `func`, `method`. A method also carries
+`recv`, and `display` is `Recv.Name` for one: a bare `Get` collides with every
+other type's `Get` and with a top-level function of the same name.
+
+Prefix matches rank first and are the indexed path; a substring fallback runs
+only when the prefix pass came back short. Unexported declarations are indexed
+and searchable — they are real, and worth finding when you are reading the
+source — but they rank last. LIKE wildcards in the query are escaped, so `%`
+means a literal percent sign and not "every symbol on the chain".
+
+`/api/symbols/status` reports `{packages, symbols, pending}`: how many packages
+are indexed, how many declarations that is, and how many packages have source
+with no index row yet.
+
+#### How the index stays current
+
+The `symbols` table is a projection of `package_files` and nothing else. Two
+things write it:
+
+- a **background pass** every 10 minutes, which walks every package that has
+  source and re-extracts the ones whose source changed. The skip is one indexed
+  lookup and one hash over bytes the walk is reading anyway, so a pass over an
+  unchanged corpus does no writing at all.
+- **opening a package's docs tab**, which indexes that one package. The
+  background pass owns the corpus, which means a package deployed a minute ago
+  is not in it yet, and the first person to care is the one looking at it.
+
+The fingerprint is over file names and bodies, not over a deploy height: a
+resync rewrites rows at the same height, and a height-keyed check would leave
+the index describing source nobody can see any more.
+
+The index is keyed on the **package**, not on the submission, because
+`package_files` holds current bodies only — a redeploy overwrites them, and the
+bodies an older submission was compiled from are simply not in the database. An
+API diff between two deploys of the same path therefore still needs a spine of
+its own, and this table is not it.
 
 ## Live feed
 
