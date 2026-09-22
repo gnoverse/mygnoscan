@@ -12061,22 +12061,7 @@ function parseDisplayedNum(s) {
 // named by the column's own header rather than by its index: "sorted by amount,
 // descending" survives a column being inserted to its left, and reads as
 // something in a link somebody pasted you.
-// makeSortable adds click-to-sort to a table whose order is its own.
-//
-// A table with `th[data-sort]` headers is not one of those: its order comes
-// from the server, over every row rather than over the fifty on screen, and its
-// loader has its own click handler on the same element. Attaching this one too
-// ran both, and this one ran second and won — so "sort by calls" on a directory
-// re-sorted the painted page *ascending* and showed the realms with the fewest
-// calls under a header promising the most. It also wrote a junk
-// `s.path-creator-calls-...` key into the URL for a sort the server owns.
-//
-// Skipping the whole table rather than the marked headers: a page-local sort of
-// a server-paged listing answers "order these fifty", where the header promises
-// "order all two hundred", and offering both on one table is how the two get
-// confused.
 function makeSortable(table) {
-  if (table.querySelector('th[data-sort]')) return;
   const headers = table.querySelectorAll('th');
   const key = tableKey(table);
   const param = key ? 's.' + key : null;
@@ -12105,7 +12090,24 @@ function makeSortable(table) {
   headers.forEach((th, colIdx) => {
     th.classList.add('sortable');
     th.addEventListener('click', () => {
-      const asc = !th.classList.contains('sort-asc');
+      // Which way to go is read from the URL, not from the header's own
+      // sort- classes, for the same reason registerTableRestore below does:
+      // a `th[data-sort]` header has a second handler on it, the loader's, and
+      // that one stamps `sort-desc` on the active column *synchronously*
+      // before this listener runs. Reading the class here therefore reads what
+      // the loader just wrote rather than what the reader last chose, and the
+      // direction never flips.
+      //
+      // And the first click on a server-sorted column goes descending, because
+      // its loader refetches the whole set ordered descending and this handler
+      // then reorders the fifty rows on screen. Starting ascending made the two
+      // disagree on the very first click: asking a directory for "most calls"
+      // fetched exactly the right rows and displayed them fewest-first, which
+      // reads as the opposite of what the header promises. Clicking again still
+      // flips it, for every table.
+      const col = slugify(th.textContent);
+      const [savedCol, savedDir] = (param ? urlParam(param) || '' : '').split(':');
+      const asc = savedCol === col ? savedDir === 'desc' : !th.hasAttribute('data-sort');
       sortBy(colIdx, asc);
       if (param) urlSetParam(param, slugify(th.textContent) + (asc ? '' : ':desc'));
     });

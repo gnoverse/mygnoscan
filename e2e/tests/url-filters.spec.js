@@ -87,7 +87,10 @@ test('a sorted column survives a reload, named rather than numbered', async ({ p
   const firstCell = () => page.locator('#view-realms table tbody tr').first().locator('td').first().innerText();
   const header = page.locator('#view-realms table thead th', { hasText: 'calls' }).first();
 
-  await header.click();                       // ascending
+  // One click, not two: a server-sorted column starts descending now, so that
+  // its page-local order agrees with the order its loader just fetched. What
+  // this test is about is the round trip through the URL, which is the same
+  // either way.
   await header.click();                       // descending
   expect(new URL(page.url()).searchParams.get(`s.${REALMS_KEY}`)).toBe('calls:desc');
   const top = await firstCell();

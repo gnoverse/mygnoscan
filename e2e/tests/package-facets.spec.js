@@ -116,38 +116,52 @@ test('a package with symbols links into its docs', async ({ page }) => {
   await expect(page).toHaveURL(/tab=docs/);
 });
 
-// A directory's order belongs to the server, over every row rather than over
-// the fifty on screen.
+// Two things sort these headers, and they have to agree on the first click.
 //
-// The generic click-to-sort enhancer used to attach to these headers as well,
-// and it ran second, so it re-sorted the painted page *ascending* on top of the
-// server's descending answer. "Sort by calls" showed the realms with the fewest
-// calls, under a header promising the most, and wrote a junk key into the URL
-// on the way. This is not about the facets; it was live on every directory.
-test('a server-sorted column sorts descending, and only once', async ({ page }) => {
+// The loader refetches the whole set ordered descending; the generic
+// click-to-sort enhancer then reorders the fifty rows on screen. It used to
+// start ascending, so asking a directory for "most calls" fetched exactly the
+// right rows and displayed them fewest-first, which reads as the opposite of
+// what the header promises. Not about the facets; it was live on every
+// directory.
+test('a server-sorted column starts descending, and still toggles', async ({ page }) => {
   await page.goto('/realms');
   await settle(page);
 
-  await page.locator('#view-realms th[data-sort="calls"]').click();
+  const header = page.locator('#view-realms th[data-sort="calls"]');
+  const callsColumn = async () =>
+    (await page.locator('#realms-list tr td:nth-child(4)').allTextContents())
+      .map(t => Number(t.replace(/[^0-9]/g, '')) || 0);
+
+  await header.click();
   await settle(page);
-
-  const calls = (await page.locator('#realms-list tr td:nth-child(4)').allTextContents())
-    .map(t => Number(t.replace(/[^0-9]/g, '')) || 0);
-  expect(calls.length).toBeGreaterThan(2);
-  for (let i = 1; i < calls.length; i++) {
-    expect(calls[i], 'most-called first, not fewest').toBeLessThanOrEqual(calls[i - 1]);
+  const desc = await callsColumn();
+  expect(desc.length).toBeGreaterThan(2);
+  for (let i = 1; i < desc.length; i++) {
+    expect(desc[i], 'first click is most-called first, not fewest').toBeLessThanOrEqual(desc[i - 1]);
   }
+  await expect(header).toHaveClass(/sort-desc/);
 
-  // And nothing writes a client-sort key for a sort it does not own.
-  expect(page.url()).not.toMatch(/[?&]s\./);
+  // And the second click still flips it, which is the behaviour url-filters
+  // already pins and this must not take away.
+  await header.click();
+  await settle(page);
+  const asc = await callsColumn();
+  for (let i = 1; i < asc.length; i++) {
+    expect(asc[i], 'second click flips to ascending').toBeGreaterThanOrEqual(asc[i - 1]);
+  }
+  await expect(header).toHaveClass(/sort-asc/);
 });
 
-// The enhancer still owns the tables whose order really is page-local.
-test('a table the server does not order is still click-sortable', async ({ page }) => {
-  await page.goto('/blocks');
+// A table nobody else sorts is unaffected: its first click stays ascending,
+// which is what every other table on the site has always done.
+test('a table the server does not order still starts ascending', async ({ page }) => {
+  await page.goto('/validators');
   await settle(page);
-  const table = page.locator('#view-blocks table').first();
-  const th = table.locator('th').first();
+  const th = page.locator('#view-validators table thead th').first();
   if (await th.count() === 0) test.skip();
   await expect(th).toHaveClass(/sortable/);
+  expect(await th.getAttribute('data-sort')).toBeNull();
+  await th.click();
+  await expect(th).toHaveClass(/sort-asc/);
 });
