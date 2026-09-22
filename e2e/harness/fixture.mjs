@@ -44,6 +44,33 @@ export const PAIR_CALLERS = [
 ];
 export const PAIRED_REALMS = ['gno.land/r/consumer00/app', 'gno.land/r/consumer01/app'];
 
+// A realm built for the calls tab's aggregates: several callers with
+// different habits, a multicall, a failure, a MsgRun, and one exported
+// function nobody has ever called.
+//
+// Its own realm rather than more traffic on HUB because the numbers here are
+// asserted exactly, and HUB's counts are already pinned by the graph and
+// storage suites.
+export const USAGE_REALM = 'gno.land/r/rumble/game';
+export const USAGE_ROUTE = 'r/rumble/game';
+export const USAGE_CREATOR = 'g1rumbledev00000000000000000000000000';
+// Exported in the source; Withdraw is deliberately never called, which is what
+// the info tab's dimmed pill means.
+export const USAGE_EXPORTED = ['Bid', 'Claim', 'Render', 'Withdraw'];
+// caller -> [messages, transactions]. g1rumble1 signs one transaction carrying
+// two Bids, which is why its two numbers differ.
+export const USAGE_CALLERS = {
+  'g1rumble100000000000000000000000000000': [4, 3],
+  'g1rumble200000000000000000000000000000': [2, 2],
+  'g1rumble300000000000000000000000000000': [1, 1],
+  'g1rumblerun000000000000000000000000000': [1, 1],
+};
+export const USAGE_MESSAGES = 8;
+export const USAGE_TXS = 7;
+export const USAGE_FAILED = 1;
+export const USAGE_BID_CALLS = 6;
+export const USAGE_BID_CALLERS = 3;
+
 // Storage. The numbers are round so the /storage assertions can name them:
 // alpha holds 40 MiB across three namespaces, against the fake indexer's
 // 100 GB of capacity, which is 0.04% full.
@@ -152,6 +179,36 @@ export function seed(dbPath) {
         'g1recipient00000000000000000000000000', '1000000ugnot');
       tx.run(network, `send-${network}-${i}`, 3000 + i, blockTime(3000 + i), 40000, 50000, 400);
     }
+
+    // The calls-tab fixture. A dedicated prepared statement because this is
+    // the only traffic in the fixture that is not uniformly successful and
+    // single-message-per-transaction, which is exactly what the aggregates
+    // have to get right.
+    const usageCall = db.prepare(`INSERT OR REPLACE INTO calls
+      (network, tx_hash, msg_index, block_height, block_time, caller, pkg_path, func_name, success)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    addPackage('alpha', USAGE_REALM, USAGE_CREATOR, 5000, true, 'usage-deploy');
+    // Overwrites the generic body addPackage writes: the exported set is the
+    // point here, and Withdraw has to be in the source and in no call.
+    file.run('alpha', USAGE_REALM, 'game.gno',
+      'package game\n\n' + USAGE_EXPORTED.map(f => `func ${f}() {}`).join('\n') + '\n');
+    const [R1, R2, R3, RRUN] = Object.keys(USAGE_CALLERS);
+    const usageRows = [
+      // tx, msgIndex, height, caller, func, success
+      ['usage-1', 0, 5001, R1, 'Bid', 1],
+      ['usage-2', 0, 5002, R1, 'Bid', 1],
+      ['usage-2', 1, 5002, R1, 'Bid', 1], // multicall: 2 messages, 1 transaction
+      ['usage-3', 0, 5003, R2, 'Bid', 1],
+      ['usage-4', 0, 5004, R2, 'Bid', 0], // the one failure
+      ['usage-5', 0, 5005, R1, 'Claim', 1],
+      ['usage-6', 0, 5006, R3, 'Bid', 1],
+    ];
+    for (const [hash, idx, h, caller, fn, ok] of usageRows) {
+      usageCall.run('alpha', hash, idx, h, blockTime(h), caller, USAGE_REALM, fn, ok);
+      tx.run('alpha', hash, h, blockTime(h), 70000, 100000, 700);
+    }
+    run.run('alpha', 'usage-run', 5007, blockTime(5007), RRUN, `import "${USAGE_REALM}"\n`);
+    tx.run('alpha', 'usage-run', 5007, blockTime(5007), 70000, 100000, 700);
 
     // Storage events, the rows /storage is built on. Signed: an unlock
     // subtracts, so r/hub/core nets out below what it deposited.
