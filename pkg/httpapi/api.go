@@ -885,6 +885,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/bankstats", a.HandleBankStats)
 	mux.HandleFunc("GET /api/timeseries/realm-share", a.HandleTimeSeriesRealmShare)
 	mux.HandleFunc("GET /api/namespaces", a.HandleNamespaces)
+	mux.HandleFunc("GET /api/state/{path...}", a.HandleState)
 	mux.HandleFunc("GET /api/storage/{path...}", a.HandleStorage)
 	mux.HandleFunc("GET /api/allevents", a.HandleAllEvents)
 	mux.HandleFunc("GET /api/events/{path...}", a.HandleEvents)
