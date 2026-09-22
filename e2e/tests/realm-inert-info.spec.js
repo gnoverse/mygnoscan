@@ -12,7 +12,7 @@ import { settle, unexpected, watch } from './helpers.js';
 // half-done: the tab is gone, its content is in info, and the old deep link
 // still lands somewhere sensible.
 
-const TABS = ['info', 'docs', 'source', 'calls', 'events', 'storage', 'defi', 'deps'];
+const TABS = ['info', 'docs', 'source', 'state', 'calls', 'events', 'storage', 'defi', 'deps'];
 
 // The page prints heights through fmtNum, which is toLocaleString.
 const height = n => n.toLocaleString('en-US');

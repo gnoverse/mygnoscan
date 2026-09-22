@@ -310,6 +310,21 @@ html.embed .pagenav { display: none; }
    compete with the seven words they qualify. */
 .tab-count { color: var(--fg2); font-size: 11px; opacity: 0.75; font-weight: 400; font-variant-numeric: tabular-nums; }
 .tab.active .tab-count { opacity: 0.9; }
+    /* The state tree. Monospace throughout: these are values a developer will
+       compare, copy and paste, and a proportional font makes two addresses that
+       differ in one character look identical. */
+    .state-tree { font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 12.5px; line-height: 1.7; }
+    .state-head { display: flex; align-items: baseline; gap: 7px; white-space: nowrap; }
+    .state-head:hover { background: var(--bg2, rgba(127,127,127,.07)); }
+    .state-twisty { display: inline-block; width: 11px; color: var(--fg2); flex: none; }
+    .state-name { color: var(--fg); }
+    .state-type { color: var(--fg2); font-size: 11.5px; }
+    /* The value is the thing the reader came for, so it is the one part
+       allowed to wrap and to take the remaining width. */
+    .state-value { color: var(--blue, #268bd2); white-space: pre-wrap; word-break: break-word; min-width: 0; }
+    .state-ref { color: var(--fg2); font-size: 11.5px; font-style: italic; }
+    .state-size { color: var(--fg2); font-size: 11px; margin-left: auto; padding-left: 12px; flex: none; }
+
 .tab-content { display: none; }
 .tab-content.active { display: block; }
 pre { background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; padding: 16px; overflow-x: auto; font-size: 13px; line-height: 1.5; white-space: pre; }
@@ -893,6 +908,7 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
     <div class="tab-content active" id="tab-info"></div>
     <div class="tab-content" id="tab-docs"></div>
     <div class="tab-content" id="tab-source"></div>
+    <div class="tab-content" id="tab-state"></div>
     <div class="tab-content" id="tab-calls"></div>
     <div class="tab-content" id="tab-events"></div>
     <div class="tab-content" id="tab-storage"></div>
@@ -10251,9 +10267,9 @@ async function loadRealmDetail(path, initialTab) {
       const tabIcons = {
         info: () => icon('info'), docs: () => icon('doc'), source: () => icon('code'),
         calls: () => icon('call'), events: () => icon('events'), storage: () => icon('storage'),
-        defi: () => icon('coin'), deps: () => icon('graph'),
+        defi: () => icon('coin'), deps: () => icon('graph'), state: () => icon('blocks'),
       };
-      const tabNames = ['info', 'docs', 'source', 'calls', 'events', 'storage', 'defi', 'deps'];
+      const tabNames = ['info', 'docs', 'source', 'state', 'calls', 'events', 'storage', 'defi', 'deps'];
       // How much is behind each tab, in the strip itself.
       //
       // Bare words said nothing about which of them were empty, so finding out
@@ -10302,7 +10318,14 @@ async function loadRealmDetail(path, initialTab) {
       // indexer takes ~16s to return cold. Paying that on every realm page load
       // to fill a tab most readers never open is the wrong trade; the response
       // cache absorbs the repeats once somebody has.
-      const tabLoaders = { defi: () => loadRealmDefi(path, detail, gen) };
+      const tabLoaders = {
+        defi: () => loadRealmDefi(path, detail, gen),
+        // State is the most expensive tab in the app: it resolves a realm's
+        // object graph live from a node, because realm state is not in the
+        // transaction stream and therefore not in our database. Never load it
+        // with the page.
+        state: () => loadRealmState(path, detail, gen),
+      };
       tabNames.forEach((name) => {
         const tab = el('div', { className: 'tab' + (name === activeTab ? ' active' : ''), onclick: () => {
           switchTab(name, tab);
@@ -10805,6 +10828,8 @@ async function loadRealmDetail(path, initialTab) {
       // demand.
       const defiEl = clear('tab-defi');
       if (activeTab === 'defi') { defiEl.classList.add('active'); tabLoaders.defi(); } else defiEl.classList.remove('active');
+      const stateEl = clear('tab-state');
+      if (activeTab === 'state') { stateEl.classList.add('active'); tabLoaders.state(); } else stateEl.classList.remove('active');
       const depsEl = clear('tab-deps'); if (activeTab === 'deps') depsEl.classList.add('active'); else depsEl.classList.remove('active');
       skeletonBlock(depsEl);
       const depsPath = path.replace('gno.land/', '');
@@ -12103,6 +12128,189 @@ function setTabCount(name, n) {
 // imports it; for anything defi-shaped the first question is money, and nothing
 // here could answer it.
 //
+// The state tab: what the realm actually holds right now.
+//
+// Loaded on demand (see tabLoaders) because it is the only tab that resolves a
+// live object graph out of a node. Realm state is not in the transaction
+// stream, so it is not in our database and cannot be: the indexer sees that a
+// call happened, not what it left behind.
+//
+// ⚠️ Everything here is *current* state and can never be historical. Realm
+// objects are stored unversioned and overwritten in place, so a node cannot
+// answer for a past height even though the query accepts one. Do not add a
+// height selector to this tab expecting it to work.
+let _stateGen = -1;
+
+function loadRealmState(path, detail, gen, full) {
+  // `full` re-reads the same realm with a wider budget, so it must bypass the
+  // once-per-realm guard that stops a tab re-click from refetching.
+  if (_stateGen === gen && !full) return;
+  _stateGen = gen;
+  const into = clear('tab-state');
+  if (getNetwork() === 'all') {
+    into.appendChild(el('div', { style: { color: 'var(--fg2)' } },
+      'state is read from one chain at a time — select a specific network to see it'));
+    return;
+  }
+  // A read can take seconds on a large realm, so say what is happening rather
+  // than leaving a blank panel: an unexplained wait reads as a broken tab.
+  into.appendChild(el('div', { style: { color: 'var(--fg2)', marginBottom: '8px' } },
+    full
+      ? 'reading the full state… this follows every reference and can take up to half a minute'
+      : 'reading state from the chain… this resolves the realm’s object graph and can take a few seconds'));
+  skeletonBlock(into);
+  (async () => {
+    let d;
+    try {
+      d = await api('state/' + path.replace('gno.land/', '') + (full ? '?full=1' : ''));
+    } catch (err) {
+      if (gen !== _detailGen) return;
+      into.textContent = '';
+      into.appendChild(el('div', { style: { color: 'var(--fg2)' } }, 'No state: ' + err.message));
+      return;
+    }
+    if (gen !== _detailGen) return;
+    into.textContent = '';
+    renderRealmState(into, d, () => loadRealmState(path, detail, gen, true));
+  })();
+}
+
+function renderRealmState(into, d, onLoadFull) {
+  const all = d.nodes || [];
+  // A type declaration is API, not state, the same way a function is: the
+  // decoder already drops functions for that reason, and types belong with
+  // them. They are kept rather than dropped because a reader occasionally
+  // wants to confirm a type exists, but they go below the state and behind a
+  // toggle, and they are not counted as variables. Left inline they push the
+  // actual values off the first screen: gnoswap/pool declares 9 types before
+  // its first stateful field.
+  const nodes = all.filter(n => n.kind !== 'type');
+  const types = all.filter(n => n.kind === 'type');
+
+  const stats = el('div', { className: 'stats-bar' });
+  const stat = (label, value, title) => {
+    const cell = el('div', { className: 'stat' },
+      el('span', { className: 'label' }, label),
+      el('span', { className: 'value' }, value));
+    if (title) cell.title = title;
+    stats.appendChild(cell);
+  };
+  stat('variables', fmtNum(nodes.length), 'top-level package variables the realm declares');
+  stat('objects', fmtNum(d.objects || 0), 'stored objects read from the chain to build this view');
+  stat('values', fmtNum(d.node_count || 0), 'decoded values in the whole tree');
+  into.appendChild(stats);
+
+  // The honesty badge. A state view that quietly shows less than the realm
+  // holds is worse than one that shows nothing, because a reader cannot tell
+  // the difference between "this realm is empty" and "we gave up".
+  if (d.partial) {
+    const warn = el('div', {
+      style: { color: 'var(--yellow, #b58900)', margin: '8px 0', fontSize: '13px' },
+    }, '⚠ partial view: ' + (d.partial_reason || 'not every reference resolved') +
+       '. Unresolved branches are shown as refs. ');
+    // A partial view with no way forward is a dead end. The wider read is
+    // opt-in rather than automatic because it costs the public RPC real work.
+    if (d.can_retry_full && onLoadFull) {
+      warn.appendChild(el('a', {
+        href: '#', style: { color: 'var(--accent, #2aa198)' },
+        onclick: (e) => { e.preventDefault(); onLoadFull(); },
+      }, 'load the full state'));
+    }
+    into.appendChild(warn);
+  }
+
+  if (!nodes.length && !types.length) {
+    into.appendChild(el('div', { style: { color: 'var(--fg2)' } },
+      'this package declares no state: no package-level variables to show'));
+    return;
+  }
+
+  const tree = el('div', { className: 'state-tree' });
+  // Depth 1 open, deeper closed. Opening everything on a realm with a few
+  // hundred entries paints a wall; opening nothing hides the answer.
+  nodes.forEach(n => tree.appendChild(stateRow(n, 0)));
+  into.appendChild(tree);
+
+  if (types.length) {
+    const wrap = el('div', { style: { marginTop: '14px' } });
+    const body = el('div', { className: 'state-tree' });
+    body.style.display = 'none';
+    const tw = el('span', { className: 'state-twisty' }, '\u25b8');
+    const head = el('div', {
+      className: 'state-head',
+      style: { cursor: 'pointer', color: 'var(--fg2)', fontSize: '12px' },
+      onclick: () => {
+        const showing = body.style.display !== 'none';
+        body.style.display = showing ? 'none' : '';
+        tw.textContent = showing ? '\u25b8' : '\u25be';
+      },
+    }, tw, el('span', {}, fmtNum(types.length) + ' type declarations'));
+    types.forEach(n => body.appendChild(stateRow(n, 0)));
+    wrap.appendChild(head);
+    wrap.appendChild(body);
+    into.appendChild(wrap);
+  }
+}
+
+// stateRow builds one row and, for a branch, its collapsible children.
+//
+// Every value goes through a text node. Realm state is entirely
+// attacker-controlled: the variable names, the type names and the values are
+// all chosen by whoever deployed the realm, so this is the most hostile input
+// the app renders. No innerHTML here, ever (AGENTS.md).
+function stateRow(n, depth) {
+  const kids = n.children || [];
+  const isBranch = kids.length > 0;
+  const open = depth < 1;
+
+  const row = el('div', { className: 'state-row' });
+  row.style.paddingLeft = (depth * 14) + 'px';
+
+  const head = el('div', { className: 'state-head' });
+  if (isBranch) {
+    const tw = el('span', { className: 'state-twisty' }, open ? '▾' : '▸');
+    head.appendChild(tw);
+    head.style.cursor = 'pointer';
+    head.addEventListener('click', () => {
+      const showing = body.style.display !== 'none';
+      body.style.display = showing ? 'none' : '';
+      tw.textContent = showing ? '▸' : '▾';
+    });
+  } else {
+    head.appendChild(el('span', { className: 'state-twisty' }, ' '));
+  }
+
+  if (n.name) head.appendChild(el('span', { className: 'state-name' }, n.name));
+  if (n.type) head.appendChild(el('span', { className: 'state-type' }, n.type));
+
+  // A ref is a branch the read did not follow. Showing its ObjectID is the
+  // difference between "nothing here" and "here, and here is its key".
+  if (n.kind === 'ref' && n.object_id) {
+    head.appendChild(el('span', { className: 'state-ref', title: 'a stored object this read did not follow' },
+      'ref ' + n.object_id));
+  } else if (n.kind === 'cycle') {
+    head.appendChild(el('span', { className: 'state-ref', title: 'this object refers back to one above it' }, 'cycle'));
+  } else if (n.value !== undefined && n.value !== '') {
+    head.appendChild(el('span', { className: 'state-value' }, n.value));
+  } else if (n.kind === 'nil') {
+    head.appendChild(el('span', { className: 'state-value' }, 'nil'));
+  }
+
+  if (n.size) {
+    head.appendChild(el('span', { className: 'state-size', title: 'bytes this object occupies on chain' },
+      fmtNum(n.size) + 'B'));
+  }
+  row.appendChild(head);
+
+  const body = el('div');
+  if (!open) body.style.display = 'none';
+  if (isBranch) {
+    kids.forEach(k => body.appendChild(stateRow(k, depth + 1)));
+    row.appendChild(body);
+  }
+  return row;
+}
+
 // Loaded on demand rather than with the page: see tabLoaders. _defiGen is the
 // render generation this tab was last filled for, so re-opening the tab on the
 // same realm does not refetch, and navigating to another realm does.
