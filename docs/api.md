@@ -907,6 +907,11 @@ than stored, because a column would be a second copy of a fact the path already
 carries; the two derivations are pinned against each other by a test over every
 path shape that occurs on a chain.
 
+`sort` is carried in the page URL as well as the query string, so a sorted
+directory is a link and survives a reload. An unrecognised key falls back to
+the listing's own default (`last_call` for realms, `newest` for packages)
+rather than reaching this endpoint.
+
 `sort=symbols` orders by how much a package declares. It is the only ordering
 that ranks the pure half at all: a library burns no gas, receives no calls and
 has no unique users, so every other sort puts the whole `p/` namespace at zero.
