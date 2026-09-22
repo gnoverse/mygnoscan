@@ -217,6 +217,11 @@ type PackageInfo struct {
 	// AccountInfo.Balance follows for the same reason: it is live RPC state,
 	// not something a SQL query over indexed history can answer.
 	Status string `json:"status,omitempty"`
+	// Symbols is how many declarations this package's source holds, from the
+	// symbol index. It is the only figure in this struct that says anything
+	// about a pure package: gas, calls and unique users are all zero for the
+	// whole p/ half of the directory by construction.
+	Symbols int `json:"symbols"`
 }
 
 type PackageDetail struct {
@@ -247,17 +252,18 @@ type Dependent struct {
 	Creator string `json:"creator,omitempty"`
 }
 
-func (d *DB) CountPackages(network string, realmOnly bool) (int, error) {
+func (d *DB) CountPackages(network string, f PackageFilter) (int, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	// Scoped to the configured networks, so this agrees with the same count on
 	// the home page. It did not: the stat tile read 321 realms while the
 	// directory header read 508, because this branch counted retired chains and
 	// that one did not. topaz alone accounts for the 187 between them.
-	q := `SELECT COUNT(*) FROM packages WHERE is_realm = ? AND ` +
-		d.networkFilter("network", network)
+	where, args := f.where("p")
+	q := `SELECT COUNT(*) FROM packages p WHERE ` + where + ` AND ` +
+		d.networkFilter("p.network", network)
 	var count int
-	err := d.db.QueryRow(q, realmOnly).Scan(&count)
+	err := d.db.QueryRow(q, args...).Scan(&count)
 	return count, err
 }
 
@@ -279,6 +285,12 @@ func packageSortClause(sortBy string) string {
 		return "gas_used DESC, p.block_height DESC"
 	case "storage":
 		return "storage_deposit DESC, p.block_height DESC"
+	case "symbols":
+		// What the package declares, which is the ordering that finds the
+		// libraries worth reading. Gas and calls cannot: a pure package burns
+		// no gas and receives no calls of its own, so every sort the directory
+		// had ranked the whole p/ half at zero.
+		return "symbols DESC, p.block_height DESC"
 	case "last_call":
 		// A realm never called has no last_call_height (NULL), which SQLite's
 		// default NULLS LAST already sorts after every real height on a DESC
@@ -293,9 +305,11 @@ func packageSortClause(sortBy string) string {
 	}
 }
 
-func (d *DB) ListPackages(network string, realmOnly bool, limit, offset int, sortBy string) ([]PackageInfo, error) {
+func (d *DB) ListPackages(network string, f PackageFilter, limit, offset int, sortBy string) ([]PackageInfo, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
+
+	where, args := f.where("p")
 
 	// Usage counts come from correlated subqueries rather than joins: a join on
 	// path alone would mix networks together, and grouping four tables in one
@@ -325,9 +339,14 @@ func (d *DB) ListPackages(network string, realmOnly bool, limit, offset int, sor
 		(SELECT COALESCE(sr.fee_net, 0) FROM storage_realm_rollup sr
 		   WHERE sr.network = p.network AND sr.path = p.path) AS storage_deposit,
 		(SELECT COALESCE(sr.bytes_net, 0) FROM storage_realm_rollup sr
-		   WHERE sr.network = p.network AND sr.path = p.path) AS storage_bytes
-		FROM packages p WHERE p.is_realm = ? AND ` + d.networkFilter("p.network", network)
-	args := []any{realmOnly}
+		   WHERE sr.network = p.network AND sr.path = p.path) AS storage_bytes,
+		-- How much this package declares. symbol_index is keyed (network, path)
+		-- so this is a primary-key lookup, not the scan the usage subqueries
+		-- above do. Zero means "not indexed yet" as well as "declares nothing",
+		-- and the two are told apart by /api/symbols/status rather than here.
+		(SELECT COALESCE(si.symbol_count, 0) FROM symbol_index si
+		   WHERE si.network = p.network AND si.package_path = p.path) AS symbols
+		FROM packages p WHERE ` + where + ` AND ` + d.networkFilter("p.network", network)
 	q += ` ORDER BY ` + packageSortClause(sortBy)
 	if limit > 0 {
 		q += fmt.Sprintf(` LIMIT %d OFFSET %d`, limit, offset)
@@ -344,13 +363,14 @@ func (d *DB) ListPackages(network string, realmOnly bool, limit, offset int, sor
 		var blockTime sql.NullString
 		var lastCallHeight sql.NullInt64
 		var lastCallTime sql.NullString
-		var gasUsed, storageDeposit, storageBytes sql.NullInt64
+		var gasUsed, storageDeposit, storageBytes, symbols sql.NullInt64
 		var p PackageInfo
 		if err := rows.Scan(&p.Network, &p.Path, &p.Name, &p.Creator, &p.BlockHeight, &blockTime, &p.TxHash,
 			&p.IsRealm, &p.NumFiles, &p.Calls, &p.Importers, &p.Imports, &p.UniqueUsers,
-			&lastCallHeight, &lastCallTime, &gasUsed, &storageDeposit, &storageBytes); err != nil {
+			&lastCallHeight, &lastCallTime, &gasUsed, &storageDeposit, &storageBytes, &symbols); err != nil {
 			return nil, err
 		}
+		p.Symbols = int(symbols.Int64)
 		p.GasUsed = int(gasUsed.Int64)
 		p.StorageDeposit = int(storageDeposit.Int64)
 		p.StorageBytes = int(storageBytes.Int64)

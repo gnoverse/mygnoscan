@@ -850,6 +850,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/realm/usage/{path...}", a.HandleRealmUsage)
 	mux.HandleFunc("GET /api/realm/{path...}", a.HandleRealm)
 	mux.HandleFunc("GET /api/packages", a.HandlePackages)
+	mux.HandleFunc("GET /api/packages/facets", a.HandlePackageFacets)
 	mux.HandleFunc("GET /api/tx/{hash}", a.HandleTx)
 	mux.HandleFunc("GET /api/txs", a.HandleTxs)
 	mux.HandleFunc("GET /api/address/{addr}", a.HandleAddress)

@@ -5,7 +5,7 @@
 // only way to find `IterateByOffset` was to already know which package has it.
 import { expect, test } from '@playwright/test';
 
-import { HUB, HUB_ROUTE } from '../harness/fixture.mjs';
+import { HUB_ROUTE } from '../harness/fixture.mjs';
 import { settle } from './helpers.js';
 
 // The fixture's packages all declare `func Render(path string) string`, so
@@ -29,12 +29,20 @@ test('the api finds a declaration by name', async ({ page, request }) => {
   expect(Array.isArray(body.symbols)).toBe(true);
   expect(body.symbols.length).toBeGreaterThan(0);
 
-  const hit = body.symbols.find(s => s.path === HUB);
-  expect(hit, `a ${SYMBOL} declared by ${HUB}`).toBeTruthy();
-  // A row has to be renderable from one request.
+  // Not asserted against one path: the fixture gives every package the same
+  // Render, so once the corpus is indexed there are more of them than a single
+  // response returns, and which fifty come back is the ranking's business.
+  // What matters is that a hit is renderable from this one request.
+  const hit = body.symbols[0];
   expect(hit.kind).toBe('func');
   expect(hit.signature).toContain('func Render');
   expect(hit.display).toBe(SYMBOL);
+  expect(hit.path).toMatch(/^gno\.land\//);
+
+  // And that the path it names is a package that really exists, which is the
+  // part a hardcoded path was standing in for.
+  const realm = await request.get('/api/realm/' + hit.path.replace('gno.land/', ''));
+  expect(realm.status()).toBe(200);
 });
 
 test('a wildcard is a literal, not a request for every symbol on the chain', async ({ page, request }) => {
