@@ -2,6 +2,7 @@ package store
 
 import (
 	"testing"
+	"time"
 
 	"github.com/moul/mygnoscan/pkg/config"
 )
@@ -271,4 +272,65 @@ func TestSymbolIndexCandidatesIgnoresAnIndexedPackage(t *testing.T) {
 	if k, _ := db.SymbolSourceKey("alpha", "gno.land/p/x/y"); k == "" {
 		t.Fatal("a package with zero symbols recorded no source key")
 	}
+}
+
+// The symbol index must not queue readers behind itself.
+//
+// This is the same property TestRollupDoesNotBlockOnReaders asserts, and the
+// same mistake: mu guards the configured-network list and is explicitly not a
+// general database lock any more, so taking it exclusively to write would put
+// every page load behind an index pass. The pass runs every ten minutes and
+// touches every package that moved, which is exactly the shape that made the
+// rollup's version of this visible on production.
+//
+// Stated from the reader's side, which is the direction that can be made
+// deterministic, and it cannot pass against a writer that takes mu: a write
+// that needs the exclusive lock has to wait for every reader to leave, so with
+// one held open it never returns.
+func TestSymbolWritesDoNotBlockOnReaders(t *testing.T) {
+	db := symbolTestDB(t)
+
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- db.ReplaceSymbols("alpha", "gno.land/p/x/y", "k", []SymbolRow{
+			{Kind: "func", Name: "F", Exported: true},
+		})
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ReplaceSymbols: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a symbol write blocked behind an open reader; it must not share a lock with reads")
+	}
+}
+
+// And they must still be serialized against other writers, or the index pass
+// races the syncer for SQLite's single writer slot.
+func TestSymbolWritesRemainSerialized(t *testing.T) {
+	db := symbolTestDB(t)
+	db.writeMu.Lock()
+
+	started := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		close(started)
+		_ = db.ReplaceSymbols("alpha", "gno.land/p/x/y", "k", nil)
+		close(finished)
+	}()
+
+	<-started
+	select {
+	case <-finished:
+		db.writeMu.Unlock()
+		t.Fatal("a symbol write proceeded while another writer held the lock")
+	case <-time.After(250 * time.Millisecond):
+	}
+	db.writeMu.Unlock()
+	<-finished
 }

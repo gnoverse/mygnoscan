@@ -181,8 +181,13 @@ func (d *DB) PackageSourceKey(network, pkgPath string) (string, error) {
 // and an upsert leaves it there forever. That is the failure mode where search
 // keeps offering a function nobody can call any more.
 func (d *DB) ReplaceSymbols(network, pkgPath, sourceKey string, rows []SymbolRow) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	// writeMu, not mu. mu guards the configured-network list and is explicitly
+	// no longer a general database lock: taking it exclusively here would queue
+	// every reader behind an index pass, which is the stall #143 removed.
+	// writeMu is the one that matters, because SQLite allows a single writer
+	// and this transaction races the syncer for that slot.
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
 
 	tx, err := d.db.Begin()
 	if err != nil {
@@ -223,8 +228,8 @@ func (d *DB) ReplaceSymbols(network, pkgPath, sourceKey string, rows []SymbolRow
 // DeleteSymbolIndex drops one package's rows, for a package whose source has
 // gone away entirely.
 func (d *DB) DeleteSymbolIndex(network, pkgPath string) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
 	tx, err := d.db.Begin()
 	if err != nil {
 		return err
