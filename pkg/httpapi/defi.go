@@ -31,10 +31,23 @@ import (
 // saw what the syncer saw, which the response says out loud rather than leaving
 // a reader to assume a floor is a figure.
 
-// coinFlowLimit bounds the flows returned to the page. The balance figures are
-// computed over everything the indexer returned; only the table and the curve
-// are cut, and the response says when they were.
+// coinFlowLimit is the default page of flows, kept at what the endpoint always
+// returned so an existing caller sees no change. The balance figures are
+// computed over everything the indexer returned; only the page is cut, and the
+// response says so.
 const coinFlowLimit = 500
+
+// coinFlowMaxLimit is the largest page ?flows_limit may ask for.
+//
+// 500 was the whole answer, not a page: there was no parameter to lift it and
+// no offset to walk past it, so a realm with 3,095 legs showed 500 of them and
+// the curve drawn on top covered only the window those 500 spanned
+// (r/…/bubblerumble3, 2026-09-22, one day old). Measured on that realm, a leg
+// is ~257 bytes of JSON, so this ceiling is ~1.3 MB raw and ~190 KB gzipped:
+// enough that every realm on mainnet today fits in one request, and bounded
+// enough that a whale cannot hand a browser an unbounded document. Past it,
+// page with ?flows_offset.
+const coinFlowMaxLimit = 5000
 
 // tokenFlowLimit is the same bound for the GRC20 side.
 const tokenFlowLimit = 500
@@ -81,13 +94,16 @@ type realmDefiResponse struct {
 	// or a genesis allocation, which emits no event).
 	DerivedUgnot int64 `json:"derived_ugnot"`
 	LiveUgnot    int64 `json:"live_ugnot"`
-	// Truncated says the indexer capped the transfer query, so the history
-	// reaches back only as far as the oldest flow below.
+	// Truncated says the walk stopped before the realm's history did, so the
+	// oldest flows are missing and DerivedUgnot is short by them.
 	Truncated bool `json:"truncated"`
-	// FlowsShown and FlowsTotal say whether the table is the whole story.
-	FlowsShown int        `json:"flows_shown"`
-	FlowsTotal int        `json:"flows_total"`
-	Flows      []coinFlow `json:"flows"`
+	// FlowsShown and FlowsTotal say whether the page is the whole story.
+	// FlowsOffset is where the page starts, counting back from the newest leg,
+	// so a caller can walk the rest without re-deriving the window.
+	FlowsShown  int        `json:"flows_shown"`
+	FlowsTotal  int        `json:"flows_total"`
+	FlowsOffset int        `json:"flows_offset"`
+	Flows       []coinFlow `json:"flows"`
 
 	Tokens     []tokenPositionRow    `json:"tokens"`
 	TokenFlows []store.TokenTransfer `json:"token_flows"`
@@ -144,11 +160,18 @@ func (a *API) HandleRealmDefi(w http.ResponseWriter, r *http.Request) {
 		flows, derived := coinFlowsFor(txs, addr, depositAddr)
 		resp.DerivedUgnot = derived
 		resp.FlowsTotal = len(flows)
-		if len(flows) > coinFlowLimit {
-			flows = flows[:coinFlowLimit]
-		}
-		resp.FlowsShown = len(flows)
-		resp.Flows = flows
+
+		// The page is cut here and nowhere else: DerivedUgnot above is the sum
+		// over every leg, because it is the figure compared against the chain's
+		// own balance and a paged sum would report a gap that is an artefact of
+		// the page size.
+		q := r.URL.Query()
+		page, offset := pageFlows(flows,
+			intParam(q, "flows_offset", 0, 0),
+			intParam(q, "flows_limit", coinFlowLimit, coinFlowMaxLimit))
+		resp.FlowsOffset = offset
+		resp.FlowsShown = len(page)
+		resp.Flows = page
 	}
 
 	positions, err := a.db.TokenPositions(network, addr)
@@ -176,6 +199,27 @@ func (a *API) HandleRealmDefi(w http.ResponseWriter, r *http.Request) {
 	}
 
 	JSONResponse(w, resp)
+}
+
+// pageFlows cuts one page out of the newest-first flows, and reports where it
+// actually started.
+//
+// Returns the clamped offset rather than the requested one, because the reader
+// pages by adding the rows they hold to the offset they were given: handing back
+// an offset past the end would have them walk forever asking for nothing. The
+// slice is never nil, so the field marshals as [] rather than null.
+func pageFlows(flows []coinFlow, offset, limit int) ([]coinFlow, int) {
+	if offset > len(flows) {
+		offset = len(flows)
+	}
+	page := flows[offset:]
+	if len(page) > limit {
+		page = page[:limit]
+	}
+	if page == nil {
+		page = []coinFlow{}
+	}
+	return page, offset
 }
 
 // coinFlowsFor turns the transactions into one signed row per transfer leg,

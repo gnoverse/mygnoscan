@@ -177,7 +177,7 @@ fact.
 | `GET /api/deps/{path...}` | dependency graph as `{path: [imports]}`. `dir=dependents` reverses direction |
 | `GET /api/realm/cousage/{path...}` | co-usage: what else the addresses that called this realm also called. `{path, network, window, callers, partners[], truncated}`, each partner `{path, shared, calls, callers}` ordered by `shared` descending. `window` = `all` (default), `90d`, `30d`, `7d`, `24h`, unknown values are a 400. `limit` defaults to 100, capped at 1000. **Resolves a single network** the same way the contracts map does |
 | `GET /api/storage/{path...}` | storage events for a package. **Requires `network`**: the figures are denominated amounts and blending chains would be meaningless |
-| `GET /api/realm/defi/{path...}` | what a package holds: its two accounts' live balances, every native transfer through them, and its GRC20 positions. **Requires `network`** |
+| `GET /api/realm/defi/{path...}` | what a package holds: its two accounts' live balances, every native transfer through them, and its GRC20 positions. **Requires `network`**. The `flows[]` table pages with `flows_limit` (default 500, capped at 5000, `0` for a totals-only read) and `flows_offset`, counting back from the newest leg; `flows_total` is the whole history and every balance figure is summed over all of it, never over the page. See below |
 | `GET /api/events/{path...}` | every event tagged with a package's path. Bounded: `limit` defaults to 200, capped at 2000. In all-networks mode it queries every chain and tags each row with its `network`. Unlike `/api/allevents` this is not filtered to `GnoEvent`, so the chain's own `StorageDepositEvent` / `StorageUnlockEvent` for that path are included; the realm page hides those behind a toggle rather than dropping them here |
 
 ### The two accounts a package owns
@@ -232,6 +232,25 @@ This does **not** generalise to an address that signs transactions: gas
 collection and the storage deposit both go through `SendCoinsUnrestricted`, which
 emits nothing, so the same sum for a user account is short by its gas spend.
 Neither touches a realm's banker, which is why the realm case is exact.
+
+### The flow history is derived per request, and it is the expensive one
+
+Every other realm tab answers from SQLite in milliseconds. This one has no local
+table: it walks the tx-indexer for the package's entire transfer history on every
+cold read, which measured 2.0s and 2.6s against production on a realm with 3,104
+legs (2026-09-22). The response cache hides that from everyone but the first
+reader after an entry expires, and `flows_offset` does **not** make the next page
+cheaper: each page re-derives the whole history and then cuts a different slice
+out of it.
+
+The walk itself is paginated over the block-height cursor, so `ElementCap` is no
+longer a ceiling on how far back a realm's history can reach. `truncated` now
+means only that the realm went past `coinFlowMaxTransactions` (50,000
+transactions), not that the indexer refused.
+
+The fix for the cost is a local `coin_transfers` table written by the syncer,
+the way `token_transfers` already is for GRC20. Until that exists, treat a large
+realm's defi tab as the one page on this site that leaves the box.
 
 GRC20 positions come from the local transfer ledger, which only ever saw what the
 syncer walked: `token_ledger_from` is the oldest row on that chain, and a

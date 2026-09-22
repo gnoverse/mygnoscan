@@ -123,3 +123,52 @@ func TestCoinFlowsForIgnoresAnEmptyDepositAddress(t *testing.T) {
 		t.Errorf("got %d flows netting %d, want none: neither end is this realm", len(flows), net)
 	}
 }
+
+// Paging is the difference between "the page shows 500 of 3,095" and "the page
+// can show all 3,095", so the arithmetic that cuts it is worth pinning: an
+// offset past the end used to be a slice panic waiting for the first reader who
+// edited the URL.
+func TestPageFlowsClampsAndNeverReturnsNil(t *testing.T) {
+	ten := make([]coinFlow, 10)
+	for i := range ten {
+		ten[i].BlockHeight = 100 - i
+	}
+
+	tests := []struct {
+		name         string
+		flows        []coinFlow
+		offset       int
+		limit        int
+		wantLen      int
+		wantOffset   int
+		wantFirstHgt int
+	}{
+		{"whole set fits", ten, 0, 500, 10, 0, 100},
+		{"first page", ten, 0, 4, 4, 0, 100},
+		{"second page resumes where the first stopped", ten, 4, 4, 4, 4, 96},
+		{"last page is short", ten, 8, 4, 2, 8, 92},
+		{"offset at the end", ten, 10, 4, 0, 10, 0},
+		{"offset past the end clamps", ten, 9999, 4, 0, 10, 0},
+		{"a zero limit is a legitimate totals-only ask", ten, 0, 0, 0, 0, 0},
+		{"no flows at all", []coinFlow{}, 0, 500, 0, 0, 0},
+		{"nil flows", nil, 0, 500, 0, 0, 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			page, offset := pageFlows(tt.flows, tt.offset, tt.limit)
+			if page == nil {
+				t.Fatal("page is nil, which marshals as null instead of []")
+			}
+			if len(page) != tt.wantLen {
+				t.Errorf("len = %d, want %d", len(page), tt.wantLen)
+			}
+			if offset != tt.wantOffset {
+				t.Errorf("offset = %d, want %d", offset, tt.wantOffset)
+			}
+			if tt.wantFirstHgt != 0 && page[0].BlockHeight != tt.wantFirstHgt {
+				t.Errorf("first row is height %d, want %d", page[0].BlockHeight, tt.wantFirstHgt)
+			}
+		})
+	}
+}
