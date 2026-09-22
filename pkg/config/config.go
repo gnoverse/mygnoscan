@@ -24,6 +24,15 @@ type NetworkConfig struct {
 	// fingerprint and never selected.
 	IndexerURLs []string `json:"indexers,omitempty"`
 	RPCURLs     []string `json:"rpcs,omitempty"`
+	// GnowebURL is where this chain's pages are served to humans. It is not an
+	// endpoint the explorer reads data from; it is the address a screenshot is
+	// taken of, and the only thing that can answer "what does this realm look
+	// like". A network without one simply gets no pictures.
+	//
+	// Verified 2026-09-22: https://gno.land and
+	// https://pearl.testnets.gno.land both answer 200 on /r/gov/dao;
+	// sapphire has no gnoweb host that resolves, which is why it has none here.
+	GnowebURL string `json:"gnoweb,omitempty"`
 }
 
 // Indexers returns every indexer endpoint for the network, singular form first,
@@ -64,8 +73,8 @@ const defaultNetworkID = "default"
 // network circuit breaker rather than breaking startup.
 var defaultConfig = &AppConfig{
 	Networks: []NetworkConfig{
-		{ID: "gnoland1", IndexerURL: "https://indexer.gno.land/graphql/query", RPCURL: "https://rpc.gno.land"},
-		{ID: "pearl", IndexerURL: "https://indexer.pearl.testnets.gno.land/graphql/query", RPCURL: "https://rpc.pearl.testnets.gno.land"},
+		{ID: "gnoland1", IndexerURL: "https://indexer.gno.land/graphql/query", RPCURL: "https://rpc.gno.land", GnowebURL: "https://gno.land"},
+		{ID: "pearl", IndexerURL: "https://indexer.pearl.testnets.gno.land/graphql/query", RPCURL: "https://rpc.pearl.testnets.gno.land", GnowebURL: "https://pearl.testnets.gno.land"},
 		{ID: "sapphire", IndexerURL: "https://indexer.sapphire.testnets.gno.land/graphql/query", RPCURL: "https://rpc.sapphire.testnets.gno.land"},
 	},
 }

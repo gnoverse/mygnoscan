@@ -15,6 +15,7 @@ One static binary and one SQLite file. No runtime dependencies.
 | `-sync` | `true` | run the background sync |
 | `-block-history-days` | `90` | days of block history to backfill. `0` backfills the full chain; a negative value stores no blocks at all |
 | `-analytics-script` | — | URL of an analytics script to load in the frontend. Empty serves no third-party script at all |
+| `-gnoshot` | — | base URL of a [gnoshot](https://github.com/gnoverse/gnoshot) capture service. Empty draws no realm screenshots at all |
 
 ## Configuration
 
@@ -241,3 +242,34 @@ curl -s localhost:8888/api/stats      # is data actually landing
 In the logs, per-pass `synced N packages` lines with small counts mean incremental
 sync is working. Large counts on every pass mean it is re-syncing everything, which
 is the signature of a build predating incremental sync.
+
+
+## Realm screenshots
+
+Off unless `-gnoshot` names a capture service. With one, `/api/shot` turns a
+package path into a picture of that realm's gnoweb page, and the frontend puts
+it on the realm page and in the `/realms` and `/packages` listings.
+
+```bash
+# on the same box, two workers, warmed from this explorer's own path list
+gnoshot serve -root /var/lib/gnoshot -source http://127.0.0.1:8888
+mygnoscan -gnoshot http://127.0.0.1:8890
+```
+
+Three things worth knowing before turning it on:
+
+- **A network needs a `gnoweb` in its config** to be photographable. The
+  built-in defaults set it for `gnoland1` and `pearl`; a network without one
+  simply gets no pictures, rather than an error on every row.
+- **The proxy is on this origin on purpose.** A listing opens fifty thumbnails,
+  and pointing them at another host costs a DNS lookup and a TLS handshake
+  before the first byte of the first one. It is also the only place the
+  parameter validation can live.
+- **The capture service being down is not this being down.** `/api/shot`
+  answers 503 with `Cache-Control: no-store`, and the page draws its own tile.
+  Nothing else on the page changes.
+
+The frontend learns whether the feature is on from a flag injected into the
+document at serve time, not from `/api/version`: the first listing row is drawn
+before that request comes back, and a page that grows a column afterwards is
+worse than either outcome on its own.

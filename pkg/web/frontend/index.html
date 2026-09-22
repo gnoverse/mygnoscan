@@ -394,6 +394,37 @@ tr.total-row td { font-weight: bold; color: var(--accent); }
 .load-error-btn:hover { border-color: var(--fg2); }
 /* Skeleton loading */
 .skeleton { background: var(--bg3); border-radius: 4px; animation: pulse 1.5s ease-in-out infinite; }
+/* Realm screenshots.
+   Every box states its own width, height and aspect-ratio. Without them lazy
+   loading is worse than useless: the row has no height until the image
+   arrives, so a listing jumps under the reader's cursor as fifty of them
+   resolve. The skeleton background is what fills the box until then, and it is
+   the same pulse every other pending thing on the site uses. */
+.shot { display: block; position: relative; overflow: hidden; border-radius: 6px;
+        background: var(--bg3); border: 1px solid var(--border); }
+.shot img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top left;
+            background: var(--bg3); }
+.shot.loading { animation: pulse 1.5s ease-in-out infinite; }
+.shot-thumb { width: 128px; height: 72px; aspect-ratio: 16 / 9; }
+.shot-hero { width: 100%; max-width: 720px; aspect-ratio: 16 / 9; margin: 0 0 16px; }
+/* The generated tile, for a path there is no picture of and never will be.
+   Never a blank box: a reader who does not know what a realm is reads blank as
+   "the site is broken" rather than "this one has no page". */
+.shot-tile { display: flex; flex-direction: column; justify-content: center; gap: 2px;
+             padding: 6px 8px; box-sizing: border-box; }
+.shot-tile .tile-path { font-family: var(--mono, monospace); font-size: 11px; color: var(--fg);
+                        overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.shot-tile .tile-label { font-size: 9px; letter-spacing: .06em; text-transform: uppercase; color: var(--fg-dim); }
+.shot-tile .tile-plain { font-size: 10px; color: var(--fg-dim); line-height: 1.3; }
+.shot-hero.shot-tile .tile-path { font-size: 20px; }
+.shot-hero.shot-tile .tile-label { font-size: 12px; }
+.shot-hero.shot-tile .tile-plain { font-size: 13px; }
+td.shot-cell, th.shot-cell { width: 128px; padding-right: 0; }
+/* The column exists in the static markup, so it has to disappear when the
+   feature is off rather than leave an empty gutter on every row. */
+html:not(.has-shots) .shot-cell { display: none; }
+@media (prefers-reduced-motion: reduce) { .shot.loading { animation: none; } }
+@media (max-width: 720px) { .shot-thumb { display: none; } td.shot-cell { display: none; } }
 .skeleton-line { height: 16px; margin-bottom: 12px; }
 .skeleton-line:nth-child(1) { width: 80%; }
 .skeleton-line:nth-child(2) { width: 60%; }
@@ -819,7 +850,7 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
   </div>
   <div class="view" id="view-watch"><main><div id="watch-content"></div></main></div>
   <div class="view" id="view-realms"><main><div id="realms-stats" class="stats-bar" style="display:none"></div><div class="section"><div class="section-title">all realms</div>
-    <table><thead><tr><th>path</th><th>creator</th>
+    <table><thead><tr><th class="shot-cell"></th><th>path</th><th>creator</th>
       <th class="rs" data-sort="calls">calls</th>
       <th class="rs" data-sort="gas">gas used</th>
       <th class="rs" data-sort="last_call">last call</th>
@@ -832,7 +863,7 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
     <div id="packages-view-all">
       <div id="packages-stats" class="stats-bar" style="display:none"></div>
       <div class="section"><div class="section-title">all packages</div>
-        <table><thead><tr><th>path</th><th>creator</th>
+        <table><thead><tr><th class="shot-cell"></th><th>path</th><th>creator</th>
           <th class="rs" data-sort="calls">calls</th>
           <th class="rs" data-sort="importers">dependents</th>
           <th class="rs" data-sort="imports">dependencies</th>
@@ -976,6 +1007,108 @@ function parkedBadgeEl(status) {
   const b = badge('fail', 'parked');
   b.title = 'submitted but not yet callable — awaiting a package approver';
   return b;
+}
+// --- Realm screenshots ---
+//
+// The pictures come from gnoshot (github.com/gnoverse/gnoshot), proxied by
+// /api/shot on this origin. window.FEATURES.shots is injected into the document
+// at serve time rather than fetched, because the answer has to be known before
+// the first row is drawn.
+//
+// The six tiles below are what stands in when there is no picture. The rule
+// that makes them cheap: the tile is chosen from JSON the page already holds —
+// a listing row knows a package is parked before it asks for a picture of it —
+// so the error handler is the last-resort net and not the mechanism.
+const SHOT_TILES = {
+  parked:    ['not enabled yet', 'Published, but still waiting for approval before anyone can use it.'],
+  pure:      ['code library',    'Building blocks other programs use. It has no page of its own.'],
+  'no-render': ['no page to show', 'This program works. It just does not display anything.'],
+  directory: ['folder',          'A folder, not a program. The things inside it have their own pages.'],
+  none:      ['no preview',      'No picture available for this one.'],
+  error:     ['unavailable',     'Could not load a picture of this one just now.'],
+};
+// shotTileKind reads the state off a listing row. `status` is already on every
+// realms/packages row — it is what parkedBadgeEl draws from — so this costs no
+// extra request.
+function shotTileKind(row) {
+  // No row, or a row that says nothing about the package's state, is not
+  // evidence that there is no picture. Only a state that rules a capture out
+  // forces a tile; everything else asks for one and lets the answer decide.
+  if (row && row.status === 'inert') return 'parked';
+  return null;
+}
+// shotTileEl builds the placeholder as DOM.
+//
+// Deliberately not innerHTML and deliberately not a background-image: the path
+// is chain-chosen and `background-image: url(...)` is injectable in a way an
+// img src is not. The only thing derived from the path here is a hue, which is
+// a number.
+function shotTileEl(path, kind, cls) {
+  const [short, plain] = SHOT_TILES[kind] || SHOT_TILES.none;
+  const box = el('div', { className: 'shot shot-tile ' + cls });
+  box.style.background = 'linear-gradient(135deg, hsl(' + shotHue(path) + ' 38% 22%), hsl(' + ((shotHue(path) + 28) % 360) + ' 42% 16%))';
+  const leaf = String(path).replace(/^gno\.land\//, '');
+  box.appendChild(el('div', { className: 'tile-path' }, leaf));
+  box.appendChild(el('div', { className: 'tile-label' }, short));
+  // The plain line is the point of the tile, and it is the accessible name
+  // whatever the size, because a screen reader has no size.
+  if (cls.indexOf('shot-hero') >= 0) box.appendChild(el('div', { className: 'tile-plain' }, plain));
+  box.setAttribute('role', 'img');
+  box.setAttribute('aria-label', leaf + ' — ' + plain);
+  box.title = plain;
+  return box;
+}
+// The class is set once, from the flag the server injected, so every rule that
+// depends on the feature is a plain CSS selector rather than a check repeated
+// at each call site.
+if (window.FEATURES && window.FEATURES.shots) document.documentElement.classList.add('has-shots');
+function shotHue(path) {
+  let h = 0;
+  for (let i = 0; i < path.length; i++) h = (h * 31 + path.charCodeAt(i)) % 360;
+  return h;
+}
+function shotURL(path, network, size, dpr, v) {
+  // URLSearchParams, never concatenation: a package path comes from the chain
+  // and can hold a "&", a "#" or an encoded slash.
+  const q = new URLSearchParams({ path: path, size: size, dpr: String(dpr) });
+  if (network) q.set('network', network);
+  if (v) q.set('v', String(v));
+  return '/api/shot?' + q.toString();
+}
+// shotEl returns a picture of a realm, or the tile that stands in for one.
+//
+// opts: { size: 'thumb'|'hero', cls, network, v, row }
+function shotEl(path, opts) {
+  opts = opts || {};
+  const size = opts.size || 'thumb';
+  const cls = opts.cls || ('shot-' + size);
+  // No capture service, no pictures at all. Not a column of placeholder
+  // tiles: a tile says "there is no picture of this one", and when nothing can
+  // take a picture of anything that is a false statement fifty times over.
+  if (!window.FEATURES || !window.FEATURES.shots) return null;
+  const forced = shotTileKind(opts.row);
+  if (forced) return shotTileEl(path, forced, cls);
+  const box = el('div', { className: 'shot ' + cls + ' loading' });
+  const dims = size === 'hero' ? [640, 360] : [160, 90];
+  const img = el('img', {
+    src: shotURL(path, opts.network, size, 1, opts.v),
+    srcset: shotURL(path, opts.network, size, 1, opts.v) + ' 1x, '
+          + shotURL(path, opts.network, size, 2, opts.v) + ' 2x',
+    sizes: size === 'hero' ? '(max-width: 800px) 100vw, 720px' : '128px',
+    width: String(dims[0]), height: String(dims[1]),
+    loading: 'lazy', decoding: 'async',
+    alt: 'what ' + String(path).replace(/^gno\.land\//, '') + ' looks like',
+  });
+  // addEventListener, not an onerror attribute through el(): el() puts every
+  // unknown key through setAttribute, so {onerror: fn} would write a stringified
+  // function into an inline event-handler attribute. It happens to work today
+  // only because there is no CSP.
+  img.addEventListener('load', () => box.classList.remove('loading'));
+  img.addEventListener('error', () => {
+    box.replaceWith(shotTileEl(path, 'error', cls));
+  });
+  box.appendChild(img);
+  return box;
 }
 // Address labels arrive whole from /api/labels: the curated registry
 // (pkg/registry/data/addresses.json) merged with what the chain proves, ranked
@@ -3963,7 +4096,7 @@ async function loadRealms(page) {
   page = page || 0;
   const section = document.querySelector('#view-realms .section');
   const tbody = clear('realms-list');
-  skeletonRows(tbody, 6, 10);
+  skeletonRows(tbody, 7, 10);
   section.querySelectorAll('.pager').forEach(p => p.remove());
   const statsBar = document.getElementById('realms-stats');
   // Sorting is server-side: ordering only the current page would rank 50 rows
@@ -3991,7 +4124,11 @@ async function loadRealms(page) {
         const pathTd = el('td', {}, realmPathEl(r.path, r.network));
         const rParked = parkedBadgeEl(r.status);
         if (rParked) { pathTd.appendChild(document.createTextNode(' ')); pathTd.appendChild(rParked); }
+        // A list of 194 monospace paths is unreadable; a list of 194 pictures
+        // is browsable. Lazy and explicitly sized, so a page of them costs
+        // nothing before the reader scrolls to them.
         list.appendChild(netRow(r.network,
+          el('td', { className: 'shot-cell' }, shotEl(r.path, { network: r.network, v: r.last_call_height || r.block_height, row: r })),
           pathTd,
           el('td', {}, addrLink(r.creator)),
           el('td', {}, countCell(r.calls)),
@@ -4006,7 +4143,7 @@ async function loadRealms(page) {
     });
   } catch (err) {
     console.error(err);
-    failRows(clear('realms-list'), 6, err, loadRealms);
+    failRows(clear('realms-list'), 7, err, loadRealms);
   }
 }
 
@@ -4015,7 +4152,7 @@ async function loadPackages(page) {
   page = page || 0;
   const section = document.querySelector('#view-packages .section');
   const tbody = clear('packages-list');
-  skeletonRows(tbody, 9, 10);
+  skeletonRows(tbody, 10, 10);
   section.querySelectorAll('.pager').forEach(p => p.remove());
   const statsBar = document.getElementById('packages-stats');
   // Sorting is server-side: ordering only the current page would rank 50 rows
@@ -4041,6 +4178,7 @@ async function loadPackages(page) {
         const pParked = parkedBadgeEl(p.status);
         if (pParked) { pathTd.appendChild(document.createTextNode(' ')); pathTd.appendChild(pParked); }
         list.appendChild(netRow(p.network,
+          el('td', { className: 'shot-cell' }, shotEl(p.path, { network: p.network, v: p.block_height, row: p })),
           pathTd,
           el('td', {}, addrLink(p.creator)),
           el('td', {}, countCell(p.calls)),
@@ -4055,7 +4193,7 @@ async function loadPackages(page) {
     });
   } catch (err) {
     console.error(err);
-    failRows(clear('packages-list'), 9, err, loadPackages);
+    failRows(clear('packages-list'), 10, err, loadPackages);
   }
 }
 
@@ -10257,6 +10395,18 @@ async function loadRealmDetail(path, initialTab) {
       provenance.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'contents'),
         el('span', { className: 'value' }, detail.num_files + ' files \u00b7 ' + fmtNum(detail.call_count) + ' calls')));
       header.appendChild(provenance);
+      // What the realm actually looks like, which until now took a trip to
+      // gnoweb to find out. Below the provenance bar rather than above it: the
+      // header's identity line stays first, and no layout surgery is needed.
+      //
+      // The picture is keyed on the realm's last call height, not on its deploy
+      // height. A render is a function of chain state and changes when nobody
+      // redeploys anything, so keying on the deploy would pin a realm's
+      // thumbnail to whatever it looked like the day it shipped.
+      header.appendChild(shotEl(detail.path, {
+        size: 'hero', network: detail.network, v: latestCall,
+        row: (inert && inert.meta && inert.meta.status === 'inert') ? { status: 'inert' } : null,
+      }));
       _watchTarget = { kind: 'realms', id: detail.path, height: latestCall };
       const tabs = clear('realm-tabs');
       // Icon per tab, so seven same-length grey words stop reading as one

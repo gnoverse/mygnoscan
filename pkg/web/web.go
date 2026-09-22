@@ -31,6 +31,14 @@ type Options struct {
 	// and stores nothing on the device. Any provider serving a single
 	// self-contained script works the same way.
 	AnalyticsScript string
+
+	// Shots is true when a capture service is configured, and it is injected
+	// into the page rather than fetched because the answer has to be known
+	// before the first row is drawn. /api/version arrives after the first
+	// paint, so gating on it would mean a listing rendering without pictures
+	// and then growing a column, which is worse than either outcome on its
+	// own.
+	Shots bool
 }
 
 // Handler serves the frontend: a static file when the path names one, and
@@ -58,6 +66,10 @@ func Handler(opts Options) (http.HandlerFunc, error) {
 	// sent: turning analytics on changes the body, and a reader holding the
 	// previous build's tag has to be told so.
 	index, err = withAnalytics(index, opts.AnalyticsScript)
+	if err != nil {
+		return nil, err
+	}
+	index, err = withFeatures(index, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -189,6 +201,29 @@ func withAnalytics(index []byte, src string) ([]byte, error) {
 	}
 	tag := "<!-- Third-party analytics, off unless -analytics-script names one. -->\n" +
 		`<script async src="` + html.EscapeString(u.String()) + `"></script>` + "\n"
+	out := make([]byte, 0, len(index)+len(tag))
+	out = append(out, index[:i]...)
+	out = append(out, tag...)
+	out = append(out, index[i:]...)
+	return out, nil
+}
+
+// withFeatures injects the server-side feature flags the first paint depends on.
+//
+// A boolean literal built here, never a value echoed from a request: this is a
+// <script> in the document, and the one rule it has to keep is that nothing
+// attacker-influenced can reach it.
+func withFeatures(index []byte, opts Options) ([]byte, error) {
+	// Nothing to say when every flag is off, and saying nothing keeps the
+	// default build byte-identical to the embedded file.
+	if !opts.Shots {
+		return index, nil
+	}
+	i := bytes.Index(index, []byte("</head>"))
+	if i < 0 {
+		return nil, fmt.Errorf("features: no </head> in index.html")
+	}
+	tag := "<script>window.FEATURES={shots:" + strconv.FormatBool(opts.Shots) + "};</script>\n"
 	out := make([]byte, 0, len(index)+len(tag))
 	out = append(out, index[:i]...)
 	out = append(out, tag...)

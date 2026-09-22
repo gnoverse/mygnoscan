@@ -12,6 +12,7 @@ realms is the point.
 ## What it does
 
 - **Realm inspector** — source, imports, dependents, callers, MsgRun references
+- **Realm screenshots** — what each realm actually looks like, on its own page and in every listing
 - **Dependency graph** — interactive D3 view of what imports what
 - **Usage tracking** — direct calls, indirect imports, MsgRun references
 - **Multi-network** — several chains in one instance and one database, switchable
