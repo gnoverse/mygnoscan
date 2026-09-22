@@ -9377,6 +9377,21 @@ function renderUsageTreemap(mount, host, detail, usage, gen, filtered) {
       height: '100%',
       top: 0, left: 0, right: 0, bottom: 0,
       label: { color: '#141414', fontSize: 11, overflow: 'truncate' },
+      // Drop a label that does not fit rather than truncate it to nothing.
+      //
+      // `overflow: truncate` alone cuts to whatever the cell is wide enough
+      // for, which on a thin sliver is two characters: r/gnoswap/router draws
+      // ExactInSwapRoute at 960 of its 982 calls and the two functions beside
+      // it both rendered as "Ex". That is not a shorter name, it is noise, and
+      // the full one is already one hover away. Same rule the contracts map's
+      // label declutter follows: what does not fit is not drawn.
+      //
+      // labelLayout receives the cell's own rect, which is the measurement the
+      // formatter cannot make, and a zero font size is how ECharts is told to
+      // skip one.
+      labelLayout: (params) => ({
+        fontSize: params.rect.width < 64 || params.rect.height < 18 ? 0 : 11,
+      }),
       itemStyle: { borderWidth: 1, gapWidth: 1 },
       data: items,
     }],

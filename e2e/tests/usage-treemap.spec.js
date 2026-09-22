@@ -44,6 +44,41 @@ test('the treemap names the functions that carry the traffic', async ({ page }) 
   expect(unexpected(seen.failedRequests)).toEqual([]);
 });
 
+// Every label that is drawn is a whole name.
+//
+// `overflow: truncate` alone cuts a label to whatever the cell is wide enough
+// for, which on a sliver is two characters: on mainnet r/gnoswap/router draws
+// ExactInSwapRoute at 960 of its 982 calls, and the two functions beside it
+// both rendered as "Ex".
+//
+// **This passes on the commit before the fix too**, and is a guard rather than
+// a regression test. The fixture's function names are three and five
+// characters, so its cells never get narrow enough to truncate: probed down to
+// a 300px viewport, where the whole chart is 208px wide, and "Claim" still
+// rendered whole. Reproducing the defect needs a seventeen-character name in a
+// two-percent cell, which is mainnet and not this fixture. The fix itself was
+// verified against live mainnet data through `page.route`. What this does buy
+// is that the invariant cannot silently regress once a fixture realm grows a
+// longer name.
+test('a cell too narrow for its name is left unlabelled, not truncated to noise', async ({ page }) => {
+  const seen = watch(page);
+  await page.setViewportSize({ width: 520, height: 900 });
+  await openCalls(page);
+  await page.waitForTimeout(1500);
+
+  const labels = (await cellLabels(page)).filter(Boolean);
+  for (const l of labels) {
+    expect(USAGE_EXPORTED, `"${l}" is a truncation, not a name`).toContain(l);
+  }
+
+  // And the rule has to be the cell's width, not "never label anything": the
+  // biggest function still carries its name at this size.
+  expect(labels).toContain('Bid');
+
+  expect(seen.jsErrors).toEqual([]);
+  expect(unexpected(seen.failedRequests)).toEqual([]);
+});
+
 test('what the realm exports and nobody has called sits beside the treemap, not inside it', async ({ page }) => {
   const seen = watch(page);
   await openCalls(page);
