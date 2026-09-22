@@ -150,17 +150,22 @@ func (c *prefetchCache) fill() error {
 			c.exhausted = true
 		}
 		c.budget -= len(oids)
-		if len(oids) == 0 {
-			return nil
-		}
-		got, err := c.fetcher.Objects(oids)
-		if err != nil {
-			return err
-		}
-		for _, oid := range oids {
-			c.objects[oid] = got[oid]
+		if len(oids) > 0 {
+			got, err := c.fetcher.Objects(oids)
+			if err != nil {
+				return err
+			}
+			for _, oid := range oids {
+				c.objects[oid] = got[oid]
+			}
 		}
 	}
+	// Types are fetched even when the object budget is spent, and are not
+	// budgeted themselves. There are a handful per realm (10 for
+	// r/gnoland/blog), they are cached for the whole decode, and they are what
+	// turns a struct's fields from [0] and [1] into their names. Skipping them
+	// on the last round would make a truncated tree unreadable as well as
+	// incomplete.
 	if tids := dedupe(c.wantTypes); len(tids) > 0 {
 		got, err := c.fetcher.Types(tids)
 		if err != nil {
