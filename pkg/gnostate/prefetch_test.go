@@ -10,11 +10,12 @@ import (
 // DecodePackageWith: the same data in a handful of wide rounds rather than
 // hundreds of sequential ones.
 type roundFetcher struct {
-	f       *fixture
-	rounds  int
-	widths  []int
-	fetched int
-	failAll bool
+	f         *fixture
+	rounds    int
+	widths    []int
+	fetched   int
+	requested int // keys asked of the chain, whether or not they resolved
+	failAll   bool
 }
 
 func (r *roundFetcher) Objects(oids []string) (map[string][]byte, error) {
@@ -23,6 +24,7 @@ func (r *roundFetcher) Objects(oids []string) (map[string][]byte, error) {
 	}
 	r.rounds++
 	r.widths = append(r.widths, len(oids))
+	r.requested += len(oids)
 	out := map[string][]byte{}
 	for _, o := range oids {
 		if b, _ := r.f.Object(o); len(b) > 0 {
@@ -115,5 +117,51 @@ func TestPrefetchPropagatesTransportErrors(t *testing.T) {
 	// an error page.
 	if _, err := DecodePackageWith([]byte(f.Package), rf, Limits{}); err == nil {
 		t.Fatal("a failing fetcher produced no error")
+	}
+}
+
+// TestPrefetchDefaultLimitsResolveFully is the regression this design invites:
+// every round re-walks from the root, so the walker makes one Resolver call
+// per cached object. Counting those against MaxFetch has a realm needing more
+// objects than the cap stop against its own cache and report a fully resolved
+// tree as truncated. r/gnoland/blog touches 1,259 unique objects against a
+// default cap of 512, so it fails loudly if the budget moves back.
+func TestPrefetchDefaultLimitsResolveFully(t *testing.T) {
+	f := load(t, "blog.json")
+	rf := &roundFetcher{f: f}
+	// Generous fetch budget, everything else default. Nothing here should
+	// truncate: the fixture is small and fully reachable.
+	tree, err := DecodePackageWith([]byte(f.Package), rf,
+		Limits{MaxFetch: 100000, MaxDepth: 64, MaxNodes: 200000})
+	if err != nil {
+		t.Fatalf("DecodePackageWith: %v", err)
+	}
+	if tree.Stats.Truncated {
+		t.Error("a fully reachable realm reported itself truncated")
+	}
+	// Stats.Fetches counts walker calls, which on the last round is one per
+	// cached object. That is expected and is exactly why it must not be the
+	// thing MaxFetch gates.
+	if tree.Stats.Fetches <= rf.fetched {
+		t.Logf("fetches=%d unique=%d", tree.Stats.Fetches, rf.fetched)
+	}
+}
+
+// TestPrefetchHonoursFetchBudget is the other half: the cap still has to bite,
+// and it has to bite on round trips rather than on cache hits.
+func TestPrefetchHonoursFetchBudget(t *testing.T) {
+	f := load(t, "blog.json")
+	const cap = 20
+	rf := &roundFetcher{f: f}
+	tree, err := DecodePackageWith([]byte(f.Package), rf,
+		Limits{MaxFetch: cap, MaxDepth: 64, MaxNodes: 200000})
+	if err != nil {
+		t.Fatalf("DecodePackageWith: %v", err)
+	}
+	if !tree.Stats.Truncated {
+		t.Error("Stats.Truncated is false despite a fetch budget this realm cannot fit in")
+	}
+	if rf.requested > cap {
+		t.Errorf("requested %d objects from the chain against a cap of %d", rf.requested, cap)
 	}
 }

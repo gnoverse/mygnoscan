@@ -1,6 +1,9 @@
 package gnostate
 
-import "sort"
+import (
+	"math"
+	"sort"
+)
 
 // Resolving a realm one object at a time is too slow to be a design.
 //
@@ -46,19 +49,46 @@ const maxRounds = 64
 // It returns the last tree it built, so a caller that runs out of budget still
 // gets everything resolved so far, with Stats.Truncated set.
 func DecodePackageWith(raw []byte, f Fetcher, lim Limits) (*Tree, error) {
+	lim = lim.withDefaults()
 	c := &prefetchCache{
 		fetcher: f,
+		budget:  lim.MaxFetch,
 		objects: map[string][]byte{},
 		types:   map[string][]byte{},
 	}
+
+	// The walk's own fetch counter has to be taken out of the loop, and this
+	// is the subtle part of resolving in rounds.
+	//
+	// Every round re-walks the whole tree from the root, so by the last round
+	// the walker makes one Resolver call per already-cached object. Those
+	// calls are free, but the walker cannot tell them apart from a real round
+	// trip, so leaving MaxFetch in place would have a realm needing more
+	// objects than the cap stop dead against its own cache and report a fully
+	// resolved tree as truncated. Measured: r/gnoland/blog touches 1,259
+	// unique objects against a default cap of 512.
+	//
+	// The cap still applies, it just moves to where the cost actually is:
+	// prefetchCache enforces it against *distinct objects fetched*, which is
+	// what a round trip is.
+	walkLim := lim
+	walkLim.MaxFetch = math.MaxInt
+
 	var tree *Tree
 	for round := 0; round < maxRounds; round++ {
 		c.wantObjects, c.wantTypes = nil, nil
 
 		var err error
-		tree, err = DecodePackage(raw, c, lim)
+		tree, err = DecodePackage(raw, c, walkLim)
 		if err != nil {
 			return nil, err
+		}
+		if c.exhausted {
+			// The caller's fetch budget ran out, so refs remain unresolved and
+			// the tree must say so. The walker did not set this, because its
+			// own counter was lifted above.
+			tree.Stats.Truncated = true
+			return tree, nil
 		}
 		// Nothing new was asked for, so another round would walk the same tree
 		// and reach the same refs.
@@ -78,7 +108,11 @@ func DecodePackageWith(raw []byte, f Fetcher, lim Limits) (*Tree, error) {
 // prefetchCache is a Resolver that never blocks: a miss is recorded and
 // answered with "not available", and the next round has it.
 type prefetchCache struct {
-	fetcher     Fetcher
+	fetcher Fetcher
+	// budget is the caller's MaxFetch, counted down in distinct objects
+	// actually requested from the chain rather than in walker calls.
+	budget      int
+	exhausted   bool
 	objects     map[string][]byte
 	types       map[string][]byte
 	wantObjects []string
@@ -109,6 +143,16 @@ func (c *prefetchCache) Type(tid string) ([]byte, error) {
 // out, reporting a complete tree as truncated.
 func (c *prefetchCache) fill() error {
 	if oids := dedupe(c.wantObjects); len(oids) > 0 {
+		// Truncate the round rather than the object: a partial level still
+		// leaves every ref it did not reach rendered as a followable link.
+		if len(oids) > c.budget {
+			oids = oids[:c.budget]
+			c.exhausted = true
+		}
+		c.budget -= len(oids)
+		if len(oids) == 0 {
+			return nil
+		}
 		got, err := c.fetcher.Objects(oids)
 		if err != nil {
 			return err
