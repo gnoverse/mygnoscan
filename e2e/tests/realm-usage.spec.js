@@ -123,3 +123,23 @@ test('the exported pills tell a called function from an uncalled one', async ({ 
   await expect(pill('Claim')).not.toHaveClass(/uncalled/);
   await expect(pill('Withdraw')).toHaveClass(/uncalled/);
 });
+
+// The headings tell the reader which control to reach for, and the control is
+// the per-row "only" button, not the row. This shipped saying "click one to
+// filter": the edit that was supposed to fix it matched nothing and silently
+// did nothing, and no test could tell. Asserting the heading names a control
+// that actually exists is what closes that.
+test('each section heading names the control it points at', async ({ page }) => {
+  await page.goto(`/realm/${USAGE_ROUTE}?network=alpha&tab=calls`);
+  await settle(page);
+
+  for (const section of ['usage-callers', 'usage-functions']) {
+    const title = page.locator(`#tab-calls .${section} .section-title`);
+    await expect(title, `${section} heading`).toContainText('only');
+    await expect(title, `${section} must not point at the row`).not.toContainText('click one');
+    // And the control it names is on every row.
+    const rows = page.locator(`#tab-calls .${section} tbody tr`);
+    expect(await rows.count()).toBeGreaterThan(0);
+    await expect(rows.first().locator('.usage-only')).toHaveCount(1);
+  }
+});
