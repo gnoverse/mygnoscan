@@ -393,6 +393,29 @@ tr.total-row td { font-weight: bold; color: var(--accent); }
   border-radius: 4px; padding: 4px 10px; font-size: 12px; font-family: inherit; cursor: pointer; }
 .load-error-btn:hover { border-color: var(--fg2); }
 /* Skeleton loading */
+/* The docs tab's symbol outline.
+   A package can declare a lot: r/gnoswap/staker has 444 symbols across 25
+   types on mainnet, which is an unnavigable wall without one. Sticky, because
+   the whole point is to still be there after scrolling past the third type. */
+.docs-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 20px; align-items: start; }
+.docs-outline { position: sticky; top: 12px; max-height: calc(100vh - 32px); overflow-y: auto;
+                border-right: 1px solid var(--border); padding-right: 12px; }
+.docs-outline .outline-group { color: var(--fg2); font-size: 11px; text-transform: uppercase;
+                               letter-spacing: .06em; margin: 12px 0 4px; }
+.docs-outline .outline-group:first-child { margin-top: 0; }
+.docs-outline a { display: block; font-family: var(--mono); font-size: 12px; padding: 1px 0;
+                  color: var(--fg); text-decoration: none; overflow: hidden;
+                  text-overflow: ellipsis; white-space: nowrap; }
+.docs-outline a:hover { color: var(--accent); }
+.docs-outline a.outline-method { padding-left: 12px; color: var(--fg2); }
+.docs-outline a.outline-unexported { opacity: .65; }
+.docs-outline .outline-count { color: var(--fg2); }
+/* One column below the breakpoint: a 220px rail beside a code block is worse
+   than no rail at all on a phone. */
+@media (max-width: 860px) {
+  .docs-layout { grid-template-columns: minmax(0, 1fr); }
+  .docs-outline { display: none; }
+}
 .skeleton { background: var(--bg3); border-radius: 4px; animation: pulse 1.5s ease-in-out infinite; }
 /* Realm screenshots.
    Every box states its own width, height and aspect-ratio. Without them lazy
@@ -9751,6 +9774,11 @@ function typeSymbolEl(t, showUnexported, pathForNav) {
 function findReadme(files) {
   return (files || []).find(f => /^readme(\.md)?$/i.test(f.name));
 }
+// DOCS_OUTLINE_MIN is how many visible declarations a package needs before the
+// docs tab grows a symbol outline beside it. Below it the table fits on a
+// screen or two and a rail is a second copy of what is already visible.
+const DOCS_OUTLINE_MIN = 12;
+
 // cssEscape quotes a value for an attribute selector.
 //
 // The value is a declaration name that came off the chain, so it can hold a
@@ -9804,24 +9832,85 @@ function docsTabEl(symbols, files, pathForNav, focus) {
   // toggle would look like the search lied, so arriving with a focus that is
   // not exported opens the toggle.
   let showUnexported = !!(focus && isUnexportedSymbol(symbols, focus));
+
+  // Two columns once there is enough to get lost in, one when there is not.
+  //
+  // The threshold is about navigation rather than size: below it the whole
+  // table is on one screen and an outline is a second copy of what the reader
+  // can already see. Above it, r/gnoswap/staker declares 444 symbols across 25
+  // types on mainnet, and the page is a wall.
+  const layout = el('div');
+  const outline = el('nav', { className: 'docs-outline' });
+  outline.setAttribute('aria-label', 'symbol outline');
   const body = el('div');
-  container.appendChild(body);
+  container.appendChild(layout);
+
   const render = () => {
     body.textContent = '';
+    outline.textContent = '';
+    const visibleTypes = types.filter(s => s.exported || showUnexported);
+    const visibleOf = items => items.filter(s => s.exported || showUnexported);
+    const total = visibleOf(consts).length + visibleOf(vars).length + visibleOf(funcs).length
+      + visibleTypes.reduce((n, t) => n + 1 + (t.methods || []).filter(m => m.exported || showUnexported).length, 0);
+
+    // The outline is drawn from the same filtered lists the body is, so the
+    // unexported toggle moves both and an entry can never point at a card that
+    // is not on the page.
+    const outlineGroup = (label, items) => {
+      if (!items.length) return;
+      const head = el('div', { className: 'outline-group' }, label);
+      head.appendChild(el('span', { className: 'outline-count' }, ' ' + items.length));
+      outline.appendChild(head);
+    };
+    const outlineLink = (sym, qualified, cls) => {
+      const a = el('a', { href: '#', className: cls + (sym.exported ? '' : ' outline-unexported'),
+        title: sym.signature || sym.name }, qualified || sym.name);
+      a.addEventListener('click', (e) => {
+        e.preventDefault();
+        // Found by attribute lookup on the rendered card rather than by an id:
+        // a package can declare Get as a function and String on four types, and
+        // ids have to be unique in a document that also holds a source tab.
+        const card = body.querySelector('[data-sym-qualified="' + cssEscape(qualified || '') + '"]')
+          || body.querySelector('[data-sym="' + cssEscape(sym.name) + '"]');
+        if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+      outline.appendChild(a);
+    };
+
     const group = (label, items) => {
-      const visible = items.filter(s => s.exported || showUnexported);
+      const visible = visibleOf(items);
       if (!visible.length) return;
       body.appendChild(el('div', { className: 'section-title', style: { marginTop: '16px' } }, label));
       for (const sym of visible) body.appendChild(symbolEl(sym, pathForNav));
+      outlineGroup(label, visible);
+      for (const sym of visible) outlineLink(sym, null, 'outline-item');
     };
     group('constants', consts);
     group('variables', vars);
-    const visibleTypes = types.filter(s => s.exported || showUnexported);
     if (visibleTypes.length) {
       body.appendChild(el('div', { className: 'section-title', style: { marginTop: '16px' } }, 'types'));
       for (const t of visibleTypes) body.appendChild(typeSymbolEl(t, showUnexported, pathForNav));
+      outlineGroup('types', visibleTypes);
+      for (const t of visibleTypes) {
+        outlineLink(t, null, 'outline-item');
+        // Methods nested under their type, because that is how calling one
+        // works: a method is only reachable through the type it is on.
+        for (const m of (t.methods || []).filter(m => m.exported || showUnexported)) {
+          outlineLink(m, t.name + '.' + m.name, 'outline-method');
+        }
+      }
     }
     group('functions', funcs);
+
+    layout.textContent = '';
+    if (total > DOCS_OUTLINE_MIN) {
+      layout.className = 'docs-layout';
+      layout.appendChild(outline);
+      layout.appendChild(body);
+    } else {
+      layout.className = '';
+      layout.appendChild(body);
+    }
   };
   render();
   if (unexportedCount > 0) {
