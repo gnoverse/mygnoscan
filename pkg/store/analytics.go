@@ -116,7 +116,7 @@ func (d *DB) GetGasStats(network string, topN int) (*GasStats, error) {
 			    ON t.network = c.network AND t.tx_hash = c.tx_hash` + realmWhere + `
 			UNION
 			SELECT DISTINCT p.path AS path, t.tx_hash, t.gas_used, t.gas_fee
-			  FROM packages p JOIN transactions t
+			  FROM package_submissions p JOIN transactions t
 			    ON t.network = p.network AND t.tx_hash = p.tx_hash` + realmWhere + `
 			UNION
 			SELECT DISTINCT 'MsgRun by ' || m.caller AS path, t.tx_hash, t.gas_used, t.gas_fee
@@ -162,7 +162,7 @@ func (d *DB) GetGasStats(network string, topN int) (*GasStats, error) {
 			    ON t.network = c.network AND t.tx_hash = c.tx_hash` + realmWhere + `
 			UNION
 			SELECT DISTINCT p.creator AS caller, t.tx_hash, t.gas_used, t.gas_fee
-			  FROM packages p JOIN transactions t
+			  FROM package_submissions p JOIN transactions t
 			    ON t.network = p.network AND t.tx_hash = p.tx_hash` + realmWhere + `
 			UNION
 			SELECT DISTINCT m.caller AS caller, t.tx_hash, t.gas_used, t.gas_fee
@@ -216,13 +216,13 @@ func (d *DB) GetGasStats(network string, topN int) (*GasStats, error) {
 		SELECT t.tx_hash, t.block_height, t.gas_used, t.gas_wanted, t.gas_fee, t.success,
 		  COALESCE(
 		    (SELECT 'MsgCall' FROM calls c WHERE c.network = t.network AND c.tx_hash = t.tx_hash LIMIT 1),
-		    (SELECT 'MsgAddPackage' FROM packages p WHERE p.network = t.network AND p.tx_hash = t.tx_hash LIMIT 1),
+		    (SELECT 'MsgAddPackage' FROM package_submissions p WHERE p.network = t.network AND p.tx_hash = t.tx_hash LIMIT 1),
 		    (SELECT 'MsgRun' FROM msg_runs m WHERE m.network = t.network AND m.tx_hash = t.tx_hash LIMIT 1),
 		    (SELECT 'BankMsgSend' FROM bank_sends b WHERE b.network = t.network AND b.tx_hash = t.tx_hash LIMIT 1),
 		    ''),
 		  COALESCE(
 		    (SELECT c.pkg_path || '::' || c.func_name FROM calls c WHERE c.network = t.network AND c.tx_hash = t.tx_hash LIMIT 1),
-		    (SELECT p.path FROM packages p WHERE p.network = t.network AND p.tx_hash = t.tx_hash LIMIT 1),
+		    (SELECT p.path FROM package_submissions p WHERE p.network = t.network AND p.tx_hash = t.tx_hash LIMIT 1),
 		    (SELECT 'MsgRun by ' || m.caller FROM msg_runs m WHERE m.network = t.network AND m.tx_hash = t.tx_hash LIMIT 1),
 		    '')
 		FROM top t

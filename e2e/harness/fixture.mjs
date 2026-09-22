@@ -105,6 +105,13 @@ export function seed(dbPath) {
     const pkg = db.prepare(`INSERT OR REPLACE INTO packages
       (network, path, name, creator, block_height, block_time, tx_hash, is_realm, num_files)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`);
+    // A deploy writes both: packages for what is live at a path now, and
+    // package_submissions for the message that put it there, one row per
+    // message and never overwritten. Gas attribution and every other history
+    // question read the second one.
+    const sub = db.prepare(`INSERT OR REPLACE INTO package_submissions
+      (network, tx_hash, msg_index, path, name, creator, block_height, block_time, is_realm, num_files, success)
+      VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, 1, 1)`);
     const file = db.prepare(`INSERT OR REPLACE INTO package_files
       (network, package_path, file_name, body) VALUES (?, ?, ?, ?)`);
     const dep = db.prepare(`INSERT OR REPLACE INTO dependencies
@@ -128,7 +135,9 @@ export function seed(dbPath) {
 
     const addPackage = (network, path, creator, height, isRealm, txHash) => {
       const name = path.split('/').pop();
-      pkg.run(network, path, name, creator, height, blockTime(height), txHash || `tx-${network}-${height}`, isRealm ? 1 : 0);
+      const hash = txHash || `tx-${network}-${height}`;
+      pkg.run(network, path, name, creator, height, blockTime(height), hash, isRealm ? 1 : 0);
+      sub.run(network, hash, path, name, creator, height, blockTime(height), isRealm ? 1 : 0);
       file.run(network, path, `${name}.gno`, `package ${name}\n\nfunc Render(path string) string { return "${name}" }\n`);
       tx.run(network, txHash || `tx-${network}-${height}`, height, blockTime(height), 100000, 200000, 1000);
     };

@@ -357,6 +357,22 @@ func migrateAddNetworkColumn(db *sql.DB) error {
 
 func initSchema(db *sql.DB) error {
 	_, err := db.Exec(`
+		-- packages answers "what is deployed at this path right now", and only
+		-- that. It is keyed (network, path) and written INSERT OR REPLACE, so a
+		-- redeploy overwrites rather than appends and the table holds one row
+		-- per path no matter how many times that path was submitted. On mainnet
+		-- as of 2026-09-22 that is 368 rows against 447 deploy messages.
+		--
+		-- So it is the wrong source for any question about history: how many
+		-- deploys there were, when a creator first deployed, what a given
+		-- transaction deployed, how deploy activity moved over time. Every one
+		-- of those needs package_submissions, which is one row per message and
+		-- never overwritten.
+		--
+		-- The tell is the join key. Joining packages on path is a current-state
+		-- question and correct here; joining it on tx_hash is a history
+		-- question wearing a current-state table, and it silently loses every
+		-- transaction whose path was later redeployed.
 		CREATE TABLE IF NOT EXISTS packages (
 			network TEXT NOT NULL DEFAULT 'gnoland1',
 			path TEXT NOT NULL,

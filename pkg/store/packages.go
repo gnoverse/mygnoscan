@@ -897,7 +897,7 @@ func (d *DB) GetRealmShareTimeSeries(network, metric, granularity string, days i
 				" WHERE t.block_time >= ?%s"+
 				" UNION"+
 				" SELECT DISTINCT strftime('%s', t.block_time) as bucket, t.network, p.path, t.tx_hash, t.gas_fee"+
-				"  FROM packages p JOIN transactions t"+
+				"  FROM package_submissions p JOIN transactions t"+
 				"    ON t.network = p.network AND t.tx_hash = p.tx_hash"+
 				" WHERE t.block_time >= ?%s"+
 				") GROUP BY bucket, network, path ORDER BY bucket ASC",
