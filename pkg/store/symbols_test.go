@@ -16,8 +16,8 @@ func symbolTestDB(t *testing.T) *DB {
 func TestReplaceSymbolsRoundTrip(t *testing.T) {
 	db := symbolTestDB(t)
 
-	if fp, err := db.SymbolFingerprint("alpha", "gno.land/p/x/y"); err != nil || fp != "" {
-		t.Fatalf("SymbolFingerprint on an unindexed package = (%q,%v), want (\"\",nil)", fp, err)
+	if k, err := db.SymbolSourceKey("alpha", "gno.land/p/x/y"); err != nil || k != "" {
+		t.Fatalf("SymbolSourceKey on an unindexed package = (%q,%v), want (\"\",nil)", k, err)
 	}
 
 	rows := []SymbolRow{
@@ -29,8 +29,8 @@ func TestReplaceSymbolsRoundTrip(t *testing.T) {
 	if err := db.ReplaceSymbols("alpha", "gno.land/p/x/y", "fp1", rows); err != nil {
 		t.Fatal(err)
 	}
-	if fp, _ := db.SymbolFingerprint("alpha", "gno.land/p/x/y"); fp != "fp1" {
-		t.Fatalf("fingerprint = %q, want fp1", fp)
+	if k, _ := db.SymbolSourceKey("alpha", "gno.land/p/x/y"); k != "fp1" {
+		t.Fatalf("source key = %q, want fp1", k)
 	}
 	st, err := db.SymbolIndexStatus()
 	if err != nil {
@@ -212,10 +212,63 @@ func TestDeleteSymbolIndex(t *testing.T) {
 	if err := db.DeleteSymbolIndex("alpha", "gno.land/p/x/y"); err != nil {
 		t.Fatal(err)
 	}
-	if fp, _ := db.SymbolFingerprint("alpha", "gno.land/p/x/y"); fp != "" {
-		t.Fatalf("fingerprint survived the delete: %q", fp)
+	if k, _ := db.SymbolSourceKey("alpha", "gno.land/p/x/y"); k != "" {
+		t.Fatalf("source key survived the delete: %q", k)
 	}
 	if st, _ := db.SymbolIndexStatus(); st.Packages != 0 || st.Symbols != 0 {
 		t.Fatalf("status = %+v, want empty", st)
+	}
+}
+
+// A package whose source has gone away must lose its symbols too, or search
+// keeps offering declarations from a package that no longer has any.
+func TestOrphanedSymbolIndexes(t *testing.T) {
+	db := symbolTestDB(t)
+	if err := db.UpsertPackageFile("alpha", "gno.land/p/x/live", "x.gno", "package x"); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"gno.land/p/x/live", "gno.land/p/x/gone"} {
+		if err := db.ReplaceSymbols("alpha", p, "k", []SymbolRow{{Kind: "func", Name: "F", Exported: true}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	orphans, err := db.OrphanedSymbolIndexes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(orphans) != 1 || orphans[0].Path != "gno.land/p/x/gone" {
+		t.Fatalf("orphans = %+v, want only gno.land/p/x/gone", orphans)
+	}
+}
+
+// The candidates query is the one that has to read no source. Assert on what it
+// selects rather than on timing, which would be flaky and would pass for the
+// wrong reason whenever the corpus happened to be small.
+func TestSymbolIndexCandidatesIgnoresAnIndexedPackage(t *testing.T) {
+	db := symbolTestDB(t)
+	if err := db.UpsertPackageFile("alpha", "gno.land/p/x/y", "x.gno", "package x"); err != nil {
+		t.Fatal(err)
+	}
+	cands, err := db.SymbolIndexCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cands) != 1 {
+		t.Fatalf("candidates = %+v, want 1", cands)
+	}
+	if err := db.ReplaceSymbols("alpha", "gno.land/p/x/y", cands[0].SourceKey, nil); err != nil {
+		t.Fatal(err)
+	}
+	cands, err = db.SymbolIndexCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cands) != 0 {
+		t.Fatalf("candidates after indexing = %+v, want none", cands)
+	}
+	// A package with no declarations at all is still indexed: without the
+	// index row it would be re-parsed on every pass forever.
+	if k, _ := db.SymbolSourceKey("alpha", "gno.land/p/x/y"); k == "" {
+		t.Fatal("a package with zero symbols recorded no source key")
 	}
 }

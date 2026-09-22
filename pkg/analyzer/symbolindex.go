@@ -2,8 +2,6 @@ package analyzer
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"log"
 	"strconv"
@@ -25,20 +23,25 @@ import (
 // analyzer: analyzer already imports store, and the cycle is why ExportedFuncs
 // is a []string on the store type and Symbols is on an API wrapper.
 
-// SymbolFingerprint identifies a package's source.
+// SourceKeyOf builds the key that says whether a package's source has moved.
 //
-// Over names and bodies rather than over the deploy height, because a resync
-// rewrites rows at the same height: a height-keyed check would leave the index
-// describing source nobody can see any more. Cheap enough to compute for every
-// package on every pass — it is one hash over bytes already being read.
-func SymbolFingerprint(files []indexer.MemFile) string {
-	h := sha256.New()
+// It has to agree byte for byte with the SQL expression the corpus pass uses,
+// which is why it takes the deploy's identity rather than deriving anything:
+// the two sides are the same string assembled in two languages, and a
+// disagreement would re-index the whole corpus on every pass, silently.
+//
+// Not a hash of the bodies. The hash was the obvious design and it is the
+// expensive one: package_files is the largest table on a busy chain, and a
+// pass that hashes every body is reading hundreds of megabytes every few
+// minutes to discover that nothing moved. A body cannot change without a new
+// MsgAddPackage, so the transaction hash carries it, and the file count and
+// byte total notice a package that was half-synced when the last pass ran.
+func SourceKeyOf(txHash string, blockHeight int, files []indexer.MemFile) string {
+	bytes := 0
 	for _, f := range files {
-		fmt.Fprintf(h, "%s\x00%d\x00", f.Name, len(f.Body))
-		h.Write([]byte(f.Body))
-		h.Write([]byte{0})
+		bytes += len(f.Body)
 	}
-	return hex.EncodeToString(h.Sum(nil)[:16])
+	return fmt.Sprintf("%s|%d|%d|%d", txHash, blockHeight, len(files), bytes)
 }
 
 // FlattenSymbols turns the docs tab's nested table into storable rows.
@@ -79,43 +82,56 @@ func FlattenSymbols(ps PackageSymbols) []store.SymbolRow {
 // Returns whether anything was written, so a pass can report how much it did
 // rather than how much it looked at.
 func (a *Analyzer) IndexPackageSymbols(network, pkgPath string, files []indexer.MemFile) (bool, error) {
-	fp := SymbolFingerprint(files)
-	prev, err := a.db.SymbolFingerprint(network, pkgPath)
+	// Asked of the database rather than assembled here, so the read path and
+	// the corpus pass cannot disagree about what a package's key is.
+	key, err := a.db.PackageSourceKey(network, pkgPath)
 	if err != nil {
 		return false, err
 	}
-	if prev == fp {
-		return false, nil
+	if key == "" {
+		return false, nil // no source stored for this package
 	}
-	rows := FlattenSymbols(ExtractSymbols(files))
-	if err := a.db.ReplaceSymbols(network, pkgPath, fp, rows); err != nil {
+	prev, err := a.db.SymbolSourceKey(network, pkgPath)
+	if err != nil {
 		return false, err
 	}
-	return true, nil
+	if prev == key {
+		return false, nil
+	}
+	return true, a.indexWithKey(network, pkgPath, key, files)
+}
+
+func (a *Analyzer) indexWithKey(network, pkgPath, key string, files []indexer.MemFile) error {
+	return a.db.ReplaceSymbols(network, pkgPath, key, FlattenSymbols(ExtractSymbols(files)))
 }
 
 // SymbolIndexResult is what one pass did.
 type SymbolIndexResult struct {
+	// Scanned is how many packages the pass found worth looking at, not how
+	// many exist: the staleness check is a single query and never reads a body
+	// it does not have to.
 	Scanned int
 	Indexed int
+	Dropped int
 	Errors  int
 	Took    time.Duration
 }
 
 func (r SymbolIndexResult) String() string {
-	return "scanned " + strconv.Itoa(r.Scanned) + ", indexed " + strconv.Itoa(r.Indexed) +
-		", errors " + strconv.Itoa(r.Errors) + ", took " + r.Took.Round(time.Millisecond).String()
+	return "stale " + strconv.Itoa(r.Scanned) + ", indexed " + strconv.Itoa(r.Indexed) +
+		", dropped " + strconv.Itoa(r.Dropped) + ", errors " + strconv.Itoa(r.Errors) +
+		", took " + r.Took.Round(time.Millisecond).String()
 }
 
 // RefreshSymbolIndex walks every package that has source and re-indexes the
 // ones whose source changed.
 //
-// Whole-corpus rather than incremental, and that is a measurement rather than a
-// preference: the skip is one indexed lookup and one hash over bytes the walk
-// is reading anyway, so a pass over an unchanged corpus is cheap and a pass
-// after a redeploy touches exactly the package that moved. An incremental
-// version would need a watermark that a resync invalidates, which is the
-// mechanism this deliberately does not have.
+// Whole-corpus rather than watermarked, and cheap because the "has anything
+// changed" question is answered entirely in SQL: one join over an aggregate of
+// package_files against the key each package was last indexed under. Source is
+// read only for the packages that actually moved. A watermark would be the
+// other way to do this and it would need invalidating on every resync, which is
+// the mechanism this deliberately does not have.
 //
 // Cancellable, because it runs on a ticker beside the syncer and a shutdown
 // should not wait for a full corpus walk.
@@ -123,40 +139,45 @@ func (a *Analyzer) RefreshSymbolIndex(ctx context.Context) (SymbolIndexResult, e
 	start := time.Now()
 	var res SymbolIndexResult
 
-	refs, err := a.db.StoredPackageRefs()
+	// One query decides the whole pass, and it reads no source. On an unchanged
+	// corpus this comes back empty and the pass is over.
+	cands, err := a.db.SymbolIndexCandidates()
 	if err != nil {
-		return res, fmt.Errorf("list packages: %w", err)
+		return res, fmt.Errorf("list candidates: %w", err)
 	}
-	for _, ref := range refs {
+	res.Scanned = len(cands)
+	for _, c := range cands {
 		select {
 		case <-ctx.Done():
 			res.Took = time.Since(start)
 			return res, ctx.Err()
 		default:
 		}
-		res.Scanned++
-		files, err := a.db.StoredPackageFiles(ref.Network, ref.Path)
-		if err != nil {
+		files, err := a.db.StoredPackageFiles(c.Network, c.Path)
+		if err != nil || len(files) == 0 {
 			res.Errors++
 			continue
 		}
-		if len(files) == 0 {
-			// Source gone. Leaving the rows would keep search offering
-			// declarations from a package that no longer has any.
-			if err := a.db.DeleteSymbolIndex(ref.Network, ref.Path); err != nil {
-				res.Errors++
-			}
-			continue
-		}
-		wrote, err := a.IndexPackageSymbols(ref.Network, ref.Path, files)
-		if err != nil {
+		if err := a.indexWithKey(c.Network, c.Path, c.SourceKey, files); err != nil {
 			res.Errors++
-			log.Printf("symbol index: %s/%s: %v", ref.Network, ref.Path, err)
+			log.Printf("symbol index: %s/%s: %v", c.Network, c.Path, err)
 			continue
 		}
-		if wrote {
-			res.Indexed++
+		res.Indexed++
+	}
+
+	// Source gone entirely. Leaving the rows would keep search offering
+	// declarations from a package that no longer has any.
+	orphans, err := a.db.OrphanedSymbolIndexes()
+	if err != nil {
+		return res, fmt.Errorf("list orphans: %w", err)
+	}
+	for _, o := range orphans {
+		if err := a.db.DeleteSymbolIndex(o.Network, o.Path); err != nil {
+			res.Errors++
+			continue
 		}
+		res.Dropped++
 	}
 	res.Took = time.Since(start)
 	return res, nil

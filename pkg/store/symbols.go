@@ -53,20 +53,125 @@ type SymbolHit struct {
 	Exported  bool   `json:"exported"`
 }
 
-// SymbolFingerprint returns what the index for one package was built from, or
-// "" when it has never been built.
-func (d *DB) SymbolFingerprint(network, pkgPath string) (string, error) {
+// SymbolSourceKey returns what the index for one package was built from, or ""
+// when it has never been built.
+func (d *DB) SymbolSourceKey(network, pkgPath string) (string, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	var fp string
+	var k string
 	err := d.db.QueryRow(
-		`SELECT fingerprint FROM symbol_index WHERE network = ? AND package_path = ?`,
-		network, pkgPath).Scan(&fp)
+		`SELECT source_key FROM symbol_index WHERE network = ? AND package_path = ?`,
+		network, pkgPath).Scan(&k)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
-	return fp, err
+	return k, err
+}
+
+// SymbolIndexCandidate is a package whose stored symbols no longer describe its
+// source, with the key that will be recorded once they do.
+type SymbolIndexCandidate struct {
+	Network   string
+	Path      string
+	SourceKey string
+}
+
+// sourceKeyExpr builds the key in SQL. It has to agree exactly with
+// SourceKeyOf, and the one way to get that wrong is LENGTH(): on a TEXT column
+// SQLite counts characters, and Go counts bytes. Casting to BLOB makes both
+// sides count bytes.
+const sourceKeyExpr = `COALESCE(p.tx_hash,'') || '|' || COALESCE(p.block_height,-1) || '|' || f.n || '|' || f.b`
+
+// SymbolIndexCandidates lists every package whose source has moved since it was
+// last indexed, reading no source to decide.
+//
+// This is the whole reason the pass is cheap enough to run on a timer: one join
+// over an aggregate of package_files, and bodies are read only for the packages
+// that actually changed. On an unchanged corpus it returns nothing and the pass
+// does no I/O beyond this query.
+func (d *DB) SymbolIndexCandidates() ([]SymbolIndexCandidate, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	rows, err := d.db.Query(`
+		SELECT f.network, f.package_path, ` + sourceKeyExpr + `
+		FROM (
+			SELECT network, package_path,
+			       COUNT(*) AS n,
+			       COALESCE(SUM(LENGTH(CAST(body AS BLOB))), 0) AS b
+			FROM package_files
+			GROUP BY network, package_path
+		) f
+		LEFT JOIN packages p ON p.network = f.network AND p.path = f.package_path
+		LEFT JOIN symbol_index si ON si.network = f.network AND si.package_path = f.package_path
+		WHERE si.source_key IS NULL OR si.source_key <> (` + sourceKeyExpr + `)
+		ORDER BY f.network, f.package_path`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SymbolIndexCandidate
+	for rows.Next() {
+		var c SymbolIndexCandidate
+		if err := rows.Scan(&c.Network, &c.Path, &c.SourceKey); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// OrphanedSymbolIndexes lists indexed packages whose source has gone away.
+// Leaving their rows would keep search offering declarations from a package
+// that no longer has any.
+func (d *DB) OrphanedSymbolIndexes() ([]StoredPackageRef, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	rows, err := d.db.Query(`
+		SELECT si.network, si.package_path FROM symbol_index si
+		WHERE NOT EXISTS (
+			SELECT 1 FROM package_files pf
+			WHERE pf.network = si.network AND pf.package_path = si.package_path
+		)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []StoredPackageRef
+	for rows.Next() {
+		var r StoredPackageRef
+		if err := rows.Scan(&r.Network, &r.Path); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// PackageSourceKey computes the key for one package from the database, for the
+// read path, which knows a package but has not asked what changed chain-wide.
+func (d *DB) PackageSourceKey(network, pkgPath string) (string, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var k string
+	err := d.db.QueryRow(`
+		SELECT `+sourceKeyExpr+`
+		FROM (
+			SELECT network, package_path,
+			       COUNT(*) AS n,
+			       COALESCE(SUM(LENGTH(CAST(body AS BLOB))), 0) AS b
+			FROM package_files WHERE network = ? AND package_path = ?
+			GROUP BY network, package_path
+		) f
+		LEFT JOIN packages p ON p.network = f.network AND p.path = f.package_path`,
+		network, pkgPath).Scan(&k)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return k, err
 }
 
 // ReplaceSymbols swaps one package's symbols for a freshly extracted set.
@@ -75,7 +180,7 @@ func (d *DB) SymbolFingerprint(network, pkgPath string) (string, error) {
 // declaration that was removed from the source has to disappear from the index,
 // and an upsert leaves it there forever. That is the failure mode where search
 // keeps offering a function nobody can call any more.
-func (d *DB) ReplaceSymbols(network, pkgPath, fingerprint string, rows []SymbolRow) error {
+func (d *DB) ReplaceSymbols(network, pkgPath, sourceKey string, rows []SymbolRow) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -103,14 +208,14 @@ func (d *DB) ReplaceSymbols(network, pkgPath, fingerprint string, rows []SymbolR
 		}
 	}
 	if _, err := tx.Exec(`INSERT INTO symbol_index
-		(network, package_path, fingerprint, symbol_count, indexed_at)
+		(network, package_path, source_key, symbol_count, indexed_at)
 		VALUES (?,?,?,?,CURRENT_TIMESTAMP)
 		ON CONFLICT(network, package_path) DO UPDATE SET
-		  fingerprint = excluded.fingerprint,
+		  source_key = excluded.source_key,
 		  symbol_count = excluded.symbol_count,
 		  indexed_at = excluded.indexed_at`,
-		network, pkgPath, fingerprint, len(rows)); err != nil {
-		return fmt.Errorf("record fingerprint: %w", err)
+		network, pkgPath, sourceKey, len(rows)); err != nil {
+		return fmt.Errorf("record source key: %w", err)
 	}
 	return tx.Commit()
 }

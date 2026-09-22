@@ -734,14 +734,22 @@ func initSchema(db *sql.DB) error {
 
 		-- What the index was built from, so a rebuild can be skipped.
 		--
-		-- The fingerprint is over the package's file names and bodies, not over
-		-- its deploy height: a resync can rewrite rows at the same height, and
-		-- a height-keyed check would then leave the index describing source
-		-- nobody can see any more.
+		-- source_key is tx_hash, block_height, file count and total bytes joined
+		-- by pipes, and the shape is chosen so the whole "has anything changed"
+		-- question is one
+		-- SQL join that reads no source at all. package_files is the largest
+		-- table on a busy chain; a periodic pass that hashed every body would
+		-- be reading hundreds of megabytes every few minutes to discover that
+		-- nothing moved.
+		--
+		-- Not the deploy height alone: a resync rewrites rows at the same
+		-- height, and the file count and byte total are what notice a package
+		-- that was half-synced when the last pass ran. A body cannot change
+		-- without a new MsgAddPackage, so tx_hash carries the rest.
 		CREATE TABLE IF NOT EXISTS symbol_index (
 			network      TEXT NOT NULL,
 			package_path TEXT NOT NULL,
-			fingerprint  TEXT NOT NULL,
+			source_key   TEXT NOT NULL,
 			symbol_count INTEGER NOT NULL DEFAULT 0,
 			indexed_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY (network, package_path)

@@ -80,44 +80,122 @@ func keysOf(m map[string]store.SymbolRow) []string {
 	return out
 }
 
-// The fingerprint is what makes a corpus walk cheap, so it has to move with the
-// source and stay put otherwise. Over bodies rather than over a deploy height,
-// because a resync rewrites rows at the same height.
-func TestSymbolFingerprint(t *testing.T) {
+// The key is what makes a corpus pass cheap, so it has to move with the source
+// and stay put otherwise. It also has to be assembled the same way in Go as in
+// SQL, which TestSourceKeyMatchesTheSQLExpression is about.
+func TestSourceKeyOf(t *testing.T) {
 	a := []indexer.MemFile{{Name: "a.gno", Body: "package a"}, {Name: "b.gno", Body: "package a\n"}}
-	if SymbolFingerprint(a) != SymbolFingerprint(a) {
+	if SourceKeyOf("tx1", 10, a) != SourceKeyOf("tx1", 10, a) {
 		t.Fatal("not deterministic")
 	}
-	b := []indexer.MemFile{{Name: "a.gno", Body: "package a"}, {Name: "b.gno", Body: "package a\n// x"}}
-	if SymbolFingerprint(a) == SymbolFingerprint(b) {
-		t.Fatal("a changed body did not move the fingerprint")
+	// A redeploy is a new transaction, which is what actually changes a body.
+	if SourceKeyOf("tx1", 10, a) == SourceKeyOf("tx2", 11, a) {
+		t.Fatal("a redeploy did not move the key")
 	}
-	// A file added with empty content still changes the package.
-	c := append(append([]indexer.MemFile{}, a...), indexer.MemFile{Name: "c.gno", Body: ""})
-	if SymbolFingerprint(a) == SymbolFingerprint(c) {
-		t.Fatal("an added file did not move the fingerprint")
+	// A file added mid-sync, at the same deploy, still has to be noticed.
+	c := append(append([]indexer.MemFile{}, a...), indexer.MemFile{Name: "c.gno", Body: "x"})
+	if SourceKeyOf("tx1", 10, a) == SourceKeyOf("tx1", 10, c) {
+		t.Fatal("an added file did not move the key")
 	}
-	// The separator has to make "ab"+"" different from "a"+"b", or two
-	// packages with the same concatenated bytes collide.
-	x := []indexer.MemFile{{Name: "f", Body: "ab"}}
-	y := []indexer.MemFile{{Name: "f", Body: "a"}, {Name: "g", Body: "b"}}
-	if SymbolFingerprint(x) == SymbolFingerprint(y) {
-		t.Fatal("concatenation collision")
+	// And so does a body that grew without the file count changing.
+	d := []indexer.MemFile{{Name: "a.gno", Body: "package a"}, {Name: "b.gno", Body: "package a\n// more"}}
+	if SourceKeyOf("tx1", 10, a) == SourceKeyOf("tx1", 10, d) {
+		t.Fatal("a longer body did not move the key")
+	}
+}
+
+// The Go side and the SQL side are the same string assembled in two languages,
+// and a disagreement would silently re-index the whole corpus on every pass.
+//
+// The specific trap is LENGTH(): on a TEXT column SQLite counts characters and
+// Go counts bytes, so any package with a non-ASCII byte in it would never stop
+// looking stale. This is that case.
+func TestSourceKeyMatchesTheSQLExpression(t *testing.T) {
+	an, db := indexTestSetup(t)
+	const body = "package a\n// \u00e9\u00e9\u00e9 and \u4e16\u754c\n"
+	if err := db.UpsertPackageFile("alpha", "gno.land/p/x/u", "u.gno", body); err != nil {
+		t.Fatal(err)
+	}
+	files := []indexer.MemFile{{Name: "u.gno", Body: body}}
+
+	fromSQL, err := db.PackageSourceKey("alpha", "gno.land/p/x/u")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No packages row, so the SQL side coalesces the deploy to ("",-1).
+	if got := SourceKeyOf("", -1, files); got != fromSQL {
+		t.Fatalf("Go key %q != SQL key %q", got, fromSQL)
+	}
+
+	// And the pass must agree: index once, then find nothing stale.
+	if _, err := an.IndexPackageSymbols("alpha", "gno.land/p/x/u", files); err != nil {
+		t.Fatal(err)
+	}
+	cands, err := db.SymbolIndexCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cands) != 0 {
+		t.Fatalf("a freshly indexed package with non-ASCII source still reads as stale: %+v", cands)
+	}
+}
+
+// The staleness check is the thing that has to read no source, or a pass every
+// ten minutes is hundreds of megabytes of I/O to discover nothing moved.
+func TestSymbolIndexCandidatesFindsOnlyWhatMoved(t *testing.T) {
+	an, db := indexTestSetup(t)
+	for _, p := range []string{"a", "b"} {
+		if err := db.UpsertPackageFile("alpha", "gno.land/p/x/"+p, "x.gno", treeSource); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cands, err := db.SymbolIndexCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cands) != 2 {
+		t.Fatalf("an unindexed corpus gave %d candidates, want 2", len(cands))
+	}
+	if _, err := an.RefreshSymbolIndex(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cands, err = db.SymbolIndexCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cands) != 0 {
+		t.Fatalf("an indexed corpus still reads as stale: %+v", cands)
+	}
+
+	// One package changes; only that one comes back.
+	if err := db.UpsertPackageFile("alpha", "gno.land/p/x/b", "x.gno", treeSource+"\nfunc More() {}\n"); err != nil {
+		t.Fatal(err)
+	}
+	cands, err = db.SymbolIndexCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cands) != 1 || cands[0].Path != "gno.land/p/x/b" {
+		t.Fatalf("candidates = %+v, want only gno.land/p/x/b", cands)
 	}
 }
 
 func TestIndexPackageSymbolsSkipsUnchangedSource(t *testing.T) {
 	an, db := indexTestSetup(t)
+	const path = "gno.land/p/x/tree"
 	files := []indexer.MemFile{{Name: "tree.gno", Body: treeSource}}
+	if err := db.UpsertPackageFile("alpha", path, "tree.gno", treeSource); err != nil {
+		t.Fatal(err)
+	}
 
-	wrote, err := an.IndexPackageSymbols("alpha", "gno.land/p/x/tree", files)
+	wrote, err := an.IndexPackageSymbols("alpha", path, files)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !wrote {
 		t.Fatal("first index wrote nothing")
 	}
-	wrote, err = an.IndexPackageSymbols("alpha", "gno.land/p/x/tree", files)
+	wrote, err = an.IndexPackageSymbols("alpha", path, files)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,8 +203,12 @@ func TestIndexPackageSymbolsSkipsUnchangedSource(t *testing.T) {
 		t.Fatal("unchanged source was re-indexed")
 	}
 
-	changed := []indexer.MemFile{{Name: "tree.gno", Body: treeSource + "\nfunc Added() {}\n"}}
-	wrote, err = an.IndexPackageSymbols("alpha", "gno.land/p/x/tree", changed)
+	changedBody := treeSource + "\nfunc Added() {}\n"
+	if err := db.UpsertPackageFile("alpha", path, "tree.gno", changedBody); err != nil {
+		t.Fatal(err)
+	}
+	wrote, err = an.IndexPackageSymbols("alpha", path,
+		[]indexer.MemFile{{Name: "tree.gno", Body: changedBody}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,6 +221,24 @@ func TestIndexPackageSymbolsSkipsUnchangedSource(t *testing.T) {
 	}
 	if len(hits) != 1 {
 		t.Fatalf("the new declaration is not searchable: %d hits", len(hits))
+	}
+}
+
+// A package whose source is not in the database is not indexable, and saying so
+// by writing an empty symbol table would be worse than doing nothing: the
+// source key would record a package that has none.
+func TestIndexPackageSymbolsWithNoStoredSourceIsANoop(t *testing.T) {
+	an, db := indexTestSetup(t)
+	wrote, err := an.IndexPackageSymbols("alpha", "gno.land/p/x/nothing",
+		[]indexer.MemFile{{Name: "x.gno", Body: treeSource}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wrote {
+		t.Fatal("indexed a package with no stored source")
+	}
+	if st, _ := db.SymbolIndexStatus(); st.Packages != 0 {
+		t.Fatalf("status = %+v, want nothing indexed", st)
 	}
 }
 
@@ -156,8 +256,8 @@ func TestRefreshSymbolIndexWalksTheCorpus(t *testing.T) {
 		t.Fatalf("first pass = %s", res)
 	}
 
-	// A second pass over an unchanged corpus must do no writing at all. That
-	// is what makes running this on a timer cheap enough to be uninteresting.
+	// A second pass over an unchanged corpus must do no writing and read no
+	// source. That is what makes running this on a timer uninteresting.
 	res, err = an.RefreshSymbolIndex(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -165,8 +265,8 @@ func TestRefreshSymbolIndexWalksTheCorpus(t *testing.T) {
 	if res.Indexed != 0 {
 		t.Fatalf("second pass re-indexed %d packages", res.Indexed)
 	}
-	if res.Scanned != 1 {
-		t.Fatalf("second pass scanned %d, want 1", res.Scanned)
+	if res.Scanned != 0 {
+		t.Fatalf("second pass found %d stale packages, want 0", res.Scanned)
 	}
 
 	hits, err := db.SearchSymbols("alpha", "IterateByOffset", 10)
@@ -199,7 +299,7 @@ func TestRefreshSymbolIndexStopsWhenCancelled(t *testing.T) {
 	if err == nil {
 		t.Fatal("a cancelled pass returned no error")
 	}
-	if res.Scanned > 1 {
-		t.Fatalf("scanned %d packages after cancellation", res.Scanned)
+	if res.Indexed > 1 {
+		t.Fatalf("indexed %d packages after cancellation", res.Indexed)
 	}
 }

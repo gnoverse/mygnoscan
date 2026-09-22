@@ -937,9 +937,20 @@ things write it:
   background pass owns the corpus, which means a package deployed a minute ago
   is not in it yet, and the first person to care is the one looking at it.
 
-The fingerprint is over file names and bodies, not over a deploy height: a
-resync rewrites rows at the same height, and a height-keyed check would leave
-the index describing source nobody can see any more.
+The staleness check reads no source at all. It is one SQL join over an
+aggregate of `package_files` against the key each package was last indexed
+under: `tx_hash|block_height|file_count|total_bytes`. Bodies are read only for
+the packages that actually moved, which is what makes a pass every ten minutes
+uninteresting rather than hundreds of megabytes of I/O to discover that nothing
+changed.
+
+Not the deploy height alone: a resync rewrites rows at the same height. A body
+cannot change without a new `MsgAddPackage`, so the transaction hash carries
+that, and the file count and byte total notice a package that was half-synced
+when the last pass ran. The Go and SQL sides assemble the same string, and
+`LENGTH()` is the trap between them — SQLite counts characters on a TEXT
+column where Go counts bytes, so the query casts to BLOB and a test pins the
+two against a package with non-ASCII source.
 
 The index is keyed on the **package**, not on the submission, because
 `package_files` holds current bodies only — a redeploy overwrites them, and the
