@@ -120,10 +120,18 @@ type Resolver interface {
 // Stats reports what a decode actually cost, so a handler can surface "this
 // tree is incomplete" instead of presenting a truncated walk as the whole
 // state.
+//
+// Truncated and Clipped are separate because they mean different things to a
+// reader. Truncated says the walk did not reach every value, so the page is
+// showing less than the realm holds. Clipped says every value is here and one
+// of them was too long to print in full, which is not a gap. Measured on
+// mainnet's r/gnoland/blog, where a post body runs past the default 4 KB cap:
+// conflating the two would badge a fully loaded realm as incomplete.
 type Stats struct {
 	Nodes     int  `json:"nodes"`
 	Fetches   int  `json:"fetches"`
 	Truncated bool `json:"truncated"`
+	Clipped   bool `json:"clipped,omitempty"`
 }
 
 // Tree is a decoded package block: one node per named top-level variable.

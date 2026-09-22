@@ -143,11 +143,22 @@ func DecodePackage(raw []byte, res Resolver, lim Limits) (*Tree, error) {
 		if name == "" || name == "_" {
 			continue
 		}
+		// A package's functions are its API, not its state: `vm/qfuncs` and
+		// the docs tab already answer for them, and listing them here would
+		// make the state view a second symbol table.
+		//
+		// The test is the declared type, before the value is walked, not the
+		// decoded Kind afterwards. Two reasons, and the second is the one that
+		// bites: a function's value is a stored object like any other, so
+		// resolving ~30 of them spends fetch budget on rows that are then
+		// thrown away, and if the budget runs out first the function comes
+		// back as an unresolved KindRef and slips past a Kind-based filter
+		// entirely. Measured on r/gnoland/blog, where `Render` did exactly
+		// that at the default fetch cap.
+		if isFuncType(blk.Values[i].T) {
+			continue
+		}
 		n := w.value(name, blk.Values[i], 0)
-		// Functions and types are the package's API, not its state, and
-		// `vm/qfuncs` plus the docs tab already answer for them. Dropping them
-		// here is what makes the difference between a state view and a second
-		// symbol table.
 		if n.Kind == KindFunc {
 			continue
 		}
@@ -725,11 +736,13 @@ func zeroValue(code int64) string {
 	return "0"
 }
 
+// clip bounds one rendered value. It sets Clipped, not Truncated: the tree is
+// complete, a single value is merely abbreviated.
 func (w *walker) clip(s string) string {
 	if len(s) <= w.lim.MaxString {
 		return s
 	}
-	w.stats.Truncated = true
+	w.stats.Clipped = true
 	return s[:w.lim.MaxString] + "…"
 }
 
@@ -782,4 +795,19 @@ func printableASCII(b []byte) (string, bool) {
 		}
 	}
 	return string(b), true
+}
+
+// isFuncType reports whether a TypedValue's declared type is a function, which
+// is knowable without fetching anything.
+func isFuncType(t json.RawMessage) bool {
+	if len(t) == 0 {
+		return false
+	}
+	var head struct {
+		Type string `json:"@type"`
+	}
+	if json.Unmarshal(t, &head) != nil {
+		return false
+	}
+	return head.Type == tFunc
 }

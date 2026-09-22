@@ -257,7 +257,6 @@ func TestDecodeLimits(t *testing.T) {
 		{"node cap", Limits{MaxNodes: 5}},
 		{"depth cap", Limits{MaxDepth: 1}},
 		{"fetch cap", Limits{MaxFetch: 1}},
-		{"string cap", Limits{MaxString: 8}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -266,7 +265,7 @@ func TestDecodeLimits(t *testing.T) {
 				t.Fatalf("DecodePackage: %v", err)
 			}
 			if !tree.Stats.Truncated {
-				t.Error("Stats.Truncated is false, so the page would present a clipped tree as complete")
+				t.Error("Stats.Truncated is false, so the page would present an incomplete tree as whole")
 			}
 			if tt.lim.MaxNodes > 0 && tree.Stats.Nodes > tt.lim.MaxNodes+len(tree.Nodes) {
 				t.Errorf("nodes = %d, well past the cap of %d", tree.Stats.Nodes, tt.lim.MaxNodes)
@@ -280,21 +279,30 @@ func TestDecodeLimits(t *testing.T) {
 
 // TestDecodeDropsFunctions keeps the state view from becoming a second symbol
 // table: a realm's functions are its API, and the docs tab already owns them.
+// TestDecodeDropsFunctions keeps the state view from becoming a second symbol
+// table, and pins it at the *default* budget: a function filtered by its
+// decoded Kind survives as an unresolved ref once the fetch cap is reached,
+// which is what r/gnoland/blog actually does.
 func TestDecodeDropsFunctions(t *testing.T) {
 	f := load(t, "blog.json")
-	tree, err := DecodePackage([]byte(f.Package), f, Limits{})
-	if err != nil {
-		t.Fatalf("DecodePackage: %v", err)
-	}
-	for _, n := range tree.Nodes {
-		if n.Kind == KindFunc {
-			t.Errorf("function %q reached the state tree", n.Name)
+	for _, lim := range []Limits{
+		{}, // the default budget, which this realm exhausts
+		{MaxDepth: 64, MaxNodes: 200000, MaxFetch: 200000},
+	} {
+		tree, err := DecodePackage([]byte(f.Package), f, lim)
+		if err != nil {
+			t.Fatalf("DecodePackage: %v", err)
 		}
-	}
-	// Render is declared by the blog realm, so if it survived the filter this
-	// test would be passing for the wrong reason.
-	if find(tree.Nodes, "Render") != nil {
-		t.Error("Render is in the state tree; it is API, not state")
+		for _, n := range tree.Nodes {
+			if n.Kind == KindFunc {
+				t.Errorf("function %q reached the state tree (limits %+v)", n.Name, lim)
+			}
+		}
+		// Render is declared by the blog realm, so if it survived the filter
+		// this test would be passing for the wrong reason.
+		if find(tree.Nodes, "Render") != nil {
+			t.Errorf("Render is in the state tree (limits %+v); it is API, not state", lim)
+		}
 	}
 }
 
@@ -355,4 +363,25 @@ func dump(ns []Node, d int) string {
 		b.WriteString(dump(n.Children, d+1))
 	}
 	return b.String()
+}
+
+// TestClipIsNotTruncation keeps the two honesty signals apart. A realm whose
+// every value was reached, but one of which is a long string, is complete:
+// badging it "incomplete" would train readers to ignore the badge on the
+// realms where it means something.
+func TestClipIsNotTruncation(t *testing.T) {
+	f := load(t, "blog.json")
+	// Generous on everything but the string cap, so the only honesty signal
+	// this realm can trip is the one under test.
+	tree, err := DecodePackage([]byte(f.Package), f,
+		Limits{MaxString: 8, MaxDepth: 64, MaxNodes: 200000, MaxFetch: 200000})
+	if err != nil {
+		t.Fatalf("DecodePackage: %v", err)
+	}
+	if !tree.Stats.Clipped {
+		t.Error("Stats.Clipped is false with an 8-byte cap over a realm full of longer strings")
+	}
+	if tree.Stats.Truncated {
+		t.Error("a clipped value set Stats.Truncated, which claims the walk missed data it did not miss")
+	}
 }
