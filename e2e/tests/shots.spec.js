@@ -71,6 +71,31 @@ test.describe('realm screenshots', () => {
     await expect(img).toHaveAttribute('src', /size=hero/);
   });
 
+  // The hero belongs to the overview. On the source, deps or state tab the
+  // reader navigated somewhere deliberately, and 405 pixels of picture above
+  // what they came for is the wrong trade — it put the dependency graph below
+  // the fold, where hovering a node stopped working at all.
+  test('the hero is on the overview and nowhere else', async ({ page }) => {
+    await page.goto(`/realm/${HUB_ROUTE}`);
+    await settle(page);
+    await expect(page.locator('#realm-header .shot-hero')).toBeVisible();
+
+    await page.locator('#realm-tabs .tab[data-tab="source"]').click();
+    await expect(page.locator('#realm-header .shot-hero')).toBeHidden();
+
+    await page.locator('#realm-tabs .tab[data-tab="info"]').click();
+    await expect(page.locator('#realm-header .shot-hero')).toBeVisible();
+  });
+
+  test('a deep link to another tab does not draw the hero', async ({ page }) => {
+    // The starting tab is made active by a class rather than by a click, so it
+    // never passes through switchTab. Landing here with the hero showing is the
+    // way this breaks.
+    await page.goto(`/realm/${HUB_ROUTE}?tab=deps`);
+    await settle(page);
+    await expect(page.locator('#realm-header .shot-hero')).toBeHidden();
+  });
+
   // The picture is keyed on the realm's last activity, not on its deploy: a
   // render is a function of chain state and changes when nobody redeploys
   // anything, so keying on the deploy pins a realm's thumbnail to whatever it

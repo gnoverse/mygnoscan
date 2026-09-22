@@ -407,6 +407,12 @@ tr.total-row td { font-weight: bold; color: var(--accent); }
 .shot.loading { animation: pulse 1.5s ease-in-out infinite; }
 .shot-thumb { width: 128px; height: 72px; aspect-ratio: 16 / 9; }
 .shot-hero { width: 100%; max-width: 720px; aspect-ratio: 16 / 9; margin: 0 0 16px; }
+/* The hero is the overview's. Every other tab is something the reader
+   navigated to deliberately, and pushing it 405 pixels down the page to show a
+   picture of the same realm is the wrong trade. Verified by e2e: the dependency
+   graph landed below the fold with the hero always on, and hovering a node
+   stopped working. */
+html[data-realm-tab]:not([data-realm-tab="info"]) #realm-header .shot-hero { display: none; }
 /* The generated tile, for a path there is no picture of and never will be.
    Never a blank box: a reader who does not know what a realm is reads blank as
    "the site is broken" rather than "this one has no page". */
@@ -3146,6 +3152,10 @@ function navigate(path, replace) {
 
 function route() {
   _watchTarget = null;
+  // Cleared on every navigation, and set again by switchTab when a realm page
+  // draws its strip. Left behind, it would keep hiding the hero on the *next*
+  // realm the reader opens.
+  document.documentElement.removeAttribute('data-realm-tab');
   // The badge counts localStorage, which another tab can change under us.
   // Repainting per navigation keeps it honest without polling.
   renderWatchBadge();
@@ -10476,6 +10486,9 @@ async function loadRealmDetail(path, initialTab) {
         // with the page.
         state: () => loadRealmState(path, detail, gen),
       };
+      // The strip's own starting state, which switchTab never sees: the first
+      // tab is made active by a class here, not by a click.
+      document.documentElement.setAttribute('data-realm-tab', activeTab);
       tabNames.forEach((name) => {
         const tab = el('div', { className: 'tab' + (name === activeTab ? ' active' : ''), onclick: () => {
           switchTab(name, tab);
@@ -12685,6 +12698,11 @@ function unknownEl() {
 }
 
 function switchTab(name, tabEl) {
+  // Which realm tab is open, on the root, so a rule can depend on it without
+  // any of these callers knowing about it. The hero screenshot is the first
+  // such rule: it belongs to the overview, and above a source listing or a
+  // force graph it is 405 pixels of picture the reader did not come for.
+  document.documentElement.setAttribute('data-realm-tab', name);
   document.querySelectorAll('#realm-tabs .tab').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
   if (tabEl) tabEl.classList.add('active');
