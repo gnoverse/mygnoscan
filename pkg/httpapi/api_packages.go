@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"net/url"
 	"sort"
@@ -211,6 +212,24 @@ func (a *API) HandleRealm(w http.ResponseWriter, r *http.Request) {
 		files = append(files, indexer.MemFile(f))
 	}
 	detail.ExportedFuncs = analyzer.ExportedFunctions(files)
+	// Opening a package's docs is also what makes it searchable.
+	//
+	// The background pass owns the corpus and runs on its own timer, which
+	// means a package deployed a minute ago is not in the index yet — and the
+	// first person to care is the one looking at it right now. Writing here
+	// closes that gap and costs one indexed lookup and one hash when the source
+	// has not moved, which is every request but the first after a deploy.
+	//
+	// Synchronous on purpose: a goroutine would make this untestable and would
+	// race the very next request.
+	// detail.Network, not the request's: the parameter is optional and resolves
+	// to "every chain" when it is absent, and indexing under that would file
+	// every symbol on a chain that does not exist.
+	if detail.Network != "" {
+		if _, err := a.analyzer.IndexPackageSymbols(detail.Network, detail.Path, files); err != nil {
+			log.Printf("symbol index: %s/%s: %v", detail.Network, detail.Path, err)
+		}
+	}
 	// Symbols lives on a wrapper rather than store.PackageDetail: the store
 	// package cannot import analyzer's richer type without a cycle (analyzer
 	// already imports store for DB access), the same reason ExportedFuncs
