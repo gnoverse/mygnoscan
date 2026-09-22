@@ -41,13 +41,38 @@ func BenchmarkRealmUsage(b *testing.B) {
 				if err != nil {
 					b.Fatal(err)
 				}
+				// Assert the fixture's *shape*, not only its size. A row count
+				// says the seeder produced enough work; it does not say the
+				// work contains the thing being measured. Every query timed
+				// here groups by caller or by function, so a seeder that
+				// quietly collapsed to one of either would benchmark happily
+				// and measure nothing.
+				//
+				// Not hypothetical: realm_cousage_bench_test.go's first
+				// seeder stepped its caller index by a multiple of the address
+				// pool's parity, and produced 200k rows of plausible traffic
+				// with zero co-usage in it. Only its assertion on its own
+				// fixture caught that.
 				if u.Summary.Messages != size.calls {
 					b.Fatalf("messages = %d, want %d", u.Summary.Messages, size.calls)
+				}
+				if u.Summary.UniqueCallers != size.callers {
+					b.Fatalf("unique callers = %d, want %d: the seeder has collapsed the "+
+						"grouping this benchmark exists to time", u.Summary.UniqueCallers, size.callers)
+				}
+				if len(u.Functions) != len(benchFuncs) {
+					b.Fatalf("functions = %d, want %d: the function grouping has nothing to group",
+						len(u.Functions), len(benchFuncs))
 				}
 			}
 		})
 	}
 }
+
+// benchFuncs is the function set seedBigRealm cycles through, named here so the
+// assertion above counts against the seeder rather than against a literal
+// repeated in two places.
+var benchFuncs = []string{"Bid", "Claim", "Withdraw", "Render", "Vote", "Poke", "Set", "Clear"}
 
 // seedBigRealm writes `calls` rows spread over `callers` addresses in one
 // transaction. InsertCall takes the write mutex and commits per row, which at
@@ -57,7 +82,7 @@ func seedBigRealm(tb TB, db *DB, path string, calls, callers int) {
 	if err := db.UpsertPackage("mainnet", path, "realm", "g1dev", "TXD", 1, "", true, 1); err != nil {
 		tb.Fatalf("upsert package: %v", err)
 	}
-	fns := []string{"Bid", "Claim", "Withdraw", "Render", "Vote", "Poke", "Set", "Clear"}
+	fns := benchFuncs
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	tx, err := db.db.Begin()
 	if err != nil {
