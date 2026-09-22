@@ -74,6 +74,11 @@ const PAGES = [
   ['realm-detail', `/realm/${HUB_ROUTE}`],
   ['realm-deps', `/realm/${HUB_ROUTE}?tab=deps`],
   ['realm-source', `/realm/${HUB_ROUTE}?tab=source`],
+  // The docs tab, and the same tab arrived at from symbol search: ?sym= opens
+  // the collapse if it has to and highlights the declaration, which is the
+  // half of symbol search that is not a JSON response.
+  ['realm-docs', `/realm/${HUB_ROUTE}?tab=docs`],
+  ['realm-docs-symbol', `/realm/${HUB_ROUTE}?tab=docs&sym=Render`],
   // The three tabs that carry a chart. Pinned to a network because the
   // storage tab refuses the all-chains case by design, and a shot of that
   // refusal would show none of what changed here.
