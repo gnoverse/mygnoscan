@@ -241,3 +241,30 @@ func TestFlattenAVLOnMainnetData(t *testing.T) {
 		}
 	}
 }
+
+// TestDecodeObjectFlattens pins the two entry points to the same shape. A tree
+// that renders as entries on the realm page and as raw avl nodes when expanded
+// from the object view is the same data drawn two ways, which teaches a reader
+// to trust neither.
+func TestDecodeObjectFlattens(t *testing.T) {
+	fx := &avlFixture{objects: map[string]string{
+		"t:0": treeObj("t:0", "n:1"),
+		"n:1": inner("n:1", "b", 1, 2, "n:2", "n:3"),
+		"n:2": leaf("n:2", "a", "alpha"),
+		"n:3": leaf("n:3", "b", "bravo"),
+	}}
+	raw, _ := fx.Object("t:0")
+	n, err := DecodeObject(raw, "x.Tree", fx, Limits{})
+	if err != nil {
+		t.Fatalf("DecodeObject: %v", err)
+	}
+	if n.Kind != KindMap {
+		t.Fatalf("kind = %q, want map: DecodeObject did not flatten the tree\n%s", n.Kind, dump([]Node{*n}, 0))
+	}
+	if len(n.Children) != 2 {
+		t.Fatalf("entries = %d, want 2", len(n.Children))
+	}
+	if n.Children[0].Name != "a" || n.Children[1].Name != "b" {
+		t.Errorf("keys = %q, %q; want a, b", n.Children[0].Name, n.Children[1].Name)
+	}
+}

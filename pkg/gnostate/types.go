@@ -58,6 +58,12 @@ type Node struct {
 	ObjectID string `json:"object_id,omitempty"`
 	OwnerID  string `json:"owner_id,omitempty"`
 	Hash     string `json:"hash,omitempty"`
+	// TypeID is the fully-qualified type this node was declared with
+	// (`gno.land/p/nt/avl/v0.Tree`), where Type is the shortened display name
+	// (`Tree`). It is here because `vm/qobject_json` returns a stored object
+	// with no type attached: expanding a collapsed branch correctly needs the
+	// type its parent knew, and without this the caller has nowhere to get it.
+	TypeID string `json:"type_id,omitempty"`
 	// Size is the object's LastObjectSize as the chain reports it, which is
 	// what the storage deposit was charged against.
 	Size int64 `json:"size,omitempty"`

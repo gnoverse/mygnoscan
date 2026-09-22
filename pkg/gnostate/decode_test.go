@@ -347,7 +347,7 @@ func TestDecodeObject(t *testing.T) {
 	if oid == "" {
 		t.Skip("no struct object in fixture")
 	}
-	n, err := DecodeObject([]byte(body), f, Limits{})
+	n, err := DecodeObject([]byte(body), "", f, Limits{})
 	if err != nil {
 		t.Fatalf("DecodeObject: %v", err)
 	}
@@ -383,5 +383,32 @@ func TestClipIsNotTruncation(t *testing.T) {
 	}
 	if tree.Stats.Truncated {
 		t.Error("a clipped value set Stats.Truncated, which claims the walk missed data it did not miss")
+	}
+}
+
+// TestNodeCarriesTypeID pins the contract DecodeObject depends on: a row the
+// UI draws must carry enough to expand itself later. Without TypeID the
+// expanded view cannot name a struct's fields or recognize an avl.Tree, and
+// silently disagrees with the row it came from.
+func TestNodeCarriesTypeID(t *testing.T) {
+	f := load(t, "blog.json")
+	tree, err := DecodePackage([]byte(f.Package), f, Limits{MaxDepth: 64, MaxNodes: 200000, MaxFetch: 200000})
+	if err != nil {
+		t.Fatalf("DecodePackage: %v", err)
+	}
+	n := find(tree.Nodes, "b")
+	if n == nil {
+		t.Fatal("b missing")
+	}
+	if n.TypeID == "" {
+		t.Error("b carries no TypeID, so expanding it later cannot name its fields")
+	}
+	if !strings.Contains(n.TypeID, ".") {
+		t.Errorf("TypeID = %q, want a qualified type id the chain answers to", n.TypeID)
+	}
+	// The display name stays short: a full type id in a table column pushes
+	// the value off the page.
+	if n.Type == n.TypeID {
+		t.Errorf("Type and TypeID are both %q; Type should be the shortened name", n.Type)
 	}
 }

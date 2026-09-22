@@ -178,7 +178,13 @@ type objectEnvelope struct {
 
 // DecodeObject decodes the body of `vm/qobject_json` into a single node, for
 // expanding one branch without re-reading the whole realm.
-func DecodeObject(raw []byte, res Resolver, lim Limits) (*Node, error) {
+//
+// typeID is the Node.TypeID the caller recorded when it drew the collapsed
+// row. It is required rather than optional because a stored object arrives
+// with no type: without it a struct's fields have no names, and an avl.Tree is
+// unrecognizable, so the expanded view would disagree with the row it came
+// from. Pass "" when genuinely unknown and accept positional field names.
+func DecodeObject(raw []byte, typeID string, res Resolver, lim Limits) (*Node, error) {
 	var env objectEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return nil, fmt.Errorf("parse object envelope: %w", err)
@@ -187,10 +193,18 @@ func DecodeObject(raw []byte, res Resolver, lim Limits) (*Node, error) {
 		return nil, fmt.Errorf("object %q has no value", env.ObjectID)
 	}
 	w := newWalker(res, lim)
-	n := w.rawValue("", nil, env.Value, 0)
+	var ti *typeInfo
+	if typeID != "" {
+		ti = &typeInfo{name: shortTypeID(typeID), id: typeID}
+	}
+	n := w.rawValue("", ti, env.Value, 0)
 	if n.ObjectID == "" {
 		n.ObjectID = env.ObjectID
 	}
+	// Flatten here too, or a tree renders as key/value pairs on the realm page
+	// and as raw avl nodes the moment a reader expands it from the object
+	// view. Same data, two shapes, is how a reader stops trusting either.
+	n = flattenTrees([]Node{n})[0]
 	return &n, nil
 }
 
@@ -225,7 +239,7 @@ func (w *walker) value(name string, tv typedValue, depth int) Node {
 
 	// A primitive number arrives in N, with T naming which one. V is absent.
 	if tv.N != "" {
-		return Node{Name: name, Type: tname(ti), Kind: KindPrimitive, Value: w.number(tv.T, tv.N)}
+		return Node{Name: name, Type: tname(ti), TypeID: tid(ti), Kind: KindPrimitive, Value: w.number(tv.T, tv.N)}
 	}
 	if len(tv.V) == 0 || string(tv.V) == "null" {
 		// A primitive with neither N nor V is its zero value, not nil: amino
@@ -235,11 +249,11 @@ func (w *walker) value(name string, tv typedValue, depth int) Node {
 		// nil would report a paused-or-not flag as unset on every realm that
 		// left it false, which is most of them.
 		if code := primitiveCode(tv.T); code != 0 {
-			return Node{Name: name, Type: tname(ti), Kind: KindPrimitive, Value: zeroValue(code)}
+			return Node{Name: name, Type: tname(ti), TypeID: tid(ti), Kind: KindPrimitive, Value: zeroValue(code)}
 		}
 		// A nil V with a pointer or interface type is a real nil. With no type
 		// at all it is an uninitialised slot, which reads the same way.
-		return Node{Name: name, Type: tname(ti), Kind: KindNil, Value: "nil"}
+		return Node{Name: name, Type: tname(ti), TypeID: tid(ti), Kind: KindNil, Value: "nil"}
 	}
 	return w.rawValue(name, ti, tv.V, depth)
 }
@@ -252,7 +266,7 @@ func (w *walker) rawValue(name string, ti *typeInfo, raw json.RawMessage, depth 
 		Type string `json:"@type"`
 	}
 	if err := json.Unmarshal(raw, &head); err != nil {
-		return Node{Name: name, Type: tname(ti), Kind: KindTruncated, Value: "undecodable"}
+		return Node{Name: name, Type: tname(ti), TypeID: tid(ti), Kind: KindTruncated, Value: "undecodable"}
 	}
 
 	switch head.Type {
@@ -261,14 +275,14 @@ func (w *walker) rawValue(name string, ti *typeInfo, raw json.RawMessage, depth 
 			Value string `json:"value"`
 		}
 		_ = json.Unmarshal(raw, &v)
-		return Node{Name: name, Type: tname(ti), Kind: KindPrimitive, Value: w.clip(v.Value)}
+		return Node{Name: name, Type: tname(ti), TypeID: tid(ti), Kind: KindPrimitive, Value: w.clip(v.Value)}
 
 	case vBigint, vBigdec:
 		var v struct {
 			Value string `json:"value"`
 		}
 		_ = json.Unmarshal(raw, &v)
-		return Node{Name: name, Type: tname(ti), Kind: KindPrimitive, Value: w.clip(v.Value)}
+		return Node{Name: name, Type: tname(ti), TypeID: tid(ti), Kind: KindPrimitive, Value: w.clip(v.Value)}
 
 	case vHeapItem:
 		// A heap item is a storage cell, not something the realm's author
@@ -315,19 +329,19 @@ func (w *walker) rawValue(name string, ti *typeInfo, raw json.RawMessage, depth 
 		return n
 
 	case vFunc, vBound:
-		return Node{Name: name, Type: tname(ti), Kind: KindFunc, Value: tname(ti)}
+		return Node{Name: name, Type: tname(ti), TypeID: tid(ti), Kind: KindFunc, Value: tname(ti)}
 
 	case vPackage:
-		return Node{Name: name, Type: tname(ti), Kind: KindPackage}
+		return Node{Name: name, Type: tname(ti), TypeID: tid(ti), Kind: KindPackage}
 
 	case vBlock, vRefNode:
 		// Execution scaffolding: a closure's captured block, or a lazy
 		// reference to an AST node. Neither is realm state, and rendering
 		// either one is how gnoweb's explorer fills a page with machinery.
-		return Node{Name: name, Type: tname(ti), Kind: KindFunc}
+		return Node{Name: name, Type: tname(ti), TypeID: tid(ti), Kind: KindFunc}
 	}
 
-	return Node{Name: name, Type: tname(ti), Kind: KindTruncated, Value: head.Type}
+	return Node{Name: name, Type: tname(ti), TypeID: tid(ti), Kind: KindTruncated, Value: head.Type}
 }
 
 // pointer follows a PointerValue to the value it addresses.
@@ -346,7 +360,7 @@ func (w *walker) pointer(name string, ti *typeInfo, raw json.RawMessage, depth i
 		return w.value(name, *v.TV, depth)
 	}
 	if len(v.Base) == 0 || string(v.Base) == "null" {
-		return Node{Name: name, Type: tname(ti), Kind: KindNil, Value: "nil"}
+		return Node{Name: name, Type: tname(ti), TypeID: tid(ti), Kind: KindNil, Value: "nil"}
 	}
 
 	base := w.rawValue(name, ti, v.Base, depth)
@@ -383,16 +397,16 @@ func (w *walker) ref(name string, ti *typeInfo, raw json.RawMessage, depth int) 
 	}
 	_ = json.Unmarshal(raw, &v)
 
-	unresolved := Node{Name: name, Type: tname(ti), Kind: KindRef, ObjectID: v.ObjectID, Hash: v.Hash}
+	unresolved := Node{Name: name, Type: tname(ti), TypeID: tid(ti), Kind: KindRef, ObjectID: v.ObjectID, Hash: v.Hash}
 	if v.PkgPath != "" {
 		// A ref to a package, not to an object: there is no object to fetch.
-		return Node{Name: name, Type: tname(ti), Kind: KindPackage, Value: v.PkgPath}
+		return Node{Name: name, Type: tname(ti), TypeID: tid(ti), Kind: KindPackage, Value: v.PkgPath}
 	}
 	if v.ObjectID == "" || w.res == nil {
 		return unresolved
 	}
 	if w.onPath[v.ObjectID] {
-		return Node{Name: name, Type: tname(ti), Kind: KindCycle, ObjectID: v.ObjectID}
+		return Node{Name: name, Type: tname(ti), TypeID: tid(ti), Kind: KindCycle, ObjectID: v.ObjectID}
 	}
 	if w.stats.Fetches >= w.lim.MaxFetch || !w.budget(depth) {
 		w.stats.Truncated = true
@@ -426,7 +440,7 @@ func (w *walker) structValue(name string, ti *typeInfo, raw json.RawMessage, dep
 	}
 	_ = json.Unmarshal(raw, &v)
 
-	n := Node{Name: name, Type: tname(ti), Kind: KindStruct}
+	n := Node{Name: name, Type: tname(ti), TypeID: tid(ti), Kind: KindStruct}
 	stamp(&n, v.ObjectInfo)
 
 	// Field names come from the type declaration, fetched once per type. With
@@ -450,7 +464,7 @@ func (w *walker) slice(name string, ti *typeInfo, raw json.RawMessage, depth int
 	}
 	_ = json.Unmarshal(raw, &v)
 
-	n := Node{Name: name, Type: tname(ti), Kind: KindSlice}
+	n := Node{Name: name, Type: tname(ti), TypeID: tid(ti), Kind: KindSlice}
 	if len(v.Base) == 0 || string(v.Base) == "null" {
 		n.Kind = KindNil
 		n.Value = "nil"
@@ -486,7 +500,7 @@ func (w *walker) array(name string, ti *typeInfo, raw json.RawMessage, depth int
 	}
 	_ = json.Unmarshal(raw, &v)
 
-	n := Node{Name: name, Type: tname(ti), Kind: KindArray}
+	n := Node{Name: name, Type: tname(ti), TypeID: tid(ti), Kind: KindArray}
 	stamp(&n, v.ObjectInfo)
 
 	// A []byte travels as base64 Data rather than as a List of elements.
@@ -520,7 +534,7 @@ func (w *walker) mapValue(name string, ti *typeInfo, raw json.RawMessage, depth 
 	}
 	_ = json.Unmarshal(raw, &v)
 
-	n := Node{Name: name, Type: tname(ti), Kind: KindMap}
+	n := Node{Name: name, Type: tname(ti), TypeID: tid(ti), Kind: KindMap}
 	stamp(&n, v.ObjectInfo)
 	for i, e := range v.List {
 		k := w.value("", e.Key, depth+1)
@@ -721,6 +735,14 @@ func tname(ti *typeInfo) string {
 		return ""
 	}
 	return ti.name
+}
+
+// tid is the resolvable type ID of a possibly-absent type.
+func tid(ti *typeInfo) string {
+	if ti == nil {
+		return ""
+	}
+	return ti.id
 }
 
 // zeroValue renders the omitted payload of a primitive whose value is zero.
