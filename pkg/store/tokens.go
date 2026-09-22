@@ -65,6 +65,16 @@ type TokenSummary struct {
 	Transfers24h  int    `json:"transfers_24h"`
 	FirstSeenTime string `json:"first_seen_time,omitempty"`
 	LastSeenTime  string `json:"last_seen_time,omitempty"`
+	// Minted and Burned are the two halves Supply is the difference of, kept
+	// apart because the difference alone cannot tell "never minted much" from
+	// "minted a lot and burned nearly all of it", and the per-token page is
+	// where that distinction is the answer rather than a detail.
+	Minted     int64 `json:"minted"`
+	Burned     int64 `json:"burned"`
+	MintCount  int   `json:"mint_count"`
+	BurnCount  int   `json:"burn_count"`
+	FirstBlock int   `json:"first_block"`
+	LastBlock  int   `json:"last_block"`
 }
 
 // TokenHolder is one balance, reconstructed.
@@ -132,11 +142,14 @@ func (d *DB) TokenSummaries(network string) ([]TokenSummary, error) {
 
 	rows, err := d.db.Query(`
 		SELECT token, pkg_path, network,
-		       COALESCE(SUM(CASE WHEN from_addr = '' THEN value ELSE 0 END), 0)
-		         - COALESCE(SUM(CASE WHEN to_addr = '' THEN value ELSE 0 END), 0) AS supply,
+		       COALESCE(SUM(CASE WHEN from_addr = '' THEN value ELSE 0 END), 0) AS minted,
+		       COALESCE(SUM(CASE WHEN to_addr = '' THEN value ELSE 0 END), 0) AS burned,
 		       COUNT(*) AS transfers,
 		       COALESCE(SUM(CASE WHEN block_time >= ? THEN 1 ELSE 0 END), 0) AS transfers_24h,
 		       COALESCE(MAX(CASE WHEN value > 0 THEN 1 ELSE 0 END), 0) AS fungible,
+		       COALESCE(SUM(CASE WHEN from_addr = '' THEN 1 ELSE 0 END), 0) AS mint_count,
+		       COALESCE(SUM(CASE WHEN to_addr = '' THEN 1 ELSE 0 END), 0) AS burn_count,
+		       MIN(block_height), MAX(block_height),
 		       MIN(block_time), MAX(block_time)
 		  FROM token_transfers
 		 WHERE `+f+`
@@ -151,15 +164,18 @@ func (d *DB) TokenSummaries(network string) ([]TokenSummary, error) {
 	for rows.Next() {
 		var t TokenSummary
 		var fungible int
-		if err := rows.Scan(&t.Token, &t.PkgPath, &t.Network, &t.Supply,
-			&t.Transfers, &t.Transfers24h, &fungible, &t.FirstSeenTime, &t.LastSeenTime); err != nil {
+		if err := rows.Scan(&t.Token, &t.PkgPath, &t.Network, &t.Minted, &t.Burned,
+			&t.Transfers, &t.Transfers24h, &fungible, &t.MintCount, &t.BurnCount,
+			&t.FirstBlock, &t.LastBlock, &t.FirstSeenTime, &t.LastSeenTime); err != nil {
 			return nil, err
 		}
+		t.Supply = t.Minted - t.Burned
 		t.Fungible = fungible == 1
 		_, t.Symbol = TokenKeyParts(t.Token)
 		if !t.Fungible {
 			// Zero would read as a balance. It is the absence of one.
 			t.Supply = 0
+			t.Minted, t.Burned = 0, 0
 		}
 		out = append(out, t)
 	}
@@ -323,4 +339,87 @@ func (d *DB) TokenSupplyOverTime(network, token string, days int) ([]BlockTimePo
 		}
 	}
 	return out, nil
+}
+
+// TokenLedgerWindow reports the span of history the transfer ledger actually
+// covers on a network.
+//
+// The ledger is filled by the sync walk and sync resumes from the highest
+// stored height, so a database that existed before the feature shipped starts
+// its transfer history mid-chain rather than at genesis. Every figure
+// reconstructed from it is then a figure over a window, and the difference
+// shows plainly: a token whose burns predate the window reports a *negative*
+// supply, which is not a rendering fault but the window arriving as arithmetic.
+//
+// Returning the window lets a page say so instead of printing the number as a
+// total. A token whose own first transfer sits at the ledger floor is the case
+// to warn about: its history most likely starts earlier than anything stored.
+type TokenLedgerWindow struct {
+	FirstBlock int    `json:"first_block"`
+	LastBlock  int    `json:"last_block"`
+	FirstTime  string `json:"first_time,omitempty"`
+	LastTime   string `json:"last_time,omitempty"`
+	Transfers  int    `json:"transfers"`
+}
+
+func (d *DB) TokenLedgerWindow(network string) (TokenLedgerWindow, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var w TokenLedgerWindow
+	var firstBlock, lastBlock *int
+	var firstTime, lastTime *string
+	err := d.db.QueryRow(`
+		SELECT MIN(block_height), MAX(block_height), MIN(block_time), MAX(block_time), COUNT(*)
+		  FROM token_transfers WHERE `+d.networkFilter("network", network)).
+		Scan(&firstBlock, &lastBlock, &firstTime, &lastTime, &w.Transfers)
+	if err != nil {
+		return w, err
+	}
+	// Every column but the count is NULL on an empty ledger, which is the
+	// state every pre-existing deployment is in until its backfill runs.
+	if firstBlock != nil {
+		w.FirstBlock, w.LastBlock = *firstBlock, *lastBlock
+	}
+	if firstTime != nil {
+		w.FirstTime, w.LastTime = *firstTime, *lastTime
+	}
+	return w, nil
+}
+
+// SearchTokens matches assets by their event key, for the search box.
+//
+// Deliberately not TokenSummaries with a filter: that reconstructs every
+// balance on the chain, which is the right cost for the assets page and the
+// wrong one for something that fires on a debounced keystroke. Search needs
+// enough to render a row and route to the page; the page itself does the
+// arithmetic.
+func (d *DB) SearchTokens(network, q string, limit int) ([]TokenSummary, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	if limit <= 0 {
+		limit = 10
+	}
+	rows, err := d.db.Query(`
+		SELECT token, pkg_path, network, COUNT(*) AS transfers
+		  FROM token_transfers
+		 WHERE `+d.networkFilter("network", network)+` AND token LIKE ?
+		 GROUP BY network, token
+		 ORDER BY transfers DESC LIMIT ?`, "%"+q+"%", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []TokenSummary{}
+	for rows.Next() {
+		var t TokenSummary
+		if err := rows.Scan(&t.Token, &t.PkgPath, &t.Network, &t.Transfers); err != nil {
+			return nil, err
+		}
+		_, t.Symbol = TokenKeyParts(t.Token)
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }

@@ -608,8 +608,9 @@ incomparable.
 
 | endpoint | description |
 |---|---|
-| `GET /api/assets` | every asset seen on a network: supply, holders, transfer counts, first and last seen, plus registry metadata |
-| `GET /api/asset/{token...}` | one asset: top holders, recent transfers, and a daily supply series. Single network |
+| `GET /api/assets` | every asset seen on a network: supply, mints, burns, holders, transfer counts, first and last seen, plus registry metadata. `?realm=<package path>` narrows it to one realm |
+| `GET /api/assets/search` | `?q=` over the event key, for the search box. No balance reconstruction |
+| `GET /api/asset/{token...}` | one asset: top holders, recent transfers, a daily supply series, the other assets its realm issues, the issuing package, and the ledger window every figure was computed over. Single network |
 
 Built from the `Transfer` events the chain already emits, which were flowing
 through the sync walk unstored. An empty `from` is a mint and an empty `to` a
@@ -622,6 +623,16 @@ holder.
 matched `%grc20%`. That matches anything that *imports* grc20 rather than
 anything that *is* a token, so a DEX router sat in the list beside the tokens it
 calls, and the row carried no supply, holders or volume.
+
+### The unit is the token, not the realm
+
+A realm is a container of assets. `gno.land/r/g1n4pl5.../gnomi/padv3` issues six
+of the twelve assets on mainnet (measured 2026-09-22) and `grc20factory` is
+built to mint on demand, so "the token of this realm" names nothing for half the
+chain's assets. Everything here is keyed on the full event key
+(`<realm path>.<SYMBOL>.<id>`), including the per-asset page at
+`/grc20/<key>`; `?realm=` and the `siblings` field exist so the realm page can
+list what it issues without ever standing in for one of them.
 
 ### Three things the events do not guarantee
 
@@ -649,6 +660,20 @@ amounts starts counting.
 
 Failed transactions are skipped: their events are still reported and counting
 them would invent supply.
+
+### Every figure is over a window, and the response says which
+
+`token_transfers` is filled by the sync walk, and sync resumes from the highest
+stored height, so an index that existed before the ledger shipped starts its
+transfer history mid-chain rather than at genesis. Supply, holders and balances
+are then exact over that window and not over the chain.
+
+`/api/asset/{token...}` therefore carries `ledger` (the first and last block the
+ledger holds on this network) alongside the figures, and `realm.block_height`
+for comparison. When the realm predates the ledger, the page says so instead of
+printing a partial supply as a total. The strongest evidence that this matters
+is on mainnet today: `GNOMIC` reports a supply of -881,594,858, which is what a
+burn of tokens minted before the window looks like as arithmetic.
 
 ### What is deliberately absent
 
