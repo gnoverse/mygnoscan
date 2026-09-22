@@ -12,7 +12,7 @@ import (
 // Search used to answer only "which path, name or creator contains this
 // string", which cannot find a package by what it declares. `IterateByOffset`
 // is a real thing somebody types into the box, and the only page that knew
-// about it was the docs tab of the one package that has it — reachable only by
+// about it was the docs tab of the one package that has it, reachable only by
 // already knowing the answer.
 //
 // This is a projection of package_files and nothing else. It is rebuilt for a
