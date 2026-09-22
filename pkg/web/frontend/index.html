@@ -2941,6 +2941,54 @@ function mountPageNav(view) {
   if (bar) main.insertBefore(bar, main.firstChild);
 }
 
+// --- URL state: the filters a reader set, in the link they copy ----------
+//
+// A filter is part of what the reader is looking at, so it belongs in the URL
+// and not only in a module variable. Without this, narrowing a 500-row table
+// and reloading throws the narrowing away, and pasting the link to someone
+// else sends them the unfiltered page, which is the one view the sender was
+// deliberately not looking at.
+//
+// Written with `replaceState`, never `pushState`: typing into a filter box
+// fires per keystroke, and a history entry per character makes the back button
+// useless. The trade is deliberate: back leaves the page rather than undoing
+// the filter, which is what the rest of this site's controls already do
+// (?tab=, ?pv=, ?av=, ?section=).
+//
+// `navigate()` passes a bare path, so every one of these keys is dropped on a
+// real navigation. Nothing has to clean up after itself.
+
+function urlParam(key) {
+  return new URLSearchParams(window.location.search).get(key);
+}
+
+// urlSetParams writes several keys at once, deleting any whose value is empty
+// so an untouched filter leaves no trace in the URL. One replaceState for the
+// lot: two filters that move together should not produce an intermediate URL
+// that was never a view.
+function urlSetParams(entries) {
+  const url = new URL(window.location);
+  for (const [key, value] of Object.entries(entries)) {
+    if (value === null || value === undefined || value === false || value === '') url.searchParams.delete(key);
+    else url.searchParams.set(key, String(value));
+  }
+  if (url.href === window.location.href) return;
+  history.replaceState(history.state, '', url);
+}
+
+function urlSetParam(key, value) {
+  urlSetParams({ [key]: value });
+}
+
+// slugify turns a label into something that survives a round trip through a
+// query string: lowercase, no punctuation, no parenthesised counts. The counts
+// matter: several headers read "events (12)", and keying off that would give
+// a table a new identity every time the number behind it changed.
+function slugify(text) {
+  return (text || '').replace(/\([^)]*\)/g, '')
+    .trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
 function navigate(path, replace) {
   if (replace) history.replaceState(null, '', path);
   else history.pushState(null, '', path);
@@ -3047,7 +3095,7 @@ function route() {
     case 'packages': enterPackages(urlPv); break;
     case 'contracts': loadContracts(); break;
     case 'apps': loadApps(); break;
-    case 'txs': loadTxs(); break;
+    case 'txs': enterTxs(); break;
     case 'blocks': loadBlocks(); break;
     case 'accounts': enterAccounts(urlAv); break;
     case 'defi': loadDefi(); break;
@@ -4029,10 +4077,7 @@ function switchPackagesView(view, tabEl) {
 
   // Persist the choice in the URL so a reload or a shared link lands back
   // on the same tab, mirroring dashSubnav's ?section= pattern.
-  const params = new URLSearchParams(window.location.search);
-  if (view === 'inert') params.set('pv', 'inert'); else params.delete('pv');
-  const qs = params.toString();
-  history.replaceState(null, '', window.location.pathname + (qs ? '?' + qs : ''));
+  urlSetParam('pv', view === 'inert' ? 'inert' : '');
 
   // Both views are loaded lazily, on first switch, rather than both at once
   // on page load: the inert queue costs the server a vm/qpkgmeta_json round
@@ -4147,6 +4192,31 @@ let _txsFilterType = null; // null = all
 let _txsFilterStatus = null; // null = all, true = ok, false = fail
 let _txsPage = 0;
 
+// The four message kinds the filter bar offers, as [wire type, label].
+//
+// The label is also what the URL carries: `?type=deploy` is something a reader
+// can read in a link somebody sent them, where `?type=MsgAddPackage` names an
+// indexer implementation detail they have no reason to know.
+const TX_TYPE_FILTERS = [['MsgCall', 'call'], ['MsgAddPackage', 'deploy'],
+                         ['MsgRun', 'run'], ['BankMsgSend', 'send']];
+const TX_TYPE_LABEL = Object.fromEntries(TX_TYPE_FILTERS);
+
+// enterTxs is a fresh navigation to /txs, and takes the filters from the URL
+// rather than from whatever was picked before navigating away.
+//
+// Module state outliving a navigation is what would make the link unshareable:
+// the page a URL describes has to be the page it draws, and a leftover filter
+// silently overriding an absent parameter means the sender and the recipient
+// see different rows.
+function enterTxs() {
+  const type = urlParam('type');
+  const known = TX_TYPE_FILTERS.find(([, label]) => label === type);
+  _txsFilterType = known ? known[0] : null;
+  const status = urlParam('status');
+  _txsFilterStatus = status === 'ok' ? true : status === 'fail' ? false : null;
+  loadTxs(Math.max(0, (parseInt(urlParam('page'), 10) || 1) - 1));
+}
+
 // The transactions page pages on the server.
 //
 // It used to fetch a 500-row window and slice it locally, which cost 3.6s on a
@@ -4169,6 +4239,16 @@ async function loadTxs(page) {
 
   // Arriving from a home stat tile pre-selects that message type.
   if (_pendingTxType) { _txsFilterType = _pendingTxType; _pendingTxType = null; _txsPage = 0; }
+
+  // Every filter change and every page turn comes through here, so this is the
+  // one place the URL has to be kept honest. Page numbers are 1-based in the
+  // URL and 0-based in the code, because ?page=0 reads as "no page" to
+  // everyone who is not holding this file.
+  urlSetParams({
+    type: _txsFilterType ? TX_TYPE_LABEL[_txsFilterType] : '',
+    status: _txsFilterStatus === null ? '' : (_txsFilterStatus ? 'ok' : 'fail'),
+    page: _txsPage ? _txsPage + 1 : '',
+  });
 
   try {
     const q = ['limit=' + PAGE_SIZE, 'offset=' + (_txsPage * PAGE_SIZE)];
@@ -4226,8 +4306,7 @@ function renderTxFilters(filterBar) {
 
   filterBar.appendChild(el('span', { style: { color: 'var(--fg2)', fontSize: '12px' } }, 'type:'));
   button('all', 'txs-type', _txsFilterType === null, () => { _txsFilterType = null; });
-  for (const [type, label] of [['MsgCall', 'call'], ['MsgAddPackage', 'deploy'],
-                               ['MsgRun', 'run'], ['BankMsgSend', 'send']]) {
+  for (const [type, label] of TX_TYPE_FILTERS) {
     button(label, 'txs-type', _txsFilterType === type, () => { _txsFilterType = type; });
   }
 
@@ -4330,7 +4409,10 @@ async function loadBlocks() {
   try {
     await apiSWR('blocks?limit=500', (data, swrMeta) => {
       _blocksCache = data;
-      _blocksWithTxsOnly = false;
+      // From the URL, not reset to false: apiSWR runs this render twice (cache
+      // then fresh), so a hardcoded default here would also undo a click made
+      // between the two passes.
+      _blocksWithTxsOnly = urlParam('txs') === '1';
       const withTxs = (data || []).filter(b => b.num_txs > 0);
       const proposers = new Set((data || []).map(b => b.proposer_address_raw));
       // Stats
@@ -4345,7 +4427,12 @@ async function loadBlocks() {
       filterBar.textContent = '';
       filterBar.style.display = 'flex';
       const cb = document.createElement('input'); cb.type = 'checkbox'; cb.id = 'blocks-filter-txs';
-      cb.addEventListener('change', () => { _blocksWithTxsOnly = cb.checked; renderBlockRows(); });
+      cb.checked = _blocksWithTxsOnly;
+      cb.addEventListener('change', () => {
+        _blocksWithTxsOnly = cb.checked;
+        urlSetParam('txs', cb.checked ? '1' : '');
+        renderBlockRows();
+      });
       const label = el('label', { style: { display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--fg2)', fontSize: '13px', cursor: 'pointer' } });
       label.appendChild(cb); label.appendChild(document.createTextNode('only blocks with transactions'));
       filterBar.appendChild(label);
@@ -4457,10 +4544,7 @@ function switchAccountsView(view, tabEl) {
 
   // Persisted in the URL, the same way the packages tabs are: a reload or a
   // shared link lands back where it was.
-  const params = new URLSearchParams(window.location.search);
-  if (view === 'balances') params.set('av', 'balances'); else params.delete('av');
-  const qs = params.toString();
-  history.replaceState(null, '', window.location.pathname + (qs ? '?' + qs : ''));
+  urlSetParam('av', view === 'balances' ? 'balances' : '');
 
   if (view === 'activity' && !_accountsActivityLoaded) {
     _accountsActivityLoaded = true;
@@ -5550,7 +5634,13 @@ async function loadValidators() {
         container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, 'valoper registrations'));
         const filterDiv = el('div', { style: { marginBottom: '8px' } });
         const cb = document.createElement('input'); cb.type = 'checkbox'; cb.id = 'val-show-failed';
-        cb.addEventListener('change', () => { _valopersShowFailed = cb.checked; renderValoperRows(container); });
+        _valopersShowFailed = urlParam('failed') === '1';
+        cb.checked = _valopersShowFailed;
+        cb.addEventListener('change', () => {
+          _valopersShowFailed = cb.checked;
+          urlSetParam('failed', cb.checked ? '1' : '');
+          renderValoperRows(container);
+        });
         const label = el('label', { style: { display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--fg2)', fontSize: '13px', cursor: 'pointer' } });
         label.appendChild(cb); label.appendChild(document.createTextNode('show failed txs'));
         filterDiv.appendChild(label);
@@ -7984,8 +8074,10 @@ async function loadEvents() {
   try {
     await apiSWR('allevents', (data, swrMeta) => {
       _eventsCache = data;
-      _eventsFilter = null;
-      _eventsPage = 0;
+      // Same reason as /blocks: this render runs twice, so the filter is read
+      // from the URL on both passes rather than cleared on the second.
+      _eventsFilter = urlParam('type') || null;
+      _eventsPage = Math.max(0, (parseInt(urlParam('page'), 10) || 1) - 1);
 
       // Flatten once: the table is a list of events, not of transactions.
       _eventsFlat = [];
@@ -8039,10 +8131,13 @@ async function loadEvents() {
         datalist.appendChild(opt);
       }
 
+      input.value = _eventsFilter || '';
+
       const apply = () => {
         const v = input.value.trim();
         _eventsFilter = v && typeCounts[v] ? v : (v || null);
         _eventsPage = 0;
+        urlSetParams({ type: _eventsFilter, page: '' });
         renderEventRows();
       };
       input.addEventListener('change', apply);
@@ -8111,7 +8206,11 @@ function renderEventRows() {
     ));
   }
 
-  pager(section, _eventsPage, matches.length, p => { _eventsPage = p; renderEventRows(); });
+  pager(section, _eventsPage, matches.length, p => {
+    _eventsPage = p;
+    urlSetParam('page', p ? p + 1 : '');
+    renderEventRows();
+  });
 }
 
 // gnoUserEl renders a gov/dao "@username" identity — a proposal's author or
@@ -8426,6 +8525,7 @@ function renderGovDAOActivity(container, calls, meta) {
 // Which statuses the list is filtered to. Module-level so the choice
 // survives the second apiSWR render, which rebuilds the whole container.
 let _govDAOFilter = 'all';
+const GOVDAO_STATUSES = ['all', 'open', 'accepted', 'rejected'];
 
 async function loadGovDAOProposals() {
   const container = clear('govdao-proposals-content');
@@ -8455,12 +8555,18 @@ async function loadGovDAOProposals() {
     // own styling is set at construction (contractPill), so toggling a class
     // on it afterwards would leave the inline colours saying something else.
     const panel = el('div');
+    // Checked against the list rather than by indexing `match`: an indexed
+    // lookup on a value off the URL reaches Object.prototype, where
+    // ?status=constructor is truthy and is not a status.
+    const wanted = urlParam('status');
+    _govDAOFilter = GOVDAO_STATUSES.includes(wanted) ? wanted : 'all';
     const draw = () => {
       panel.textContent = '';
       const pills = el('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap', padding: '4px 0 12px' } });
-      for (const k of ['all', 'open', 'accepted', 'rejected']) {
+      for (const k of GOVDAO_STATUSES) {
         pills.appendChild(contractPill(k + ' (' + counts[k] + ')', _govDAOFilter === k, () => {
           _govDAOFilter = k;
+          urlSetParam('status', k === 'all' ? '' : k);
           draw();
         }));
       }
@@ -9438,6 +9544,35 @@ let _usageFilter = { window: 'all', kind: '', status: '', func: '', caller: '', 
 const USAGE_PAGE_SIZE = 50;
 const USAGE_WINDOWS = ['all', '90d', '30d', '7d', '24h'];
 
+// These filters are the reason a realm page is worth sending someone: "this
+// realm, this function, failures only" is a finding, and it has to survive
+// being pasted into a chat. So the tab's state is seeded from the URL on every
+// render, and written back on every change (see loadRealmUsage).
+//
+// `window` is validated against the offered set rather than passed through:
+// an unknown value would reach the API as a filter the server does not
+// implement and quietly come back unfiltered, which looks like the filter
+// worked and returned everything.
+function usageFilterFromURL() {
+  const window_ = urlParam('window');
+  return {
+    window: USAGE_WINDOWS.includes(window_) ? window_ : 'all',
+    kind: urlParam('kind') || '',
+    status: urlParam('status') || '',
+    func: urlParam('func') || '',
+    caller: urlParam('caller') || '',
+    page: Math.max(0, (parseInt(urlParam('page'), 10) || 1) - 1),
+  };
+}
+
+// The treemap's grouping is seeded from the same URL as the filters above it,
+// so the whole tab is one shareable view rather than six filters and one knob
+// that is not. Not part of _usageFilter because it changes nothing the server
+// is asked: the treemap is drawn from aggregates the tab already has.
+function usageTreemapByFromURL() {
+  return urlParam('by') === 'callers' ? 'callers' : 'functions';
+}
+
 function usageQuery() {
   const q = new URLSearchParams();
   if (_usageFilter.window && _usageFilter.window !== 'all') q.set('window', _usageFilter.window);
@@ -9455,6 +9590,17 @@ function usageQuery() {
 // tabs use: a slow response for a realm the reader has already navigated away
 // from must not write into the page that replaced it.
 async function loadRealmUsage(host, detail, gen) {
+  // Every control on the tab mutates _usageFilter and calls this, so this is
+  // the single place the URL is written. Defaults resolve to '' and are deleted
+  // rather than spelled out, so an untouched tab leaves ?tab=calls alone.
+  urlSetParams({
+    window: _usageFilter.window === 'all' ? '' : _usageFilter.window,
+    kind: _usageFilter.kind,
+    status: _usageFilter.status,
+    func: _usageFilter.func,
+    caller: _usageFilter.caller,
+    page: _usageFilter.page ? _usageFilter.page + 1 : '',
+  });
   const suffix = detail.path.replace('gno.land/', '');
   try {
     const usage = await api('realm/usage/' + suffix + '?' + usageQuery());
@@ -9617,6 +9763,7 @@ function renderUsageTreemap(mount, host, detail, usage, gen, filtered) {
     const p = contractPill(k, by === k, () => {
       if (disabled || by === k) return;
       _usageTreemapBy = k;
+      urlSetParam('by', k === 'functions' ? '' : k);
       renderUsageTreemap(mount, host, detail, usage, gen, filtered);
     });
     if (disabled) { p.style.opacity = '0.4'; p.style.cursor = 'default'; }
@@ -10316,7 +10463,8 @@ async function loadRealmDetail(path, initialTab) {
       // called *that*.
       const calls = clear('tab-calls'); if (activeTab === 'calls') calls.classList.add('active'); else calls.classList.remove('active');
       skeletonRows(calls, 5, 4);
-      _usageFilter = { window: 'all', kind: '', status: '', func: '', caller: '', page: 0 };
+      _usageFilter = usageFilterFromURL();
+      _usageTreemapBy = usageTreemapByFromURL();
       loadRealmUsage(calls, detail, gen);
       // Events tab (loaded from indexer)
       const eventsEl = clear('tab-events'); if (activeTab === 'events') eventsEl.classList.add('active'); else eventsEl.classList.remove('active');
@@ -10397,7 +10545,7 @@ async function loadRealmDetail(path, initialTab) {
           // Hidden by default rather than dropped: on a realm whose whole
           // point is what it costs to store, the raw deposit stream beside the
           // call that caused it is occasionally the thing you came for.
-          let evShowStorage = false;
+          let evShowStorage = urlParam('storage') === '1';
           const evTblWrap = el('div');
           const renderEvTable = () => {
             evTblWrap.textContent = '';
@@ -10420,7 +10568,12 @@ async function loadRealmDetail(path, initialTab) {
           };
           if (evStorageCount) {
             const evCb = document.createElement('input'); evCb.type = 'checkbox';
-            evCb.addEventListener('change', () => { evShowStorage = evCb.checked; renderEvTable(); });
+            evCb.checked = evShowStorage;
+            evCb.addEventListener('change', () => {
+              evShowStorage = evCb.checked;
+              urlSetParam('storage', evCb.checked ? '1' : '');
+              renderEvTable();
+            });
             const evLabel = el('label', { style: { display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--fg2)', fontSize: '13px', cursor: 'pointer' } });
             evLabel.appendChild(evCb);
             evLabel.appendChild(document.createTextNode('show ' + fmtNum(evStorageCount) + ' storage events'));
@@ -11424,6 +11577,25 @@ function addTableExport(container, table) {
 }
 
 // --- Filterable + sortable tables ---
+
+// tableKey names a table for the URL, so `?f.<key>=` can carry its filter and
+// `?s.<key>=` its sort across a reload or into a pasted link.
+//
+// The id when the table has one, otherwise a slug of its header row. Headers
+// are the right key because they are what identifies a table to a reader and
+// they do not change between renders. A positional index would be shorter and
+// wrong: several pages draw their second table only when it has rows (the defi
+// tab's GRC20 positions, the storage tab's events), so index 1 means a
+// different table depending on data the link's recipient may not have.
+//
+// Two tables sharing a header row share a filter. That is the same view twice
+// rather than a wrong one, and it is cheap next to the alternative.
+function tableKey(table) {
+  if (table.id) return table.id;
+  const heads = [...table.querySelectorAll('thead th')].map(th => slugify(th.textContent)).filter(Boolean);
+  return heads.join('-');
+}
+
 // Adds a text filter input above a table. Filters rows by text content.
 function addTableFilter(container, table) {
   // This filters the rows currently in the DOM, which on a paginated table is
@@ -11432,17 +11604,20 @@ function addTableFilter(container, table) {
   // does not exist. Say which it is, and point at the tool that does search
   // across pages.
   const paged = !!container.querySelector('.pager');
+  const key = tableKey(table);
+  const param = key ? 'f.' + key : null;
 
   const input = document.createElement('input');
   input.type = 'text';
   input.className = 'table-filter';
   input.placeholder = paged ? 'filter this page...' : 'filter...';
+  if (param) input.setAttribute('data-param', param);
 
   const note = el('div', { className: 'table-filter-note' });
   const hidden = () => [...table.querySelectorAll('tbody tr')]
     .filter(tr => !tr.classList.contains('total-row') && tr.style.display === 'none').length;
 
-  input.addEventListener('input', () => {
+  const apply = () => {
     const q = input.value.toLowerCase();
     const rows = table.querySelectorAll('tbody tr');
     rows.forEach(tr => {
@@ -11462,10 +11637,20 @@ function addTableFilter(container, table) {
       });
       note.appendChild(search);
     }
+  };
+
+  input.addEventListener('input', () => {
+    if (param) urlSetParam(param, input.value);
+    apply();
   });
 
   container.insertBefore(input, table);
   container.insertBefore(note, table);
+
+  // The box comes back filled from the URL; applying it is enhanceTables' job,
+  // because the rows this has to hide are repainted under it more than once.
+  input.value = (param && urlParam(param)) || '';
+  registerTableRestore(table, () => { if (input.value) apply(); });
 }
 
 // parseDisplayedNum extracts the numeric value behind a formatted display
@@ -11489,32 +11674,84 @@ function parseDisplayedNum(s) {
 }
 
 // Makes table headers clickable for sorting. Sorts by text content.
+//
+// The chosen column travels in the URL as `?s.<table>=<column>` (plus `:desc`),
+// named by the column's own header rather than by its index: "sorted by amount,
+// descending" survives a column being inserted to its left, and reads as
+// something in a link somebody pasted you.
 function makeSortable(table) {
   const headers = table.querySelectorAll('th');
+  const key = tableKey(table);
+  const param = key ? 's.' + key : null;
+
+  const sortBy = (colIdx, asc) => {
+    const tbody = table.querySelector('tbody');
+    if (!tbody) return;
+    const rows = Array.from(tbody.querySelectorAll('tr:not(.total-row)'));
+    // Reset all headers
+    headers.forEach(h => { h.classList.remove('sort-asc', 'sort-desc'); });
+    headers[colIdx].classList.add(asc ? 'sort-asc' : 'sort-desc');
+    rows.sort((a, b) => {
+      const at = (a.children[colIdx]?.textContent || '').trim();
+      const bt = (b.children[colIdx]?.textContent || '').trim();
+      const an = parseDisplayedNum(at);
+      const bn = parseDisplayedNum(bt);
+      if (!isNaN(an) && !isNaN(bn)) return asc ? an - bn : bn - an;
+      return asc ? at.localeCompare(bt) : bt.localeCompare(at);
+    });
+    rows.forEach(r => tbody.appendChild(r));
+    // Move total row to end
+    const total = tbody.querySelector('.total-row');
+    if (total) tbody.appendChild(total);
+  };
+
   headers.forEach((th, colIdx) => {
     th.classList.add('sortable');
     th.addEventListener('click', () => {
-      const tbody = table.querySelector('tbody');
-      if (!tbody) return;
-      const rows = Array.from(tbody.querySelectorAll('tr:not(.total-row)'));
       const asc = !th.classList.contains('sort-asc');
-      // Reset all headers
-      headers.forEach(h => { h.classList.remove('sort-asc', 'sort-desc'); });
-      th.classList.add(asc ? 'sort-asc' : 'sort-desc');
-      rows.sort((a, b) => {
-        const at = (a.children[colIdx]?.textContent || '').trim();
-        const bt = (b.children[colIdx]?.textContent || '').trim();
-        const an = parseDisplayedNum(at);
-        const bn = parseDisplayedNum(bt);
-        if (!isNaN(an) && !isNaN(bn)) return asc ? an - bn : bn - an;
-        return asc ? at.localeCompare(bt) : bt.localeCompare(at);
-      });
-      rows.forEach(r => tbody.appendChild(r));
-      // Move total row to end
-      const total = tbody.querySelector('.total-row');
-      if (total) tbody.appendChild(total);
+      sortBy(colIdx, asc);
+      if (param) urlSetParam(param, slugify(th.textContent) + (asc ? '' : ':desc'));
     });
   });
+
+  // Read back from the URL rather than from the headers' own sort- classes, so
+  // a repaint that rebuilt the thead restores the same order as one that only
+  // replaced the rows.
+  registerTableRestore(table, () => {
+    const saved = param ? urlParam(param) : null;
+    if (!saved) return;
+    const [col, dir] = saved.split(':');
+    // An unnamed column leaves the table in the order the server sent it,
+    // rather than falling back to sorting by whichever column happened to be
+    // first: a link naming a column this table does not have is a link to a
+    // different table, and guessing is worse than doing nothing.
+    const idx = [...headers].findIndex(th => slugify(th.textContent) === col);
+    if (idx >= 0) sortBy(idx, dir !== 'desc');
+  });
+}
+
+// --- Re-applying a table's own state after its rows are repainted ------------
+//
+// Enhancing a table is a one-off, but its rows are not: `apiSWR` renders twice
+// (cache, then fresh), a pager replaces the tbody, and live mode inserts rows at
+// the top. Every one of those hands an enhanced table a row set nothing has
+// sorted or filtered, under a filter box still saying it is narrowed. Before
+// this, a reload of a filtered `?f.…` link painted the narrowed table and then
+// the fresh render silently put all 50 rows back.
+//
+// The guard is the `data-tstate` mark, not a timer or a flag: a re-sort is a
+// childList mutation and therefore schedules another enhanceTables, so anything
+// that re-applies unconditionally calls itself forever. Marking is an attribute
+// write, which this observer does not watch, so the pass after a re-sort finds
+// every row already marked and stops. Only rows the page actually replaced come
+// back unmarked.
+function registerTableRestore(table, fn) {
+  (table._restore = table._restore || []).push(fn);
+}
+
+function restoreTableState(table) {
+  for (const fn of (table._restore || [])) fn();
+  table.querySelectorAll('tbody tr').forEach(tr => tr.setAttribute('data-tstate', '1'));
 }
 
 // Auto-enhance tables: make sortable + add filter for large tables
@@ -11534,6 +11771,11 @@ function enhanceTables() {
         addTableExport(parent, tbl);
       }
     }
+    restoreTableState(tbl);
+  });
+  document.querySelectorAll('table[data-enhanced]').forEach(tbl => {
+    if (!tbl._restore || !tbl.querySelector('tbody tr:not([data-tstate])')) return;
+    restoreTableState(tbl);
   });
 }
 
@@ -12105,10 +12347,7 @@ function switchTab(name, tabEl) {
     }
   }
   // Update URL with tab param without triggering navigation
-  const url = new URL(window.location);
-  if (name === 'info') url.searchParams.delete('tab');
-  else url.searchParams.set('tab', name);
-  history.replaceState(null, '', url);
+  urlSetParam('tab', name === 'info' ? '' : name);
 }
 
 // --- Activity windows ------------------------------------------------------
@@ -13785,7 +14024,8 @@ const DASH_WINDOWS = ['24h', '7d', '30d', '90d', '1y', 'all'];
 // "not there yet", which is the point: an 'all' window is never truly
 // complete while backfill is capped or the indexer is pruned.
 const DASH_WINDOW_DAYS = { '24h': 1, '7d': 7, '30d': 30, '90d': 90, '1y': 365, 'all': 3650 };
-let _dashWindow = '90d';
+const DASH_WINDOW_DEFAULT = '90d';
+let _dashWindow = DASH_WINDOW_DEFAULT;
 let _dashSection = null;
 let _dashGen = 0;
 const _dashCharts = {};
@@ -14758,9 +14998,7 @@ function dashSubnav(sections) {
   sections.forEach(s => {
     const b = el('button', { type: 'button', className: s.id === _dashSection ? 'on' : '' }, s.title);
     b.addEventListener('click', () => {
-      const params = new URLSearchParams(window.location.search);
-      params.set('section', s.id);
-      history.replaceState(null, '', window.location.pathname + '?' + params.toString());
+      urlSetParam('section', s.id);
       loadDashboards();
     });
     seg.appendChild(b);
@@ -14772,7 +15010,11 @@ function dashWindowPicker() {
   const seg = el('div', { className: 'dash-seg' });
   DASH_WINDOWS.forEach(w => {
     const b = el('button', { type: 'button', className: w === _dashWindow ? 'on' : '' }, w);
-    b.addEventListener('click', () => { _dashWindow = w; loadDashboards(); });
+    b.addEventListener('click', () => {
+      _dashWindow = w;
+      urlSetParam('window', w === DASH_WINDOW_DEFAULT ? '' : w);
+      loadDashboards();
+    });
     seg.appendChild(b);
   });
   return el('span', { className: 'dash-grp' }, el('span', { className: 'label' }, 'window'), seg);
@@ -14797,8 +15039,10 @@ function loadDashboards() {
     root.appendChild(el('div', { className: 'dash-msg' }, 'no dashboards yet'));
     return;
   }
-  const urlSection = new URLSearchParams(window.location.search).get('section');
+  const urlSection = urlParam('section');
   _dashSection = sections.some(s => s.id === urlSection) ? urlSection : sections[0].id;
+  const urlWindow = urlParam('window');
+  _dashWindow = DASH_WINDOWS.includes(urlWindow) ? urlWindow : DASH_WINDOW_DEFAULT;
 
   const section = sections.find(s => s.id === _dashSection);
   const barParts = [dashSubnav(sections)];
