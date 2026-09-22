@@ -63,6 +63,17 @@ Break these and things go wrong in ways that are hard to see:
   filled is how you get two of everything) and must not `await` (an await
   reopens the interleaving that rebuilding exists to close). Kick long work off
   in an async IIFE with a generation guard, the way `renderTsCharts` does.
+- **Anything attached to a painted row has to survive that row being replaced.**
+  The corollary of the above, and the one that is easy to miss: the fresh pass
+  throws away the rows the cached pass drew, so a one-off applied to them (a
+  filter hiding rows, a sort reordering them, a highlight) is gone a moment
+  later, leaving a control that says it is doing something it is not. The cache
+  is `sessionStorage`, so the second render only happens on the *second* visit
+  to a page, and on localhost the two often collapse into one, which makes this
+  a bug that passes in isolation and fails in the suite. `enhanceTables` is the
+  pattern to copy: register the work with `registerTableRestore` and let it be
+  re-applied whenever a row turns up without the `data-tstate` mark. Delay the
+  fresh fetch with `page.route` to test it, or the test proves nothing.
 - **The nav is described twice, and a test keeps the two identical.** The rail
   is static HTML in `index.html`; the `NAV` table in the script beside it drives
   the `.pagenav` section strips and `route()`'s active-state bookkeeping. The
