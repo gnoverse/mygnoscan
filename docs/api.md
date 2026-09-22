@@ -174,6 +174,7 @@ fact.
 | `GET /api/packages` | list all packages, realms and pure packages. `limit`, `offset` |
 | `GET /api/realm/{path...}` | detail for one package: metadata, source files, imports, dependents, callers, MsgRun references. `recent_calls` and `msgrun_refs` are the 50 most recent of each, and carry `block_time` where the syncer knew it (omitted otherwise, so a consumer plotting them on a time axis can say how many it left out). `address` and `storage_deposit_address` are the two accounts the package owns, derived from its path (see below) |
 | `GET /api/deps/{path...}` | dependency graph as `{path: [imports]}`. `dir=dependents` reverses direction |
+| `GET /api/realm/cousage/{path...}` | co-usage: what else the addresses that called this realm also called. `{path, network, window, callers, partners[], truncated}`, each partner `{path, shared, calls, callers}` ordered by `shared` descending. `window` = `all` (default), `90d`, `30d`, `7d`, `24h`, unknown values are a 400. `limit` defaults to 100, capped at 1000. **Resolves a single network** the same way the contracts map does |
 | `GET /api/storage/{path...}` | storage events for a package. **Requires `network`**: the figures are denominated amounts and blending chains would be meaningless |
 | `GET /api/realm/defi/{path...}` | what a package holds: its two accounts' live balances, every native transfer through them, and its GRC20 positions. **Requires `network`** |
 | `GET /api/events/{path...}` | every event tagged with a package's path. Bounded: `limit` defaults to 200, capped at 2000. In all-networks mode it queries every chain and tags each row with its `network`. Unlike `/api/allevents` this is not filtered to `GnoEvent`, so the chain's own `StorageDepositEvent` / `StorageUnlockEvent` for that path are included; the realm page hides those behind a toggle rather than dropping them here |
@@ -188,6 +189,32 @@ The first is the realm's banker; the second holds the deposit locked against its
 bytes. A `gno.land/e/<g1...>/run` path is the exception: its address is embedded
 in the path rather than hashed, and it has no deposit account, so that field is
 omitted. See `pkg/gnoaddr`.
+
+### Co-usage is not the contracts map's edge query at realm scale
+
+`/api/realm/cousage` and `/api/contracts/edges?kind=callers` answer the same
+question from opposite ends, and the map's answer is the wrong one to serve a
+realm page.
+
+The map counts every pair of contracts an address touched, then bounds the
+result so a 348-bubble picture stays legible: `maxFanout=30` drops an address
+that touched more contracts than that, and `min=2` requires two addresses in
+common before an edge exists. Both are right chain-wide and wrong for one
+realm. An address that touched forty contracts is mud on the map and is exactly
+the answer here; one shared address is a coincidence across a chain and is most
+of the relationship on a realm with three callers.
+
+So this asks the targeted question instead, with no fanout cap and no minimum:
+take the addresses that called this realm, count what else each of them called.
+Two index-covered lookups rather than a pair matrix. `msg_runs` is not consulted
+at all, only `calls`.
+
+`callers` on the response is the subject realm's own distinct caller count, and
+`callers` on each partner is that partner's, over the same window. Both are
+there because `shared` cannot be read without a denominator: 12 shared against a
+partner with 12 callers of its own and 12 against one with 900 are different
+facts. On mainnet the whole gnoswap set saturates the first form, its caller
+sets being strict subsets of each other.
 
 ### Balances are reconstructed, and the response says how well
 
@@ -285,6 +312,34 @@ The three bounds on `kind=callers` exist because the pair count is quadratic in
 how many contracts one address touched: a bot that called fifty of them
 contributes 1,225 pairs by itself and links everything to everything. Its calls
 still count toward every node's metrics either way.
+
+### The same controls, per realm
+
+The realm page's deps tab draws one realm's neighbourhood with the same four
+controls: `links` (`imports` or shared callers), `size` (the six metrics above),
+`scale`, and a `window`. It is not the map embedded, it is `renderDepGraph`
+reading the map's data:
+
+- `links=imports` is the existing graph, built from `/api/deps` in both
+  directions.
+- `links=callers` is `/api/realm/cousage`, one hop and no further. "Someone who
+  called me also called X" is a fact about this realm's callers; "and a caller
+  of X also called Y" is a fact about X's, so a second hop would draw a distance
+  the data does not carry. No arrowhead either: shared population is symmetric.
+- `size` reads `/api/contracts/map`, one fetch for the chain cached per network
+  and period, made only once a metric is picked. Uniform is the default and
+  costs nothing.
+- The realm header's "view on the map" link opens `/contracts?view=orbit&focus=`
+  on that realm, which is the same neighbourhood drawn against the whole chain.
+
+The activity filter stays on import mode alone. In caller mode every node is
+present because somebody called it inside the window, so "drop what saw no
+activity" has nothing left to drop.
+
+Caller mode is empty on most realms and says which emptiness it is, because the
+two are different facts a blank box cannot separate: nobody called this realm,
+or its callers called nothing else. On mainnet on 2026-09-22, 35 of 348
+contracts had ever been called and 20 had a shared-caller edge.
 
 ## Chain parameters
 

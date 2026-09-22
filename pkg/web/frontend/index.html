@@ -2166,9 +2166,15 @@ function renderFooterIndexer() {
   }
 }
 
-async function api(path) {
+// `network` overrides the selected chain for this one request. Used where the
+// page already knows which chain the thing it is asking about lives on and the
+// reader is in "all networks" mode: an endpoint that refuses to blend resolves
+// "all" to the first configured chain, so asking it about a path that exists on
+// three chains would answer for whichever one it picked. 193 package paths on
+// this deployment exist on more than one.
+async function api(path, network) {
   const sep = path.includes('?') ? '&' : '?';
-  const url = '/api/' + path + sep + 'network=' + getNetwork();
+  const url = '/api/' + path + sep + 'network=' + (network || getNetwork());
   beginRequest();
   try {
     const r = await fetch(url);
@@ -9076,6 +9082,21 @@ async function loadRealmDetail(path, initialTab) {
       // a busy realm should not immediately report its entire history as new.
       const latestCall = (detail.recent_calls || [])[0]?.block_height || detail.block_height;
       badgeRow.appendChild(watchButton('realms', detail.path, latestCall));
+      // The contracts map, already centred on this realm. Its orbit layout is
+      // a per-realm view by construction (one contract at the middle,
+      // everything it touches around it), so this is the whole chain's picture
+      // opened at the realm the reader is on, rather than a second copy of it.
+      //
+      // A real href, not a click handler: the map is a page of its own with its
+      // own state in the query string, and this is the one link on the realm
+      // page worth being able to open in a new tab.
+      const mapHref = '/contracts?view=orbit&focus=' + encodeURIComponent(detail.path)
+        + '&edges=imports&metric=importers&scale=log'
+        + (detail.network ? '&network=' + encodeURIComponent(detail.network) : '');
+      const mapLink = el('a', { href: mapHref, className: 'badge badge-realm', style: { textDecoration: 'none' } }, 'view on the map');
+      mapLink.title = 'open the contracts map centred on this realm';
+      mapLink.addEventListener('click', (e) => { e.preventDefault(); navigate(mapHref); });
+      badgeRow.appendChild(mapLink);
       header.appendChild(badgeRow);
       // Provenance box \u2014 four scannable columns (height / date / publisher /
       // contents) replacing what used to be one prose sentence ("deployed by
@@ -9751,15 +9772,20 @@ async function loadRealmDetail(path, initialTab) {
         grid.appendChild(buildDepTree('dependents (what uses this)', dependents, path,
           'what else depends on each of these'));
         depsEl.appendChild(grid);
-        // Through reloadDepGraphActivity rather than straight into
-        // renderDepGraph: the window is sticky across realms, like the
-        // dashboards' picker, so arriving on a new realm with 7d still
-        // selected has to fetch that realm's active set before the first
-        // paint instead of drawing unfiltered and then jumping.
+        // Through reloadDepGraph rather than straight into renderDepGraph:
+        // every control here is sticky across realms, like the dashboards'
+        // picker, so arriving on a new realm with 7d or caller mode still
+        // selected has to fetch that realm's answer before the first paint
+        // instead of drawing the wrong graph and then jumping.
         _depGraph.imports = imports;
         _depGraph.dependents = dependents;
         _depGraph.center = path;
-        reloadDepGraphActivity();
+        // The chain this realm is actually on, which is not always the one the
+        // reader has selected: in "all networks" mode the endpoints that refuse
+        // to blend resolve to the first configured chain, and this path may not
+        // live there at all.
+        _depGraph.network = detail.network || null;
+        reloadDepGraph();
       })();
     });
   } catch (err) {
@@ -11303,8 +11329,42 @@ let _depGraph = {
   imports: null, dependents: null, center: null,
   window: null, deps: false,
   active: null, activeWindow: null, activeNetwork: null,
+  // links decides what a line between two contracts means, the same choice the
+  // contracts map offers and for the same reason: the import graph is a
+  // property of the deployed source, and shared callers is a property of who
+  // used it. They are different pictures of the same realm, and the import one
+  // is the default because it is the one with data almost everywhere. On
+  // mainnet on 2026-09-22, 307 of 348 contracts carry an import edge and 20
+  // carry a shared-caller edge, because only 35 have ever been called at all.
+  links: 'imports',
+  // period windows the shared-caller query and the metric values. Deliberately
+  // not the same control as `window` above, which filters the import graph down
+  // to what saw activity: one asks "over which period", the other asks "drop
+  // the dormant". Folding them into one pill row was tried and each mode's
+  // answer then silently changed the other's meaning.
+  period: 'all',
+  // metric sizes the nodes, by the same keys the contracts map uses. Null is
+  // the uniform sizing this graph has always had, and is the default because
+  // every other value costs a request the reader did not ask for.
+  metric: null,
+  scale: 'linear',
+  // The contracts map's node metrics and this realm's co-usage partners,
+  // each cached under the network and period they were read for. Both are
+  // fetched only by the control that needs them.
+  metrics: null, metricsKey: null,
+  partners: null, partnersKey: null,
+  // The realm's own chain, so the two per-chain endpoints below are asked about
+  // the chain the realm is on rather than about whichever one "all" resolves to.
+  network: null,
   gen: 0,
 };
+
+// depGraphMetricsKey and depGraphPartnersKey: what a cached fetch is only valid
+// for. The partner set is per realm as well as per chain and period, so it has
+// the centre in its key; the metrics are the whole chain's and do not.
+function depGraphNetwork() { return _depGraph.network || getNetwork(); }
+function depGraphMetricsKey() { return depGraphNetwork() + '|' + _depGraph.period; }
+function depGraphPartnersKey() { return depGraphNetwork() + '|' + _depGraph.period + '|' + _depGraph.center; }
 
 function depGraphControls() {
   const bar = el('div', {
@@ -11316,32 +11376,98 @@ function depGraphControls() {
   });
   if (!_depGraph.center) return bar;
 
-  const pills = activityPills(_depGraph, () => {
-    reloadDepGraphActivity();
-  }, { offLabel: 'off' });
-  bar.appendChild(contractControlGroup('active', pills));
+  // Link mode. The labels are the map's, not shortened, because a reader who
+  // learned "shared callers" there should not have to work out that "callers"
+  // here is the same thing.
+  bar.appendChild(contractControlGroup('links', ['imports', 'callers'].map(k =>
+    contractPill(CONTRACT_EDGE_KINDS[k].label, _depGraph.links === k, () => {
+      if (_depGraph.links === k) return;
+      _depGraph.links = k;
+      reloadDepGraph();
+    }))));
 
-  // What the filter did, in numbers, because on a dependency graph the honest
-  // answer is often "almost nothing is live" and a map that simply got small
-  // does not say whether that is the chain or a broken filter.
-  if (_depGraph.window && _depGraph.note) {
+  // Node size. "uniform" first, because it is the default and because a reader
+  // who has sized the graph by something needs a way back that is not a reload.
+  const sizePills = [contractPill('uniform', !_depGraph.metric, () => {
+    if (!_depGraph.metric) return;
+    _depGraph.metric = null;
+    reloadDepGraph();
+  })];
+  for (const k of Object.keys(CONTRACT_METRICS)) {
+    sizePills.push(contractPill(CONTRACT_METRICS[k].label, _depGraph.metric === k, () => {
+      if (_depGraph.metric === k) return;
+      _depGraph.metric = k;
+      reloadDepGraph();
+    }));
+  }
+  bar.appendChild(contractControlGroup('size', sizePills));
+
+  // Scale, only once there is something scaled. A log pill next to uniform
+  // sizing is a control with nothing to act on.
+  if (_depGraph.metric) {
+    bar.appendChild(contractControlGroup('scale', ['log', 'linear'].map(k =>
+      contractPill(k, _depGraph.scale === k, () => {
+        if (_depGraph.scale === k) return;
+        _depGraph.scale = k;
+        renderDepGraph(_depGraph.imports, _depGraph.dependents, _depGraph.center);
+      }))));
+  }
+
+  // The period, shown only when something reads it: the shared-caller query, or
+  // a windowed metric. Sizing by storage under a 24h pill would be a control
+  // that visibly does nothing, because storage and gas are all-time figures
+  // read from the rollups.
+  const metric = CONTRACT_METRICS[_depGraph.metric];
+  if (_depGraph.links === 'callers' || (metric && metric.windowed)) {
+    bar.appendChild(contractControlGroup('window', CONTRACT_WINDOWS.map(w =>
+      contractPill(w, _depGraph.period === w, () => {
+        if (_depGraph.period === w) return;
+        _depGraph.period = w;
+        reloadDepGraph();
+      }))));
+  }
+
+  // The activity filter narrows the import graph to what the chain still runs,
+  // which is a question only the import graph has. In caller mode every node is
+  // there because somebody called it, so the filter has nothing left to remove.
+  if (_depGraph.links === 'imports') {
+    bar.appendChild(contractControlGroup('active', activityPills(_depGraph, () => {
+      reloadDepGraph();
+    }, { offLabel: 'off' })));
+  }
+
+  // What the graph is showing, in numbers. On a dependency graph under a filter
+  // the honest answer is often "almost nothing is live", and a picture that
+  // simply got small does not say whether that is the chain or a broken filter;
+  // in caller mode it carries the denominator, without which a partner count
+  // cannot be read at all. Import mode prints it only when the filter is on,
+  // because unfiltered there is nothing to report.
+  const showNote = _depGraph.note && (_depGraph.links === 'callers' || _depGraph.window);
+  if (showNote) {
     bar.appendChild(el('span', { style: { fontSize: '11px', color: 'var(--fg2)' } }, _depGraph.note));
   }
   return bar;
 }
 
-// reloadDepGraphActivity fetches the active-path set if the current window
-// needs one, then repaints.
+// reloadDepGraph fetches whatever the current controls need that is not already
+// cached, then repaints.
+//
+// Three possible requests, none of them made by default. The activity filter
+// needs the active-path set, sizing needs the contracts map's node metrics, and
+// caller mode needs this realm's co-usage partners. A reader who opens the deps
+// tab and touches nothing still pays for exactly the two dependency calls the
+// tab always made.
 //
 // Guarded by a generation counter for the same reason every loader here is: a
 // reader clicking 24h then 7d gets two requests in flight, and the slower one
 // must not paint over the newer answer.
-async function reloadDepGraphActivity() {
+async function reloadDepGraph() {
   const gen = ++_depGraph.gen;
   const bar = document.getElementById('dep-graph-controls');
   if (bar) bar.replaceWith(depGraphControls());
   const net = getNetwork();
-  if (_depGraph.window
+
+  if (_depGraph.links === 'imports' && _depGraph.window
       && (_depGraph.activeWindow !== _depGraph.window || _depGraph.activeNetwork !== net)) {
     try {
       const data = await api('graph/active?window=' + _depGraph.window);
@@ -11355,6 +11481,45 @@ async function reloadDepGraphActivity() {
       _depGraph.window = null;
     }
   }
+
+  // The metrics are the contracts map's own node payload, reused rather than
+  // given a second endpoint that would compute the same six numbers. It is one
+  // request for the whole chain (348 nodes and 116 KB on mainnet), which is why
+  // it is cached per network and period instead of per realm: reading three
+  // realms in a row costs one fetch, not three.
+  if (_depGraph.metric && _depGraph.metricsKey !== depGraphMetricsKey()) {
+    const key = depGraphMetricsKey();
+    try {
+      const data = await api('contracts/map?window=' + _depGraph.period, depGraphNetwork());
+      if (gen !== _depGraph.gen) return;
+      _depGraph.metrics = new Map((data.nodes || []).map(n => [n.path, n]));
+      _depGraph.metricsKey = key;
+    } catch (e) {
+      if (gen !== _depGraph.gen) return;
+      // Fall back to uniform rather than to zeroes. Sizing every bubble by a
+      // metric that failed to load draws a graph of identical minimum dots and
+      // states, in the legend, that they are all equally small.
+      _depGraph.metrics = null;
+      _depGraph.metricsKey = null;
+      _depGraph.metric = null;
+    }
+  }
+
+  if (_depGraph.links === 'callers' && _depGraph.partnersKey !== depGraphPartnersKey()) {
+    const key = depGraphPartnersKey();
+    try {
+      const data = await api('realm/cousage/' + _depGraph.center.replace('gno.land/', '')
+        + '?window=' + _depGraph.period, depGraphNetwork());
+      if (gen !== _depGraph.gen) return;
+      _depGraph.partners = data;
+      _depGraph.partnersKey = key;
+    } catch (e) {
+      if (gen !== _depGraph.gen) return;
+      _depGraph.partners = null;
+      _depGraph.partnersKey = null;
+    }
+  }
+
   if (gen !== _depGraph.gen) return;
   renderDepGraph(_depGraph.imports, _depGraph.dependents, _depGraph.center);
 }
@@ -11391,21 +11556,34 @@ function renderDepGraph(imports, dependents, centerPath) {
   _depGraph.center = centerPath;
   const container = document.getElementById('dep-graph'); container.textContent = '';
   const nodes = new Map(); const links = [];
+  const callerMode = _depGraph.links === 'callers';
 
   // Build graph
   nodes.set(centerPath, { id: centerPath, group: 'center', depth: 0 });
-  for (const [pkg, deps] of Object.entries(imports || {})) {
-    if (!nodes.has(pkg)) nodes.set(pkg, { id: pkg, group: 'import', depth: 999 });
-    for (const dep of deps || []) {
-      if (!nodes.has(dep)) nodes.set(dep, { id: dep, group: 'import', depth: 999 });
-      links.push({ source: pkg, target: dep, type: 'imports' });
+  if (callerMode) {
+    // One hop and no more, which is the honest depth of this relationship
+    // rather than a limitation. "Someone who called me also called X" is a
+    // fact about my callers; "and a caller of X also called Y" is a fact about
+    // X's callers and says nothing about this realm, so walking a second hop
+    // would draw a distance the data does not carry.
+    for (const p of ((_depGraph.partners || {}).partners || [])) {
+      nodes.set(p.path, { id: p.path, group: 'partner', depth: 999, shared: p.shared, partnerCallers: p.callers, sharedCalls: p.calls });
+      links.push({ source: centerPath, target: p.path, type: 'callers', weight: p.shared });
     }
-  }
-  for (const [pkg, deps] of Object.entries(dependents || {})) {
-    if (!nodes.has(pkg)) nodes.set(pkg, { id: pkg, group: 'dependent', depth: 999 });
-    for (const dep of deps || []) {
-      if (!nodes.has(dep)) nodes.set(dep, { id: dep, group: 'dependent', depth: 999 });
-      links.push({ source: pkg, target: dep, type: 'dependent' });
+  } else {
+    for (const [pkg, deps] of Object.entries(imports || {})) {
+      if (!nodes.has(pkg)) nodes.set(pkg, { id: pkg, group: 'import', depth: 999 });
+      for (const dep of deps || []) {
+        if (!nodes.has(dep)) nodes.set(dep, { id: dep, group: 'import', depth: 999 });
+        links.push({ source: pkg, target: dep, type: 'imports' });
+      }
+    }
+    for (const [pkg, deps] of Object.entries(dependents || {})) {
+      if (!nodes.has(pkg)) nodes.set(pkg, { id: pkg, group: 'dependent', depth: 999 });
+      for (const dep of deps || []) {
+        if (!nodes.has(dep)) nodes.set(dep, { id: dep, group: 'dependent', depth: 999 });
+        links.push({ source: pkg, target: dep, type: 'dependent' });
+      }
     }
   }
 
@@ -11413,8 +11591,11 @@ function renderDepGraph(imports, dependents, centerPath) {
   // distance from the centre through the links that are actually drawn, and
   // computing it over packages that are about to be removed would leave every
   // surviving node coloured for a path that is no longer on screen.
+  //
+  // Caller mode skips it: every node there is present because an address called
+  // it inside the period, so "drop what saw no activity" has nothing to drop.
   const total = nodes.size;
-  const kept = filterDepGraphNodes(nodes, links, centerPath);
+  const kept = callerMode ? null : filterDepGraphNodes(nodes, links, centerPath);
   if (kept) {
     for (const id of Array.from(nodes.keys())) {
       if (!kept.has(id)) nodes.delete(id);
@@ -11423,6 +11604,22 @@ function renderDepGraph(imports, dependents, centerPath) {
       if (!nodes.has(links[i].source) || !nodes.has(links[i].target)) links.splice(i, 1);
     }
     _depGraph.note = nodes.size + ' of ' + total + ' shown';
+  } else if (callerMode) {
+    // The denominator, because "8 partners" alone cannot be read. Out of how
+    // many of my own callers is the whole question: eight realms shared by all
+    // three of my users is a different realm from eight shared by three of four
+    // hundred.
+    const co = _depGraph.partners;
+    // Naming the chain when the reader is on "all networks", because this
+    // answer is not the union of anything. 193 package paths exist on more
+    // than one chain and an address is a different actor on each, so the
+    // endpoint picks one chain and says which; a note that stayed silent about
+    // it would present mainnet's callers as every chain's.
+    _depGraph.note = co
+      ? fmtNum(total - 1) + (co.truncated ? '+' : '') + ' also called by my '
+        + fmtNum(co.callers) + ' caller' + (co.callers === 1 ? '' : 's')
+        + (co.network && co.network !== getNetwork() ? ' on ' + co.network : '')
+      : null;
   } else {
     _depGraph.note = null;
   }
@@ -11475,16 +11672,68 @@ function renderDepGraph(imports, dependents, centerPath) {
     // reader and the only content on the tab — which on a realm with no
     // dependencies at all is every reader.
     container.style.minHeight = 'auto';
-    container.appendChild(el('div', { style: { padding: '24px', textAlign: 'center', color: 'var(--fg2)' } },
-      _depGraph.window
+    // Caller mode is empty on most realms and that is the chain, not a fault,
+    // so it says which of the two it is. On mainnet on 2026-09-22 only 35 of
+    // 348 contracts have ever been called; a realm with no callers at all and
+    // one whose callers went nowhere else are different facts and the reader
+    // cannot tell them apart from a blank box.
+    let why;
+    if (!callerMode) {
+      why = _depGraph.window
         ? 'nothing in this dependency graph saw activity in the last ' + _depGraph.window
-        : 'no dependencies to visualize'));
+        : 'no dependencies to visualize';
+    } else if (!_depGraph.partners) {
+      why = 'could not load the shared-caller graph';
+    } else if (!_depGraph.partners.callers) {
+      why = _depGraph.period === 'all'
+        ? 'nobody has called this realm, so it shares no callers with anything'
+        : 'nobody called this realm in the last ' + _depGraph.period;
+    } else {
+      why = 'its ' + fmtNum(_depGraph.partners.callers) + ' caller'
+        + (_depGraph.partners.callers === 1 ? ' has' : 's have')
+        + ' called nothing else' + (_depGraph.period === 'all' ? '' : ' in the last ' + _depGraph.period);
+    }
+    container.appendChild(el('div', { style: { padding: '24px', textAlign: 'center', color: 'var(--fg2)' } }, why));
     return;
   }
 
   const width = container.clientWidth || 800;
   const height = Math.max(600, window.innerHeight - 300);
   container.style.minHeight = height + 'px';
+
+  // Node size, by the same rule and the same formula as the contracts map.
+  //
+  // Area carries the value, hence the square root: a contract with ten times
+  // the calls should look ten times as big, and scaling the radius directly
+  // would make it look a hundred times as big.
+  //
+  // Which is also why sizing exists here at all. A dependency graph drawn with
+  // every node the same size cannot show what it is mostly about: p/nt/ufmt/v0
+  // has 91 dependents on mainnet and no calls, no gas and no storage of its
+  // own, so on any traffic metric it is a dot, and on `importers` it is the
+  // largest thing on the chain. The default stays uniform, and the reader picks.
+  const metricSpec = CONTRACT_METRICS[_depGraph.metric];
+  const metricOf = (d) => {
+    if (!metricSpec || !_depGraph.metrics) return 0;
+    const n = _depGraph.metrics.get(d.id);
+    return n ? Math.max(0, metricSpec.get(n) || 0) : 0;
+  };
+  const maxMetric = Math.max(1, d3.max(nodeArr, metricOf) || 1);
+  const R_BASE = { center: 12, other: 7 };
+  const rMin = 4;
+  const rMax = Math.max(14, Math.min(40, Math.sqrt((width * height) / (nodeArr.length * Math.PI)) * 0.8));
+  const ratio = _depGraph.scale === 'linear'
+    ? v => v / maxMetric
+    : v => Math.log1p(v) / Math.log1p(maxMetric);
+  // The centre keeps its size floor under every metric. It is the subject of
+  // the page, and a realm nobody has called shrinking to the smallest dot on
+  // its own graph is the one node a reader must never have to hunt for.
+  const nodeSize = (d) => {
+    if (!metricSpec) return d.depth === 0 ? R_BASE.center : R_BASE.other;
+    const r = rMin + (rMax - rMin) * Math.sqrt(ratio(metricOf(d)));
+    return d.depth === 0 ? Math.max(r, R_BASE.center) : r;
+  };
+  const maxNodeSize = Math.max(...nodeArr.map(nodeSize));
 
   // Legend
   const legend = el('div', { style: { display: 'flex', gap: '16px', flexWrap: 'wrap', padding: '8px 12px', fontSize: '12px', color: 'var(--fg2)', alignItems: 'center' } });
@@ -11500,6 +11749,17 @@ function renderDepGraph(imports, dependents, centerPath) {
   const diamEl = el('span'); diamEl.insertAdjacentHTML('beforeend', diamSvg);
   legend.appendChild(el('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '4px' } }, circEl, 'package (p/)'));
   legend.appendChild(el('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '4px' } }, diamEl, 'realm (r/)'));
+  // An area is a comparison, not a reading: the map's rule, and it applies here
+  // for the same reason. A reader can see that this node is twice that one and
+  // has no way to say twice of what, so the legend names the metric and prints
+  // the largest value behind it.
+  if (metricSpec) {
+    legend.appendChild(el('span', { style: { marginLeft: '12px', borderLeft: '1px solid var(--border)', paddingLeft: '12px' } },
+      'size = ' + metricSpec.label
+      + (_depGraph.scale === 'log' ? ' (log)' : '')
+      + ', largest ' + fmtMetric(metricSpec, maxMetric)
+      + (metricSpec.windowed && _depGraph.period !== 'all' ? ' over ' + _depGraph.period : '')));
+  }
   container.appendChild(legend);
 
   const svg = d3.select(container).append('svg').attr('width', width).attr('height', height);
@@ -11516,25 +11776,52 @@ function renderDepGraph(imports, dependents, centerPath) {
   controls.appendChild(zoomIn); controls.appendChild(zoomOut); controls.appendChild(zoomReset);
   container.appendChild(controls);
 
-  // Arrow markers per depth
+  // Arrow markers per depth.
+  //
+  // refX is 10, the tip of the path, so the arrowhead sits exactly on the end
+  // of the line and the line itself is trimmed to the node border on every tick
+  // instead. It used to be 20, a constant chosen for the fixed radius of 7, and
+  // a node sized by a metric can be forty pixels across: the arrow would land
+  // inside the bubble it points at, which reads as no arrow at all.
+  //
+  // Caller mode draws no arrow. "The same addresses called both" is symmetric,
+  // and an arrowhead would assert a direction the data does not have.
   const defs = svg.append('defs');
   for (let i = 0; i <= maxDepth + 1; i++) {
     defs.append('marker').attr('id', 'arrow-d' + i).attr('viewBox', '0 -5 10 10')
-      .attr('refX', 20).attr('refY', 0).attr('markerWidth', 6).attr('markerHeight', 6).attr('orient', 'auto')
+      .attr('refX', 10).attr('refY', 0).attr('markerWidth', 6).attr('markerHeight', 6).attr('orient', 'auto')
       .append('path').attr('d', 'M0,-5L10,0L0,5').attr('fill', depthColor(i));
   }
+  // How far short of the target centre a line has to stop: its radius, plus the
+  // arrowhead's own length where there is one (markerWidth 6 over a 10-unit
+  // viewBox).
+  const ARROW_LEN = 6;
+  const headRoom = callerMode ? 0 : ARROW_LEN;
+  const maxWeight = Math.max(1, d3.max(links, l => l.weight || 0) || 1);
 
   const sim = d3.forceSimulation(nodeArr)
     .force('link', d3.forceLink(links).id(d => d.id).distance(100))
     .force('charge', d3.forceManyBody().strength(-250))
     .force('center', d3.forceCenter(width / 2, height / 2))
-    .force('collision', d3.forceCollide().radius(35));
+    // The collision radius tracked the old fixed node size. Sized nodes overlap
+    // without this, and the largest ones swallow their neighbours whole.
+    .force('collision', d3.forceCollide().radius(d => Math.max(35, nodeSize(d) + 12)));
+  // A graph of forty bubbles at forty pixels needs more room between them than
+  // one of forty dots, or the link lengths alone decide the layout and the
+  // sizing reads as crowding.
+  if (metricSpec) sim.force('link').distance(Math.max(100, maxNodeSize * 3));
 
   const linkEl = zoomG.append('g').selectAll('line').data(links).join('line')
     .attr('stroke', d => depthColor(d.depth))
     .attr('stroke-opacity', 0.7)
-    .attr('stroke-width', 1.5)
-    .attr('marker-end', d => 'url(#arrow-d' + d.depth + ')');
+    // In caller mode the weight is the number of addresses the two contracts
+    // have in common, which is the whole quantity that mode is about: drawing
+    // every line at 1.5px would throw away the only thing distinguishing a
+    // partner shared by one address from one shared by four hundred.
+    .attr('stroke-width', d => callerMode
+      ? 1 + 5 * Math.sqrt((d.weight || 0) / maxWeight)
+      : 1.5)
+    .attr('marker-end', d => callerMode ? null : 'url(#arrow-d' + d.depth + ')');
 
   // Nodes: circle for p/, diamond for r/
   const nodeG = zoomG.append('g').selectAll('g').data(nodeArr).join('g')
@@ -11547,15 +11834,33 @@ function renderDepGraph(imports, dependents, centerPath) {
 
   // Circle for packages
   nodeG.filter(d => !d.isRealm).append('circle')
-    .attr('r', d => d.depth === 0 ? 12 : 7)
+    .attr('r', d => nodeSize(d))
     .attr('fill', d => depthColor(d.depth))
     .attr('stroke', '#000').attr('stroke-width', 1);
 
-  // Diamond for realms
+  // Diamond for realms. Scaled by 1.28 against the circle so the two read as
+  // the same size: a diamond inscribed in a circle of radius r covers 2r^2
+  // against the circle's pi*r^2, a bit under two thirds, and sizing both by r
+  // alone makes every realm look smaller than a package holding the same value.
   nodeG.filter(d => d.isRealm).append('polygon')
-    .attr('points', d => { const s = d.depth === 0 ? 14 : 9; return `0,${-s} ${s},0 0,${s} ${-s},0`; })
+    .attr('points', d => { const s = nodeSize(d) * 1.28; return `0,${-s} ${s},0 0,${s} ${-s},0`; })
     .attr('fill', d => depthColor(d.depth))
     .attr('stroke', '#000').attr('stroke-width', 1);
+
+  // What a node is worth, on hover, because the size is a comparison and the
+  // number behind it is the reading. Native title rather than a styled card:
+  // every string here is on-chain content chosen by whoever deployed it, and a
+  // title attribute cannot execute any of it.
+  nodeG.append('title').text(d => {
+    const lines = [d.id];
+    if (metricSpec) lines.push(metricSpec.label + ': ' + fmtMetric(metricSpec, metricOf(d)));
+    if (callerMode && d.depth > 0) {
+      lines.push(fmtNum(d.shared) + ' of my ' + fmtNum((_depGraph.partners || {}).callers || 0)
+        + ' callers, ' + fmtNum(d.shared) + ' of its own ' + fmtNum(d.partnerCallers));
+      lines.push(fmtNum(d.sharedCalls) + ' calls from the addresses we share');
+    }
+    return lines.join('\n');
+  });
 
   // Labels are decluttered rather than all drawn.
   //
@@ -11611,7 +11916,12 @@ function renderDepGraph(imports, dependents, centerPath) {
     const taken = new Set();
     for (const entry of labelOrder) {
       const d = entry.d, node = entry.node;
-      const x = t.applyX(d.x) + 14, y = t.applyY(d.y) + 4;
+      // The offset clears the node itself, so it has to track the node's size
+      // on screen: the labels live outside the zoom group at a constant font
+      // size, but the thing they sit beside is both sized by the metric and
+      // scaled by the zoom. A fixed 14px put every label inside its own bubble
+      // as soon as anything was sized.
+      const x = t.applyX(d.x) + nodeSize(d) * t.k + 6, y = t.applyY(d.y) + 4;
       node.setAttribute('x', x);
       node.setAttribute('y', y);
 
@@ -11654,9 +11964,38 @@ function renderDepGraph(imports, dependents, centerPath) {
 
   zoom.on('zoom.labels', () => placeLabels());
 
+  // Lines stop at the node border, not at its centre. With uniform 7px dots the
+  // difference was a few pixels hidden under the bubble; sized by a metric, a
+  // link ran straight through a forty-pixel node and out the other side, and
+  // the arrowhead ended up inside the thing it pointed at. Same fix the
+  // contracts map made for its own edges.
+  function trimmed(d) {
+    const dx = d.target.x - d.source.x, dy = d.target.y - d.source.y;
+    const len = Math.hypot(dx, dy);
+    // Two nodes on the same point have no direction to trim along, and
+    // dividing by zero would put NaN into the coordinates and drop the line.
+    if (!len) return { x1: d.source.x, y1: d.source.y, x2: d.target.x, y2: d.target.y };
+    const ux = dx / len, uy = dy / len;
+    const from = nodeSize(d.source), to = nodeSize(d.target) + headRoom;
+    // A link shorter than the two radii it has to clear would be drawn
+    // backwards. Collapse it to a point instead, and let the collision force
+    // push the pair apart on the next tick.
+    if (from + to >= len) {
+      const mx = d.source.x + ux * len / 2, my = d.source.y + uy * len / 2;
+      return { x1: mx, y1: my, x2: mx, y2: my };
+    }
+    return {
+      x1: d.source.x + ux * from, y1: d.source.y + uy * from,
+      x2: d.target.x - ux * to, y2: d.target.y - uy * to,
+    };
+  }
+
   sim.on('tick', () => {
-    linkEl.attr('x1', d => d.source.x).attr('y1', d => d.source.y)
-      .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+    linkEl.each(function (d) {
+      const t = trimmed(d);
+      this.setAttribute('x1', t.x1); this.setAttribute('y1', t.y1);
+      this.setAttribute('x2', t.x2); this.setAttribute('y2', t.y2);
+    });
     nodeG.attr('transform', d => 'translate(' + d.x + ',' + d.y + ')');
     placeLabels();
   });
