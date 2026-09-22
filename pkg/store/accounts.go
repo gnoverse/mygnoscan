@@ -186,7 +186,7 @@ func (d *DB) GetActiveAccounts(network, sortBy string, limit, offset int) ([]Acc
 	//
 	// The consequence is that an address can appear once per chain it is active
 	// on. That is the honest shape; the network column says which is which.
-	amountSum := `SUM(CAST(REPLACE(REPLACE(amount, 'ugnot', ''), '"', '') AS INTEGER))`
+	amountSum := `SUM(ugnot_amount)`
 	q := `
 		SELECT address, network, SUM(call_count), SUM(call_tx_count), SUM(deploy_count), SUM(run_count), SUM(send_count), SUM(sent_amount), SUM(received_amount)
 		FROM (

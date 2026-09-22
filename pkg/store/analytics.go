@@ -13,8 +13,8 @@ import (
 func (d *DB) InsertBankSend(network, txHash string, blockHeight int, blockTime, from, to, amount string, success bool) error {
 	d.writeMu.Lock()
 	defer d.writeMu.Unlock()
-	_, err := d.db.Exec(`INSERT OR IGNORE INTO bank_sends (network, tx_hash, block_height, block_time, from_address, to_address, amount, success) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		network, txHash, blockHeight, blockTime, from, to, amount, success)
+	_, err := d.db.Exec(`INSERT OR IGNORE INTO bank_sends (network, tx_hash, block_height, block_time, from_address, to_address, amount, ugnot_amount, success) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		network, txHash, blockHeight, blockTime, from, to, amount, ParseUgnot(amount), success)
 	return err
 }
 

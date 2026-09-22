@@ -159,6 +159,12 @@ func NewDB(path string) (*DB, error) {
 		return nil, err
 	}
 
+	// After initSchema, which is what creates the column on a fresh database.
+	if err := migrateBankSendUgnot(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate bank send ugnot: %w", err)
+	}
+
 	d := &DB{db: db}
 
 	// Refresh the planner's statistics in the background.
@@ -500,7 +506,17 @@ func initSchema(db *sql.DB) error {
 			block_time TEXT,
 			from_address TEXT NOT NULL,
 			to_address TEXT NOT NULL,
+			-- amount is the coin string the message carried, verbatim, and it
+			-- is a coin *list*: "100ugnot,5foo". ugnot_amount is it parsed, for
+			-- summing. Both, for the same reason balances keeps both: a total
+			-- has to add a number, and a page has to show what the chain said.
+			--
+			-- Summing the string instead needed a denom stripped out of it with
+			-- REPLACE, and SQLite's CAST takes the leading numeric prefix and
+			-- discards the rest without erroring, so "5foo,100ugnot" summed as
+			-- 5 ugnot and "5foo" invented 5 ugnot that never existed.
 			amount TEXT NOT NULL,
+			ugnot_amount INTEGER,
 			success BOOLEAN NOT NULL,
 			UNIQUE(network, tx_hash, from_address, to_address)
 		);
@@ -874,6 +890,67 @@ var backfillTables = []string{"packages", "package_submissions", "calls", "msg_r
 // implementation detail of the sync loop.
 func BlocksBackfillDoneKey(network string) string {
 	return "blocks_backfill_done:" + network
+}
+
+// migrateBankSendUgnot fills the ugnot column on rows written before it existed.
+//
+// NULL is the marker: a row that has never been parsed has no value, and the
+// backfill only looks at those, so it is idempotent and resumable without a
+// separate flag in sync_state. New rows arrive parsed from InsertBankSend.
+//
+// Parsing is done per distinct coin string rather than per row. Production
+// holds 21,592 sends across 3,444 distinct amounts (2026-09-21), and the
+// distinct values are what carry the information; the ratio only widens as a
+// chain grows, because a send repeats round numbers.
+func migrateBankSendUgnot(db *sql.DB) error {
+	// Errors ignored: on a database that already has the column, and on a
+	// fresh one where initSchema just created it, this is a duplicate column.
+	db.Exec(`ALTER TABLE bank_sends ADD COLUMN ugnot_amount INTEGER`)
+
+	rows, err := db.Query(`SELECT DISTINCT amount FROM bank_sends WHERE ugnot_amount IS NULL`)
+	if err != nil {
+		return err
+	}
+	var amounts []string
+	for rows.Next() {
+		var a string
+		if err := rows.Scan(&a); err != nil {
+			rows.Close()
+			return err
+		}
+		amounts = append(amounts, a)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(amounts) == 0 {
+		return nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`UPDATE bank_sends SET ugnot_amount = ? WHERE amount = ? AND ugnot_amount IS NULL`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, a := range amounts {
+		if _, err := stmt.Exec(ParseUgnot(a), a); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	log.Printf("bank_sends: parsed ugnot for %d distinct amounts", len(amounts))
+	return nil
 }
 
 // migrateStorageUnlockSign repairs storage_events rows written while the
