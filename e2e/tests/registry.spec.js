@@ -102,3 +102,40 @@ test('a curated label is not marked', async ({ page }) => {
 
   expect(seen.jsErrors, 'uncaught exceptions').toEqual([]);
 });
+
+test('plain mode keeps the address and moves the label into the tooltip', async ({ page }) => {
+  const seen = watch(page);
+
+  await page.goto('/');
+  await settle(page);
+
+  // What /coins' three side-by-side leaderboards use. The label and the address
+  // together are wider than a third of the page, and the figure in the next
+  // cell was what got clipped — so the label gives way, and has to still be
+  // reachable or a reader who knows @faucet by name loses it entirely.
+  const rendered = await page.evaluate(() => {
+    const addr = 'g18qhq2fl54lszhmxeyqlvxnwjzc3xpu4nnakclp';
+    const span = addrLinkImpl(addr, null, 'g18qhq2f…kclp', true);
+    const a = span.querySelector('a');
+    return {
+      text: span.textContent,
+      link: a.textContent,
+      title: a.title,
+      ctx: !!span.querySelector('.block-ctx'),
+      mark: span.querySelector('.addr-inferred') ? span.querySelector('.addr-inferred').textContent : null,
+    };
+  });
+
+  expect(rendered.link).toBe('g18qhq2f…kclp');
+  expect(rendered.text).not.toContain('@faucet');
+  // Not lost: first line of the tooltip, ahead of the full address it explains.
+  expect(rendered.title.split('\n')[0]).toBe('@faucet');
+  expect(rendered.title).toContain('g18qhq2fl54lszhmxeyqlvxnwjzc3xpu4nnakclp');
+  // The label is what gave way, not the caveat on it.
+  expect(rendered.mark).toBe('?');
+  // Plain mode drops the trailing address-beside-the-label, since the label is
+  // gone and the address is now the link itself.
+  expect(rendered.ctx).toBe(false);
+
+  expect(seen.jsErrors, 'uncaught exceptions').toEqual([]);
+});
