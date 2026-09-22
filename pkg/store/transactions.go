@@ -375,7 +375,7 @@ type txSource struct {
 // a current-state projection (one row per path, overwritten by a later
 // submission at the same path), so filtering /txs by MsgAddPackage against
 // it silently hid every resubmission but the newest — see
-// AddressTransactions' own comment on the identical bug (gno-meta#126).
+// AddressTransactions' own comment on the identical bug.
 // package_submissions carries its own success column, one row per attempt,
 // so this no longer needs the join to `transactions` the old
 // COALESCE(t.success, 1) depended on.

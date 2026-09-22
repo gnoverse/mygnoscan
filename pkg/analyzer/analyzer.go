@@ -184,7 +184,7 @@ func (a *Analyzer) ProcessPackage(network string, pkg *indexer.MemPackage, creat
 		return err
 	}
 	// store the submission itself, kept even once a later one replaces the
-	// row above — see InsertPackageSubmission and gno-meta#126.
+	// row above — see InsertPackageSubmission.
 	if err := a.db.InsertPackageSubmission(network, txHash, msgIndex, pkg.Path, pkg.Name, creator, blockHeight, blockTime, isRealm, len(pkg.Files), success); err != nil {
 		return err
 	}
