@@ -369,3 +369,65 @@ func TestFrontendSpriteHasNoOrphansOrDanglingRefs(t *testing.T) {
 			strings.Join(dangling, ", "))
 	}
 }
+
+// The screenshot feature flag is injected into the document rather than
+// fetched, because the first row is drawn before /api/version comes back. Off
+// by default, and off means the served bytes are the embedded file unchanged.
+func TestFeatureFlagIsInjectedOnlyWhenOn(t *testing.T) {
+	index, err := Index()
+	if err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+
+	t.Run("off leaves the body untouched", func(t *testing.T) {
+		h, err := Handler(Options{})
+		if err != nil {
+			t.Fatalf("Handler: %v", err)
+		}
+		rec := httptest.NewRecorder()
+		h(rec, httptest.NewRequest("GET", "/", nil))
+		if !bytes.Equal(rec.Body.Bytes(), index) {
+			t.Error("a build with no capture service does not serve index.html unchanged")
+		}
+		// The assignment, not the reads: the application script reads
+		// window.FEATURES defensively and that text is in index.html either way.
+		if bytes.Contains(rec.Body.Bytes(), []byte("window.FEATURES={")) {
+			t.Error("FEATURES was injected with the feature off")
+		}
+	})
+
+	t.Run("on declares the flag before the app script runs", func(t *testing.T) {
+		h, err := Handler(Options{Shots: true})
+		if err != nil {
+			t.Fatalf("Handler: %v", err)
+		}
+		rec := httptest.NewRecorder()
+		h(rec, httptest.NewRequest("GET", "/", nil))
+		body := rec.Body.Bytes()
+		want := []byte("window.FEATURES={shots:true}")
+		i := bytes.Index(body, want)
+		if i < 0 {
+			t.Fatalf("no %q in the served body", want)
+		}
+		// Before </head>, and therefore before the application script at the
+		// foot of the body. A flag that arrives after the code reading it is
+		// the same as no flag at all.
+		if head := bytes.Index(body, []byte("</head>")); i > head {
+			t.Fatalf("FEATURES at %d is after </head> at %d", i, head)
+		}
+	})
+
+	t.Run("the ETag moves with the flag", func(t *testing.T) {
+		// The body differs, so a reader holding the other build's tag has to be
+		// told. Serving the same ETag for two different bodies is how a browser
+		// keeps a stale page forever.
+		off, _ := Handler(Options{})
+		on, _ := Handler(Options{Shots: true})
+		recOff, recOn := httptest.NewRecorder(), httptest.NewRecorder()
+		off(recOff, httptest.NewRequest("GET", "/", nil))
+		on(recOn, httptest.NewRequest("GET", "/", nil))
+		if recOff.Header().Get("ETag") == recOn.Header().Get("ETag") {
+			t.Fatal("both builds serve the same ETag")
+		}
+	})
+}

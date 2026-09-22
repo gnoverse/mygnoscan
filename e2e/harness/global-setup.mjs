@@ -12,6 +12,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { startFakeIndexer } from './fake-indexer.mjs';
+import { startShotStub } from './shot-stub.mjs';
 import { NETWORKS, seed } from './fixture.mjs';
 import { PORT } from './port.mjs';
 
@@ -47,10 +48,17 @@ export default async function globalSetup() {
   await run('go', ['build', '-o', binary, '.'], { cwd: repoRoot });
 
   const indexer = await startFakeIndexer();
+  // The screenshot service, stubbed. The frontend only draws realm pictures
+  // when one is configured, so without this the suite would be reviewing a
+  // build with the feature switched off.
+  const shots = await startShotStub();
 
   const configPath = join(tmpDir, 'networks.json');
   writeFileSync(configPath, JSON.stringify({
-    networks: NETWORKS.map(id => ({ id, indexer: indexer.url })),
+    // gnoweb is what turns a package path into the URL a picture is taken of.
+    // It points at the stub here; nothing ever fetches it, but /api/shot
+    // refuses a network that has none, which is the behaviour worth keeping.
+    networks: NETWORKS.map(id => ({ id, indexer: indexer.url, gnoweb: shots.url })),
   }, null, 2));
 
   // A fresh database every run. The suite asserts on exact counts, and a
@@ -67,6 +75,7 @@ export default async function globalSetup() {
     '-config', configPath,
     '-sync=false',
     '-listen', `127.0.0.1:${port}`,
+    '-gnoshot', shots.url,
   ], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] });
 
   const log = [];

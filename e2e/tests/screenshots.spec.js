@@ -23,6 +23,10 @@ const OUT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'docs', 'i
 const PAGES = [
   ['home', '/'],
   ['realms', '/realms'],
+  // The same page with every capture refused, which is the state a reviewer
+  // cannot otherwise see: it is what a reader gets while the cache is cold, if
+  // the capture service is down, or on a chain nothing has photographed yet.
+  ['realms-cold', '/realms'],
   ['packages', '/packages'],
   ['contracts', '/contracts'],
   // One per layout: a change to any of the six is invisible in a single shot
@@ -89,6 +93,9 @@ test.describe('screenshots', () => {
   for (const [name, path] of PAGES) {
     test(`capture ${name}`, async ({ page }) => {
       await page.setViewportSize({ width: 1400, height: 900 });
+      if (name === 'realms-cold') {
+        await page.route('**/api/shot**', route => route.fulfill({ status: 503, body: '' }));
+      }
       if (name === 'rail-collapsed') {
         await page.goto('/');
         await page.evaluate(() => localStorage.setItem('mygnoscan-rail', 'collapsed'));

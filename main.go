@@ -51,6 +51,11 @@ func run() error {
 		// report to somebody else's analytics account.
 		analyticsScript = flag.String("analytics-script", "",
 			"URL of an analytics script to load in the frontend, e.g. https://scripts.simpleanalyticscdn.com/latest.js (empty = none)")
+		// Realm screenshots. Empty means the explorer draws no pictures of
+		// realms at all, which is the right default: pointing at a capture
+		// service that is not there would put a broken tile on every row.
+		gnoshotURL = flag.String("gnoshot", "",
+			"base URL of a gnoshot capture service, e.g. http://127.0.0.1:8890 (empty = no realm screenshots)")
 	)
 	flag.Parse()
 
@@ -191,6 +196,10 @@ func run() error {
 	// Set up API routes
 	api := httpapi.NewAPI(db, clients, cfg.Networks, analyzer)
 	api.SetSyncHealth(syncHealth)
+	api.SetShotUpstream(*gnoshotURL)
+	if api.ShotsEnabled() {
+		log.Printf("screenshots: /api/shot proxies %s", *gnoshotURL)
+	}
 
 	// A network pairs an indexer with an RPC, and nothing checked they serve the
 	// same chain. Verify before serving rather than after someone reads a
@@ -234,7 +243,10 @@ func run() error {
 	// API routes
 	mux.HandleFunc("GET /api/version", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"git_hash":%q,"build_time":%q}`, gitHash, buildTime)
+		// shots tells the frontend whether to put any realm <img> on the page.
+		// It asks once and decides for the whole session, so a deployment
+		// without a capture service never requests an image it cannot get.
+		fmt.Fprintf(w, `{"git_hash":%q,"build_time":%q,"shots":%t}`, gitHash, buildTime, api.ShotsEnabled())
 	})
 	mux.HandleFunc("GET /api/networks", func(w http.ResponseWriter, r *http.Request) {
 		type netInfo struct {
@@ -255,7 +267,7 @@ func run() error {
 	mux.HandleFunc("GET /api/live", httpapi.LiveFeedHandler())
 
 	// Frontend: SPA handler serves index.html for all non-API routes
-	frontend, err := web.Handler(web.Options{AnalyticsScript: *analyticsScript})
+	frontend, err := web.Handler(web.Options{AnalyticsScript: *analyticsScript, Shots: api.ShotsEnabled()})
 	if err != nil {
 		return err
 	}
