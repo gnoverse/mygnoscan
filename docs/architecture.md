@@ -60,6 +60,24 @@ single-block probe confirms the indexer really has nothing below it.
 `import "gno.land/..."` statements by regex, then writes package, file and
 dependency rows.
 
+**`pkg/gnostate`** — decodes the Amino JSON that `vm/qpkg_json` and
+`vm/qobject_json` return into a named value tree: `posts["hello"].Title` rather
+than a PointerValue to a RefValue to a HeapItemValue. Recognizes `avl.Tree` and
+flattens it to its entries, which is most of the difference between a state
+explorer and a picture of the VM's heap. `DecodePackageWith` resolves
+breadth-first, because the walker asks for one object at a time and a realm can
+need thousands: `r/gnoland/blog` costs 4m29s one-at-a-time and 38s in rounds.
+Takes a `Resolver`, so the same code reads from live RPC, a cache or a stored
+snapshot. No gno dependency: the `@type` discriminators are enough.
+
+**`pkg/gnoaddr`** — derives the two accounts every package path owns (the realm
+banker and its storage deposit). Both are pure functions of the path, so nothing
+on chain stores them and no indexer can look them up.
+
+**`pkg/registry`** — the curated data no chain can supply: address labels, token
+metadata, the apps directory. Three JSON files embedded at build time, so adding
+an entry is a pull request against a file rather than an edit to the frontend.
+
 **`pkg/store`** — schema, startup migrations, and every query, split by domain:
 `schema.go`, then `packages.go`, `accounts.go`, `transactions.go`,
 `analytics.go`, `rollups.go`, `storage.go`.

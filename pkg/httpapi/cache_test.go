@@ -189,9 +189,17 @@ func TestResponseCacheStopsServingBeyondGrace(t *testing.T) {
 func TestResponseCacheRefreshesOnlyOncePerBurst(t *testing.T) {
 	var calls atomic.Int32
 	release := make(chan struct{})
+	// refreshing is signalled by the refresh goroutine as it enters the
+	// handler. Without it this test asserts on work that has been scheduled
+	// and not yet run: the refresh is deliberately detached from the request
+	// that triggered it (see WithResponseCache), so the burst returning says
+	// nothing about whether the refresh has started. Buffered so a second,
+	// unwanted refresh cannot deadlock the assertion it is there to fail.
+	refreshing := make(chan struct{}, 8)
 	c := NewResponseCache(10 * time.Millisecond)
 	h := WithResponseCache(c, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if calls.Add(1) > 1 {
+			refreshing <- struct{}{}
 			<-release // hold the refresh open so the burst overlaps it
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -215,8 +223,25 @@ func TestResponseCacheRefreshesOnlyOncePerBurst(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+
+	// Wait for the one refresh the burst is allowed to trigger to actually
+	// reach the handler. Only then is the call count meaningful.
+	select {
+	case <-refreshing:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no refresh started within 5s for a stale entry")
+	}
 	if got := calls.Load(); got != 2 {
 		t.Errorf("handler ran %d times for one stale entry, want 2 (the original plus one refresh)", got)
+	}
+	// A second refresh cannot legitimately start while the first is still in
+	// flight: the claim in lookup is single-flight under the cache lock, and
+	// the first refresh is blocked on release. So anything queued here is a
+	// coalescing bug, which is the whole point of the test.
+	select {
+	case <-refreshing:
+		t.Error("a second refresh started while the first was still running; the burst was not coalesced")
+	default:
 	}
 	close(release)
 }
