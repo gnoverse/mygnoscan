@@ -35,6 +35,10 @@ export const EXPECTED_FAILURES = [
   // The inert-package queue/history also read live over RPC (vm/qinertpaths,
   // vm/qpkgmeta_json), same as the balance above.
   { pattern: /\/api\/inert\/(queue|history)/, why: 'inert queue needs RPC' },
+  // The state tab resolves a realm's live object graph over RPC (vm/qpkg_json,
+  // vm/qobject_json). Realm state is not in the transaction stream, so the fake
+  // indexer cannot stand in for it the way it does for everything else here.
+  { pattern: /\/api\/state\//, why: 'realm state needs RPC' },
 ];
 
 export function unexpected(failures) {
