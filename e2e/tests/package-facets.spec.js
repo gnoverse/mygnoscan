@@ -124,6 +124,26 @@ test('a package with symbols links into its docs', async ({ page }) => {
 // right rows and displayed them fewest-first, which reads as the opposite of
 // what the header promises. Not about the facets; it was live on every
 // directory.
+//
+// `settle` is not enough to read the result of one of these clicks. It waits for
+// `networkidle`, which is 500 ms of quiet: if the click's fetch has not been
+// issued by the time Playwright looks, the network is *already* quiet and settle
+// returns at once, so the read lands on the rows from before the click.
+//
+// That is what was failing, on main and on unrelated pull requests alike, twice
+// in a run because the retry raced the same way. The values in the failure name
+// it: `Expected >= 23, Received 20`, and 23 then 20 is exactly what the first
+// column holds in the *descending* state this fixture produces. The read was of
+// the rows the previous click left behind, not of a sort that came out wrong.
+//
+// Not reproduced on a developer machine, including against a deliberately slow
+// /api/realms, which is why the window is one task rather than one request:
+// delaying the response does not help, because networkidle waits correctly once
+// a request is actually in flight.
+//
+// So each click waits for its own response. `sorted()` is the shape to copy for
+// any other server-sorted header: start listening *before* the click, because a
+// fast response can land before the waiter is attached.
 test('a server-sorted column starts descending, and still toggles', async ({ page }) => {
   await page.goto('/realms');
   await settle(page);
@@ -132,9 +152,14 @@ test('a server-sorted column starts descending, and still toggles', async ({ pag
   const callsColumn = async () =>
     (await page.locator('#realms-list tr td:nth-child(4)').allTextContents())
       .map(t => Number(t.replace(/[^0-9]/g, '')) || 0);
+  const sorted = async () => {
+    const landed = page.waitForResponse(r => r.url().includes('/api/realms') && r.ok());
+    await header.click();
+    await landed;
+    await settle(page);
+  };
 
-  await header.click();
-  await settle(page);
+  await sorted();
   const desc = await callsColumn();
   expect(desc.length).toBeGreaterThan(2);
   for (let i = 1; i < desc.length; i++) {
@@ -144,8 +169,7 @@ test('a server-sorted column starts descending, and still toggles', async ({ pag
 
   // And the second click still flips it, which is the behaviour url-filters
   // already pins and this must not take away.
-  await header.click();
-  await settle(page);
+  await sorted();
   const asc = await callsColumn();
   for (let i = 1; i < asc.length; i++) {
     expect(asc[i], 'second click flips to ascending').toBeGreaterThanOrEqual(asc[i - 1]);
