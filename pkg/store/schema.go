@@ -1147,3 +1147,33 @@ func migrateStorageUnlockSign(db *sql.DB) error {
 	}
 	return nil
 }
+
+// networkParams is networkFilter with bound parameters instead of quoted
+// literals, for the query paths that take reader-supplied input beside the
+// network.
+//
+// networkFilter concatenates, which AGENTS.md flags as something not to add
+// more of. Code search is the first caller that needs the "every configured
+// network" case in a statement whose other argument is a raw FTS5 query, so
+// it gets the bound version rather than a third hand-escaped one.
+//
+// Returns a bare condition and its arguments, so callers supply their own
+// WHERE or AND. The condition is `1=1` with no arguments when nothing is
+// configured, which keeps every call site a plain string append.
+func (d *DB) networkParams(column, network string) (string, []any) {
+	if network != "" {
+		return column + " = ?", []any{network}
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if len(d.configured) == 0 {
+		return "1=1", nil
+	}
+	args := make([]any, 0, len(d.configured))
+	marks := make([]string, 0, len(d.configured))
+	for _, n := range d.configured {
+		args = append(args, n)
+		marks = append(marks, "?")
+	}
+	return column + " IN (" + strings.Join(marks, ",") + ")", args
+}
