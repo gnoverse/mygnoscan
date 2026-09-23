@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -34,7 +35,8 @@ import (
 const (
 	fromCurated   = "curated"   // this repo's apps.json
 	fromCommunity = "community" // awesome-gno
-	fromChain     = "chain"     // the realm's own source or the chain's own numbers
+	fromChain     = "chain"     // the realm's own package doc comment
+	fromReadme    = "readme"    // the realm's own README
 	fromPath      = "path"      // derived from the path, the last resort
 )
 
@@ -117,17 +119,57 @@ func firstSentence(s string) string {
 	return s
 }
 
+// versionSegment matches a trailing generation marker: v0, v1, v23.
+var versionSegment = regexp.MustCompile(`^v[0-9]+$`)
+
 // nameFromPath is the last resort, and it is a poor one on purpose: it is what
 // a card looks like when nobody has said anything about a realm and the realm
 // says nothing about itself, which is exactly the case a contributor should be
 // able to spot and fix.
+//
+// It is still not allowed to be *ambiguous*. The last segment alone produced
+// `position`, `staker`, `gns` and two cards both called `staker` on mainnet,
+// which tells a reader nothing and tells them it twice. A version segment is
+// dropped, because `v0` names a generation and never a project, and the
+// namespace is kept, because `gnoswap/position` is a thing somebody can
+// recognise and `position` is not.
 func nameFromPath(path string) string {
-	p := strings.TrimSuffix(path, "/")
-	if i := strings.LastIndex(p, "/"); i >= 0 {
+	p := strings.Trim(strings.TrimPrefix(path, "gno.land/"), "/")
+	// Drop the kind prefix: every entry here is r/, so it distinguishes nothing.
+	if i := strings.Index(p, "/"); i >= 0 && (p[:i] == "r" || p[:i] == "p") {
 		p = p[i+1:]
 	}
-	return p
+	parts := strings.Split(p, "/")
+	// A version belongs to the realm's history, not its name, and it is not
+	// always the last segment: gnoswap deploys as `gnoswap/v1/position`, so
+	// dropping only a trailing one left `v1/position`. Every version segment
+	// goes, and if that leaves nothing the last original segment comes back,
+	// because a card with a blank name is worse than one called `v0`.
+	kept := parts[:0:0]
+	for _, seg := range parts {
+		if !versionSegment.MatchString(seg) {
+			kept = append(kept, seg)
+		}
+	}
+	if len(kept) > 0 {
+		parts = kept
+	} else {
+		parts = parts[len(parts)-1:]
+	}
+	// An address namespace is 40 characters of noise to a reader, so a realm
+	// deployed under one is named by what follows it.
+	if len(parts) > 1 && bech32Namespace.MatchString(parts[0]) {
+		parts = parts[1:]
+	}
+	if len(parts) > 2 {
+		parts = parts[len(parts)-2:]
+	}
+	return strings.Join(parts, "/")
 }
+
+// bech32Namespace matches a realm deployed under a raw address rather than a
+// registered username.
+var bech32Namespace = regexp.MustCompile(`^g1[0-9a-z]{38}$`)
 
 type appsHubResponse struct {
 	Network string    `json:"network,omitempty"`
@@ -239,6 +281,28 @@ func (a *API) HandleAppsHub(w http.ResponseWriter, r *http.Request) {
 				if c := byPath[p]; c != nil {
 					c.Calls, c.Callers, c.CallsWindow = s.Calls, s.Callers, s.CallsWindow
 					c.LastCall, c.DeployedAt = s.LastCall, s.DeployedAt
+				}
+			}
+		}
+	}
+
+	// Layer 2b: a README, for the realms that carry one and no doc comment.
+	//
+	// Worth its own pass because on mainnet it is the difference between a
+	// described grid and a mostly blank one: most realms have no package
+	// comment, and several of the busiest ship a README that opens with exactly
+	// the sentence a card wants.
+	if network != "" {
+		want := []string{}
+		for p, c := range byPath {
+			if c.Description == "" {
+				want = append(want, p)
+			}
+		}
+		if readmes, err := a.db.PackageReadmes(network, want); err == nil {
+			for p, lead := range readmes {
+				if c := byPath[p]; c != nil && c.Description == "" {
+					c.Description, c.DescriptionFrom = firstSentence(lead), fromReadme
 				}
 			}
 		}
