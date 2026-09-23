@@ -325,6 +325,22 @@ html.embed .pagenav { display: none; }
     /* The state tree. Monospace throughout: these are values a developer will
        compare, copy and paste, and a proportional font makes two addresses that
        differ in one character look identical. */
+    /* Where a realm's bytes are, above the tree that spells them out. */
+    .state-sizemap { margin: 10px 0 14px; }
+    .state-sizebar { display: flex; height: 16px; border-radius: 3px; overflow: hidden; background: var(--bg2, rgba(127,127,127,.1)); }
+    .state-seg { background: var(--accent, #2aa198); min-width: 2px; }
+    .state-seg + .state-seg { border-left: 1px solid var(--bg, #002b36); }
+    .state-seg-rest { background: var(--fg2, #657b83); }
+    .state-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 6px; font-size: 11.5px; }
+    .state-legend-item { display: inline-flex; gap: 5px; align-items: baseline; }
+    .state-legend-name { color: var(--fg); font-family: var(--mono, monospace); }
+    .state-legend-size { color: var(--fg2); }
+    /* An absent or empty value is not a value: it should recede, not read as
+       content the way "len 0" did. */
+    .state-dim { color: var(--fg2); opacity: .7; }
+    .state-func { color: var(--accent, #2aa198); text-decoration: none; }
+    .state-func:hover { text-decoration: underline; }
+    .state-meta { margin-left: auto; padding-left: 12px; flex: none; display: inline-flex; gap: 8px; }
     /* Code search results. One hit is a path, a file and the matched line;
        the line is the part people scan, so it gets the monospace and the
        highlight and everything else stays quiet. */
@@ -350,7 +366,7 @@ html.embed .pagenav { display: none; }
        allowed to wrap and to take the remaining width. */
     .state-value { color: var(--blue, #268bd2); white-space: pre-wrap; word-break: break-word; min-width: 0; }
     .state-ref { color: var(--fg2); font-size: 11.5px; font-style: italic; }
-    .state-size { color: var(--fg2); font-size: 11px; margin-left: auto; padding-left: 12px; flex: none; }
+    .state-size { color: var(--fg2); font-size: 11px; }
 
 .tab-content { display: none; }
 .tab-content.active { display: block; }
@@ -13910,11 +13926,11 @@ function loadRealmState(path, detail, gen, full) {
     }
     if (gen !== _detailGen) return;
     into.textContent = '';
-    renderRealmState(into, d, () => loadRealmState(path, detail, gen, true));
+    renderRealmState(into, d, () => loadRealmState(path, detail, gen, true), path);
   })();
 }
 
-function renderRealmState(into, d, onLoadFull) {
+function renderRealmState(into, d, onLoadFull, path) {
   const all = d.nodes || [];
   // A type declaration is API, not state, the same way a function is: the
   // decoder already drops functions for that reason, and types belong with
@@ -13964,10 +13980,22 @@ function renderRealmState(into, d, onLoadFull) {
     return;
   }
 
+  // Where the bytes are, before the tree that spells them out.
+  //
+  // A realm's storage bill is one number on the storage tab and says nothing
+  // about which variable is responsible. This is that answer: one bar per
+  // top-level variable, widths proportional to the bytes its subtree holds, so
+  // the expensive part of a realm is visible rather than computed by reading.
+  const sized = nodes
+    .map(n => ({ name: n.name, bytes: subtreeBytes(n) }))
+    .filter(x => x.bytes > 0)
+    .sort((a, b) => b.bytes - a.bytes);
+  if (sized.length) into.appendChild(stateSizeMap(sized));
+
   const tree = el('div', { className: 'state-tree' });
   // Depth 1 open, deeper closed. Opening everything on a realm with a few
   // hundred entries paints a wall; opening nothing hides the answer.
-  nodes.forEach(n => tree.appendChild(stateRow(n, 0)));
+  nodes.forEach(n => tree.appendChild(stateRow(n, 0, path)));
   into.appendChild(tree);
 
   if (types.length) {
@@ -13984,7 +14012,7 @@ function renderRealmState(into, d, onLoadFull) {
         tw.textContent = showing ? '\u25b8' : '\u25be';
       },
     }, tw, el('span', {}, fmtNum(types.length) + ' type declarations'));
-    types.forEach(n => body.appendChild(stateRow(n, 0)));
+    types.forEach(n => body.appendChild(stateRow(n, 0, path)));
     wrap.appendChild(head);
     wrap.appendChild(body);
     into.appendChild(wrap);
@@ -13997,7 +14025,7 @@ function renderRealmState(into, d, onLoadFull) {
 // attacker-controlled: the variable names, the type names and the values are
 // all chosen by whoever deployed the realm, so this is the most hostile input
 // the app renders. No innerHTML here, ever (AGENTS.md).
-function stateRow(n, depth) {
+function stateRow(n, depth, path) {
   const kids = n.children || [];
   const isBranch = kids.length > 0;
   const open = depth < 1;
@@ -14006,6 +14034,8 @@ function stateRow(n, depth) {
   row.style.paddingLeft = (depth * 14) + 'px';
 
   const head = el('div', { className: 'state-head' });
+  head.title = stateTooltip(n);
+
   if (isBranch) {
     const tw = el('span', { className: 'state-twisty' }, open ? '▾' : '▸');
     head.appendChild(tw);
@@ -14022,32 +14052,157 @@ function stateRow(n, depth) {
   if (n.name) head.appendChild(el('span', { className: 'state-name' }, n.name));
   if (n.type) head.appendChild(el('span', { className: 'state-type' }, n.type));
 
-  // A ref is a branch the read did not follow. Showing its ObjectID is the
-  // difference between "nothing here" and "here, and here is its key".
-  if (n.kind === 'ref' && n.object_id) {
-    head.appendChild(el('span', { className: 'state-ref', title: 'a stored object this read did not follow' },
-      'ref ' + n.object_id));
-  } else if (n.kind === 'cycle') {
-    head.appendChild(el('span', { className: 'state-ref', title: 'this object refers back to one above it' }, 'cycle'));
-  } else if (n.value !== undefined && n.value !== '') {
-    head.appendChild(el('span', { className: 'state-value' }, n.value));
-  } else if (n.kind === 'nil') {
-    head.appendChild(el('span', { className: 'state-value' }, 'nil'));
-  }
+  const val = stateValueEl(n, path);
+  if (val) head.appendChild(val);
 
+  // Size and the revision counter sit right-aligned, quietly: they are what
+  // you scan a column of, not what you read a row for.
+  const meta = el('span', { className: 'state-meta' });
   if (n.size) {
-    head.appendChild(el('span', { className: 'state-size', title: 'bytes this object occupies on chain' },
-      fmtNum(n.size) + 'B'));
+    meta.appendChild(el('span', {
+      className: 'state-size',
+      title: fmtBytes(n.size) + ' on chain, which is what the storage deposit was charged against',
+    }, shortBytes(n.size)));
   }
+  if (meta.childNodes.length) head.appendChild(meta);
   row.appendChild(head);
 
   const body = el('div');
   if (!open) body.style.display = 'none';
   if (isBranch) {
-    kids.forEach(k => body.appendChild(stateRow(k, depth + 1)));
+    kids.forEach(k => body.appendChild(stateRow(k, depth + 1, path)));
     row.appendChild(body);
   }
   return row;
+}
+
+// subtreeBytes totals the on-chain size of a node and everything under it.
+//
+// Sizes are per stored object, and one variable is usually many objects, so
+// the top-level number alone would under-report every container on the page.
+// An object reached twice is counted twice: this is a "what is big here"
+// picture, not an accounting of unique bytes, and de-duplicating would need
+// the whole graph rather than the tree the reader is looking at.
+function subtreeBytes(n) {
+  let total = n.size || 0;
+  (n.children || []).forEach(c => { total += subtreeBytes(c); });
+  return total;
+}
+
+// stateSizeMap draws one proportional bar per top-level variable.
+function stateSizeMap(sized) {
+  const total = sized.reduce((a, x) => a + x.bytes, 0);
+  const wrap = el('div', { className: 'state-sizemap' });
+  const bar = el('div', { className: 'state-sizebar' });
+  // Anything under a pixel of width is unreadable and unclickable, so the
+  // tail is pooled into one segment rather than drawn as slivers that cannot
+  // be hovered.
+  const shown = [];
+  let rest = 0;
+  sized.forEach(x => { if (x.bytes / total >= 0.02) shown.push(x); else rest += x.bytes; });
+  if (rest > 0) shown.push({ name: shown.length ? 'everything else' : sized[0].name, bytes: rest, rest: true });
+
+  shown.forEach((x, i) => {
+    const seg = el('div', {
+      className: 'state-seg' + (x.rest ? ' state-seg-rest' : ''),
+      title: x.name + ' — ' + fmtBytes(x.bytes) + ' (' + Math.round(x.bytes / total * 100) + '% of this realm\u2019s state)',
+    });
+    seg.style.width = (x.bytes / total * 100) + '%';
+    seg.style.opacity = String(1 - (i / Math.max(shown.length, 8)) * 0.55);
+    bar.appendChild(seg);
+  });
+  wrap.appendChild(bar);
+
+  const legend = el('div', { className: 'state-legend' });
+  shown.slice(0, 6).forEach(x => {
+    legend.appendChild(el('span', { className: 'state-legend-item' },
+      el('span', { className: 'state-legend-name' }, x.name),
+      el('span', { className: 'state-legend-size' }, shortBytes(x.bytes))));
+  });
+  wrap.appendChild(legend);
+  return wrap;
+}
+
+// stateValueEl renders the right-hand side of a row, linking what can be
+// linked.
+//
+// Three things in realm state are addresses of something else on this site and
+// were previously dead text: a g1 address, a gno.land package path, and a
+// stored function's declaration. Making them navigable is most of what turns
+// a state dump into an explorer.
+function stateValueEl(n, path) {
+  // A stored function carries its own declaration site on the wire, so it can
+  // point at the exact line rather than at the file.
+  if (n.kind === 'func') {
+    const label = n.value || 'func';
+    if (n.file) {
+      const href = '/realm/' + String(path || '').replace('gno.land/', '') +
+        '?tab=source&file=' + encodeURIComponent(n.file) + (n.line ? '&line=' + n.line : '');
+      return el('a', {
+        className: 'state-value state-func', href,
+        onclick: (e) => { e.preventDefault(); navigate(href); },
+      }, label + '()');
+    }
+    return el('span', { className: 'state-value state-dim' }, label + '()');
+  }
+
+  if (n.kind === 'ref' && n.object_id) {
+    return el('span', { className: 'state-ref' }, 'ref ' + n.object_id);
+  }
+  if (n.kind === 'cycle') {
+    return el('span', { className: 'state-ref' }, 'cycle');
+  }
+  if (n.kind === 'nil') {
+    return el('span', { className: 'state-dim' }, 'nil');
+  }
+
+  const v = n.value;
+  if (v === undefined || v === '') {
+    // An empty string is a value, and rendering nothing for it reads as a
+    // missing row rather than as "".
+    return n.kind === 'primitive' ? el('span', { className: 'state-dim' }, '""') : null;
+  }
+
+  // A container's own value is its length. "len 0" is a fact about an empty
+  // collection and reads better as the word: a reader scanning for what a
+  // realm holds wants "empty" to disappear, not to be counted.
+  const lenMatch = /^len (\d+)$/.exec(v);
+  if (lenMatch) {
+    return Number(lenMatch[1]) === 0
+      ? el('span', { className: 'state-dim' }, 'empty')
+      : el('span', { className: 'state-value' }, lenMatch[1] + ' item' + (lenMatch[1] === '1' ? '' : 's'));
+  }
+  const entriesMatch = /^0 entries/.test(v);
+  if (entriesMatch) {
+    return el('span', { className: 'state-dim' }, v.replace(/^0 entries/, 'empty'));
+  }
+
+  if (/^g1[a-z0-9]{38}$/.test(v)) return addrLink(v);
+  if (/^gno\.land\/[rp]\//.test(v)) return realmPathEl(v);
+
+  return el('span', { className: 'state-value' }, v);
+}
+
+// stateTooltip is everything the chain knows about one value, for the hover.
+//
+// ⚠️ `rev` is deliberately not called a time. ModTime is the owning realm's
+// own logical counter at the moment the object was last written, not a clock:
+// it orders changes within one realm and cannot be turned into a date, an age
+// or a number of updates. Labelling it "last modified" would invent a fact.
+function stateTooltip(n) {
+  const lines = [];
+  if (n.name) lines.push(n.name);
+  if (n.type) lines.push('type: ' + n.type + (n.type_id && n.type_id !== n.type ? '  (' + n.type_id + ')' : ''));
+  lines.push('kind: ' + n.kind);
+  if (n.value && n.kind === 'primitive') lines.push('value: ' + n.value);
+  if (n.object_id) lines.push('object: ' + n.object_id);
+  if (n.owner_id) lines.push('owned by: ' + n.owner_id);
+  if (n.size) lines.push('size: ' + fmtBytes(n.size));
+  if (n.refs) lines.push('referenced by: ' + fmtNum(n.refs));
+  if (n.rev) lines.push('last written at realm revision ' + fmtNum(n.rev) + ' (a per-realm counter, not a time)');
+  if (n.hash) lines.push('hash: ' + n.hash);
+  if (n.file) lines.push('declared in ' + n.file + (n.line ? ':' + n.line : ''));
+  return lines.join('\n');
 }
 
 // Loaded on demand rather than with the page: see tabLoaders. _defiGen is the
