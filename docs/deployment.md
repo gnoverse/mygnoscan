@@ -273,3 +273,18 @@ The frontend learns whether the feature is on from a flag injected into the
 document at serve time, not from `/api/version`: the first listing row is drawn
 before that request comes back, and a page that grows a column afterwards is
 worse than either outcome on its own.
+
+### Link previews
+
+With a capture service configured, a `/realm/<path>` URL is also the **one
+route that gets its own document**: the head carries `og:title`,
+`og:description`, `og:url` and an `og:image` pointing at that realm's `og` rung,
+so a link pasted into Slack, Discord or X previews as a picture of the realm.
+
+Everything else still gets the single precomputed, pre-gzipped document, byte
+for byte, and a test holds that line. The exception exists because a crawler
+does not run the SPA, and the SPA is where every other answer lives.
+
+It costs a per-path ETag and a BestSpeed gzip **on that branch only**. Without
+`-gnoshot` the text half is still served and the card is downgraded to a plain
+`summary`, rather than advertising an image that is not there.

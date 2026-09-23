@@ -91,6 +91,13 @@ func Handler(opts Options) (http.HandlerFunc, error) {
 	// milliseconds of CPU per request to do it.
 	indexGzip := gzipBytes(index)
 
+	// Split once, so a per-path document is two appends rather than a search
+	// through 450 KB on every crawler hit.
+	headEnd := bytes.Index(index, []byte("</head>"))
+	if headEnd < 0 {
+		return nil, fmt.Errorf("no </head> in index.html")
+	}
+
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			if f, err := sub.Open(r.URL.Path[1:]); err == nil {
@@ -99,6 +106,18 @@ func Handler(opts Options) (http.HandlerFunc, error) {
 				return
 			}
 		}
+		// A realm gets its own document, and only a realm. Every other route
+		// takes the precomputed one below, byte for byte as before.
+		//
+		// The cost is real and bounded to this branch: a per-path ETag and a
+		// BestSpeed gzip per request, instead of one of each for the life of
+		// the process. It buys the only thing a crawler can act on, since it
+		// does not run the SPA and the SPA is where every other answer lives.
+		if pkgPath := realmPathFromURL(r.URL.Path); pkgPath != "" {
+			serveRealmDocument(w, r, index, headEnd, etag, pkgPath, opts.Shots)
+			return
+		}
+
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("ETag", etag)
 		w.Header().Set("Cache-Control", "no-cache")
@@ -118,6 +137,63 @@ func Handler(opts Options) (http.HandlerFunc, error) {
 		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 		w.Write(body)
 	}, nil
+}
+
+// serveRealmDocument writes index.html with a realm's link-preview block spliced
+// into its head.
+//
+// The ETag is derived from the base one plus the injected block, so it moves
+// when the build moves *and* when the realm being described changes, and two
+// realms never share a tag.
+func serveRealmDocument(w http.ResponseWriter, r *http.Request, index []byte, headEnd int,
+	baseETag, pkgPath string, withImage bool,
+) {
+	tags := ogTags(requestOrigin(r), pkgPath, networkParam(r), withImage)
+
+	sum := sha256.Sum256(append([]byte(baseETag), tags...))
+	etag := `"` + base64.RawURLEncoding.EncodeToString(sum[:16]) + `"`
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Vary", "Accept-Encoding")
+	if matchesETag(r.Header.Get("If-None-Match"), etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+
+	body := make([]byte, 0, len(index)+len(tags))
+	body = append(body, index[:headEnd]...)
+	body = append(body, tags...)
+	body = append(body, index[headEnd:]...)
+
+	// BestSpeed, not BestCompression: this body is built per request, so the
+	// seconds the startup pass can afford are milliseconds a reader waits.
+	if acceptsGzip(r) {
+		if gz := gzipBytesFast(body); gz != nil {
+			w.Header().Set("Content-Encoding", "gzip")
+			body = gz
+		}
+	}
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.Write(body)
+}
+
+// gzipBytesFast is gzipBytes at the other end of the ratio/latency trade, for
+// a body that is compressed once per request rather than once per process.
+func gzipBytesFast(b []byte) []byte {
+	var buf bytes.Buffer
+	zw, err := gzip.NewWriterLevel(&buf, gzip.BestSpeed)
+	if err != nil {
+		return nil
+	}
+	if _, err := zw.Write(b); err != nil {
+		return nil
+	}
+	if err := zw.Close(); err != nil {
+		return nil
+	}
+	return buf.Bytes()
 }
 
 // gzipBytes compresses at the best available ratio, or returns nil if it
