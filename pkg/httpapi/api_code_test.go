@@ -64,6 +64,19 @@ func TestHandleCodeSearch(t *testing.T) {
 			query: "network=alpha&q=", status: 200,
 			wantPaths: nil,
 		},
+		{
+			// The default. getNetwork() returns "all" until a reader picks
+			// one, so this is what a shared /developer/search link runs, and
+			// it used to match nothing at all.
+			name:  "no network searches every configured one",
+			query: "q=IterateByOffset", status: 200,
+			wantPaths: []string{"gno.land/p/nt/avl/v0", "gno.land/r/other/thing"},
+		},
+		{
+			name:  "all is the same as naming no network",
+			query: "network=all&q=IterateByOffset", status: 200,
+			wantPaths: []string{"gno.land/p/nt/avl/v0", "gno.land/r/other/thing"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -75,9 +88,19 @@ func TestHandleCodeSearch(t *testing.T) {
 			if len(got.Hits) != len(tt.wantPaths) {
 				t.Fatalf("hits = %d %+v, want %d", len(got.Hits), got.Hits, len(tt.wantPaths))
 			}
-			for i, want := range tt.wantPaths {
-				if got.Hits[i].Path != want {
-					t.Errorf("hit[%d] = %q, want %q", i, got.Hits[i].Path, want)
+			// Compared as a set: hits come back by FTS rank, and two networks
+			// scoring the same term is a tie the engine is free to break
+			// either way.
+			seen := map[string]bool{}
+			for _, h := range got.Hits {
+				seen[h.Path] = true
+				if h.Network == "" {
+					t.Errorf("hit %q carries no network, so nothing can link it to a chain", h.Path)
+				}
+			}
+			for _, want := range tt.wantPaths {
+				if !seen[want] {
+					t.Errorf("missing %q; got %+v", want, got.Hits)
 				}
 			}
 		})
