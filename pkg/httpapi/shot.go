@@ -204,3 +204,62 @@ func defaultShotNetwork(a *API) string {
 	}
 	return ""
 }
+
+// HandleShotSite proxies a screenshot of a page that is not on a chain.
+//
+// GET /api/shot/site?url=&size=og|hero|thumb&dpr=1|2
+//
+// Most of what is built on gno.land is not a realm, so most of it cannot be
+// photographed through gnoweb. The community's own list names those projects
+// and, after `make awesome`, where each one lives; this is how the app hub puts
+// a picture on them.
+//
+// The gate is the whole design. An unbounded ?url= on a capture service is an
+// open proxy and a way to spend someone else's CPU on headless Chrome, so a URL
+// is accepted only if it appears **verbatim** in the vendored snapshot: not a
+// host match, the exact string a human merged. gnoshot has its own host
+// allowlist behind this one and refuses anything not on it, which is the second
+// gate and the one that survives a bug in the first.
+func (a *API) HandleShotSite(w http.ResponseWriter, r *http.Request) {
+	if !a.ShotsEnabled() {
+		http.Error(w, "screenshots are not configured", http.StatusNotFound)
+		return
+	}
+	aw := a.registry.Awesome
+	if aw == nil {
+		http.Error(w, "no site list", http.StatusNotFound)
+		return
+	}
+	q := r.URL.Query()
+	site := q.Get("url")
+	if !aw.AllowsSite(site) {
+		// Deliberately the same answer as an unknown route: this endpoint has
+		// nothing to say about URLs it does not serve, and enumerating what it
+		// would accept is not its job.
+		http.Error(w, "not a listed site", http.StatusBadRequest)
+		return
+	}
+	size := q.Get("size")
+	if size == "" {
+		size = "thumb"
+	}
+	if !shotSizes[size] {
+		http.Error(w, "unknown size", http.StatusBadRequest)
+		return
+	}
+	dpr := q.Get("dpr")
+	if dpr != "1" && dpr != "2" {
+		dpr = "2"
+	}
+
+	up := url.Values{}
+	up.Set("url", site)
+	// Never `page`, which would serve the full-height master: several of these
+	// sites are eight thousand pixels tall and the master is close to a
+	// megabyte. The rung is derived from that master by gnoshot, cropped to the
+	// top, which is the part of a landing page that identifies it.
+	up.Set("mode", "render")
+	up.Set("size", size)
+	up.Set("dpr", dpr)
+	a.proxyShot(w, r, "/shot?"+up.Encode())
+}

@@ -2,6 +2,7 @@ package registry
 
 import (
 	"fmt"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -46,7 +47,38 @@ type AwesomeEntry struct {
 	// the realm itself, and attributing it to `r/gnoland/blog` would file the
 	// Gno debugger under the blog. Those are deliberately left pathless.
 	Path string `json:"path,omitempty"`
+	// Site is a page you can open and use: the entry's own URL when that is an
+	// app rather than a repository, or the homepage the project's GitHub repo
+	// declares. Verified to answer at generation time, because a card with a
+	// picture of a 404 is worse than a card with no picture.
+	//
+	// This is what the explorer photographs. A realm is photographed from its
+	// Path instead, through the chain's own gnoweb.
+	Site string `json:"site,omitempty"`
+	// SiteFrom records where Site came from, so a reader can tell a link the
+	// community wrote from one this repo went and looked up.
+	SiteFrom string `json:"site_from,omitempty"`
 }
+
+// Site provenance.
+const (
+	// SiteListed means the community list itself points at the app.
+	SiteListed = "listed"
+	// SiteRepoHomepage means the list points at a repository and the
+	// repository declares this homepage. That is the project's own assertion
+	// about where its app lives, which is why it is worth following; it is
+	// recorded separately because it is not what the list said.
+	SiteRepoHomepage = "repo-homepage"
+)
+
+// IsApp reports whether this entry is something you can open and look at.
+//
+// The whole point of the distinction: a language server, a JSON-RPC client
+// library and a conference talk are all genuinely part of this ecosystem and
+// none of them has a screenshot. Putting them in a grid of pictures produces a
+// grid of grey rectangles, which reads as a broken page rather than as a list
+// of libraries.
+func (e AwesomeEntry) IsApp() bool { return e.Site != "" || e.Path != "" }
 
 // AwesomeSection is one `##` heading and its bullets.
 type AwesomeSection struct {
@@ -95,6 +127,112 @@ func (a *Awesome) Paths() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// awesomeAppSections are the sections whose entries can be apps at all.
+//
+// A section-level rule rather than a per-entry guess, because the community
+// already sorted their own list and disagreeing with them entry by entry is how
+// a "Tutorials" link ends up in an app grid. Everything outside these is a
+// repository, a document, a talk or a social account, and the page says how
+// many there are rather than rendering them.
+var awesomeAppSections = map[string]bool{
+	"apps":           true,
+	"community-apps": true,
+	"tools":          true,
+}
+
+// IsAwesomeAppSection reports whether a section can hold apps. Exported for the
+// generator, which has to know before it goes looking for one.
+func IsAwesomeAppSection(slug string) bool { return awesomeAppSections[slug] }
+
+// Apps returns every entry worth a picture, in list order.
+func (a *Awesome) Apps() []AwesomeEntry {
+	out := []AwesomeEntry{}
+	for _, s := range a.Sections {
+		if !awesomeAppSections[s.Slug] || s.Archived {
+			continue
+		}
+		for _, e := range s.Entries {
+			if e.IsApp() {
+				out = append(out, e)
+			}
+		}
+	}
+	return out
+}
+
+// AwesomeGroup is a section reduced to its name and how much of it the app grid
+// does not show.
+type AwesomeGroup struct {
+	Title string `json:"title"`
+	Slug  string `json:"slug"`
+	Count int    `json:"count"`
+}
+
+// Others counts what is on the list and is not an app, by section.
+//
+// Counted and named rather than rendered. An SDK, a language server and a
+// conference talk have no screenshot, and a grid of pictures with grey holes in
+// it reads as a broken page rather than as a list of libraries. Saying "39 more
+// entries: SDKs, docs, talks" and linking to the list is the honest version of
+// the same information, and it is one line instead of six screens.
+func (a *Awesome) Others() []AwesomeGroup {
+	out := []AwesomeGroup{}
+	for _, s := range a.Sections {
+		n := 0
+		for _, e := range s.Entries {
+			if !awesomeAppSections[s.Slug] || s.Archived || !e.IsApp() {
+				n++
+			}
+		}
+		if n > 0 {
+			out = append(out, AwesomeGroup{Title: s.Title, Slug: s.Slug, Count: n})
+		}
+	}
+	return out
+}
+
+// SiteHosts is every host the explorer may ask for a screenshot of.
+//
+// This is the allowlist, and it is derived rather than written down: the set of
+// hosts is exactly the set the vendored list names, so it cannot drift from
+// what the page actually renders, and an arbitrary ?url= is refused because it
+// is not in a file somebody committed.
+func (a *Awesome) SiteHosts() []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, e := range a.Apps() {
+		if e.Site == "" {
+			continue
+		}
+		u, err := url.Parse(e.Site)
+		if err != nil {
+			continue
+		}
+		h := strings.ToLower(u.Hostname())
+		if h != "" && !seen[h] {
+			seen[h] = true
+			out = append(out, h)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// AllowsSite reports whether a URL is one this explorer offers a picture of.
+//
+// Exact string match against the vendored list, not a host match: the host set
+// is what gnoshot is configured with, and this is the tighter gate in front of
+// it. A caller may ask for a screenshot of a page the community vouched for,
+// and for nothing else on that host.
+func (a *Awesome) AllowsSite(raw string) bool {
+	for _, e := range a.Apps() {
+		if e.Site != "" && e.Site == raw {
+			return true
+		}
+	}
+	return false
 }
 
 // awesomeArchived names the sections whose entries are explicitly no longer
@@ -160,6 +298,18 @@ func validateAwesome(a *Awesome) error {
 			}
 			if e.Path != "" && !realmPath.MatchString(e.Path) {
 				return fmt.Errorf("awesome.json: %s has path %q, which is not a gno.land path", e.Name, e.Path)
+			}
+			if e.Site != "" {
+				u, err := url.Parse(e.Site)
+				if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Hostname() == "" {
+					return fmt.Errorf("awesome.json: %s has site %q, which is not an http url", e.Name, e.Site)
+				}
+				// The explorer offers a screenshot of every site in here, so an
+				// entry naming one without saying where it came from is an
+				// unattributed claim that this project lives at that address.
+				if e.SiteFrom != SiteListed && e.SiteFrom != SiteRepoHomepage {
+					return fmt.Errorf("awesome.json: %s has site_from %q", e.Name, e.SiteFrom)
+				}
 			}
 			if e.Path != "" && strings.Contains(e.Path, ":") {
 				// Belt and braces: the parser already refuses these, and the

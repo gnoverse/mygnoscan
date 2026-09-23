@@ -89,6 +89,13 @@ is missing is a pull request there, and `/apps?view=ecosystem` exists partly to
 make that ask specific: it ranks this directory's entries that the list does not
 name, with the bullet line ready to paste.
 
+`make awesome` does more than copy the list. For every entry in an app section
+it resolves the page you would actually open, following a repository's declared
+homepage when the list links a repository, and it **drops anything that does not
+answer 200 with HTML**. That check is what keeps a confident screenshot of a
+dead host out of the grid. It also prints the host list gnoshot needs on its
+`-allow-site` flag, because that is configuration on another box.
+
 A snapshot rather than a live fetch, for the same reason everything else here is
 embedded: a page that read GitHub on every load would be down when GitHub is and
 different for two readers a minute apart. The cost is staleness, so the file

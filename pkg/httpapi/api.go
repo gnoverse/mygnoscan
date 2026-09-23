@@ -924,6 +924,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/contracts/edges", a.HandleContractsEdges)
 	mux.HandleFunc("GET /api/shot", a.HandleShot)
 	mux.HandleFunc("GET /api/shot/meta", a.HandleShotMeta)
+	mux.HandleFunc("GET /api/shot/site", a.HandleShotSite)
 	mux.HandleFunc("GET /api/inert/queue", a.HandleInertQueue)
 	mux.HandleFunc("GET /api/inert/history", a.HandleInertHistory)
 	mux.HandleFunc("GET /api/inert/package/{path...}", a.HandleInertPackage)

@@ -515,27 +515,19 @@ html:not(.has-shots) .shot-cell { display: none; }
 .app-launch { white-space: nowrap; }
 .dim { color: var(--fg2); }
 @media (max-width: 720px) { .app-grid { grid-template-columns: 1fr; } }
-/* The community list. Denser than an app card and with no picture, because
-   most of these are not realms and there is nothing to screenshot: a VS Code
-   extension has no rendered page. */
-.eco-sec { margin-top: 22px; }
-.eco-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); margin-top: 6px; }
-.eco-item { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
-            padding: 9px 11px; display: flex; flex-direction: column; gap: 4px; }
-.eco-item:hover { border-color: var(--fg2); }
-.eco-name { font-size: 12.5px; font-weight: bold; }
-.eco-desc { color: var(--fg2); font-size: 11.5px; line-height: 1.45; white-space: normal; word-break: normal; }
+/* The stand-in when a site has no picture: the project's initial on a colour
+   derived from its name. Same box as the screenshot it replaces, so one missing
+   capture never reflows the grid around it. */
+.eco-initial { display: flex; align-items: center; justify-content: center; }
+.eco-initial span { font-size: 34px; font-weight: bold; color: rgba(255,255,255,.72);
+                    letter-spacing: .02em; }
 .eco-meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; margin-top: auto; padding-top: 2px; }
-/* Retired entries stay legible but never compete with a live one for a
-   scanning reader's eye. */
-.eco-off { opacity: 0.6; }
-.eco-off:hover { opacity: 1; }
 .eco-bullet { font-size: 10.5px; color: var(--fg2); white-space: normal; word-break: break-word; display: block; max-width: 520px; }
 .contrib { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); margin: 10px 0 4px; }
 .contrib-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 11px 13px; }
 .contrib-card h4 { margin: 0 0 5px; font-size: 12.5px; }
 .contrib-card p { margin: 0 0 7px; color: var(--fg2); font-size: 11.5px; line-height: 1.5; }
-@media (max-width: 720px) { .eco-grid, .contrib { grid-template-columns: 1fr; } }
+@media (max-width: 720px) { .contrib { grid-template-columns: 1fr; } }
 .skeleton-line { height: 16px; margin-bottom: 12px; }
 .skeleton-line:nth-child(1) { width: 80%; }
 .skeleton-line:nth-child(2) { width: 60%; }
@@ -7994,34 +7986,149 @@ function awesomeBullet(app) {
   return '- [' + app.name + '](' + url + ') - ' + one;
 }
 
+// siteShotEl is shotEl's counterpart for a page that is not on a chain.
+//
+// Same shape, different endpoint and a different gate: a realm is addressed by
+// its path and photographed through gnoweb, while a site is addressed by the
+// URL a human merged into the vendored list and is refused if it is not in
+// there. Everything after that (lazy, 1x/2x, a tile on failure) is deliberately
+// identical, because a reader should not be able to tell which half of the grid
+// they are looking at.
+function siteShotURL(site, size, dpr) {
+  const q = new URLSearchParams({ url: site, size: size, dpr: String(dpr) });
+  return '/api/shot/site?' + q.toString();
+}
+
+function siteShotEl(entry, cls) {
+  if (!window.FEATURES || !window.FEATURES.shots) return null;
+  const box = el('div', { className: 'shot ' + cls + ' loading' });
+  const img = el('img', {
+    // thumb, not og: the card is about 280px wide, and gnoshot's thumb at 2x is
+    // 320px and a few kilobytes where og is 1200px and twenty. Thirteen cards
+    // is the difference between 50 KB and 260 KB of pictures on a page that
+    // already waits on blocking CDN script.
+    src: siteShotURL(entry.site, 'thumb', 1),
+    srcset: siteShotURL(entry.site, 'thumb', 1) + ' 1x, ' + siteShotURL(entry.site, 'thumb', 2) + ' 2x',
+    sizes: '(max-width: 720px) 100vw, 320px',
+    width: '320', height: '180',
+    loading: 'lazy', decoding: 'async',
+    alt: 'what ' + entry.name + ' looks like',
+  });
+  img.addEventListener('load', () => box.classList.remove('loading'));
+  // A capture that has not been taken yet answers 202 with a placeholder rather
+  // than an error, so this is the real failure: no capture service, or a host
+  // gnoshot was never told about. Falling back to the initial keeps the card the
+  // same shape either way, which is what stops one missing picture from
+  // reflowing the whole grid.
+  img.addEventListener('error', () => box.replaceWith(ecoInitial(entry.name, cls)));
+  box.appendChild(img);
+  return box;
+}
+
+// ecoInitial is the stand-in when there is no picture: the project's initial on
+// a colour derived from its name. Deterministic, so a given project is always
+// the same colour, and it is a mark rather than a logo because we do not have
+// their logo and inventing one would be worse than not having it.
+function ecoInitial(name, cls) {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  const box = el('div', { className: 'shot ' + cls + ' eco-initial' },
+    el('span', {}, (name.trim()[0] || '?').toUpperCase()));
+  box.style.background = 'linear-gradient(135deg, hsl(' + (h % 360) + ' 42% 26%), hsl('
+    + ((h >> 3) % 360) + ' 38% 16%))';
+  return box;
+}
+
+// One app card. A picture, a name, a sentence, and the two places to go.
+function ecoCard(entry, stat, network, describedPath) {
+  const card = el('div', { className: 'app-card' });
+
+  // A realm is photographed by path through gnoweb, an off-chain app by URL.
+  // The realm route is preferred where both exist: it is the live chain page
+  // rather than a marketing site, which is what a reader on an explorer came
+  // for.
+  const shot = entry.path
+    ? shotEl(entry.path, { size: 'thumb', cls: 'app-shot', network: network })
+    : siteShotEl(entry, 'app-shot');
+  card.appendChild(shot || ecoInitial(entry.name, 'app-shot'));
+
+  const body = el('div', { className: 'app-card-body' });
+  const head = el('div', { className: 'app-card-head' });
+  head.appendChild(el('span', { className: 'app-name' }, entry.name));
+  if (entry.path) head.appendChild(el('span', { className: 'app-cat' }, 'on chain'));
+  body.appendChild(head);
+  if (entry.description) body.appendChild(el('div', { className: 'app-desc' }, entry.description));
+
+  const meta = el('div', { className: 'app-stats' });
+  if (entry.path && network && stat && stat.deployed) {
+    meta.appendChild(el('b', {}, fmtNum(stat.calls_window)));
+    meta.append(' calls · ');
+    meta.appendChild(el('b', {}, fmtNum(stat.callers)));
+    meta.append(' people');
+  } else if (entry.path && network) {
+    meta.appendChild(el('span', { className: 'dim' }, 'not deployed on ' + network));
+  } else if (entry.site) {
+    // Where the address came from, because the two are not the same claim: one
+    // is what the community wrote down, the other is what we went and asked the
+    // project's own repository.
+    const host = entry.site.replace(/^https?:\/\//, '').replace(/\/$/, '');
+    meta.appendChild(el('span', {
+      className: 'dim',
+      title: entry.site_from === 'repo-homepage'
+        ? 'the list links the repository; this is the homepage that repository declares'
+        : 'the address the community list points at',
+    }, host.length > 34 ? host.slice(0, 33) + '…' : host));
+  }
+  body.appendChild(meta);
+
+  const actions = el('div', { className: 'app-actions' });
+  const open = entry.site || (entry.path ? 'https://gno.land/' + entry.path.replace(/^gno\.land\//, '') : entry.url);
+  if (open) {
+    actions.appendChild(el('a', {
+      href: open, target: '_blank', rel: 'noopener noreferrer', className: 'app-launch',
+    }, 'open ↗'));
+  }
+  const realm = entry.path || describedPath;
+  if (realm) {
+    actions.appendChild(link('realm',
+      () => navigate('/realm/' + realm.replace('gno.land/', '') + netSuffix())));
+  }
+  if (entry.url && entry.url !== open) {
+    actions.appendChild(el('a', {
+      href: entry.url, target: '_blank', rel: 'noopener noreferrer',
+    }, 'source ↗'));
+  }
+  body.appendChild(actions);
+
+  card.appendChild(body);
+  return card;
+}
+
 function renderEcosystem(container, data) {
   container.textContent = '';
-  const sections = data.sections || [];
+  const apps = data.apps || [];
   const stats = data.stats || {};
   const network = data.network || '';
+  const described = data.directory_by_name || {};
 
   const intro = el('div', { className: 'section-sub' });
-  intro.append('the community’s own list of what is being built on gno.land, kept as a '
-    + 'markdown file in ');
+  intro.append('what is built on gno.land and is not a realm: wallets, explorers, a DEX, '
+    + 'games, a playground. curated by the community in ');
   intro.appendChild(extLink('gnoverse/awesome-gno', data.source || AWESOME_REPO));
-  intro.append('. it holds what a chain index cannot see: wallets, editors, a language '
-    + 'server, SDKs, workshops. none of those is a realm, so none of them can ever appear '
-    + 'in the directory beside it.');
+  intro.append(', and photographed here. none of these can ever appear in the directory '
+    + 'beside it, because none of them is on a chain.');
   container.appendChild(intro);
 
-  // A snapshot pretending to be live is the one way this section could mislead.
-  // The date and the commit are printed for that reason, and the commit links
-  // to what was read.
   const prov = el('div', { style: { color: 'var(--fg2)', fontSize: '11px', marginTop: '4px' } });
-  prov.append(fmtNum(data.entries || 0) + ' entries, read from ');
+  prov.append(fmtNum(apps.length) + ' apps out of ' + fmtNum(data.entries || 0) + ' entries, read from ');
   prov.appendChild(extLink((data.commit || '').slice(0, 7),
-    (data.source || AWESOME_REPO) + '/commit/' + (data.commit || ''), 'the commit this snapshot was taken from'));
+    (data.source || AWESOME_REPO) + '/commit/' + (data.commit || ''),
+    'the commit this snapshot was taken from'));
   prov.append(' on ' + (data.synced || '?'));
   if (typeof data.age_days === 'number' && data.age_days >= 0) {
     prov.append(data.age_days === 0 ? ' (today)' : ' (' + data.age_days + 'd ago)');
   }
-  prov.append('. a snapshot, not a live read: it is refreshed by a commit here, so it is '
-    + 'behind the list by however long that has been.');
+  prov.append('. a snapshot, not a live read.');
   container.appendChild(prov);
 
   const bar = el('div', { className: 'dash-bar' });
@@ -8036,90 +8143,52 @@ function renderEcosystem(container, data) {
   }
   container.appendChild(bar);
 
+  if (!apps.length) {
+    container.appendChild(el('p', { className: 'dim', style: { fontSize: '12px' } },
+      'no apps resolved from the community list'));
+  } else {
+    const grid = el('div', { className: 'app-grid' });
+    apps.forEach(e => grid.appendChild(ecoCard(e, stats[e.path], network, described[e.name])));
+    container.appendChild(grid);
+  }
+
+  container.appendChild(ecoOthers(data));
   container.appendChild(contributePanel({
     entries: data.entries,
     missing_from_awesome: (data.missing_from_awesome || []).length,
     missing_from_directory: (data.missing_from_directory || []).length,
   }));
-
-  // Archived last, whatever order the file had them in: the list itself says
-  // those entries are retired, and a reader scanning a grid has no other way to
-  // tell a live project from a testnet that stopped resolving in 2024.
-  const ordered = sections.slice().sort((a, b) => (a.archived ? 1 : 0) - (b.archived ? 1 : 0));
-  // Keyed by the list's own spelling, matched server-side: the overlap is
-  // found by normalising names, and a second normaliser written here would be
-  // a second one to keep in step with the first.
-  const described = data.directory_by_name || {};
-  for (const sec of ordered) {
-    container.appendChild(ecoSection(sec, stats, network, described));
-  }
-
   container.appendChild(ecoGaps(data, stats, network));
 }
 
-function ecoSection(sec, stats, network, described) {
-  const wrap = el('div', { className: 'section eco-sec' });
-  const head = el('div', { className: 'section-title' }, sec.title);
-  if (sec.archived) {
-    head.appendChild(el('span', {
-      className: 'app-cat', style: { marginLeft: '8px' },
-      title: 'the community list has retired these; kept because a reader looking for one should find out that it is gone',
-    }, 'archived'));
-  }
-  wrap.appendChild(head);
-  if (sec.note) wrap.appendChild(el('div', { className: 'section-sub' }, sec.note));
-
-  const grid = el('div', { className: 'eco-grid' });
-  for (const e of (sec.entries || [])) {
-    grid.appendChild(ecoItem(e, stats[e.path], network, sec.archived, (described || {})[e.name]));
-  }
-  wrap.appendChild(grid);
+// The rest of the list, counted and named rather than drawn.
+//
+// An SDK, a language server and a conference talk are all genuinely part of
+// this ecosystem and none of them has a screenshot. Rendering them beside the
+// apps was the previous version of this page and it buried fourteen pictures
+// under six screens of link list. Saying what is there and linking to the place
+// that is good at showing it is the honest version of the same information.
+function ecoOthers(data) {
+  const others = data.others || [];
+  if (!others.length) return el('span');
+  const total = others.reduce((n, g) => n + g.count, 0);
+  const wrap = el('div', { style: { marginTop: '18px', fontSize: '11.5px', color: 'var(--fg2)' } });
+  wrap.append(fmtNum(total) + ' more entries have nothing to photograph, and are counted '
+    + 'rather than drawn: ');
+  // Busiest first, and separated by a middle dot rather than a comma: three of
+  // these section titles contain commas of their own ("Tutorials, Presentations,
+  // Resources"), so a comma-joined list reads as three sections that do not
+  // exist. The count is printed rather than left in a tooltip for the same
+  // reason the page prints its snapshot date: a number a reader cannot see is a
+  // number they cannot weigh.
+  const ranked = others.slice().sort((a, b) => b.count - a.count);
+  ranked.forEach((g, i) => {
+    if (i) wrap.append(' · ');
+    wrap.append(g.title.toLowerCase() + ' ' + g.count);
+  });
+  wrap.append('. ');
+  wrap.appendChild(extLink('read them on awesome-gno ↗', data.readme || AWESOME_REPO));
   return wrap;
-}
-
-function ecoItem(e, stat, network, archived, describedPath) {
-  const item = el('div', { className: 'eco-item' + (archived ? ' eco-off' : '') });
-  const head = el('div', { className: 'eco-name' });
-  head.appendChild(e.url ? extLink(e.name, e.url) : el('span', {}, e.name));
-  item.appendChild(head);
-  if (e.description) item.appendChild(el('div', { className: 'eco-desc' }, e.description));
-
-  const meta = el('div', { className: 'eco-meta' });
-  // The links the community wrote into the sentence, lifted out of it. A
-  // `[realm](...)` link on an entry whose front end lives elsewhere is how
-  // Kourt is connected to a chain at all, so dropping them would sever exactly
-  // the entries this page most wants to join up.
-  for (const l of (e.links || [])) meta.appendChild(extLink(l.text + ' ↗', l.url));
-
-  // The join: an entry that names a realm gets this explorer's page for it, and
-  // the chain's own figures beside it. This is the whole reason the list is
-  // rendered here rather than linked to.
-  if (e.path) {
-    meta.appendChild(link('on chain · ' + e.path.replace(/^gno\.land\//, ''),
-      () => navigate('/realm/' + e.path.replace('gno.land/', '') + netSuffix())));
-    if (network && stat && stat.deployed) {
-      meta.appendChild(el('span', { className: 'dim' },
-        fmtNum(stat.calls_window) + ' calls · ' + fmtNum(stat.callers) + ' people'));
-    } else if (network) {
-      meta.appendChild(el('span', { className: 'dim' }, 'not deployed on ' + network));
-    }
-  }
-  // The loop closed: this project is one of the few the two lists agree on, and
-  // saying so is what stops the page reading as two directories printed one
-  // after the other. Only drawn when it adds a destination the entry did not
-  // already have: Gnoswap links to GitHub here and to a realm next door, which
-  // is the whole point, while Kourt already names its own realm above.
-  if (describedPath && describedPath !== e.path) {
-    meta.appendChild(link('described here \u00b7 ' + describedPath.replace(/^gno\.land\//, ''),
-      () => navigate('/realm/' + describedPath.replace('gno.land/', '') + netSuffix())));
-  } else if (describedPath) {
-    meta.appendChild(el('span', {
-      className: 'dim', title: 'this directory describes the same realm',
-    }, 'in this directory'));
-  }
-
-  if (meta.childNodes.length) item.appendChild(meta);
-  return item;
 }
 
 // The gap, both ways.
