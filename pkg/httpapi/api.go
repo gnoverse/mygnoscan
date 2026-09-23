@@ -957,6 +957,7 @@ func (a *API) RegisterRoutes(serveMux *http.ServeMux) {
 	mux.HandleFunc("GET /api/registry/apps", a.HandleApps)
 	mux.HandleFunc("GET /api/apps", a.HandleAppsHub)
 	mux.HandleFunc("GET /api/registry/awesome", a.HandleAwesome)
+	mux.HandleFunc("GET /api/glossary", a.HandleGlossary)
 	mux.HandleFunc("GET /api/accounts/rich", a.HandleRichList)
 	mux.HandleFunc("GET /api/accounts/population", a.HandleAccountPopulation)
 	mux.HandleFunc("GET /api/assets", a.HandleAssets)
