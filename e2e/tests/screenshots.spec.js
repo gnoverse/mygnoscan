@@ -44,13 +44,9 @@ const PAGES = [
   // regression a shot of the default view would never catch.
   ['contracts-active', '/contracts?view=bundled&edges=imports&metric=importers&flow=0&active=1&deps=1'],
   // The hub in all three of its shapes: no chain picked (descriptions only,
-  // no numbers), a chain picked (cards with usage, and the candidates queue
-  // under them), the dense table, and the community list with the cross-check
-  // under it.
+  // no numbers, off-chain apps only) and a chain picked (the ranked grid).
   ['apps', '/apps'],
   ['apps-network', '/apps?network=alpha'],
-  ['apps-table', '/apps?network=alpha&view=table'],
-  ['apps-ecosystem', '/apps?network=alpha&view=ecosystem'],
   ['transactions', '/txs'],
   ['blocks', '/blocks'],
   ['accounts', '/accounts'],

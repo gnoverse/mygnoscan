@@ -30,7 +30,7 @@ func seedDirectory(t *testing.T, db *store.DB) {
 	}
 	// One package with a symbol count, so the symbols sort has something to
 	// order by and the column has something to show.
-	if err := db.ReplaceSymbols("alpha", "gno.land/p/nt/ufmt/v0", "k", []store.SymbolRow{
+	if err := db.ReplaceSymbols("alpha", "gno.land/p/nt/ufmt/v0", "k", "", []store.SymbolRow{
 		{Kind: "func", Name: "Sprintf", Exported: true},
 		{Kind: "func", Name: "Println", Exported: true},
 		{Kind: "func", Name: "Errorf", Exported: true},
