@@ -377,6 +377,7 @@ same reason: 3 of 4 is a library being picked up, 3 of 300 is noise.
 | `GET /api/realms` | list realms. `limit`, `offset` |
 | `GET /api/packages/facets` | counts per kind and per namespace, for the current filter |
 | `GET /api/symbols/search` | find a declaration by name. `q`, `network`, `limit` |
+| `GET /api/users/search` | find a registered user by name or address prefix. `q`, `network`, `limit`. See Search below |
 | `GET /api/symbols/status` | what the symbol index covers |
 | `GET /api/packages` | list all packages, realms and pure packages. `limit`, `offset` |
 | `GET /api/realm/{path...}` | detail for one package: metadata, source files, imports, dependents, callers, MsgRun references. `recent_calls` and `msgrun_refs` are the 50 most recent of each, and carry `block_time` where the syncer knew it (omitted otherwise, so a consumer plotting them on a time axis can say how many it left out). `address` and `storage_deposit_address` are the two accounts the package owns, derived from its path (see below) |
@@ -1080,10 +1081,75 @@ Searches **package paths, names and creators only**. It does not search
 transaction hashes, block heights, or addresses — an address matches only when it
 happens to be a package creator.
 
+Realms come first and each kind is capped separately (ten apiece), rather than
+twenty rows ordered by deploy height. The search box draws realms and packages
+as two groups, and a flat limit let one namespace's realms fill it and leave the
+package group empty — which reads as "this namespace has no packages" rather
+than "you are looking at twenty realms".
+
 The UI covers the rest without asking the server: an address, a transaction hash
 or a block height is recognised by shape and offered as a direct destination
 above the package matches. A bare number is offered only when a network is
 selected, since a height identifies a different block on every chain.
+
+### User search
+
+```
+GET /api/users/search?q=<query>&network=<id>&limit=<n>
+```
+
+The chain's own name registry, `gno.land/r/sys/users`. Matches a name or an
+address prefix, ranked exact → prefix → substring, and a current name always
+outranks a previous one.
+
+A fourth endpoint rather than a group inside `/api/search`, for the same reason
+assets and symbols are their own: that response is an array of packages and
+every caller reads it as one. A user is not a package — 67 of mainnet's 78
+registrations on 2026-09-23 have never deployed anything, so folding them in
+would mean inventing a package row for each.
+
+Distinct from `/api/namespaces`, which answers a narrower question by a
+different method: that one resolves the handful of names that *do* own packages,
+one `vm/qeval` per name against the live chain, for the ownership labels the
+frontend paints on a path. This is the registry itself, replayed from events
+into a table.
+
+```json
+{
+  "network": "gnoland1",
+  "users": [
+    {
+      "network": "gnoland1", "name": "moul",
+      "address": "g1manfred47kzduec920z88wfr64ylksmdcedlf5",
+      "tx_hash": "...", "block_height": 0, "block_time": "...",
+      "packages": 41, "label": "@moul"
+    }
+  ]
+}
+```
+
+`alias: true` marks a previous name of the address; `deleted: true` a
+tombstone. Both stay in the answer on purpose. `r/sys/users` never frees a
+name — an old name from a rename stays resolvable, and a deleted user's name
+stays taken — so dropping either row would let the search imply the name is
+available. `packages` is how many packages the address has deployed on the same
+chain, and `label` the curated gloss from `pkg/registry/data/addresses.json`
+when there is one.
+
+**Where the rows come from.** `r/sys/users` emits `Registered {name, address}`,
+`Updated {alias, address}` and `Deleted {address}`, and the syncer replays all
+three. It is a pass of its own rather than a hook on the call walk for two
+reasons: a third of mainnet's registry was written at genesis, at height 0,
+which a cursor-driven walk above the last stored height never revisits; and the
+filtered query is 63 transactions against the walk's hundreds of thousands.
+Measured 2026-09-23, those 63 carry 78 `Registered` events and no `Updated` or
+`Deleted`, which is exactly the count the realm prints for itself.
+
+The registry also feeds `/api/labels`, where it overwrites the deploy-dominance
+guess for the same address. Both are `derived` so precedence cannot settle it,
+and it is not a tie: one is what the chain records, the other is this repo
+noticing that an address deployed most of one namespace. Four of twelve mainnet
+namespaces resolve to a different account than their deploys suggest.
 
 ### Faceting the directory
 

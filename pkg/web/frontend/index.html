@@ -1799,6 +1799,48 @@ function fmtExpiry(unix) {
   return d.getTime() < Date.now() ? iso + ' (expired)' : iso;
 }
 
+// allowPathEl renders one AllowPaths entry, the grant a session actually got.
+//
+// The entry is "<route>/<type>[:<path>]" and only vm/exec carries a path, so
+// the realm is linked and everything else stays literal. "*" is the one entry
+// that grants everything, and it must not render as a realm name nobody can
+// click: it is the most consequential value the field takes.
+//
+// The chain prefix-matches these, so an entry naming a realm also authorises
+// every sub-realm under it. That is said once, in the section note, rather than
+// on every row.
+function allowPathEl(entry) {
+  const span = el('span');
+  if (entry === '*') {
+    span.appendChild(badge('reject', 'anything'));
+    return span;
+  }
+  const m = String(entry).match(/^vm\/exec:(.+)$/);
+  if (!m) {
+    // bank/send, vm/run and friends: no path to link, and the route is the
+    // whole grant.
+    return el('span', {}, entry);
+  }
+  span.appendChild(el('span', { className: 'block-ctx' }, 'call '));
+  span.appendChild(realmPathEl(m[1]));
+  return span;
+}
+
+// fmtSpend says how much of a session's cap is gone, and over what window.
+//
+// The window is the half that gets dropped, and dropping it inverts the
+// meaning: spend_period 0 is a cap for the session's entire lifetime, which is
+// stricter than a rolling one, so rendering both as a bare "x of y" makes the
+// tighter grant look like the looser one.
+function fmtSpend(s) {
+  if (!s.spend_limit) return 'unlimited';
+  const used = s.spend_used ? fmtBalanceStr(s.spend_used) : '0 GNOT';
+  const window = s.spend_period
+    ? 'per ' + fmtDuration(s.spend_period)
+    : 'lifetime';
+  return used + ' of ' + fmtBalanceStr(s.spend_limit) + ' (' + window + ')';
+}
+
 // Which field names the signer, per message type.
 //
 // Every type spells it differently, and the list is not stable: the inert
@@ -12749,11 +12791,88 @@ async function loadTxDetail(hash) {
   } catch (err) { container.textContent = ''; container.appendChild(el('p', { style: { color: 'var(--red)', padding: '20px' } }, 'Error: ' + err.message)); }
 }
 
+// renderSessions draws the delegated signing keys an account has granted.
+//
+// The account page is the only place this fact can appear. A session signs on
+// its master's behalf and the master stays the caller of every message, so the
+// transaction list below reads identically whether this account signed for
+// itself or handed a key to an agent. Six live keys on an account is the single
+// most load-bearing thing about it, and until this section existed no page said
+// so.
+//
+// Live chain state, not history: it says which grants exist right now, never
+// when they were made or what has been revoked. The indexer cannot answer the
+// second question yet (see pkg/httpapi/api_sessions.go).
+//
+// Draws nothing at all when the chain cannot answer. `supported` is the
+// difference between "this account delegates nothing" and "this chain has never
+// heard of sessions", and printing the first about the second would be stating
+// a fact we do not have.
+function renderSessions(container, sessions) {
+  if (!sessions || !sessions.supported) return;
+  const list = sessions.sessions || [];
+  if (!list.length) return;
+
+  container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } },
+    'sessions (' + list.length + ')'));
+  container.appendChild(el('div', { style: { color: 'var(--fg2)', fontSize: '12px', marginBottom: '8px' } },
+    'delegated signing keys. each signs on this account\'s behalf, and every message it sends still names this account as the caller, ' +
+    'so none of them appear as separate senders below. a realm in "may call" also covers every realm under it.'));
+
+  const tbl = el('table');
+  tbl.appendChild(el('thead', {}, el('tr', {},
+    el('th', {}, 'key'),
+    el('th', {}, 'may call'),
+    el('th', {}, 'spent'),
+    el('th', {}, 'expires'),
+    el('th', {}, 'signed'))));
+  const tbody = el('tbody');
+  for (const sn of list) {
+    const keyTd = el('td', {}, addrLinkFull(sn.address));
+    // An expired key is still returned by the chain and can no longer sign.
+    // Saying so beside the key, not only in the expiry column, is what keeps a
+    // scan down the first column honest.
+    if (sn.expires_at && sn.expires_at * 1000 < Date.now()) {
+      keyTd.append(' ');
+      keyTd.appendChild(badge('reject', 'expired'));
+    }
+
+    const scopeTd = el('td');
+    const paths = sn.allow_paths || [];
+    if (!paths.length) {
+      // An empty grant is not "unrestricted": the chain rejects an empty
+      // -allow-paths at create time, so this can only be a read we failed to
+      // decode, and guessing either way would be worse than saying so.
+      scopeTd.appendChild(el('span', { style: { color: 'var(--fg2)' } }, 'not stated'));
+    } else {
+      for (const [i, entry] of paths.entries()) {
+        if (i) scopeTd.appendChild(el('div'));
+        scopeTd.appendChild(allowPathEl(entry));
+      }
+    }
+
+    tbody.appendChild(el('tr', {},
+      keyTd,
+      scopeTd,
+      el('td', {}, fmtSpend(sn)),
+      el('td', { style: { fontSize: '12px' } }, sn.expires_at ? fmtExpiry(sn.expires_at) : 'never'),
+      // The sequence is how many transactions the key has actually signed, and
+      // it is the only usage figure that survives a call costing no gas.
+      el('td', {}, fmtNum(sn.sequence || 0))));
+  }
+  tbl.appendChild(tbody);
+  container.appendChild(tbl);
+}
+
 async function loadAddressDetail(addr) {
   const container = clear('address-detail-content');
   skeletonBlock(container);
   try {
-    await apiSWR(['address/' + addr, 'blocks?limit=50'], ([data, blocksData], swrMeta) => {
+    // Sessions are optional: a chain without the feature, or one whose RPC is
+    // unreachable, must cost this page nothing. The fallback is the same shape
+    // the endpoint returns, so the renderer has one case, not two.
+    const sessionsPath = { path: 'address/' + addr + '/sessions', fallback: { supported: false, sessions: [] } };
+    await apiSWR(['address/' + addr, 'blocks?limit=50', sessionsPath], ([data, blocksData, sessionsData], swrMeta) => {
       ++_detailGen;
       destroyDetailCharts();
       // Block time lookup
@@ -12817,6 +12936,13 @@ async function loadAddressDetail(addr) {
       if (data.balance) {
         statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'balance'), el('span', { className: 'value' }, fmtBalanceStr(data.balance))));
       }
+      // Only when there are some. A "sessions 0" tile on every one of the
+      // chain's accounts would spend a headline slot on a fact that is true of
+      // almost all of them.
+      const sessionCount = (sessionsData?.supported && (sessionsData.sessions || []).length) || 0;
+      if (sessionCount) {
+        statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'sessions'), el('span', { className: 'value' }, fmtNum(sessionCount))));
+      }
       container.appendChild(statsBar);
       // Analyse the page's rows.
       //
@@ -12876,6 +13002,10 @@ async function loadAddressDetail(addr) {
         extraStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'gas fees'), el('span', { className: 'value' }, fmtNum(Math.floor(totalGasFee / 1000000 * 100) / 100) + ' GNOT')));
       }
       if (hasExtra) container.appendChild(extraStats);
+      // Who else can sign for this account, before anything about what it did.
+      // The tables below are all activity; this is identity, and it changes how
+      // every row under it should be read.
+      renderSessions(container, sessionsData);
       // What this account does, over time, split by message kind.
       //
       // The three tables below rank *who* and *what*; none of them says when,
@@ -15922,22 +16052,57 @@ document.getElementById('search-input').addEventListener('input', function() {
 
   searchTimeout = setTimeout(async () => {
     try {
-      // Assets come from their own endpoint rather than being folded into
-      // /api/search: that one answers with packages, and a realm issuing six
-      // tokens collapses to one package row, which is the confusion the
-      // per-asset page exists to undo. Optional, so an old backend that has
-      // no such route still answers with packages.
-      // Symbols come from their own endpoint for the same reason assets do:
-      // /api/search answers with packages and every caller treats it as an
-      // array. Optional in the same way, so an older backend that has no such
-      // route still answers with packages.
-      const [data, assets, symbols] = await Promise.all([
+      // Four endpoints rather than one, because /api/search answers with a flat
+      // array of packages and every caller reads it as one. A user is not a
+      // package (67 of mainnet's 78 registrations have never deployed
+      // anything), and a realm issuing six tokens collapses to a single package
+      // row, which is the confusion the per-asset page exists to undo. Each of
+      // the three extras is optional, so an older backend that has none of
+      // those routes still answers with packages.
+      const [data, users, assets, symbols] = await Promise.all([
         api('search?q=' + encodeURIComponent(q)),
+        api('users/search?q=' + encodeURIComponent(q)).catch(() => null),
         api('assets/search?q=' + encodeURIComponent(q)).catch(() => null),
         api('symbols/search?q=' + encodeURIComponent(q) + '&limit=8').catch(() => null),
       ]);
       if (gen !== _searchGen) return;
       loading.remove();
+
+      // The order of the groups below is deliberate, and is the answer to a
+      // real complaint: typing "moul" used to lead with the MOULTEST token.
+      // Users, then assets, then realms, then packages, then symbols. It runs
+      // from "who" through "what can I hold" and "what can I open" down to
+      // "what can I import", which is the order the questions are asked in.
+
+      // Users first. A short query is most often a name, and this is the only
+      // group whose answer is a person rather than a path.
+      const people = (users && users.users) || [];
+      if (people.length) {
+        results.appendChild(el('div', { className: 'search-section-label' }, 'users'));
+        for (const u of people) {
+          const bits = [];
+          // The curated label, only when it says something the name does not:
+          // for a namespace the two are usually the same word twice.
+          if (u.label && u.label.replace(/^@/, '') !== u.name) bits.push(u.label);
+          bits.push(shortAddr(u.address));
+          // The package count separates the project a reader meant from a
+          // namesake. Shown when there is one, left off when there is not,
+          // rather than printed as a zero: 67 of mainnet's 78 users have
+          // deployed nothing, and a column of "0 packages" says nothing.
+          if (u.packages) bits.push(u.packages + ' package' + (u.packages === 1 ? '' : 's'));
+          // An alias and a tombstone are both real answers and both have to say
+          // so. r/sys/users keeps an old name resolvable on purpose, so
+          // "this resolves, but not to what you think" is exactly what a reader
+          // searching a previous handle needs to be told.
+          if (u.alias) bits.push('previous name');
+          if (u.deleted) bits.push('deleted');
+          results.appendChild(searchResultRow('', 'user', '@' + u.name, bits.join(' · '),
+            () => {
+              results.classList.remove('open');
+              navigate('/address/' + u.address + netSuffix(u.network || getNetwork()));
+            }));
+        }
+      }
 
       const tokens = (assets && assets.assets) || [];
       if (tokens.length) {
@@ -15949,9 +16114,31 @@ document.getElementById('search-input').addEventListener('input', function() {
         }
       }
 
-      // Symbols before packages. Somebody typing a CamelCase identifier wants
-      // the declaration, not the four paths whose text happens to contain it,
-      // and a package match for a symbol query is the weaker answer of the two.
+      // Realms and packages are two groups, not one list with two badges. A
+      // realm is something a reader can open and use; a package is a library it
+      // imports. They arrived interleaved by deploy height, so the realm
+      // somebody typed the name of could sit below four of its own libraries.
+      // The server caps each kind separately (searchKindLimit) so neither can
+      // crowd the other out of the response.
+      const rows = data || [];
+      const realms = rows.filter(r => r.is_realm);
+      const pkgs = rows.filter(r => !r.is_realm);
+      const pkgRow = r => searchResultRow(r.is_realm ? 'realm' : 'pkg', r.is_realm ? 'realm' : 'package',
+        pathParts(r.path), 'by ' + shortAddr(r.creator) + (r.status === 'inert' ? ' · parked' : ''),
+        () => { results.classList.remove('open'); navigate('/realm/' + r.path.replace('gno.land/', '')); });
+      if (realms.length) {
+        results.appendChild(el('div', { className: 'search-section-label' }, 'realms'));
+        for (const r of realms) results.appendChild(pkgRow(r));
+      }
+      if (pkgs.length) {
+        results.appendChild(el('div', { className: 'search-section-label' }, 'packages'));
+        for (const r of pkgs) results.appendChild(pkgRow(r));
+      }
+
+      // Symbols last. A CamelCase identifier matches none of the four groups
+      // above, so that reader loses nothing by it sitting there, and it stops a
+      // query like "moul" answering with eight declarations before the
+      // namespace it named.
       const syms = (symbols && symbols.symbols) || [];
       if (syms.length) {
         results.appendChild(el('div', { className: 'search-section-label' }, 'symbols'));
@@ -15969,17 +16156,8 @@ document.getElementById('search-input').addEventListener('input', function() {
         }
       }
 
-      if (!data || !data.length) {
-        if (!direct.length && !tokens.length && !syms.length) {
-          results.appendChild(el('div', { style: { padding: '10px 12px' } }, 'no results'));
-        }
-        return;
-      }
-      results.appendChild(el('div', { className: 'search-section-label' }, 'packages'));
-      for (const r of data) {
-        results.appendChild(searchResultRow(r.is_realm ? 'realm' : 'pkg', r.is_realm ? 'realm' : 'package',
-          pathParts(r.path), 'by ' + shortAddr(r.creator) + (r.status === 'inert' ? ' · parked' : ''),
-          () => { results.classList.remove('open'); navigate('/realm/' + r.path.replace('gno.land/', '')); }));
+      if (!direct.length && !people.length && !tokens.length && !syms.length && !rows.length) {
+        results.appendChild(el('div', { style: { padding: '10px 12px' } }, 'no results'));
       }
     } catch (err) {
       if (gen !== _searchGen) return;

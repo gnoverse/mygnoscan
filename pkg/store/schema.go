@@ -885,6 +885,45 @@ func initSchema(db *sql.DB) error {
 			PRIMARY KEY (network, tx_hash, event_idx)
 		) WITHOUT ROWID;
 
+		-- The user registry, replayed from what gno.land/r/sys/users emits.
+		--
+		-- The registry is the chain's own answer to "who is this name", and it is
+		-- not derivable from anything else this index holds. Namespaces read off
+		-- package paths cover 11 of mainnet's 78 registrations, because a name
+		-- does not have to deploy anything; the curated label file is a human's
+		-- notes, not a registry; and r/sys/namereg/v0 renders only the names it
+		-- issued itself, missing every genesis and GovDAO-allocated one, moul
+		-- and onbloc among them.
+		--
+		-- The events are Registered {name, address}, Updated {alias, address}
+		-- and Deleted {address}. Measured against indexer.gno.land on
+		-- 2026-09-23: 63 transactions, 78 Registered, no Updated or Deleted, which
+		-- is exactly the count r/sys/users prints for itself.
+		--
+		-- Keyed on the name rather than the address, because one address can hold
+		-- several: Updated adds an alias and the old name stays resolvable
+		-- (r/sys/users keeps it deliberately, as anti-rename-squat policy). alias
+		-- marks the rows that are not the address's current name, so a search can
+		-- rank them below it without losing them.
+		--
+		-- deleted is a tombstone, not a DELETE: r/sys/users never frees a name,
+		-- and a row that vanished would let the search claim the name is free.
+		CREATE TABLE IF NOT EXISTS users (
+			network      TEXT NOT NULL,
+			name         TEXT NOT NULL,
+			address      TEXT NOT NULL,
+			tx_hash      TEXT NOT NULL DEFAULT '',
+			block_height INTEGER NOT NULL DEFAULT 0,
+			block_time   TEXT NOT NULL DEFAULT '',
+			alias        BOOLEAN NOT NULL DEFAULT 0,
+			deleted      BOOLEAN NOT NULL DEFAULT 0,
+			PRIMARY KEY (network, name)
+		) WITHOUT ROWID;
+
+		-- "Who is g1..." is the other direction, and the address page asks it on
+		-- every load.
+		CREATE INDEX IF NOT EXISTS idx_users_address ON users(network, address);
+
 		CREATE INDEX IF NOT EXISTS idx_token_transfers_token ON token_transfers(network, token, block_height DESC);
 		CREATE INDEX IF NOT EXISTS idx_token_transfers_from ON token_transfers(network, token, from_addr);
 		CREATE INDEX IF NOT EXISTS idx_token_transfers_to ON token_transfers(network, token, to_addr);

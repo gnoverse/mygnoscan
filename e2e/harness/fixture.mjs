@@ -214,6 +214,17 @@ export const FRESH_REALM_ADDRESS = 'g165ajlk4c06fxcp54fms89668s9h0dtjuz889zq';
 // The largest ugnot move in the tail, paid out of the realm's own account.
 export const FRESH_PAYOUT_UGNOT = 42000000000;
 
+// The user registry, as r/sys/users records it. Named so the search-box test can
+// assert the group without restating the strings.
+//
+// `hub` is deliberately the namespace of HUB and LIBRARY, so one query returns a
+// user, a realm and a package at once -- which is the ordering the search box is
+// asserted on. `hubbot` is the namesake that has deployed nothing, and `hubgone`
+// is a tombstone: r/sys/users never frees a name.
+export const USER_NAME = 'hub';
+export const USER_BOT = 'hubbot';
+export const USER_GONE = 'hubgone';
+
 // How long seed() waits for the binary to finish building the schema.
 // Generous on purpose: it is a bound on a broken run, not a budget for a
 // healthy one, which clears it in well under a second.
@@ -225,7 +236,7 @@ const SCHEMA_TIMEOUT_MS = 30_000;
 const SEEDED_TABLES = [
   'bank_sends', 'calls', 'dependencies', 'msg_runs', 'package_files',
   'packages', 'package_submissions', 'storage_events', 'token_transfers',
-  'transactions',
+  'transactions', 'users',
 ];
 
 // waitForSchema blocks until the binary has created the tables seed() writes.
@@ -295,6 +306,9 @@ export function seed(dbPath) {
     const tx = db.prepare(`INSERT OR REPLACE INTO transactions
       (network, tx_hash, block_height, block_time, gas_used, gas_wanted, gas_fee, success)
       VALUES (?, ?, ?, ?, ?, ?, ?, 1)`);
+    const user = db.prepare(`INSERT OR REPLACE INTO users
+      (network, name, address, tx_hash, block_height, block_time, alias, deleted)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
 
     const addPackage = (network, path, creator, height, isRealm, txHash, body) => {
       const name = path.split('/').pop();
@@ -308,6 +322,13 @@ export function seed(dbPath) {
 
     let height = 100;
     addPackage('alpha', HUB, HUB_CREATOR, height++, true);
+
+    // The registry. Height 0 for the first, because that is where a third of
+    // mainnet's registrations live and a genesis row is the one a
+    // cursor-driven sync would miss.
+    user.run('alpha', USER_NAME, HUB_CREATOR, 'tx-alpha-users', 0, blockTime(1), 0, 0);
+    user.run('alpha', USER_BOT, 'g1hubbot0000000000000000000000000000', 'tx-alpha-users', 1, blockTime(1), 0, 0);
+    user.run('alpha', USER_GONE, 'g1hubgone000000000000000000000000000', 'tx-alpha-users', 2, blockTime(2), 0, 1);
 
     // A package big enough to need navigating.
     //
