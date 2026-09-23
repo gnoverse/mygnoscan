@@ -12,12 +12,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/moul/mygnoscan/pkg/registry"
@@ -60,6 +62,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// The list links repositories; the page wants apps. This is the step that
+	// turns one into the other, and it is the slow half of the run because it
+	// talks to every project's own server.
+	resolveSites(context.Background(), sections)
 
 	snap := registry.Awesome{
 		Source:   fmt.Sprintf("https://github.com/%s/%s", owner, repo),
@@ -92,8 +98,20 @@ func run() error {
 	if err := os.WriteFile(*out, body, 0o644); err != nil {
 		return err
 	}
-	fmt.Printf("awesome-sync: wrote %s: %d sections, %d entries, %d realms, from %s\n",
-		*out, len(snap.Sections), snap.Count(), len(snap.Paths()), sha[:12])
+	apps := snap.Apps()
+	hosts := snap.SiteHosts()
+	fmt.Printf("awesome-sync: wrote %s: %d sections, %d entries, %d apps (%d realms, %d sites), from %s\n",
+		*out, len(snap.Sections), snap.Count(), len(apps), len(snap.Paths()), len(hosts), sha[:12])
+	// Printed rather than left to be worked out, because it is configuration on
+	// another box: gnoshot refuses a host it was not told about, and the
+	// failure is a card with no picture and nothing in any log here.
+	//
+	// This is the community list's hosts only. apps.json can name a website
+	// too, so the authoritative set is `/api/apps` plus that file; run this,
+	// then check nothing in apps.json points at a host missing from the line
+	// below.
+	fmt.Printf("\ngnoshot needs these hosts on its -allow-site flag:\n\n  -allow-site '%s'\n",
+		strings.Join(hosts, ","))
 	return nil
 }
 

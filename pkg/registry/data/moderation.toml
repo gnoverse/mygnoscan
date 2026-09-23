@@ -1,0 +1,32 @@
+# What /apps will not show, and why.
+#
+# The directory discovers itself: every realm the chain knows is ranked by what
+# people actually do with it, and the busiest become cards without anyone
+# writing a line. That is the right default, because a curated list is always
+# behind the chain and staring at an empty JSON file is not a workflow.
+#
+# It is also the reason this file has to exist. Usage is evidence of activity,
+# not of worth: a realm can be busy because it is a load test, because one
+# script calls it in a loop, or because somebody is farming an airdrop. And an
+# explorer that renders a scam as a card, with a screenshot and a call count,
+# is lending it the same credibility it lends everything else.
+#
+# So this is the one lever that removes rather than adds. Keep it small and keep
+# every entry explained: an unexplained skip is indistinguishable from
+# censorship, and six months from now nobody will remember which it was.
+#
+# A skip hides a realm from /apps. It does not hide it from the chain, from
+# /realms, from search, or from anything else in this explorer. There is no
+# mechanism here for making a transaction harder to find, and there should not
+# be.
+
+# [[skip]]
+# path = "gno.land/r/example/spam"
+# why  = "38,000 calls from two addresses in one afternoon, no other caller ever"
+
+# [[skip]]
+# path = "gno.land/r/example/scam"
+# why  = "impersonates r/gnoland/blog, links a wallet drainer from its render"
+
+# Nothing is skipped today. The list is empty on purpose rather than seeded with
+# guesses: the first entry should be one somebody can point at.
