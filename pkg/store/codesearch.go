@@ -224,7 +224,16 @@ func (d *DB) BackfillCodeIndex() (int, error) {
 	if err := d.db.QueryRow(`SELECT count(*) FROM package_files`).Scan(&files); err != nil {
 		return 0, err
 	}
-	if indexed > 0 || files == 0 {
+	// The guard is "is the index complete", not "is it non-empty".
+	//
+	// `indexed > 0` was wrong and shipped: the syncer starts at the same
+	// moment and indexes its first few files through UpsertPackageFile, so by
+	// the time this goroutine ran the index held 7 rows out of ~2,000 and the
+	// backfill concluded it had nothing to do. Silently. The live instance
+	// then served 0 hits of 7 indexed files, which is the same
+	// looks-fine-returns-nothing failure this function exists to prevent,
+	// reached by a different route.
+	if files == 0 || indexed >= files {
 		return 0, nil
 	}
 
@@ -278,19 +287,50 @@ func (d *DB) backfillBatchOnce(offset, limit int) (int, error) {
 	}
 	defer tx.Rollback() //nolint:errcheck
 
-	res, err := tx.Exec(`
-		INSERT INTO code_index (network, package_path, file_name, body)
+	// Each batch is delete-then-insert for exactly the rows it copies, the
+	// same shape UpsertPackageFile uses. That makes the backfill idempotent
+	// and safe to run against a partly-filled index: re-running cannot
+	// duplicate a row, and a file the syncer indexed a moment ago is replaced
+	// rather than doubled. A plain INSERT would have produced two hits for
+	// every file that arrived during the backfill.
+	rows, err := tx.Query(`
 		SELECT network, package_path, file_name, body FROM package_files
 		ORDER BY network, package_path, file_name
 		LIMIT ? OFFSET ?`, limit, offset)
 	if err != nil {
 		return 0, err
 	}
-	n, _ := res.RowsAffected()
+	type file struct{ net, path, name, body string }
+	var batch []file
+	for rows.Next() {
+		var f file
+		if err := rows.Scan(&f.net, &f.path, &f.name, &f.body); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		batch = append(batch, f)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	for _, f := range batch {
+		if _, err := tx.Exec(
+			`DELETE FROM code_index WHERE network = ? AND package_path = ? AND file_name = ?`,
+			f.net, f.path, f.name); err != nil {
+			return 0, err
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO code_index (network, package_path, file_name, body) VALUES (?, ?, ?, ?)`,
+			f.net, f.path, f.name, f.body); err != nil {
+			return 0, err
+		}
+	}
+	n := len(batch)
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
-	return int(n), nil
+	return n, nil
 }
 
 func isBusy(err error) bool {
