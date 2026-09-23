@@ -413,7 +413,14 @@ func collapseSuperseded(order []*AppCard) []AppCard {
 			replaced[old] = c
 		}
 	}
-	out := make([]AppCard, 0, len(order))
+	// Two passes, and the second one is why.
+	//
+	// Folding while building the output loses every fold whose newer card came
+	// first in the ranking: that card has already been copied into the result
+	// by value, so appending to the pointer's Previous changes nothing anybody
+	// will see. On mainnet that silently dropped the bubblerumble and gnomi/pad
+	// chains while Kourt v3, which happened to rank *below* its predecessor,
+	// worked. A bug that depends on sort order is one that looks fixed.
 	for _, c := range order {
 		if newer := replaced[c.Path]; newer != nil && c.Path != "" {
 			// Carried without its own Previous, so a three-generation chain
@@ -421,6 +428,11 @@ func collapseSuperseded(order []*AppCard) []AppCard {
 			old := *c
 			old.Previous = nil
 			newer.Previous = append(newer.Previous, old)
+		}
+	}
+	out := make([]AppCard, 0, len(order))
+	for _, c := range order {
+		if newer := replaced[c.Path]; newer != nil && c.Path != "" {
 			continue
 		}
 		out = append(out, *c)
