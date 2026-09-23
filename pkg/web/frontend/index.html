@@ -1798,6 +1798,60 @@ function fmtExpiry(unix) {
   return d.getTime() < Date.now() ? iso + ' (expired)' : iso;
 }
 
+// allowPathEl renders one AllowPaths entry, the grant a session actually got.
+//
+// The entry is "<route>/<type>[:<path>]" and only vm/exec carries a path, so
+// the realm is linked and everything else stays literal. "*" is the one entry
+// that grants everything, and it must not render as a realm name nobody can
+// click: it is the most consequential value the field takes.
+//
+// The chain prefix-matches these, so an entry naming a realm also authorises
+// every sub-realm under it. That is said once, in the section note, rather than
+// on every row.
+function allowPathEl(entry) {
+  const span = el('span');
+  if (entry === '*') {
+    span.appendChild(badge('reject', 'anything'));
+    return span;
+  }
+  const m = String(entry).match(/^vm\/exec:(.+)$/);
+  if (!m) {
+    // bank/send, vm/run and friends: no path to link, and the route is the
+    // whole grant.
+    return el('span', {}, entry);
+  }
+  span.appendChild(el('span', { className: 'block-ctx' }, 'call '));
+  span.appendChild(realmPathEl(m[1]));
+  return span;
+}
+
+// fmtGnot renders a session spend figure without rounding it away.
+//
+// Not fmtBalanceStr, which floors to two decimal places of GNOT: a session's
+// spend runs from a few thousand ugnot upwards, so it renders "9350ugnot" as
+// "0 GNOT" and reports a key that has been spending as one that never has.
+// Three significant figures keep the small end readable and leave a whole
+// number of GNOT written as a whole number.
+function fmtGnot(coin) {
+  const m = String(coin || '').match(/^(\d+)ugnot$/);
+  if (!m) return fmtCoins(coin);
+  const gnot = Number(m[1]) / 1000000;
+  return (Number.isInteger(gnot) ? fmtNum(gnot) : Number(gnot.toPrecision(3))) + ' GNOT';
+}
+
+// fmtSpend says how much of a session's cap is gone, and over what window.
+//
+// The window is the half that gets dropped, and dropping it inverts the
+// meaning: spend_period 0 is a cap for the session's entire lifetime, which is
+// stricter than a rolling one, so rendering both as a bare "x of y" makes the
+// tighter grant look like the looser one.
+function fmtSpend(s) {
+  if (!s.spend_limit) return 'unlimited';
+  const used = s.spend_used ? fmtGnot(s.spend_used) : '0 GNOT';
+  const period = s.spend_period ? 'per ' + fmtDuration(s.spend_period) : 'lifetime';
+  return used + ' of ' + fmtGnot(s.spend_limit) + ' (' + period + ')';
+}
+
 // Which field names the signer, per message type.
 //
 // Every type spells it differently, and the list is not stable: the inert
@@ -12985,11 +13039,87 @@ async function loadTxDetail(hash) {
   } catch (err) { container.textContent = ''; container.appendChild(el('p', { style: { color: 'var(--red)', padding: '20px' } }, 'Error: ' + err.message)); }
 }
 
+// renderSessions draws the delegated signing keys an account has granted.
+//
+// The account page is the only place this fact can appear. A session signs on
+// its master's behalf and the master stays the caller of every message, so the
+// transaction list below reads identically whether this account signed for
+// itself or handed a key to an agent. Six live keys on an account is the single
+// most load-bearing thing about it, and until this section existed no page said
+// so.
+//
+// Live chain state, not history: it says which grants exist right now, never
+// when they were made or what has been revoked. The indexer cannot answer the
+// second question yet (see pkg/httpapi/api_sessions.go).
+//
+// Draws nothing at all when the chain cannot answer. `supported` is the
+// difference between "this account delegates nothing" and "this chain has never
+// heard of sessions", and printing the first about the second would be stating
+// a fact we do not have.
+function renderSessions(container, sessions) {
+  if (!sessions || !sessions.supported) return;
+  const list = sessions.sessions || [];
+  if (!list.length) return;
+
+  container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } },
+    'sessions (' + list.length + ')'));
+  container.appendChild(el('div', { style: { color: 'var(--fg2)', fontSize: '12px', marginBottom: '8px' } },
+    'delegated signing keys. each signs on this account\'s behalf, and every message it sends still names this account as the caller, ' +
+    'so none of them appear as separate senders below. a realm in "may call" also covers every realm under it.'));
+
+  const tbl = el('table');
+  tbl.appendChild(el('thead', {}, el('tr', {},
+    el('th', {}, 'key'),
+    el('th', {}, 'may call'),
+    el('th', {}, 'spent'),
+    el('th', {}, 'expires'),
+    el('th', {}, 'signed'))));
+  const tbody = el('tbody');
+  for (const sn of list) {
+    const keyTd = el('td', {}, addrLinkFull(sn.address));
+    // An expired key is still returned by the chain and can no longer sign.
+    // Saying so beside the key, not only in the expiry column, is what keeps a
+    // scan down the first column honest.
+    if (sn.expires_at && sn.expires_at * 1000 < Date.now()) {
+      keyTd.append(' ');
+      keyTd.appendChild(badge('reject', 'expired'));
+    }
+
+    const scopeTd = el('td');
+    const paths = sn.allow_paths || [];
+    if (!paths.length) {
+      // An empty grant is not "unrestricted": the chain rejects an empty
+      // -allow-paths at create time, so this can only be a read we failed to
+      // decode, and guessing either way would be worse than saying so.
+      scopeTd.appendChild(el('span', { style: { color: 'var(--fg2)' } }, 'not stated'));
+    } else {
+      // One line per entry rather than a comma list: bubblerumble's grant has
+      // five, and run together they read as one long path nobody parses.
+      for (const entry of paths) scopeTd.appendChild(el('div', {}, allowPathEl(entry)));
+    }
+
+    tbody.appendChild(el('tr', {},
+      keyTd,
+      scopeTd,
+      el('td', {}, fmtSpend(sn)),
+      el('td', { style: { fontSize: '12px' } }, sn.expires_at ? fmtExpiry(sn.expires_at) : 'never'),
+      // The sequence is how many transactions the key has actually signed, and
+      // it is the only usage figure that survives a call costing no gas.
+      el('td', {}, fmtNum(sn.sequence || 0))));
+  }
+  tbl.appendChild(tbody);
+  container.appendChild(tbl);
+}
+
 async function loadAddressDetail(addr) {
   const container = clear('address-detail-content');
   skeletonBlock(container);
   try {
-    await apiSWR(['address/' + addr, 'blocks?limit=50'], ([data, blocksData], swrMeta) => {
+    // Sessions are optional: a chain without the feature, or one whose RPC is
+    // unreachable, must cost this page nothing. The fallback is the same shape
+    // the endpoint returns, so the renderer has one case, not two.
+    const sessionsPath = { path: 'address/' + addr + '/sessions', fallback: { supported: false, sessions: [] } };
+    await apiSWR(['address/' + addr, 'blocks?limit=50', sessionsPath], ([data, blocksData, sessionsData], swrMeta) => {
       ++_detailGen;
       destroyDetailCharts();
       // Block time lookup
@@ -13053,6 +13183,13 @@ async function loadAddressDetail(addr) {
       if (data.balance) {
         statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'balance'), el('span', { className: 'value' }, fmtBalanceStr(data.balance))));
       }
+      // Only when there are some. A "sessions 0" tile on every one of the
+      // chain's accounts would spend a headline slot on a fact that is true of
+      // almost all of them.
+      const sessionCount = (sessionsData?.supported && (sessionsData.sessions || []).length) || 0;
+      if (sessionCount) {
+        statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'sessions'), el('span', { className: 'value' }, fmtNum(sessionCount))));
+      }
       container.appendChild(statsBar);
       // Analyse the page's rows.
       //
@@ -13112,6 +13249,10 @@ async function loadAddressDetail(addr) {
         extraStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'gas fees'), el('span', { className: 'value' }, fmtNum(Math.floor(totalGasFee / 1000000 * 100) / 100) + ' GNOT')));
       }
       if (hasExtra) container.appendChild(extraStats);
+      // Who else can sign for this account, before anything about what it did.
+      // The tables below are all activity; this is identity, and it changes how
+      // every row under it should be read.
+      renderSessions(container, sessionsData);
       // What this account does, over time, split by message kind.
       //
       // The three tables below rank *who* and *what*; none of them says when,
