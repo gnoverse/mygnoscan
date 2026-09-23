@@ -1,6 +1,9 @@
 package httpapi
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -180,8 +183,8 @@ func TestHandleAwesomeWithoutANetworkStillServesTheList(t *testing.T) {
 	var resp awesomeResponse
 	getJSON(t, api.HandleAwesome, "/api/registry/awesome", &resp)
 
-	if len(resp.Sections) == 0 {
-		t.Fatal("no sections")
+	if len(resp.Apps) == 0 {
+		t.Fatal("no apps")
 	}
 	if resp.Network != "" || resp.Stats != nil {
 		t.Errorf("network = %q, stats = %v, want both absent", resp.Network, resp.Stats)
@@ -212,5 +215,86 @@ func TestAppsSummaryAgreesWithTheAwesomeEndpoint(t *testing.T) {
 	if apps.Awesome.MissingFromDirectory != len(awesome.MissingFromDirectory) {
 		t.Errorf("inbound: apps says %d, awesome says %d",
 			apps.Awesome.MissingFromDirectory, len(awesome.MissingFromDirectory))
+	}
+}
+
+// An app is exactly a thing with a page you can open, and the grid draws one
+// card per app. Anything in here without a destination is a card the frontend
+// cannot draw, and anything with a site but no provenance is an unattributed
+// claim that a project lives at an address.
+func TestAwesomeAppsAllHaveSomewhereToGo(t *testing.T) {
+	api, _ := newTestAPI(t)
+
+	var resp awesomeResponse
+	getJSON(t, api.HandleAwesome, "/api/registry/awesome", &resp)
+
+	if len(resp.Apps) < 8 {
+		t.Fatalf("got %d apps, which is too few to be the resolved list", len(resp.Apps))
+	}
+	for _, a := range resp.Apps {
+		if a.Site == "" && a.Path == "" {
+			t.Errorf("%s is listed as an app with neither a site nor a realm", a.Name)
+		}
+		if a.Site == "" {
+			continue
+		}
+		if !strings.HasPrefix(a.Site, "http://") && !strings.HasPrefix(a.Site, "https://") {
+			t.Errorf("%s has site %q", a.Name, a.Site)
+		}
+		switch a.SiteFrom {
+		case registry.SiteListed, registry.SiteRepoHomepage:
+		default:
+			t.Errorf("%s has site_from %q", a.Name, a.SiteFrom)
+		}
+	}
+	// The other half of the same statement: everything the grid does not draw
+	// is counted, so the page can say what it is not showing.
+	if len(resp.Others) == 0 {
+		t.Error("nothing reported as unphotographable, which cannot be true of an awesome list")
+	}
+}
+
+// The gate in front of the capture service. Exact strings, not hosts: a
+// host-level check would let any page on a listed app's domain through, and the
+// point of vendoring the list is that a human merged each of these.
+func TestShotSiteRefusesAnythingNotInTheList(t *testing.T) {
+	api, _ := newTestAPI(t)
+	api.SetShotUpstream("http://127.0.0.1:1")
+
+	var listed awesomeResponse
+	getJSON(t, api.HandleAwesome, "/api/registry/awesome", &listed)
+	var site string
+	for _, a := range listed.Apps {
+		if a.Site != "" {
+			site = a.Site
+			break
+		}
+	}
+	if site == "" {
+		t.Fatal("no site in the snapshot to test against")
+	}
+
+	for _, tt := range []struct {
+		name string
+		url  string
+		want int
+	}{
+		{"a listed site reaches the proxy", site, http.StatusServiceUnavailable},
+		{"another page on a listed host", site + "/something-else", http.StatusBadRequest},
+		{"an unlisted host", "https://evil.example/", http.StatusBadRequest},
+		{"a file url", "file:///etc/passwd", http.StatusBadRequest},
+		{"nothing at all", "", http.StatusBadRequest},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/api/shot/site?url="+url.QueryEscape(tt.url), nil)
+			w := httptest.NewRecorder()
+			api.HandleShotSite(w, r)
+			// The allowed one is answered 503 because the upstream in this test
+			// is a closed port: reaching the proxy at all is what is being
+			// asserted, and it is the only outcome the gate permits.
+			if w.Code != tt.want {
+				t.Errorf("got %d, want %d", w.Code, tt.want)
+			}
+		})
 	}
 }

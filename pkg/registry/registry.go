@@ -80,6 +80,13 @@ type App struct {
 	// a poster, or which generation a front-end currently serves. Those go
 	// stale silently, because nothing about the page says how old they are.
 	Checked string `json:"checked,omitempty"`
+	// Supersedes names an older generation this entry replaces.
+	//
+	// Two live deployments of the same idea is the normal state of a chain
+	// nobody can delete from, and showing both as peers is how a directory
+	// sends people to last year's version. Kourt is the worked example: v1 and
+	// v3 are both live, both busy, and only one is the one to open.
+	Supersedes []string `json:"supersedes,omitempty"`
 }
 
 // Registry is the parsed whole.
@@ -92,6 +99,9 @@ type Registry struct {
 	// somebody else's list, and the whole point is that the community edits it
 	// there rather than here. See awesome.go.
 	Awesome *Awesome `json:"awesome"`
+	// Moderation is the skip list: the one lever here that removes rather than
+	// adds. See moderation.go.
+	Moderation *Moderation `json:"moderation"`
 }
 
 var (
@@ -121,6 +131,9 @@ func Load() (*Registry, error) {
 		return nil, err
 	}
 	if reg.Awesome, err = loadAwesome(); err != nil {
+		return nil, err
+	}
+	if reg.Moderation, err = loadModeration(); err != nil {
 		return nil, err
 	}
 	return &reg, nil
@@ -262,6 +275,14 @@ func validateApps(apps []App) error {
 		}
 		if err := validateChecked("apps.json", a.Path, a.Checked); err != nil {
 			return err
+		}
+		for _, old := range a.Supersedes {
+			if !realmPath.MatchString(old) {
+				return fmt.Errorf("apps.json: %s supersedes %q, which is not a gno.land path", a.Path, old)
+			}
+			if old == a.Path {
+				return fmt.Errorf("apps.json: %s supersedes itself", a.Path)
+			}
 		}
 		seen[a.Path] = true
 	}

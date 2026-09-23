@@ -26,7 +26,11 @@
       "name": "Kourt v3",
       "category": "content",
       "description": "The second live generation of the same design, founded two way: a tenth of each payment burns and the rest is held as that court's reserve, which Redeem pays out against pro rata. Court coin is transferable here, and wrappable for a DEX. Deployed 2026-09-19; kourt.xyz still serves the v1 realm above.",
-      "checked": "2026-09-21"
+      "checked": "2026-09-21",
+      "supersedes": [
+        "gno.land/r/g1ecsuj0q572jr0dhu29q9njtnmw03hyu7tyyvv6/kourt"
+      ],
+      "url": "https://kourt.xyz"
     },
     {
       "path": "gno.land/r/gnoland/wugnot",
