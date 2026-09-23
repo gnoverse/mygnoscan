@@ -14072,7 +14072,72 @@ function defiTokensEl(d, tokens) {
       + d.token_ledger_from.slice(0, 10)
       + '. Anything received before then is not in it, so these are floors rather than balances.'));
   }
+  defiTokenFlowsEl(section, d, tokens);
   return section;
+}
+
+// defiTokenFlowsEl is the GRC20 counterpart of the native transfers table: the
+// legs the curves above are drawn from, so a reader who sees a step in a line
+// can find the transaction that made it.
+//
+// The positions table says what the realm holds and the charts say when it
+// moved; neither names a counterparty, which on a treasury is usually the
+// question after "is it growing".
+function defiTokenFlowsEl(section, d, tokens) {
+  const flows = d.token_flows || [];
+  if (!flows.length) return;
+  // Fungibility is a property of the position, not of the leg, and it decides
+  // whether an amount means anything. Same judgement the positions table makes,
+  // read from the same rows, so the two cannot disagree.
+  const meta = new Map(tokens.map(t => [t.token, t]));
+
+  section.appendChild(el('div', { className: 'section-title', style: { marginTop: '16px' } }, 'GRC20 transfers'));
+  const tbl = el('table', { id: 'defi-token-flows' });
+  tbl.appendChild(el('thead', {}, el('tr', {},
+    el('th', {}, 'tx'), el('th', {}, 'token'), el('th', {}, 'counterparty'),
+    el('th', {}, 'amount'), el('th', {}, 'block'))));
+  const body = el('tbody');
+  for (const f of flows) {
+    const t = meta.get(f.token);
+    const received = f.to === d.address;
+    // A mint carries an empty `from` and a burn an empty `to`. Rendering either
+    // as a blank address cell would read as a counterparty the indexer failed to
+    // report, when in fact there is none: the supply itself is the other end.
+    const other = received ? f.from : f.to;
+    const counterparty = other ? addrLink(other)
+      : el('span', { style: { color: 'var(--fg2)' },
+        title: received ? 'no sender: this token was minted' : 'no recipient: this token was burned' },
+        received ? 'mint' : 'burn');
+    body.appendChild(el('tr', {},
+      el('td', {}, txLink(f.tx_hash, f.block_height, d.network, { showBlock: false })),
+      el('td', {}, t ? link(t.display_symbol || t.symbol || t.token, () => navigate(assetPath(f.token)))
+        : link(f.token, () => navigate(assetPath(f.token)))),
+      el('td', { className: 'truncate' }, counterparty),
+      el('td', {}, t && !t.fungible
+        ? el('span', { style: { color: 'var(--fg2)' }, title: 'these transfers carry no amount, so a signed value does not apply. most likely an NFT collection' }, 'n/a')
+        : signedUnitsEl(received ? f.value : -f.value)),
+      el('td', {}, blockWithAge(f.block_height, f.block_time))));
+  }
+  tbl.appendChild(body);
+  section.appendChild(tbl);
+  // tokenFlowLimit in pkg/httpapi/defi.go caps this at one page across *every*
+  // token the realm holds, and there is no pager to walk past it. The positions
+  // above count the whole ledger, so the two disagreeing is the signal, and
+  // saying so is what stops a reader treating the newest page as the history.
+  const total = tokens.reduce((sum, t) => sum + (t.transfers || 0), 0);
+  if (total > flows.length) {
+    section.appendChild(el('div', { className: 'detail-chart-note' },
+      'showing the ' + fmtNum(flows.length) + ' most recent of ' + fmtNum(total)
+      + ', across every token above. The positions and the curves are computed over all of them.'));
+  }
+}
+
+// signedUnitsEl is signedGnotEl for a token amount: coloured by direction, and
+// carrying no denomination, because a GRC20 value is in the token's own units
+// and this page does not scale it by decimals anywhere else either.
+function signedUnitsEl(value) {
+  return el('span', { style: { color: value < 0 ? 'var(--red)' : 'var(--green)' } },
+    (value < 0 ? '-' : '+') + fmtTokenUnits(Math.abs(value)));
 }
 
 // signedGnot formats a signed ugnot amount for an axis tick.
