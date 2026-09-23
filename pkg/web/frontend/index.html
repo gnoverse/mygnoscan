@@ -7533,6 +7533,26 @@ const APP_WINDOWS = ['24h', '7d', '30d', '90d'];
 const APP_WINDOW_DEFAULT = '30d';
 const APPS_JSON_URL = 'https://github.com/gnoverse/mygnoscan/blob/main/pkg/registry/data/apps.json';
 
+// The chain to offer when none is picked. mainnet when it is configured,
+// because that is the one a visitor almost always means; otherwise the first
+// configured chain, so a deployment without mainnet still gets the offer.
+function defaultNetworkName() {
+  const names = (_networks || []).map(n => (typeof n === 'string' ? n : n.id || n.name)).filter(Boolean);
+  if (!names.length) return '';
+  return names.includes('mainnet') ? 'mainnet' : names[0];
+}
+
+// Goes through the header's own select and its change handler rather than
+// writing localStorage directly: that handler also rewrites the URL and resets
+// state that does not survive a chain switch, and skipping it leaves the
+// selector showing one chain while the page shows another.
+function switchNetwork(name) {
+  const sel = document.getElementById('network-select');
+  if (!sel) return;
+  sel.value = name;
+  onNetworkChange();
+}
+
 function appsWindow() {
   const w = urlParam('window');
   return APP_WINDOWS.includes(w) ? w : APP_WINDOW_DEFAULT;
@@ -7600,16 +7620,22 @@ function appCard(app, stat, network) {
   }
 
   // The stats line says one of three different things, and conflating them is
-  // the way this page would start lying: no chain picked, picked and the app
-  // is not there, picked and nobody has called it.
+  // the way this page would start lying: picked and the app is not there,
+  // picked and nobody has called it, picked and here is how busy.
+  //
+  // With no chain picked there is no fourth thing to say here. The reason is
+  // the same for all ten cards, so it is said once in the intro instead of
+  // stamped on every card, where it was ten repetitions of a sentence that is
+  // about the page rather than about any app on it.
+  // Built either way, appended only when there is a chain to describe: an
+  // empty stats row still takes its margin and leaves a gap under every card
+  // that reads as a rendering bug.
   const stats = el('div', { className: 'app-stats' });
-  if (!network) {
-    stats.appendChild(el('span', { className: 'dim' }, 'pick a network for usage'));
-  } else if (!stat || !stat.deployed) {
+  if (network && (!stat || !stat.deployed)) {
     stats.appendChild(el('span', { className: 'dim' }, 'not deployed on ' + network));
-  } else if (!stat.calls) {
+  } else if (network && !stat.calls) {
     stats.appendChild(el('span', { className: 'dim' }, 'deployed, never called'));
-  } else {
+  } else if (network) {
     stats.appendChild(el('b', {}, fmtNum(stat.calls_window)));
     stats.append(' calls · ');
     stats.appendChild(el('b', {}, fmtNum(stat.callers)));
@@ -7622,7 +7648,7 @@ function appCard(app, stat, network) {
         : fmtNum(stat.calls) + ' calls all time, ' + fmtNum(stat.callers) + ' distinct callers',
     }, quiet ? ' · quiet this ' + appsWindow() : ' · ' + appsWindow()));
   }
-  body.appendChild(stats);
+  if (network) body.appendChild(stats);
 
   const actions = el('div', { className: 'app-actions' });
   actions.appendChild(link('details',
@@ -7675,6 +7701,23 @@ function renderApps(container, data) {
     intro.append('.');
   }
   container.appendChild(intro);
+
+  // No chain picked, so there is nothing honest to say about usage: the same
+  // path is a different deployment on each chain. Offered as one click rather
+  // than as an instruction to go and find the selector, because this is the
+  // first thing a visitor sent to this page lands on.
+  if (!network) {
+    const hint = el('div', { className: 'section-sub' });
+    hint.append('usage is per chain, so none is shown across all of them. ');
+    const pick = defaultNetworkName();
+    if (pick) {
+      hint.appendChild(link('see which of these are live on ' + pick,
+        () => switchNetwork(pick)));
+    } else {
+      hint.append('pick one in the header to see which of these are live, and how busy.');
+    }
+    container.appendChild(hint);
+  }
 
   if (!apps.length) {
     container.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '12px' } }, 'no apps listed yet'));
