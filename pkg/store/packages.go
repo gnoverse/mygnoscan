@@ -50,14 +50,41 @@ func (d *DB) InsertPackageSubmission(network, txHash string, msgIndex int, path,
 // re-reading an event already stored must be a no-op, not a duplicate that
 // doubles a realm's storage total.
 
+// UpsertPackageFile stores a file's source and keeps the search index in step.
+//
+// Both writes go in one transaction under one lock. The index is maintained
+// here rather than by an SQLite trigger so that a failure to index is a
+// visible error on the sync path, instead of a silent gap a reader only
+// discovers by searching for something they know is on chain.
 func (d *DB) UpsertPackageFile(network, pkgPath, fileName, body string) error {
 	d.writeMu.Lock()
 	defer d.writeMu.Unlock()
-	_, err := d.db.Exec(`
+
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	if _, err := tx.Exec(`
 		INSERT OR REPLACE INTO package_files (network, package_path, file_name, body)
 		VALUES (?, ?, ?, ?)
-	`, network, pkgPath, fileName, body)
-	return err
+	`, network, pkgPath, fileName, body); err != nil {
+		return err
+	}
+	// Delete then insert: FTS5 has no upsert, so a redeployed path would
+	// otherwise keep matching source that is no longer on chain.
+	if _, err := tx.Exec(
+		`DELETE FROM code_index WHERE network = ? AND package_path = ? AND file_name = ?`,
+		network, pkgPath, fileName); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO code_index (network, package_path, file_name, body) VALUES (?, ?, ?, ?)`,
+		network, pkgPath, fileName, body); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // StoredPackageRef identifies a package whose source is held locally.

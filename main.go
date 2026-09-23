@@ -117,6 +117,25 @@ func run() error {
 		}
 	}()
 
+	// Backfill the code search index from stored source.
+	//
+	// Every existing deployment has a full corpus and an empty index, and
+	// without this the search would return nothing on exactly the instances
+	// with the most to search, while looking like it worked. Same trap the
+	// GRC20 ledger fell into by only ever seeing transactions synced after it
+	// shipped.
+	//
+	// Reads only the local database, so it costs nothing on the network, and
+	// it is skipped once the index is populated. Background and non-fatal: a
+	// cold search index is not a reason to refuse to start.
+	go func() {
+		if n, err := db.BackfillCodeIndex(); err != nil {
+			log.Printf("code index backfill: %v", err)
+		} else if n > 0 {
+			log.Printf("code index: backfilled %d files", n)
+		}
+	}()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
