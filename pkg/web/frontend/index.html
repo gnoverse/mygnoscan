@@ -9287,7 +9287,21 @@ function gasTxsTable(txs) {
   tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'tx'), el('th', {}, 'type'), el('th', {}, 'detail'), el('th', {}, 'gas used'), el('th', {}, 'efficiency'), el('th', {}, 'fee'), el('th', {}, 'status'))));
   const body = el('tbody');
   for (const t of (txs || [])) {
-    const pct = t.gas_wanted > 0 ? (t.gas_used / t.gas_wanted * 100).toFixed(0) + '%' : '-';
+    // A genesis transaction is not metered the way a signed one is: it carries
+    // a token gas_wanted of 1 and a token fee of 1 ugnot, and the VM records
+    // what it actually burned. The ratio is then arithmetically correct and
+    // semantically meaningless (boards2 read 991463%), and a five-digit
+    // percentage in a column where everything else is bounded by 100 reads as a
+    // bug in the explorer. It also made the column unsortable, because those
+    // rows dominate whatever the real answer is.
+    //
+    // So the row says what it is instead of computing a number about it. That
+    // one badge also explains the fee column showing 1 ugnot beside half a
+    // billion gas, which is the same cause.
+    const unmetered = !(t.gas_wanted > 1);
+    const effEl = unmetered
+      ? el('span', { class: 'badge', title: 'included at genesis: a token gas_wanted and a token fee, so used/wanted says nothing' }, 'genesis')
+      : el('span', {}, (t.gas_used / t.gas_wanted * 100).toFixed(0) + '%');
     let detailEl;
     if (t.detail) {
       detailEl = /^MsgRun by g1[a-z0-9]+$/.test(t.detail)
@@ -9301,7 +9315,7 @@ function gasTxsTable(txs) {
       el('td', {}, typeBadge(t.type)),
       el('td', {}, detailEl),
       el('td', {}, fmtNum(t.gas_used)),
-      el('td', {}, pct),
+      el('td', {}, effEl),
       el('td', {}, fmtNum(t.fee) + ' ugnot'),
       el('td', {}, statusBadge(t.success))
     ));
