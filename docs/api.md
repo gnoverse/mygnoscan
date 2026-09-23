@@ -127,7 +127,7 @@ bounded at 3650 days instead.
 | `GET /api/networks` | configured network IDs — the fastest way to confirm which chains an instance is actually serving |
 | `GET /api/watch` | activity digest for a watchlist, plus a `transactions` timeline: the 50 most recent rows across every watched realm and address, merged and deduplicated. Repeated `realm=` and `address=` parameters, each optionally `id@height` — that height is the baseline `new_since` counts against (the timeline itself is not filtered by it). Answered from stored rows only, so a watchlist costs no indexer round-trips. Capped at 100 items |
 | `GET /api/labels` | display names for addresses: `{address: {label, kind, why}}`, the curated registry merged with what the chain proves |
-| `GET /api/registry/apps` | the curated app directory: `categories`, `apps` and a count of known tokens |
+| `GET /api/registry/apps` | the curated app directory: `categories`, `apps` and a count of known tokens. With a single `network`, also `stats` (per path: `deployed`, `calls`, `callers`, `calls_window`), `candidates` (the busiest realms with no entry, over `window`, default 30d) and `realms` (how many exist). Those are per-chain and absent without one, because the same path is a different deployment on each chain |
 
 **Address labels are global, not per network.** An address is the same key on
 every chain, so a name earned on one applies everywhere.
