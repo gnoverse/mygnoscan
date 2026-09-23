@@ -252,3 +252,32 @@ func TestAppsHubServesItsOwnSkipList(t *testing.T) {
 		}
 	}
 }
+
+// The derived name is allowed to be poor. It is not allowed to be ambiguous:
+// the last segment alone produced `position`, `staker`, `gns` and two separate
+// cards both called `staker` on mainnet, which tells a reader nothing and tells
+// them it twice.
+func TestNameFromPath(t *testing.T) {
+	for _, tt := range []struct {
+		in, want, why string
+	}{
+		{"gno.land/r/gnoswap/v1/position", "gnoswap/position",
+			"a version names a generation, never a project"},
+		{"gno.land/r/gnoswap/v1/staker", "gnoswap/staker",
+			"and the namespace is what tells two stakers apart"},
+		{"gno.land/r/gnoland/blog", "gnoland/blog", "the ordinary case"},
+		{"gno.land/r/moul/config/v0", "moul/config", "trailing version dropped"},
+		{"gno.land/r/g1leu8d2vsplhehcfkjg50mwgdpxdkt8tztu95wr/kourtv3", "kourtv3",
+			"40 characters of address is noise to a reader"},
+		{"gno.land/r/demo/v0", "demo",
+			"a generation is not a name; two generations of one realm collapse here and supersedes tells them apart"},
+		{"gno.land/r/x/v1", "x", "and the namespace survives alone"},
+		{"gno.land/r/a/b/c/d", "c/d", "two segments is the most a card has room for"},
+	} {
+		t.Run(tt.in, func(t *testing.T) {
+			if got := nameFromPath(tt.in); got != tt.want {
+				t.Errorf("got %q, want %q (%s)", got, tt.want, tt.why)
+			}
+		})
+	}
+}
