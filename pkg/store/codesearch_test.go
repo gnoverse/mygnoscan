@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -194,5 +195,50 @@ func TestBackfillCodeIndex(t *testing.T) {
 	// would be pure cost.
 	if n2, err := d.BackfillCodeIndex(); err != nil || n2 != 0 {
 		t.Errorf("second backfill = %d, %v; want 0, nil", n2, err)
+	}
+}
+
+// TestBackfillCodeIndexChunks is a regression test for a real production
+// failure: the first version backfilled the whole corpus in one transaction
+// and died with SQLITE_BUSY on the live instance, because the syncer writes
+// continuously and the connection's busy_timeout is 5s. The index stayed
+// empty while the search box looked like it worked.
+//
+// Seeding more files than one batch holds proves the loop actually pages: a
+// single-transaction implementation would still pass a small-corpus test.
+func TestBackfillCodeIndexChunks(t *testing.T) {
+	d := NewTestDB(t)
+	const files = 1200 // > the 500-row batch, so at least three pages
+	for i := 0; i < files; i++ {
+		path := fmt.Sprintf("gno.land/r/x/p%04d", i)
+		if err := d.UpsertPackageFile("alpha", path, "a.gno", fmt.Sprintf("package p%04d\nfunc Marker%04d() {}\n", i, i)); err != nil {
+			t.Fatalf("seed %d: %v", i, err)
+		}
+	}
+	if _, err := d.db.Exec(`DELETE FROM code_index`); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := d.BackfillCodeIndex()
+	if err != nil {
+		t.Fatalf("BackfillCodeIndex: %v", err)
+	}
+	if n != files {
+		t.Errorf("indexed %d, want %d: the paging loop dropped or repeated rows", n, files)
+	}
+
+	// Every page must be present, not just the first: an OFFSET bug shows up
+	// as the last batch missing and nothing else.
+	for _, i := range []int{0, 499, 500, 999, 1199} {
+		hits, err := d.SearchCode(CodeSearchOpts{Network: "alpha", Query: fmt.Sprintf("Marker%04d", i)})
+		if err != nil {
+			t.Fatalf("search %d: %v", i, err)
+		}
+		if len(hits) != 1 {
+			t.Errorf("file %d: %d hits, want 1", i, len(hits))
+		}
+	}
+	if size, _ := d.CodeIndexSize("alpha"); size != files {
+		t.Errorf("index size = %d, want %d", size, files)
 	}
 }

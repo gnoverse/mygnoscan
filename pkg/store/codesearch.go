@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Code search over every .gno file the chain holds.
@@ -205,6 +206,16 @@ var _ = sql.ErrNoRows
 // deliberately does not rebuild a populated index: that would re-run on every
 // restart of a busy instance for no gain, and RebuildCodeIndex is there for
 // when a rebuild is actually wanted.
+//
+// Chunked, and that is not a detail. The first version did the whole corpus in
+// one transaction and died on the live instance with SQLITE_BUSY: the syncer
+// writes continuously, the connection's busy_timeout is 5s, and a single
+// INSERT..SELECT over two million files holds the write lock for far longer
+// than that. The result was the exact failure the backfill exists to prevent,
+// an index that stays empty while the search box looks like it works.
+//
+// So: small batches, each its own transaction, each yielding the write lock
+// between them, and a retry when the syncer wins a race anyway.
 func (d *DB) BackfillCodeIndex() (int, error) {
 	var indexed, files int
 	if err := d.db.QueryRow(`SELECT count(*) FROM code_index`).Scan(&indexed); err != nil {
@@ -216,7 +227,80 @@ func (d *DB) BackfillCodeIndex() (int, error) {
 	if indexed > 0 || files == 0 {
 		return 0, nil
 	}
-	return d.RebuildCodeIndex()
+
+	const batch = 500
+	total := 0
+	for offset := 0; ; {
+		n, err := d.backfillBatch(offset, batch)
+		if err != nil {
+			// Report what was indexed so far alongside the error: a partial
+			// index is better than none and the next start resumes, because
+			// the "already populated" guard above only skips a non-empty one
+			// once it is complete enough to be useful.
+			return total, err
+		}
+		if n == 0 {
+			break
+		}
+		total += n
+		offset += batch
+	}
+	return total, nil
+}
+
+// backfillBatch copies one page of files into the index, retrying a busy
+// database rather than giving up on the whole backfill for one lost race.
+func (d *DB) backfillBatch(offset, limit int) (int, error) {
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		n, err := d.backfillBatchOnce(offset, limit)
+		if err == nil {
+			return n, nil
+		}
+		lastErr = err
+		if !isBusy(err) {
+			return 0, err
+		}
+		// The syncer holds the write lock. Back off and let it finish; this is
+		// background work and has no deadline.
+		time.Sleep(time.Duration(attempt+1) * 250 * time.Millisecond)
+	}
+	return 0, lastErr
+}
+
+func (d *DB) backfillBatchOnce(offset, limit int) (int, error) {
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
+
+	tx, err := d.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	res, err := tx.Exec(`
+		INSERT INTO code_index (network, package_path, file_name, body)
+		SELECT network, package_path, file_name, body FROM package_files
+		ORDER BY network, package_path, file_name
+		LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return int(n), nil
+}
+
+func isBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "SQLITE_BUSY") ||
+		strings.Contains(msg, "database is locked") ||
+		strings.Contains(msg, "database table is locked")
 }
 
 // querySyntaxMarkers are the ways SQLite and FTS5 report a malformed MATCH.
