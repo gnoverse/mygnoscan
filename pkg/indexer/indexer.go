@@ -216,12 +216,40 @@ const sessionFragments = `
 				creator
 			}`
 
+// transferFragments is the native-coin movement group.
+//
+// Gated like the other two, and the gate is not theoretical: probed
+// 2026-09-23, `indexer.gno.land` defines TransferEvent and
+// `indexer.pearl.testnets.gno.land` answers `__type: null` for it. Selecting it
+// unconditionally would therefore 422 **every** transaction query on pearl and
+// take that chain's whole sync down, not just the one view that wants coins.
+// The same gap already shows on the deployed site: `/api/realm/defi?network=pearl`
+// answers a raw `Field "TransferEvent" is not defined by type "NestedFilterEvent"`,
+// because CoinFlows filters on it with no probe in front.
+const transferFragments = `
+			... on TransferEvent {
+				from
+				to
+				coins
+			}`
+
 // The type each fragment group is gated on: one representative per group, and
 // the rest of the group shipped to the indexer in the same release as it.
 const (
-	inertProbeType   = "MsgEnablePackage"
-	sessionProbeType = "MsgCreateSession"
+	inertProbeType    = "MsgEnablePackage"
+	sessionProbeType  = "MsgCreateSession"
+	transferProbeType = "TransferEvent"
 )
+
+// SupportsTransferEvents reports whether this chain's indexer can answer
+// anything about native coin movement at all.
+//
+// Exported because the difference between "this realm never moved a coin" and
+// "this chain cannot be asked" is a fact a reader needs, and the handler cannot
+// tell them apart from an empty result.
+func (c *Client) SupportsTransferEvents(ctx context.Context) bool {
+	return c.supportsType(ctx, transferProbeType)
+}
 
 // supportsType reports whether this chain's indexer defines a GraphQL type,
 // asking it once per type and remembering the answer.
@@ -294,6 +322,9 @@ func (c *Client) trimFields(ctx context.Context, fields string) string {
 	}
 	if !c.supportsType(ctx, sessionProbeType) {
 		fields = strings.ReplaceAll(fields, sessionFragments, "")
+	}
+	if !c.supportsType(ctx, transferProbeType) {
+		fields = strings.ReplaceAll(fields, transferFragments, "")
 	}
 	return fields
 }
@@ -703,8 +734,10 @@ type TxEvent struct {
 
 	// TransferEvent. The chain emits one on every bank transfer, a realm's own
 	// banker moves included, which is what makes a balance derivable at all.
-	// Only CoinFlows selects them; the shared field templates do not, so these
-	// are zero on every other fetch.
+	// The shared templates carry the fragment now, gated on transferProbeType,
+	// so these are populated on every fetch from a chain whose indexer defines
+	// the type and zero on one that does not. The syncer writes them to
+	// coin_transfers from the pass it already runs.
 	From  string `json:"from,omitempty"`
 	To    string `json:"to,omitempty"`
 	Coins string `json:"coins,omitempty"`
@@ -805,6 +838,11 @@ const txFieldsTemplate = `
 				bytes_delta
 				fee_refund { amount denom }
 				pkg_path
+			}
+			... on TransferEvent {
+				from
+				to
+				coins
 			}
 		}
 	}

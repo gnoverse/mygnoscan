@@ -904,6 +904,48 @@ func initSchema(db *sql.DB) error {
 		-- actually bind, because a window is a wall-clock question.
 		CREATE INDEX IF NOT EXISTS idx_token_transfers_time ON token_transfers(network, block_time);
 
+		-- Native coin movement, one row per TransferEvent leg.
+		--
+		-- The same shape as token_transfers above, and for the same reason: the
+		-- chain emits TransferEvent on every sendCoins including a realm's own
+		-- banker moves, so summing the legs touching a realm's address
+		-- reproduces bank/balances exactly (ADR 0034). Without this table the
+		-- only way to ask that question was to re-walk the whole history from
+		-- the tx-indexer per request, which cost ~2.1s even for a realm holding
+		-- nothing, because the latency is resolving a chain-wide event filter
+		-- and not the payload.
+		--
+		-- coins is the chain's own string, verbatim, and ugnot is it parsed.
+		-- Both, for the reason bank_sends keeps both: a coin string is a *list*
+		-- ("5foo,100ugnot") and SQL cannot sum one without inventing a number
+		-- (ADR 0041). Anything denominated in something other than ugnot is
+		-- readable in coins and contributes 0 to ugnot, which is the honest
+		-- answer rather than a coerced one.
+		--
+		-- ⚠️ Not a substitute for a *signer's* balance. Gas collection and the
+		-- storage deposit go through SendCoinsUnrestricted, which emits nothing,
+		-- so this sum is short by exactly an account's gas spend. Neither
+		-- touches a realm's banker, which is why the realm case is exact and the
+		-- account case is not.
+		CREATE TABLE IF NOT EXISTS coin_transfers (
+			network      TEXT NOT NULL,
+			tx_hash      TEXT NOT NULL,
+			event_idx    INTEGER NOT NULL,
+			from_addr    TEXT NOT NULL DEFAULT '',
+			to_addr      TEXT NOT NULL DEFAULT '',
+			coins        TEXT NOT NULL DEFAULT '',
+			ugnot        INTEGER NOT NULL DEFAULT 0,
+			block_height INTEGER NOT NULL,
+			block_time   TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY (network, tx_hash, event_idx)
+		) WITHOUT ROWID;
+
+		-- Both directions, because a leg is read from whichever end asked. Height
+		-- descending is in the index rather than left to a sort: the page reads
+		-- newest-first and the table is the largest one a busy realm has.
+		CREATE INDEX IF NOT EXISTS idx_coin_transfers_from ON coin_transfers(network, from_addr, block_height DESC);
+		CREATE INDEX IF NOT EXISTS idx_coin_transfers_to   ON coin_transfers(network, to_addr, block_height DESC);
+
 		-- The rich list's only query: the top balances on one chain.
 		CREATE INDEX IF NOT EXISTS idx_balances_rank ON balances(network, ugnot DESC);
 

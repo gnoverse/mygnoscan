@@ -60,6 +60,13 @@ type Fake struct {
 	// defined, MsgCreateSession not. Checked on mainnet 2026-09-18.
 	NoSessionTypes bool
 
+	// NoTransferEvents is the same for TransferEvent, and is pearl's shape:
+	// mainnet defines the type, pearl answers __type: null for it (probed
+	// 2026-09-23). It matters more than the other two because the fragment
+	// rides the *shared* selection set, so a chain that rejects it rejects
+	// every transaction query rather than only the view that wanted coins.
+	NoTransferEvents bool
+
 	// Failure injection, each checked before any data is served.
 	Status        int    // non-200 to return instead of a response
 	GQLError      string // a GraphQL error to return instead of data
@@ -128,6 +135,7 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	noInert := f.NoInertTypes
 	noSessions := f.NoSessionTypes
+	noTransfers := f.NoTransferEvents
 	f.mu.Unlock()
 	if noSessions {
 		if strings.Contains(req.Query, `__type(name: "MsgCreateSession")`) {
@@ -138,6 +146,19 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusUnprocessableEntity)
 			writeGQL(w, map[string]any{"errors": []map[string]string{
 				{"message": `Unknown type "MsgCreateSession".`},
+			}})
+			return
+		}
+	}
+	if noTransfers {
+		if strings.Contains(req.Query, `__type(name: "TransferEvent")`) {
+			writeGQL(w, map[string]any{"data": map[string]any{"__type": nil}})
+			return
+		}
+		if strings.Contains(req.Query, "TransferEvent") {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			writeGQL(w, map[string]any{"errors": []map[string]string{
+				{"message": `Field "TransferEvent" is not defined by type "NestedFilterEvent".`},
 			}})
 			return
 		}

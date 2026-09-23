@@ -236,8 +236,8 @@ func TestCapabilitiesAreProbedOncePerType(t *testing.T) {
 			probes[q]++
 		}
 	}
-	if len(probes) != 2 {
-		t.Errorf("probed %d distinct types, want 2 (inert lifecycle and sessions): %v", len(probes), probes)
+	if len(probes) != 3 {
+		t.Errorf("probed %d distinct types, want 3 (inert lifecycle, sessions, transfers): %v", len(probes), probes)
 	}
 	for q, n := range probes {
 		if n != 1 {
