@@ -840,6 +840,7 @@ func (a *API) HandleFunctionCallHeatmap(w http.ResponseWriter, r *http.Request) 
 
 func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/stats", a.HandleStats)
+	mux.HandleFunc("GET /api/pulse", a.HandlePulse)
 	mux.HandleFunc("GET /api/realms", a.HandleRealms)
 	// These three beat the /api/realm/{path...} wildcard below by Go 1.22 mux
 	// precedence: the more specific pattern wins, and no gno path starts with

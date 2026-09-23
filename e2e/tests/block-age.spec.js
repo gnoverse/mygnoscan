@@ -51,6 +51,11 @@ const TABLES = [
   ['the packages list', '/packages?network=alpha', '#packages-list', 'block'],
   ['the realms list', '/realms?network=alpha', '#realms-list', 'added'],
   ['the storage table', '/storage?network=alpha', '#storage-content table', 'first claim'],
+  // The home page's two windowed tables. Neither has a timestamp column of its
+  // own, so the age beside the height is the only "when" either one carries.
+  // The fixture's recent tail is what puts rows in them at the default window.
+  ['the hot realms table', '/?network=alpha', '#hot-realms', 'last call'],
+  ['the notable transfers table', '/?network=alpha', '#hot-flows', 'block'],
 ];
 
 for (const [name, url, selector, header] of TABLES) {

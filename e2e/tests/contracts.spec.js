@@ -884,12 +884,29 @@ test('the activity filter and its closure survive a reload', async ({ page }) =>
     .toHaveCSS('background-color', /rgb/);
 });
 
-test('the filter names the window it reads against', async ({ page }) => {
-  await openMap(page, '?window=24h');
+test('the filter names the window it reads against, and finds what is in it', async ({ page }) => {
+  await openMap(page, '?network=alpha&window=24h');
   await expect(page.getByRole('button', { name: 'active in 24h', exact: true })).toBeVisible();
 
-  // The fixture's rows are all months old, so a one-day window leaves nothing
-  // and the map has to say so rather than draw an empty box.
+  // alpha carries the fixture's recent tail, so a one-day window keeps the few
+  // contracts that were called inside it and drops the months-old rest. Both
+  // halves matter: a filter that kept everything and a filter that kept nothing
+  // are equally broken and equally silent.
+  const all = await bubbleCount(page);
+  await page.getByRole('button', { name: 'active in 24h', exact: true }).click();
+  // Polled, not read once: the bubbles from before the click are still on
+  // screen while the filtered request is in flight, so a single read sees the
+  // unfiltered count and passes a test that proves nothing.
+  await expect.poll(() => bubbleCount(page), {
+    message: 'the 24h filter should drop the months-old contracts',
+  }).toBeLessThan(all);
+  expect(await bubbleCount(page)).toBeGreaterThan(0);
+});
+
+test('a window with nothing in it says so rather than drawing an empty box', async ({ page }) => {
+  // beta has no recent tail, so every row on it is months old and a one-day
+  // window genuinely finds nothing.
+  await openMap(page, '?network=beta&window=24h');
   await page.getByRole('button', { name: 'active in 24h', exact: true }).click();
   await expect(page.locator('#contract-map')).toContainText('no contracts to show');
 });

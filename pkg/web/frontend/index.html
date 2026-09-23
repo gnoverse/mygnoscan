@@ -175,6 +175,18 @@ html.rail-collapsed .rail-toggle svg { transform: scaleX(-1); }
 .stat-link { cursor: pointer; }
 .stat-link:hover .label { color: var(--accent); }
 .stat-link:hover .value { text-decoration: underline; }
+/* The window's share of a tile, under the all-time figure. Deliberately small:
+   the total is the anchor a reader recognises, the delta is what tells them
+   whether the anchor moved. */
+.stat .delta { font-size: 11px; color: var(--fg2); margin-top: 2px; white-space: nowrap; min-height: 14px; }
+/* Used by the tiles and by every "vs before" cell, so a rise reads the same
+   colour wherever it appears on the page. */
+.trend-up { color: var(--green); }
+.trend-down { color: var(--red); }
+.trend-flat { color: var(--fg2); }
+.window-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 14px 0 0; }
+.window-bar .win-label { font-size: 11px; color: var(--fg2); text-transform: uppercase; letter-spacing: 1px; }
+.window-bar .win-range { font-size: 11px; color: var(--fg2); }
 main { padding: 20px 0; }
 /* overflow-x lets a table with a wide column (events' free-text "attributes",
    say) scroll its own table rather than pushing the whole page wider than
@@ -862,19 +874,59 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
 </div>
 <div class="container">
   <div class="view active" id="view-home">
+    <!-- The window every figure below the tiles is scoped to. First thing on
+         the page because it changes the meaning of everything under it. -->
+    <div class="window-bar">
+      <span class="win-label">activity in the</span>
+      <div id="home-window-group" style="display:flex; gap:4px;"></div>
+      <span class="win-range" id="home-window-range"></span>
+    </div>
     <div class="stats-bar">
-      <div class="stat stat-link" data-goto="/txs"><span class="label">txs</span><span class="value" id="stat-txs">-</span></div>
-      <div class="stat stat-link" data-goto="/txs" data-type="MsgCall"><span class="label">calls</span><span class="value" id="stat-calls">-</span></div>
-      <div class="stat stat-link" data-goto="/txs" data-type="MsgAddPackage"><span class="label">deploys</span><span class="value" id="stat-deploys">-</span></div>
-      <div class="stat stat-link" data-goto="/txs" data-type="MsgRun"><span class="label">runs</span><span class="value" id="stat-runs">-</span></div>
-      <div class="stat stat-link" data-goto="/txs" data-type="BankMsgSend"><span class="label">sends</span><span class="value" id="stat-sends">-</span></div>
-      <div class="stat stat-link" data-goto="/realms"><span class="label">realms</span><span class="value" id="stat-realms">-</span></div>
-      <div class="stat stat-link" data-goto="/packages"><span class="label">packages</span><span class="value" id="stat-packages">-</span></div>
-      <div class="stat"><span class="label">storage</span><span class="value" id="stat-storage">-</span></div>
-      <div class="stat"><span class="label">data in use</span><span class="value" id="stat-storage-bytes">-</span></div>
-      <div class="stat stat-link" data-goto="/blocks"><span class="label">block</span><span class="value" id="stat-block">-</span></div>
+      <div class="stat stat-link" data-goto="/txs"><span class="label">txs</span><span class="value" id="stat-txs">-</span><span class="delta" id="delta-txs"></span></div>
+      <div class="stat stat-link" data-goto="/txs" data-type="MsgCall"><span class="label">calls</span><span class="value" id="stat-calls">-</span><span class="delta" id="delta-calls"></span></div>
+      <div class="stat stat-link" data-goto="/txs" data-type="MsgAddPackage"><span class="label">deploys</span><span class="value" id="stat-deploys">-</span><span class="delta" id="delta-deploys"></span></div>
+      <div class="stat stat-link" data-goto="/txs" data-type="MsgRun"><span class="label">runs</span><span class="value" id="stat-runs">-</span><span class="delta" id="delta-runs"></span></div>
+      <div class="stat stat-link" data-goto="/txs" data-type="BankMsgSend"><span class="label">sends</span><span class="value" id="stat-sends">-</span><span class="delta" id="delta-sends"></span></div>
+      <div class="stat stat-link" data-goto="/accounts" title="all-time distinct callers. the line below counts every address active in the window, which includes senders and deployers, so it is not a slice of the figure above it."><span class="label">callers</span><span class="value" id="stat-active">-</span><span class="delta" id="delta-active"></span></div>
+      <div class="stat stat-link" data-goto="/realms"><span class="label">realms</span><span class="value" id="stat-realms">-</span><span class="delta" id="delta-realms"></span></div>
+      <div class="stat stat-link" data-goto="/packages"><span class="label">packages</span><span class="value" id="stat-packages">-</span><span class="delta" id="delta-packages"></span></div>
+      <div class="stat"><span class="label">storage</span><span class="value" id="stat-storage">-</span><span class="delta" id="delta-storage"></span></div>
+      <div class="stat"><span class="label">data in use</span><span class="value" id="stat-storage-bytes">-</span><span class="delta" id="delta-storage-bytes"></span></div>
+      <div class="stat stat-link" data-goto="/blocks"><span class="label">block</span><span class="value" id="stat-block">-</span><span class="delta" id="delta-block"></span></div>
     </div>
     <main>
+      <div class="section">
+        <div class="section-title">hot realms</div>
+        <div class="section-sub">what is being called right now, against the same span before it.
+          a realm nobody called in the window is not here at all.</div>
+        <table><thead><tr><th>realm</th><th>calls</th><th>vs before</th><th>callers</th><th>failed</th><th>last call</th></tr></thead><tbody id="hot-realms"></tbody></table>
+      </div>
+      <div class="section">
+        <div class="section-title">hot assets</div>
+        <div class="section-sub">every asset that moved in the window. ugnot is counted from bank
+          sends and everything else from GRC20 transfer events, which is why it is marked: two
+          ledgers, one list.</div>
+        <table><thead><tr><th>asset</th><th>transfers</th><th>vs before</th><th>volume</th><th>senders</th><th>receivers</th></tr></thead><tbody id="hot-tokens"></tbody></table>
+      </div>
+      <div class="section">
+        <div class="section-title">notable transfers</div>
+        <div class="section-sub">the largest move of each asset, newest first. an end that resolves
+          to a package is drawn as that package: a realm's account is a hash of its path, so this is
+          derived rather than looked up, and anything left as an address belongs to no package we know.</div>
+        <table><thead><tr><th>block</th><th>asset</th><th>from</th><th>to</th><th>amount</th><th>tx</th></tr></thead><tbody id="hot-flows"></tbody></table>
+      </div>
+      <div class="section">
+        <div class="section-title">hot developers</div>
+        <div class="section-sub">who shipped code in the window. deploys counts submissions and paths
+          counts distinct packages: a retried deploy raises the first and not the second.</div>
+        <table><thead><tr><th>deployer</th><th>deploys</th><th>paths</th><th>realms</th><th>shipped</th></tr></thead><tbody id="hot-devs"></tbody></table>
+      </div>
+      <div class="section">
+        <div class="section-title">hot libraries</div>
+        <div class="section-sub">what the window's new packages import. the all-time column is what
+          makes the first one readable: 3 of 4 is a library being picked up, 3 of 300 is noise.</div>
+        <table><thead><tr><th>library</th><th>new importers</th><th>all-time</th><th>imported by</th></tr></thead><tbody id="hot-libs"></tbody></table>
+      </div>
       <div class="section">
         <div class="section-title">most depended-upon realms</div>
         <div class="section-sub">what the rest of the chain builds on. every realm here links to the
@@ -4040,18 +4092,205 @@ function renderTopRealmsChart(container, realms) {
   }));
 }
 
+// The home page's window, in the URL so a view is a link and survives a reload.
+//
+// The keys mirror pulseWindows in pkg/httpapi/pulse.go, and
+// TestHomeWindowsMatchTheServer keeps the two identical — the same reason the
+// nav rail is checked against NAV. An unknown key falls back here *and*
+// server-side, so a hand-edited URL lands on the default rather than on a 400.
+const HOME_WINDOWS = ['1h', '6h', '24h', '7d', '30d'];
+const HOME_WINDOW_DEFAULT = '24h';
+function homeWindow() {
+  const v = urlParam('window');
+  return HOME_WINDOWS.includes(v) ? v : HOME_WINDOW_DEFAULT;
+}
+
+// trendEl compares a window against the equal window before it.
+//
+// A percentage rather than the raw pair, because the pair is already in the
+// row: what the reader cannot do at a glance is divide. Zero before is not
+// infinity, it is "new", which is the more interesting answer anyway.
+function trendEl(cur, prev, hasPrev) {
+  if (!hasPrev) return el('span', { className: 'trend-flat' }, '—');
+  if (!prev) return cur ? badge('ok', 'new') : el('span', { className: 'trend-flat' }, '—');
+  const pct = Math.round((cur - prev) / prev * 100);
+  if (pct === 0) return el('span', { className: 'trend-flat' }, '=');
+  const up = pct > 0;
+  // Past a point a percentage stops being readable: "122,900%" is a figure
+  // nobody sizes at a glance, and a quiet previous window produces it often.
+  // Say it as a multiple instead.
+  const size = Math.abs(pct) >= 1000 ? Math.round(cur / prev) + '×' : Math.abs(pct) + '%';
+  const span = el('span', { className: up ? 'trend-up' : 'trend-down' },
+    (up ? '▲ ' : '▼ ') + size);
+  span.title = fmtNum(prev) + ' in the window before';
+  return span;
+}
+
+// setDelta writes the window's share under a tile's all-time figure.
+function setDelta(id, text, cur, prev, hasPrev) {
+  const cell = document.getElementById(id);
+  if (!cell) return;
+  cell.textContent = '';
+  if (text) cell.appendChild(document.createTextNode(text));
+  const t = trendEl(cur, prev, hasPrev);
+  if (t) cell.appendChild(el('span', text ? { style: { marginLeft: '5px' } } : null, t));
+}
+
+// fmtSigned keeps the sign on a delta. A window that freed more storage than it
+// took is a real answer, and "-2 MB" has to read as one.
+function fmtSigned(n) { return (n > 0 ? '+' : '') + fmtNum(n); }
+
+// emptyRow says which window came up empty rather than leaving a blank table,
+// which reads as a broken page. Deploys are sparse — mainnet ran between 0 and
+// 44 a day over the week to 2026-09-23 — so this is the normal state of two of
+// these tables on a short window, not an error.
+function emptyRow(tbody, cols, text) {
+  tbody.appendChild(el('tr', {}, el('td', { colSpan: cols, style: { color: 'var(--fg2)' } }, text)));
+}
+
+// A list of package paths in one cell, for "what they shipped" and "who imports
+// it". Comma-separated rather than stacked: the column is context for the
+// number beside it, not the subject of the row.
+function pathListEl(paths, network) {
+  const span = el('span');
+  (paths || []).forEach((p, i) => {
+    if (i) span.appendChild(el('span', { className: 'block-ctx' }, ', '));
+    span.appendChild(realmPathEl(p, network));
+  });
+  if (!(paths || []).length) span.appendChild(el('span', { className: 'block-ctx' }, '—'));
+  return span;
+}
+
+// hotAssetCell names the asset and where its figures came from.
+//
+// ugnot is marked because it is counted from bank sends and every other row
+// from GRC20 transfer events: two ledgers in one list, which is honest only if
+// the list says so.
+function hotAssetCell(t) {
+  const span = el('span');
+  if (t.native) {
+    span.appendChild(el('b', {}, 'ugnot'));
+    const note = el('span', { className: 'block-ctx', style: { marginLeft: '6px' } }, 'bank sends');
+    note.title = 'the chain’s own coin moves through BankMsgSend, not through a GRC20 Transfer event';
+    span.appendChild(note);
+    return span;
+  }
+  span.appendChild(link(t.symbol || t.token, () => navigate(assetPath(t.token) + netSuffix(t.network))));
+  if (t.pkg_path) {
+    span.appendChild(el('span', { className: 'block-ctx', style: { marginLeft: '6px' } },
+      t.pkg_path.replace('gno.land', '')));
+  }
+  if (!t.fungible) {
+    const nft = el('span', { className: 'block-ctx', style: { marginLeft: '6px' } }, 'nft');
+    nft.title = 'a GRC721 transfer carries no amount, so volume does not apply';
+    span.appendChild(nft);
+  }
+  return span;
+}
+
+// hotVolumeEl renders an amount in the unit the row is actually denominated in.
+// Nothing here converts between assets, because nothing here knows a price.
+function hotVolumeEl(t) {
+  if (t.native) return el('span', {}, fmtGnotAmount(t.volume));
+  if (!t.fungible) return el('span', { className: 'trend-flat' }, 'n/a');
+  return el('span', {}, fmtNum(t.volume) + ' ' + (t.symbol || ''));
+}
+
+// flowEndEl draws one end of a transfer as the package that owns it, or as a
+// plain address when no package does.
+//
+// The resolution is derived, not looked up: a package's account is the first
+// twenty bytes of a hash of its path, so the server derives every known path
+// forward and matches (pkg/gnoaddr.Reverse). A miss therefore means "no package
+// this explorer knows", which is a person on a synced chain — said that way
+// round because the derivation can prove a hit and cannot prove a human.
+function flowEndEl(addr, path, deposit, network, side) {
+  if (path) {
+    const span = el('span');
+    span.appendChild(realmPathEl(path, network));
+    if (deposit) {
+      const d = el('span', { className: 'block-ctx', style: { marginLeft: '6px' } }, 'deposit');
+      d.title = 'the package’s storage deposit account, not its banker';
+      span.appendChild(d);
+    }
+    return span;
+  }
+  if (!addr) {
+    // An empty end is the chain itself: minted into existence, or burned out
+    // of it. Drawing it as a blank cell would read as missing data.
+    const b = badge('ok', side === 'from' ? 'mint' : 'burn');
+    b.title = side === 'from'
+      ? 'no sender: these units were minted'
+      : 'no recipient: these units were burned';
+    return b;
+  }
+  return addrLink(addr, network);
+}
+
+function renderHomeWindow(pulse, current) {
+  const group = clear('home-window-group');
+  const options = pulse?.window?.options || HOME_WINDOWS.map(k => ({ key: k, label: k }));
+  for (const o of options) {
+    const btn = el('button', {
+      className: 'pager-btn' + (o.key === current ? ' active' : ''),
+      style: { padding: '3px 10px', fontSize: '12px' },
+    }, o.key);
+    btn.title = o.label;
+    btn.addEventListener('click', () => {
+      // The default stays out of the URL, so the plain /  is the plain default.
+      urlSetParams({ window: o.key === HOME_WINDOW_DEFAULT ? null : o.key });
+      loadHome();
+    });
+    group.appendChild(btn);
+  }
+  // The boundaries, spelled out. This endpoint is cached and may be served
+  // stale, and "last hour" painted from a fifteen-minute-old entry is the hour
+  // that ended fifteen minutes ago — which a reader can only catch if the page
+  // says when the window closed.
+  const range = document.getElementById('home-window-range');
+  if (range) {
+    range.textContent = '';
+    if (pulse?.window?.since) {
+      // An absolute start, because that is the boundary a reader checks a
+      // figure against, and a ticking age for the close, because that is what
+      // says how stale the page is.
+      range.appendChild(document.createTextNode(
+        pulse.window.since.replace('T', ' ').replace(/(:\d\d)Z$/, ' UTC') + ' → read '));
+      range.appendChild(timeEl(pulse.window.until || pulse.window.since));
+    }
+  }
+}
+
 async function loadHome() {
+  const win = homeWindow();
+  skeletonRows(clear('hot-realms'), 6, 5);
+  skeletonRows(clear('hot-tokens'), 6, 4);
+  skeletonRows(clear('hot-flows'), 6, 4);
+  skeletonRows(clear('hot-devs'), 5, 3);
+  skeletonRows(clear('hot-libs'), 4, 3);
   skeletonRows(clear('recent-txs'), 5, 8);
   skeletonRows(clear('latest-realms'), 6, 5);
   skeletonRows(clear('top-depended'), 4, 5);
   skeletonRows(clear('top-accounts'), 4, 5);
+  renderHomeWindow(null, win);
   try {
-    await apiSWR(['stats', 'realms?limit=10', 'txs?limit=20', 'blocks?limit=50', 'realms?limit=8&sort=importers', 'accounts?limit=8'], ([stats, realmsData, txsData, blocksData, dependedData, accountsData], swrMeta) => {
+    // The two indexer-backed paths are declared optional, so an indexer that is
+    // slow, rate-limited or down no longer takes the whole page with it.
+    //
+    // Everything else here reads local SQLite and cannot fail that way, which
+    // is precisely why it mattered: /api/txs returning 403 used to blank the
+    // stat row and all nine tables, including five that had their answer in
+    // hand. The feed says what happened instead of rendering as empty.
+    await apiSWR(['stats', 'pulse?window=' + win, 'realms?limit=10',
+      { path: 'txs?limit=20', fallback: { items: [], unavailable: true } },
+      { path: 'blocks?limit=50', fallback: [] },
+      'realms?limit=8&sort=importers', 'accounts?limit=8'], ([stats, pulse, realmsData, txsData, blocksData, dependedData, accountsData], swrMeta) => {
       document.getElementById('stat-txs').textContent = fmtNum(stats.total_txs);
       document.getElementById('stat-calls').textContent = fmtNum(stats.total_calls);
       document.getElementById('stat-deploys').textContent = fmtNum(stats.total_deploys);
       document.getElementById('stat-runs').textContent = fmtNum(stats.total_msg_runs);
       document.getElementById('stat-sends').textContent = fmtNum(stats.total_sends);
+      document.getElementById('stat-active').textContent = fmtNum(stats.unique_callers);
       document.getElementById('stat-realms').textContent = fmtNum(stats.total_realms);
       document.getElementById('stat-packages').textContent = fmtNum(stats.total_packages);
       // Storage economics, which the chain has always charged for and this page
@@ -4060,6 +4299,102 @@ async function loadHome() {
       document.getElementById('stat-storage').textContent = fmtUgnot(stats.storage_deposit || 0, 'ugnot');
       document.getElementById('stat-storage-bytes').textContent = fmtBytes(stats.storage_bytes || 0);
       document.getElementById('stat-block').textContent = fmtNum(stats.latest_block);
+
+      // The window under every total. A total answers "how big is this chain",
+      // which nobody who is already here is asking; the line under it answers
+      // "did anything happen since I last looked", which is why they came.
+      const cur = pulse?.current || {};
+      const prev = pulse?.prev || {};
+      const hasPrev = !!pulse?.has_prev;
+      renderHomeWindow(pulse, pulse?.window?.key || win);
+      setDelta('delta-txs', fmtSigned(cur.txs || 0), cur.txs || 0, prev.txs || 0, hasPrev);
+      setDelta('delta-calls', fmtSigned(cur.calls || 0), cur.calls || 0, prev.calls || 0, hasPrev);
+      setDelta('delta-deploys', fmtSigned(cur.deploys || 0), cur.deploys || 0, prev.deploys || 0, hasPrev);
+      setDelta('delta-runs', fmtSigned(cur.msg_runs || 0), cur.msg_runs || 0, prev.msg_runs || 0, hasPrev);
+      setDelta('delta-sends', fmtSigned(cur.sends || 0), cur.sends || 0, prev.sends || 0, hasPrev);
+      setDelta('delta-active', fmtNum(cur.active_addresses || 0) + ' active',
+        cur.active_addresses || 0, prev.active_addresses || 0, hasPrev);
+      // New realms and packages count *first* submissions: a redeploy is not a
+      // new package, and under the inert submission policy retries are routine.
+      setDelta('delta-realms', fmtSigned(cur.new_realms || 0), cur.new_realms || 0, prev.new_realms || 0, hasPrev);
+      setDelta('delta-packages', fmtSigned(cur.new_packages || 0), cur.new_packages || 0, prev.new_packages || 0, hasPrev);
+      setDelta('delta-storage', fmtSigned(cur.storage_fee || 0) + ' ugnot',
+        cur.storage_fee || 0, prev.storage_fee || 0, hasPrev);
+      setDelta('delta-storage-bytes', signedBytes(cur.storage_bytes || 0),
+        cur.storage_bytes || 0, prev.storage_bytes || 0, hasPrev);
+
+      const realmBody = clear('hot-realms');
+      for (const r of (pulse?.hot_realms || [])) {
+        realmBody.appendChild(netRow(r.network,
+          el('td', {}, realmPathEl(r.path, r.network)),
+          el('td', {}, fmtNum(r.calls)),
+          el('td', {}, trendEl(r.calls, r.prev_calls, hasPrev)),
+          el('td', {}, fmtNum(r.callers)),
+          el('td', {}, r.failed
+            ? el('span', { className: 'trend-down' }, fmtNum(r.failed))
+            : el('span', { className: 'trend-flat' }, '0')),
+          el('td', {}, blockWithAge(r.last_block, r.last_time, r.network))
+        ));
+      }
+      if (!(pulse?.hot_realms || []).length) emptyRow(realmBody, 6, 'no calls in this window');
+
+      const tokenBody = clear('hot-tokens');
+      for (const t of (pulse?.hot_tokens || [])) {
+        tokenBody.appendChild(netRow(t.network,
+          el('td', {}, hotAssetCell(t)),
+          el('td', {}, fmtNum(t.transfers)),
+          el('td', {}, trendEl(t.transfers, t.prev_transfers, hasPrev)),
+          el('td', {}, hotVolumeEl(t)),
+          el('td', {}, fmtNum(t.senders)),
+          el('td', {}, fmtNum(t.receivers))
+        ));
+      }
+      if (!(pulse?.hot_tokens || []).length) emptyRow(tokenBody, 6, 'nothing moved in this window');
+
+      const flowBody = clear('hot-flows');
+      for (const f of (pulse?.hot_flows || [])) {
+        flowBody.appendChild(netRow(f.network,
+          el('td', {}, blockWithAge(f.block_height, f.block_time, f.network)),
+          el('td', {}, f.native
+            ? el('span', {}, 'ugnot')
+            : link(f.symbol || f.token, () => navigate(assetPath(f.token) + netSuffix(f.network)))),
+          el('td', {}, flowEndEl(f.from, f.from_path, f.from_deposit, f.network, 'from')),
+          el('td', {}, flowEndEl(f.to, f.to_path, f.to_deposit, f.network, 'to')),
+          el('td', {}, f.native ? fmtGnotAmount(f.value) : fmtNum(f.value) + ' ' + (f.symbol || '')),
+          el('td', {}, txLink(f.tx_hash, f.block_height, f.network, { showBlock: false }))
+        ));
+      }
+      if (!(pulse?.hot_flows || []).length) emptyRow(flowBody, 6, 'no transfers in this window');
+
+      const devBody = clear('hot-devs');
+      for (const d of (pulse?.hot_devs || [])) {
+        const who = el('span', {}, addrLink(d.address, d.network));
+        if (d.new) {
+          const b = badge('ok', 'first deploy');
+          b.title = 'this address had never deployed on this chain before the window';
+          who.appendChild(el('span', { style: { marginLeft: '6px' } }, b));
+        }
+        devBody.appendChild(netRow(d.network,
+          el('td', {}, who),
+          el('td', {}, fmtNum(d.deploys)),
+          el('td', {}, fmtNum(d.paths)),
+          el('td', {}, fmtNum(d.realms)),
+          el('td', {}, pathListEl(d.recent, d.network))
+        ));
+      }
+      if (!(pulse?.hot_devs || []).length) emptyRow(devBody, 5, 'nobody deployed in this window — try 7d');
+
+      const libBody = clear('hot-libs');
+      for (const l of (pulse?.hot_libs || [])) {
+        libBody.appendChild(netRow(l.network,
+          el('td', {}, realmPathEl(l.path, l.network)),
+          el('td', {}, fmtNum(l.new_importers)),
+          el('td', {}, fmtNum(l.total_importers)),
+          el('td', {}, pathListEl(l.importers, l.network))
+        ));
+      }
+      if (!(pulse?.hot_libs || []).length) emptyRow(libBody, 4, 'no new packages in this window — try 7d');
+
       // Block height → time lookup
       const blockTime = {};
       for (const b of (Array.isArray(blocksData) ? blocksData : [])) blockTime[b.height] = b.time;
@@ -4125,16 +4460,26 @@ async function loadHome() {
           el('td', { style: { color: 'var(--fg2)', fontSize: '12px' } }, when)
         ), liveRowKey(tx.network, tx.hash), Date.parse(tx.block_time) || 0));
       }
+      if (!(txsData?.items || []).length) {
+        emptyRow(txBody, 5, txsData?.unavailable
+          ? 'the indexer is not answering \u2014 everything above is read from local storage'
+          : 'no transactions yet');
+      }
     });
   } catch (err) {
     console.error('home:', err);
     // The stat row shows a dash until it has a number, which is indistinguishable
     // from still loading. Mark it as failed so the whole page reads one way.
     for (const id of ['stat-txs', 'stat-calls', 'stat-deploys', 'stat-runs',
-                      'stat-sends', 'stat-realms', 'stat-packages', 'stat-block']) {
+                      'stat-sends', 'stat-active', 'stat-realms', 'stat-packages', 'stat-block']) {
       const cell = document.getElementById(id);
-      if (cell) { cell.textContent = '\u2014'; cell.style.color = 'var(--fg2)'; }
+      if (cell) { cell.textContent = '—'; cell.style.color = 'var(--fg2)'; }
     }
+    failRows(clear('hot-realms'), 6, err, loadHome);
+    failRows(clear('hot-tokens'), 6, err, loadHome);
+    failRows(clear('hot-flows'), 6, err, loadHome);
+    failRows(clear('hot-devs'), 5, err, loadHome);
+    failRows(clear('hot-libs'), 4, err, loadHome);
     failRows(clear('top-depended'), 4, err, loadHome);
     failRows(clear('top-accounts'), 4, err, loadHome);
     failRows(clear('recent-txs'), 5, err, loadHome);
