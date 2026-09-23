@@ -11966,10 +11966,19 @@ async function loadRealmDetail(path, initialTab) {
       // height. A render is a function of chain state and changes when nobody
       // redeploys anything, so keying on the deploy would pin a realm's
       // thumbnail to whatever it looked like the day it shipped.
-      header.appendChild(shotEl(detail.path, {
+      // Guarded, because shotEl returns null when no capture service is
+      // configured (FEATURES.shots off) and appendChild(null) throws. That
+      // exception escaped mid-render and took the whole realm page down: no
+      // header, no tab strip, nothing, on every realm. Invisible on a
+      // deployment that has screenshots enabled, total on one that does not.
+      //
+      // Every other shotEl caller passes the result to el(), which skips a
+      // null child; this was the only direct appendChild.
+      const hero = shotEl(detail.path, {
         size: 'hero', network: detail.network, v: latestCall,
         row: (inert && inert.meta && inert.meta.status === 'inert') ? { status: 'inert' } : null,
-      }));
+      });
+      if (hero) header.appendChild(hero);
       _watchTarget = { kind: 'realms', id: detail.path, height: latestCall };
       const tabs = clear('realm-tabs');
       // Icon per tab, so seven same-length grey words stop reading as one
