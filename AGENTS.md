@@ -47,6 +47,13 @@ Break these and things go wrong in ways that are hard to see:
   the explorer renders on-chain content, all of which is attacker-controlled.
   This is also why the optimistic-UI cache stores payloads and not rendered
   markup: a revived `innerHTML` would be the one place this stopped being true.
+- **A generated explanation may not add a fact.** Discover's layers 2 and 3 are
+  written from a closed `facts` map and `pkg/discover` fails the build if they
+  say anything that map does not contain: an ungrounded number, a name from
+  another row, an unlicensed superlative, a forward-looking claim, jargon in the
+  headline. Same kind of rule as "the frontend builds DOM, never HTML strings":
+  quiet, load-bearing, and broken invisibly, because a fluent sentence asserting
+  something false reads exactly like a correct one.
 - **`docs/glossary.md` defines the words, and nothing else does.** Nineteen terms,
   embedded and served at `GET /api/glossary`. If a tooltip, a tile, an empty state
   or a feed needs to explain what "parked" or "unique callers" means, it reads the
