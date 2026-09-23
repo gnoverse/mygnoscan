@@ -165,6 +165,11 @@ func NewDB(path string) (*DB, error) {
 		return nil, fmt.Errorf("migrate package_doc: %w", err)
 	}
 
+	if err := migrateAddDocPass(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate doc_pass: %w", err)
+	}
+
 	if err := migrateBankSendUgnot(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate bank send ugnot: %w", err)
@@ -263,6 +268,25 @@ func migrateAddPackageDoc(db *sql.DB) error {
 	}
 	if _, err := db.Exec(`ALTER TABLE symbol_index ADD COLUMN package_doc TEXT NOT NULL DEFAULT ''`); err != nil {
 		return fmt.Errorf("add package_doc to symbol_index: %w", err)
+	}
+	return nil
+}
+
+// migrateAddDocPass adds the extraction-version column beside package_doc.
+//
+// Separate from the column itself because the first deploy shipped without it,
+// and the two are now both in the CREATE TABLE for a fresh database.
+func migrateAddDocPass(db *sql.DB) error {
+	exists, err := tableExists(db, "symbol_index")
+	if err != nil || !exists {
+		return err
+	}
+	has, err := columnExists(db, "symbol_index", "doc_pass")
+	if err != nil || has {
+		return err
+	}
+	if _, err := db.Exec(`ALTER TABLE symbol_index ADD COLUMN doc_pass INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return fmt.Errorf("add doc_pass to symbol_index: %w", err)
 	}
 	return nil
 }
@@ -789,6 +813,15 @@ func initSchema(db *sql.DB) error {
 			-- segment says nothing, and a sentence this repo invents is a
 			-- stranger's guess presented as fact.
 			package_doc  TEXT NOT NULL DEFAULT '',
+			-- Which version of the extraction wrote this row.
+			--
+			-- package_doc alone cannot answer "has this been looked at", because
+			-- an empty doc is a real answer: most realms have no package comment.
+			-- Re-indexing on emptiness would re-read every one of them on every
+			-- pass, forever. So the row records the recipe that filled it, the
+			-- same way gnoshot versions its capture recipe, and bumping
+			-- DocPassVersion re-extracts everything exactly once.
+			doc_pass     INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY (network, package_path)
 		);
 

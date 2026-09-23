@@ -191,8 +191,11 @@ today. Realms only: a `p/` package has no page to open and belongs in
 `/packages`.
 
 **Every default is somebody's own word.** The description is the realm's own
-package doc comment, first sentence, stored in `symbol_index.package_doc` and
-written by whoever wrote the realm. The picture is a capture of the realm or of
+package doc comment, first sentence, stored in `symbol_index.package_doc`; and
+where there is none, the opening line of its own README, which on mainnet is the
+difference between a described grid and a mostly blank one (most realms carry no
+package comment, and several of the busiest ship a README that opens with
+exactly the sentence a card wants). The picture is a capture of the realm or of
 its website. Neither is this repo inventing a sentence about somebody else's
 code, which is what made auto-listing acceptable at all.
 
@@ -201,6 +204,7 @@ code, which is what made auto-listing acceptable at all.
 | lever | file | does |
 |---|---|---|
 | list | `apps.json`, awesome-gno | include something the ranking cannot see, and override its name, sentence, website or category |
+| relate only | `apps.json`, `supersedes` alone | assert "v3 replaces v2" without inventing a description for somebody else's realm |
 | relate | `apps.json` `supersedes` | fold an older generation into the one that replaces it |
 | skip | `moderation.toml` | remove something that should not be here, with a reason |
 
@@ -211,7 +215,8 @@ called, above the busiest realm on the chain.
 
 **Every field says where it came from**, and the card shows it as one quiet
 mark: `curated` (this repo's registry), `community` (awesome-gno), `chain` (the
-realm's own doc), `path` (nobody has said anything yet). A reader who cannot
+realm's own doc comment), `readme` (its own README), `path` (nobody has said
+anything yet). A reader who cannot
 tell a vouched-for sentence from a generated one has to trust both equally or
 neither.
 
