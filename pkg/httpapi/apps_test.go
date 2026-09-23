@@ -59,7 +59,12 @@ func TestCollapseSupersededFoldsTheOlderGeneration(t *testing.T) {
 		Supersedes: []string{"gno.land/r/x/kourt"}}
 	other := &AppCard{Path: "gno.land/r/x/other", Name: "Other"}
 
-	got := collapseSuperseded([]*AppCard{v1, v3, other})
+	// The newer card first, which is the order that broke it: folding while
+	// building the output mutates a card already copied into the result, so the
+	// fold vanished for every chain whose newer generation outranked its
+	// predecessor. On mainnet that was bubblerumble and gnomi/pad, while Kourt
+	// worked because it happened to rank the other way.
+	got := collapseSuperseded([]*AppCard{v3, v1, other})
 
 	if len(got) != 2 {
 		t.Fatalf("got %d cards, want the older generation folded away: %+v", len(got), got)
@@ -91,7 +96,7 @@ func TestCollapseDoesNotNest(t *testing.T) {
 	v2 := &AppCard{Path: "gno.land/r/x/b", Name: "B", Supersedes: []string{"gno.land/r/x/a"}}
 	v3 := &AppCard{Path: "gno.land/r/x/c", Name: "C", Supersedes: []string{"gno.land/r/x/b"}}
 
-	got := collapseSuperseded([]*AppCard{v1, v2, v3})
+	got := collapseSuperseded([]*AppCard{v3, v2, v1})
 
 	if len(got) != 1 || got[0].Name != "C" {
 		t.Fatalf("got %+v, want only the newest", got)
