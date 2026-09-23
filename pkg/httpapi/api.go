@@ -31,6 +31,11 @@ type API struct {
 	analyzer *analyzer.Analyzer
 	health   *healthTracker
 
+	// routes is the API surface, recorded by RegisterRoutes as it registers
+	// each one, and served by /api/endpoints. Written once at startup before
+	// any request can arrive, read-only afterwards.
+	routes []Endpoint
+
 	// registry is the curated data that cannot be derived from a chain. Parsed
 	// once at construction: it is embedded in the binary, so a failure here is
 	// a build problem rather than a runtime one.
@@ -838,7 +843,14 @@ func (a *API) HandleFunctionCallHeatmap(w http.ResponseWriter, r *http.Request) 
 // Endpoints that close over build-time values (/api/version) or over process
 // state (/api/live, the SPA) stay in run().
 
-func (a *API) RegisterRoutes(mux *http.ServeMux) {
+func (a *API) RegisterRoutes(serveMux *http.ServeMux) {
+	// Shadows the parameter so every mux.HandleFunc below both registers the
+	// route and records it for /api/endpoints. See api_endpoints.go: the point
+	// is that adding a route cannot forget to document itself.
+	a.routes = nil
+	mux := routeRecorder{mux: serveMux, routes: &a.routes}
+
+	mux.HandleFunc("GET /api/endpoints", a.HandleEndpoints)
 	mux.HandleFunc("GET /api/stats", a.HandleStats)
 	mux.HandleFunc("GET /api/pulse", a.HandlePulse)
 	mux.HandleFunc("GET /api/realms", a.HandleRealms)
@@ -856,6 +868,7 @@ func (a *API) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/txs", a.HandleTxs)
 	mux.HandleFunc("GET /api/address/{addr}", a.HandleAddress)
 	mux.HandleFunc("GET /api/search", a.HandleSearch)
+	mux.HandleFunc("GET /api/code/search", a.HandleCodeSearch)
 	mux.HandleFunc("GET /api/symbols/search", a.HandleSymbolSearch)
 	mux.HandleFunc("GET /api/symbols/status", a.HandleSymbolIndexStatus)
 	mux.HandleFunc("GET /api/deps/{path...}", a.HandleDeps)

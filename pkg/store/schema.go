@@ -939,7 +939,16 @@ func initSchema(db *sql.DB) error {
 		-- sorting a page's worth of rows on every request.
 		CREATE INDEX IF NOT EXISTS idx_calls_net_pkg_height ON calls(network, pkg_path, block_height DESC);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// The code search index, separately because it is a virtual table and a
+	// CREATE VIRTUAL TABLE cannot share a statement batch with the rest.
+	if _, err := db.Exec(codeIndexSchema); err != nil {
+		return fmt.Errorf("create code index: %w", err)
+	}
+	return nil
 }
 
 // Close waits for background work to finish before closing the handle, so no
