@@ -656,6 +656,20 @@ func (a *API) govDAORelatedCalls(ctx context.Context, network string, id int) []
 // client but genuinely no gov/dao activity should not look identical to one
 // this instance cannot reach.
 
+// HandleDeps answers "what does this import" (the default) and "what imports
+// this" (?dir=dependents), as an adjacency map keyed by package path.
+//
+// ?depth=N caps how many hops out from the subject the answer walks, and the
+// two directions default differently on purpose:
+//
+//   - imports defaults to unbounded, because an import closure is what the
+//     package actually is. Every one of those packages runs when this one
+//     runs, however deep it sits.
+//   - dependents defaults to 1, because the second hop is not about this
+//     package at all. "Who uses me" is one question; "who uses the people who
+//     use me" is a question about them, and mixing the two put 315 edges on
+//     p/nt/ufmt/v0's graph that belonged to somebody else (see
+//     GetReverseGraph). ?depth=0 asks for the old unbounded walk.
 func (a *API) HandleDeps(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
 	path := "gno.land/" + r.PathValue("path")
@@ -667,7 +681,16 @@ func (a *API) HandleDeps(w http.ResponseWriter, r *http.Request) {
 
 	switch direction {
 	case "dependents":
-		graph, err = a.db.GetReverseGraph(network, path)
+		depth := defaultReverseDepth
+		if raw := r.URL.Query().Get("depth"); raw != "" {
+			n, convErr := strconv.Atoi(raw)
+			if convErr != nil || n < 0 {
+				jsonError(w, "depth must be a non-negative integer (0 means unbounded)", 400)
+				return
+			}
+			depth = n
+		}
+		graph, err = a.db.GetReverseGraph(network, path, depth)
 	default:
 		graph, err = a.db.GetDependencyGraph(network, path)
 	}
@@ -678,6 +701,11 @@ func (a *API) HandleDeps(w http.ResponseWriter, r *http.Request) {
 	}
 	JSONResponse(w, graph)
 }
+
+// defaultReverseDepth is one hop, and the funnel on the deps tab is drawn at
+// exactly this depth. Changing it changes what every existing ?dir=dependents
+// link means, so it is named rather than written as a literal in the handler.
+const defaultReverseDepth = 1
 
 func fetchBalance(ctx context.Context, addr, rpcURL string) string {
 	if rpcURL == "" {

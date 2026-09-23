@@ -79,7 +79,11 @@ const PAGES = [
   ['storage', '/storage?network=alpha&group=namespace'],
   ['storage-payer', '/storage?network=alpha&group=payer&order=size'],
   ['realm-detail', `/realm/${HUB_ROUTE}`],
+  // The funnel, plain and sized. The second is the one worth reviewing: a
+  // dependency graph's rows are only readable if the node pitch tracks the
+  // node size, and that only goes wrong once something is scaled by a metric.
   ['realm-deps', `/realm/${HUB_ROUTE}?tab=deps`],
+  ['realm-deps-sized', `/realm/${HUB_ROUTE}?network=alpha&tab=deps&gsize=importers&gscale=log`],
   ['realm-source', `/realm/${HUB_ROUTE}?tab=source`],
   // The two-column layout: a package with enough declarations to need a symbol
   // outline beside them. `realm-docs` above is the one-column case.
