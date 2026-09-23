@@ -32,6 +32,14 @@ test('the tip stays on screen at the bottom of a long page', async ({ page }) =>
   await page.goto('/blocks');
   await settle(page);
 
+  // The pointer has to be over the content. page.mouse starts at (0,0), which
+  // is the nav rail, and the rail has its own scroll: ~994px of links against
+  // a viewport of 1000 here, so it overflows and swallows the wheel on any
+  // window shorter than that. Measured on main, 2026-09-23: at 900, 800 and
+  // 720px tall the rail overflows and a wheel at (0,0) leaves scrollY at 0,
+  // which is every laptop. This test was passing on six pixels of headroom and
+  // was asserting the rail's height, not the page's scroll.
+  await page.mouse.move(700, 500);
   await page.mouse.wheel(0, 40_000);
   await page.waitForFunction(() => window.scrollY > 200);
 
