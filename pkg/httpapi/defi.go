@@ -52,6 +52,46 @@ const coinFlowMaxLimit = 5000
 // tokenFlowLimit is the same bound for the GRC20 side.
 const tokenFlowLimit = 500
 
+// counterpartyLimit bounds the collapsed view of the same legs.
+//
+// A graph is not a table and does not get more informative past a few dozen
+// nodes; it gets unreadable. Ranked by gross volume and cut here, with the
+// full count reported beside it so a reader knows a tail was left out rather
+// than guessing from the picture.
+const counterpartyLimit = 50
+
+// counterparty is one other end of the realm's money, with the two directions
+// kept apart.
+//
+// The same legs as Flows, collapsed. It exists because the table answers "what
+// happened" and cannot answer "who", which on anything defi-shaped is the
+// question: r/.../bubblerumble3 has 3,095 legs and twelve counterparties, and
+// only the second number is a thing a person can hold in their head.
+//
+// Computed over every leg the walk returned, never over the page, for the same
+// reason DerivedUgnot is: a per-counterparty total summed over 500 of 3,095
+// legs is wrong for exactly the heaviest counterparties, which are the ones a
+// reader is looking at.
+type counterparty struct {
+	// Address is the other end. Empty means the chain itself (a fee collector,
+	// a genesis allocation), not a missing value.
+	Address string `json:"address"`
+	// Sent is what this account put into the realm; Received is what the realm
+	// paid it. Kept apart rather than netted, because an account that moved
+	// 400 GNOT each way is not the same actor as one that never moved any, and
+	// a single net figure cannot tell them apart.
+	Sent     int64 `json:"sent"`
+	Received int64 `json:"received"`
+	// Net is Received minus Sent: this account's own profit and loss, not the
+	// realm's. The sign is the opposite of coinFlow.Amount's, which is written
+	// from the realm's point of view, and getting the two confused turns a
+	// player who is up into one who is down.
+	Net       int64  `json:"net"`
+	Legs      int    `json:"legs"`
+	FirstSeen string `json:"first_seen,omitempty"`
+	LastSeen  string `json:"last_seen,omitempty"`
+}
+
 type coinFlow struct {
 	TxHash      string `json:"tx_hash"`
 	BlockHeight int    `json:"block_height"`
@@ -104,6 +144,12 @@ type realmDefiResponse struct {
 	FlowsTotal  int        `json:"flows_total"`
 	FlowsOffset int        `json:"flows_offset"`
 	Flows       []coinFlow `json:"flows"`
+
+	// Counterparties is the same history collapsed by who was at the other
+	// end, newest-heaviest first, and CounterpartiesTotal is how many there
+	// were before the cut. Always over every leg, never over the page above.
+	Counterparties      []counterparty `json:"counterparties"`
+	CounterpartiesTotal int            `json:"counterparties_total"`
 
 	Tokens     []tokenPositionRow    `json:"tokens"`
 	TokenFlows []store.TokenTransfer `json:"token_flows"`
@@ -172,6 +218,10 @@ func (a *API) HandleRealmDefi(w http.ResponseWriter, r *http.Request) {
 		resp.FlowsOffset = offset
 		resp.FlowsShown = len(page)
 		resp.Flows = page
+
+		parties, total := counterpartiesFor(flows)
+		resp.Counterparties = parties
+		resp.CounterpartiesTotal = total
 	}
 
 	positions, err := a.db.TokenPositions(network, addr)
@@ -285,4 +335,65 @@ func coinFlowsFor(txs []indexer.Transaction, addr, depositAddr string) ([]coinFl
 		return flows[i].BlockHeight > flows[j].BlockHeight
 	})
 	return flows, net
+}
+
+// counterpartiesFor collapses the legs by who was at the other end.
+//
+// Banker legs only, which is the same rule DerivedUgnot follows. The storage
+// deposit account is a different account with a different story (the storage
+// tab draws it), and folding its legs in here would attribute a deposit to the
+// realm's treasury. In practice it contributes nothing at all: the charge and
+// the refund both go through SendCoinsUnrestricted, which emits no event.
+//
+// Returns the top counterpartyLimit by gross volume, and the total count before
+// the cut.
+func counterpartiesFor(flows []coinFlow) ([]counterparty, int) {
+	byAddr := map[string]*counterparty{}
+	for _, f := range flows {
+		if f.Account != "banker" {
+			continue
+		}
+		c := byAddr[f.Counterparty]
+		if c == nil {
+			c = &counterparty{Address: f.Counterparty}
+			byAddr[f.Counterparty] = c
+		}
+		// Amount is signed from the realm's point of view: positive is the
+		// realm receiving, which is this account sending.
+		if f.Amount >= 0 {
+			c.Sent += f.Amount
+		} else {
+			c.Received += -f.Amount
+		}
+		c.Legs++
+		// The flows are newest first, so the first time an address is seen is
+		// its last activity and the last time is its first.
+		if c.LastSeen == "" {
+			c.LastSeen = f.BlockTime
+		}
+		if f.BlockTime != "" {
+			c.FirstSeen = f.BlockTime
+		}
+	}
+
+	out := make([]counterparty, 0, len(byAddr))
+	for _, c := range byAddr {
+		c.Net = c.Received - c.Sent
+		out = append(out, *c)
+	}
+	// Gross, not net: an account that moved a lot in both directions is a major
+	// counterparty even when it comes out level, and ranking by net would bury
+	// it under someone who moved a thousandth as much one way.
+	gross := func(c counterparty) int64 { return c.Sent + c.Received }
+	sort.SliceStable(out, func(i, j int) bool {
+		if gross(out[i]) != gross(out[j]) {
+			return gross(out[i]) > gross(out[j])
+		}
+		return out[i].Address < out[j].Address
+	})
+	total := len(out)
+	if len(out) > counterpartyLimit {
+		out = out[:counterpartyLimit]
+	}
+	return out, total
 }
