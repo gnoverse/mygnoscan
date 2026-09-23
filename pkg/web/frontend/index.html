@@ -2342,10 +2342,7 @@ function onNetworkChange() {
   // network switch resets it.
   const transferGraph = DASHBOARDS.flatMap(s => s.charts).find(c => c.id === 'transfer-graph');
   if (transferGraph && transferGraph.state) transferGraph.state.ego = null;
-  const params = new URLSearchParams(window.location.search);
-  if (n && n !== 'all') { params.set('network', n); } else { params.delete('network'); }
-  const newUrl = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
-  history.replaceState(null, '', newUrl);
+  urlSetParam('network', n === 'all' ? '' : n);
   renderFooterIndexer();
   renderNetworkSwatch();
   refreshHealthChip();
