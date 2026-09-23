@@ -13790,7 +13790,15 @@ function defiGraphNodes(d, parties) {
     name: (d.path || '').split('/').pop(),
     symbolSize: 46,
     itemStyle: { color: '#4ecdc4' },
-    label: { show: true, color: '#0a0a0a', fontWeight: 'bold', fontSize: 11, position: 'inside' },
+    // Below the node, not inside it. A realm's leaf name is as long as the
+    // deployer chose ("bubblerumble3" is thirteen characters) and ECharts
+    // clips an inside label to the symbol rather than growing it, so the one
+    // node the picture is centred on rendered as "...blerumbl". Verified on
+    // mainnet 2026-09-23.
+    label: {
+      show: true, color: '#4ecdc4', fontWeight: 'bold', fontSize: 11,
+      position: 'bottom', distance: 6,
+    },
     _lines: [d.path, fmtGnotAmount(d.live_ugnot || 0) + ' held'],
   }];
   top.forEach(c => {
