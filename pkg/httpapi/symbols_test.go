@@ -12,7 +12,7 @@ import (
 
 func seedSymbols(t *testing.T, db *store.DB) {
 	t.Helper()
-	if err := db.ReplaceSymbols("alpha", "gno.land/p/nt/avl/v0", "fp", []store.SymbolRow{
+	if err := db.ReplaceSymbols("alpha", "gno.land/p/nt/avl/v0", "fp", "", []store.SymbolRow{
 		{Kind: "func", Name: "IterateByOffset", Signature: "func IterateByOffset(o, n int)",
 			Doc: "IterateByOffset walks from an offset. It stops after n.", Exported: true, File: "avl.gno", Line: 12},
 		{Kind: "type", Name: "Tree", Signature: "type Tree struct{...}", Exported: true},
