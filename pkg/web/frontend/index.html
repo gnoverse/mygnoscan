@@ -12319,6 +12319,10 @@ async function loadRealmDetail(path, initialTab) {
       const depsEl = clear('tab-deps'); if (activeTab === 'deps') depsEl.classList.add('active'); else depsEl.classList.remove('active');
       skeletonBlock(depsEl);
       const depsPath = path.replace('gno.land/', '');
+      // Before the fetch, not after: a link that says "sized by gas, shared
+      // callers" needs the caller data, and restoring the controls afterwards
+      // would draw the default graph and then throw it away.
+      depGraphApplyURL(new URLSearchParams(window.location.search));
       (async () => {
         let imports, dependents;
         try {
@@ -12388,13 +12392,25 @@ function buildDepTree(title, graph, root, arrowHint) {
 
   // The arrow annotation was previously unlabelled, which left readers guessing
   // whether it meant files, call sites or aliases.
-  div.appendChild(el('div', {
-    style: { color: 'var(--fg2)', fontSize: '11px', marginBottom: '8px' }
-  }, '\u2192 ' + arrowHint));
+  //
+  // Printed only when a row actually carries a second line. The dependents
+  // side is fetched one hop deep now (the second hop is a fact about somebody
+  // else, see GetReverseGraph), so its rows have no onward list and a hint
+  // promising one would be describing a thing that is not there.
+  const anyOnward = direct.some(pkg => ((graph || {})[pkg] || []).some(d => d !== root));
+  if (anyOnward) {
+    div.appendChild(el('div', {
+      style: { color: 'var(--fg2)', fontSize: '11px', marginBottom: '8px' }
+    }, '\u2192 ' + arrowHint));
+  }
 
   for (const pkg of direct) {
     const item = el('div', { style: { marginBottom: '8px' } });
-    item.appendChild(link(pkg, () => navigate('/realm/' + pkg.replace('gno.land/', ''))));
+    // Through depGraphHref, like the graph's own nodes: these rows sit under
+    // the picture, and a reader following one of them is still walking the
+    // dependency tree. Landing on the info tab is a dead end they have to
+    // click back out of.
+    item.appendChild(link(pkg, () => navigate(depGraphHref(pkg))));
 
     // What this one reaches in turn, minus the root: an edge back to the realm
     // being viewed is the reverse relationship, not a new one.
@@ -12404,7 +12420,7 @@ function buildDepTree(title, graph, root, arrowHint) {
       sub.append('\u2192 ');
       onward.forEach((d, i) => {
         if (i > 0) sub.append(', ');
-        sub.appendChild(link(d.split('/').slice(-1)[0], () => navigate('/realm/' + d.replace('gno.land/', ''))));
+        sub.appendChild(link(d.split('/').slice(-1)[0], () => navigate(depGraphHref(d))));
       });
       item.appendChild(sub);
     }
@@ -14823,6 +14839,13 @@ let _depGraph = {
   // mainnet on 2026-09-22, 307 of 348 contracts carry an import edge and 20
   // carry a shared-caller edge, because only 35 have ever been called at all.
   links: 'imports',
+  // layout: how the nodes are positioned. `funnel` puts the direction on the
+  // y axis (who imports this above, what it imports below, unbounded depth)
+  // and is the default because a dependency graph's direction is the thing it
+  // is about, and a force simulation cannot show it. `force` is the old view,
+  // kept because a dense graph's clusters are easier to see when the physics
+  // finds them than when they are flattened into rows.
+  layout: 'funnel',
   // period windows the shared-caller query and the metric values. Deliberately
   // not the same control as `window` above, which filters the import graph down
   // to what saw activity: one asks "over which period", the other asks "drop
@@ -14852,6 +14875,70 @@ function depGraphNetwork() { return _depGraph.network || getNetwork(); }
 function depGraphMetricsKey() { return depGraphNetwork() + '|' + _depGraph.period; }
 function depGraphPartnersKey() { return depGraphNetwork() + '|' + _depGraph.period + '|' + _depGraph.center; }
 
+// The graph's controls live in the URL.
+//
+// Three things need that, and the third is the one this was built for. A
+// reload should not throw the reader's picture away; a shared link should open
+// the picture that was shared; and above all, clicking a node should land on
+// that package's own graph drawn exactly the same way. Without it, every click
+// resets to the default view and walking the tree is impossible, which is what
+// depGraphHref below fixes.
+//
+// Namespaced with a `g` because the realm page's other tabs already own the
+// obvious names: the calls tab writes `window`, and a click-through URL
+// carries both tabs' state at once.
+//
+// Every entry resolves to '' at its default, and urlSetParams deletes those,
+// so a reader who touches nothing leaves the address bar alone.
+const DEP_GRAPH_PARAMS = {
+  glayout: { read: () => _depGraph.layout, def: 'funnel', apply: v => { if (v === 'funnel' || v === 'force') _depGraph.layout = v; } },
+  glinks: { read: () => _depGraph.links, def: 'imports', apply: v => { if (CONTRACT_EDGE_KINDS[v]) _depGraph.links = v; } },
+  gsize: { read: () => _depGraph.metric, def: '', apply: v => { if (CONTRACT_METRICS[v]) _depGraph.metric = v; } },
+  gscale: { read: () => _depGraph.scale, def: 'linear', apply: v => { if (v === 'log' || v === 'linear') _depGraph.scale = v; } },
+  gperiod: { read: () => _depGraph.period, def: 'all', apply: v => { if (CONTRACT_WINDOWS.includes(v)) _depGraph.period = v; } },
+  gwin: { read: () => _depGraph.window, def: '', apply: v => { if (ACTIVITY_WINDOWS.includes(v) && v !== 'all') _depGraph.window = v; } },
+  gdeps: { read: () => (_depGraph.deps ? '1' : ''), def: '', apply: v => { _depGraph.deps = v === '1'; } },
+};
+
+function depGraphParams() {
+  const out = {};
+  for (const [key, spec] of Object.entries(DEP_GRAPH_PARAMS)) {
+    const v = spec.read();
+    out[key] = (v == null || String(v) === spec.def) ? '' : String(v);
+  }
+  return out;
+}
+
+// Called from the control handlers and not from renderDepGraph, which also
+// runs for a reader sitting on the info tab: writing the graph's parameters
+// into the URL of a page whose graph nobody has looked at is noise in the
+// address bar and in the reader's history.
+function depGraphSyncURL() { urlSetParams(depGraphParams()); }
+
+// depGraphApplyURL restores the controls from a link before the first fetch,
+// so the tab loads the data the restored controls need rather than loading the
+// default view and then reloading it.
+function depGraphApplyURL(params) {
+  if (!params) return;
+  for (const [key, spec] of Object.entries(DEP_GRAPH_PARAMS)) {
+    const raw = params.get(key);
+    if (raw !== null && raw !== '') spec.apply(raw);
+  }
+}
+
+// depGraphHref: the same package page, on the same tab, with the same graph.
+// This is what makes the picture walkable, and it is why the parameters exist.
+function depGraphHref(path) {
+  const q = new URLSearchParams();
+  const net = getNetwork();
+  if (net && net !== 'all') q.set('network', net);
+  q.set('tab', 'deps');
+  for (const [key, value] of Object.entries(depGraphParams())) {
+    if (value) q.set(key, value);
+  }
+  return '/realm/' + String(path).replace('gno.land/', '') + '?' + q.toString();
+}
+
 function depGraphControls() {
   const bar = el('div', {
     id: 'dep-graph-controls',
@@ -14869,20 +14956,36 @@ function depGraphControls() {
     contractPill(CONTRACT_EDGE_KINDS[k].label, _depGraph.links === k, () => {
       if (_depGraph.links === k) return;
       _depGraph.links = k;
+      depGraphSyncURL();
       reloadDepGraph();
     }))));
+
+  // Layout, in import mode only. Shared callers are symmetric, so there is no
+  // up and no down to lay out and a funnel pill there would be a control that
+  // silently does nothing.
+  if (_depGraph.links === 'imports') {
+    bar.appendChild(contractControlGroup('layout', ['funnel', 'force'].map(k =>
+      contractPill(k, _depGraph.layout === k, () => {
+        if (_depGraph.layout === k) return;
+        _depGraph.layout = k;
+        depGraphSyncURL();
+        renderDepGraph(_depGraph.imports, _depGraph.dependents, _depGraph.center);
+      }))));
+  }
 
   // Node size. "uniform" first, because it is the default and because a reader
   // who has sized the graph by something needs a way back that is not a reload.
   const sizePills = [contractPill('uniform', !_depGraph.metric, () => {
     if (!_depGraph.metric) return;
     _depGraph.metric = null;
+    depGraphSyncURL();
     reloadDepGraph();
   })];
   for (const k of Object.keys(CONTRACT_METRICS)) {
     sizePills.push(contractPill(CONTRACT_METRICS[k].label, _depGraph.metric === k, () => {
       if (_depGraph.metric === k) return;
       _depGraph.metric = k;
+      depGraphSyncURL();
       reloadDepGraph();
     }));
   }
@@ -14895,6 +14998,7 @@ function depGraphControls() {
       contractPill(k, _depGraph.scale === k, () => {
         if (_depGraph.scale === k) return;
         _depGraph.scale = k;
+        depGraphSyncURL();
         renderDepGraph(_depGraph.imports, _depGraph.dependents, _depGraph.center);
       }))));
   }
@@ -14909,6 +15013,7 @@ function depGraphControls() {
       contractPill(w, _depGraph.period === w, () => {
         if (_depGraph.period === w) return;
         _depGraph.period = w;
+        depGraphSyncURL();
         reloadDepGraph();
       }))));
   }
@@ -14918,6 +15023,7 @@ function depGraphControls() {
   // there because somebody called it, so the filter has nothing left to remove.
   if (_depGraph.links === 'imports') {
     bar.appendChild(contractControlGroup('active', activityPills(_depGraph, () => {
+      depGraphSyncURL();
       reloadDepGraph();
     }, { offLabel: 'off' })));
   }
@@ -15017,12 +15123,11 @@ async function reloadDepGraph() {
 // one realm's dependencies that hides the realm because nobody called it today
 // is answering a question nobody asked.
 //
-// Direction matters here in a way it does not on the contracts map. The
-// `imports` half is stored as "pkg imports each of these"; the `dependents`
-// half comes from the reverse query and is stored as "each of these imports
-// pkg", so the closure has to walk it the other way round or it would keep
-// everything that depends on an active package rather than everything an
-// active package depends on.
+// Direction matters here in a way it does not on the contracts map: the
+// closure has to walk "what this depends on", not "what depends on this", or
+// it would keep everything downstream of an active package rather than
+// everything an active package stands on. Both halves of the graph are built
+// source-imports-target above, so the links can be walked as they are.
 function filterDepGraphNodes(nodes, links, centerPath) {
   if (!_depGraph.window || !_depGraph.active) return null;
   const kept = new Set([centerPath]);
@@ -15030,10 +15135,180 @@ function filterDepGraphNodes(nodes, links, centerPath) {
     if (_depGraph.active.has(id)) kept.add(id);
   }
   if (!_depGraph.deps) return kept;
-  const importEdges = links.map(l => l.type === 'dependent'
-    ? { source: l.target, target: l.source }
-    : { source: l.source, target: l.target });
-  return expandThroughImports(kept, importEdges);
+  return expandThroughImports(kept, links);
+}
+
+// --- The funnel ------------------------------------------------------------
+//
+// A dependency graph has a direction, and a force simulation throws it away:
+// the physics settles wherever it settles, and "who uses me" ends up wherever
+// there was room. The funnel puts the direction on the y axis and never moves
+// it. Every arrow points down, and down means "imports": the packages above
+// the centre import it, the centre imports the row below it, and so on to the
+// bottom of the tree.
+//
+// That is also why the two halves are asked for at different depths, which is
+// not an asymmetry for its own sake. Downward is unbounded because an import
+// closure is what a package is: everything below runs when it runs. Upward is
+// one hop because the second hop is a fact about somebody else (see
+// GetReverseGraph in pkg/store/packages.go).
+
+// Green above, because "who uses me" is a different kind of fact from "what I
+// stand on" and position alone is not enough when the reader has panned. Not
+// taken from DEPTH_COLORS: every one of those means a distance in the
+// downward tree, and reusing one would say this row is three hops away.
+const FUNNEL_UP_COLOR = '#98c379';
+// The row for nodes the two passes never reached. Under the activity filter a
+// package can survive while every path from it to the centre does not, and
+// calling that "four levels down" would be inventing a distance. Grey, in a
+// row of its own, and the legend says what it is.
+const FUNNEL_ORPHAN = 9999;
+const FUNNEL_ORPHAN_COLOR = '#888';
+function funnelColor(d) {
+  if (d.level === FUNNEL_ORPHAN) return FUNNEL_ORPHAN_COLOR;
+  if (d.level < 0) return FUNNEL_UP_COLOR;
+  return depthColor(Math.max(0, d.level));
+}
+
+// depFunnelLevels: which row each node belongs in, as a signed distance from
+// the centre. Negative is above (it imports the centre, directly or through
+// another package above), positive is below (the centre imports it).
+//
+// Two directed breadth-first passes over the same edges, because the graph is
+// directed and the undirected BFS the force view uses for its colours cannot
+// tell the two sides apart. The downward pass runs first and wins every tie: a
+// package the centre genuinely depends on belongs under it, and a node placed
+// in two rows would be drawn twice.
+function depFunnelLevels(nodeArr, links, centerPath) {
+  const outgoing = new Map(), incoming = new Map();
+  for (const l of links) {
+    const src = typeof l.source === 'object' ? l.source.id : l.source;
+    const tgt = typeof l.target === 'object' ? l.target.id : l.target;
+    if (!outgoing.has(src)) outgoing.set(src, []);
+    if (!incoming.has(tgt)) incoming.set(tgt, []);
+    outgoing.get(src).push(tgt);
+    incoming.get(tgt).push(src);
+  }
+
+  const level = new Map([[centerPath, 0]]);
+  const walk = (adj, step) => {
+    let frontier = [centerPath];
+    while (frontier.length) {
+      const next = [];
+      for (const id of frontier) {
+        for (const nb of (adj.get(id) || [])) {
+          if (level.has(nb)) continue;
+          level.set(nb, level.get(id) + step);
+          next.push(nb);
+        }
+      }
+      frontier = next;
+    }
+  };
+  walk(outgoing, 1);
+  walk(incoming, -1);
+
+  // Anything neither pass reached is not connected to the centre through the
+  // edges that survived the activity filter. It still gets drawn, in a row of
+  // its own under the tree, rather than silently sharing the centre's row and
+  // claiming a relationship it does not have.
+  for (const n of nodeArr) {
+    if (!level.has(n.id)) level.set(n.id, FUNNEL_ORPHAN);
+  }
+  return level;
+}
+
+// layoutFunnel writes x and y onto every node and returns the height the rows
+// actually needed.
+//
+// Rows wrap. p/nt/ufmt/v0 has 131 direct dependents on mainnet, and 131 nodes
+// on one line 800px wide are six pixels apart: unreadable, and unlabelled,
+// because the label pass drops everything that collides. A row that does not
+// fit is laid out as several lines at the same level instead, which keeps the
+// row's meaning ("these all import the centre") while giving each node the
+// width it needs.
+function layoutFunnel(nodeArr, links, centerPath, width, nodeSize) {
+  const level = depFunnelLevels(nodeArr, links, centerPath);
+  for (const n of nodeArr) n.level = level.get(n.id);
+
+  const rows = new Map();
+  for (const n of nodeArr) {
+    if (!rows.has(n.level)) rows.set(n.level, []);
+    rows.get(n.level).push(n);
+  }
+  const levels = Array.from(rows.keys()).sort((a, b) => a - b);
+
+  // Neighbours in the adjacent row, for the ordering pass below.
+  const neighbours = new Map();
+  const note = (a, b) => {
+    if (!neighbours.has(a)) neighbours.set(a, []);
+    neighbours.get(a).push(b);
+  };
+  for (const l of links) {
+    const src = typeof l.source === 'object' ? l.source.id : l.source;
+    const tgt = typeof l.target === 'object' ? l.target.id : l.target;
+    note(src, tgt);
+    note(tgt, src);
+  }
+
+  // Order each row by where its neighbours sit in the row nearer the centre,
+  // working outward in both directions. One barycentre sweep, not the repeated
+  // ones a full Sugiyama does: this graph is two or three rows deep in almost
+  // every case, and the second sweep has nothing left to improve.
+  const placed = new Map(); // id -> its index in its own row
+  const orderRow = (lvl, towards) => {
+    const row = rows.get(lvl);
+    row.sort((a, b) => {
+      const ba = barycentre(a), bb = barycentre(b);
+      return ba - bb || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    });
+    row.forEach((n, i) => placed.set(n.id, i));
+    function barycentre(n) {
+      const xs = [];
+      for (const nb of (neighbours.get(n.id) || [])) {
+        const lv = level.get(nb);
+        if (lv === towards && placed.has(nb)) xs.push(placed.get(nb));
+      }
+      // No placed neighbour means nothing is pulling this node either way, so
+      // it sorts to the middle rather than to the left edge, where a run of
+      // unattached nodes would otherwise pile up.
+      if (!xs.length) return (rows.get(towards) || []).length / 2;
+      return xs.reduce((a, b) => a + b, 0) / xs.length;
+    }
+  };
+  if (rows.has(0)) { rows.get(0).forEach((n, i) => placed.set(n.id, i)); }
+  for (const lvl of levels.filter(l => l > 0).sort((a, b) => a - b)) orderRow(lvl, lvl - 1);
+  for (const lvl of levels.filter(l => l < 0).sort((a, b) => b - a)) orderRow(lvl, lvl + 1);
+
+  // MIN_CELL is set by the labels, not by the dots. A funnel label is centred
+  // under its node at a constant 10px, and a package's last two path segments
+  // run to sixty pixels or more, so a pitch narrower than this puts every
+  // label over its neighbour and the declutter pass answers by dropping half
+  // the row. Wrapping one more line is the cheaper trade.
+  const PAD_X = 36, PAD_Y = 28, ROW_GAP = 36, LINE_GAP = 26, MIN_CELL = 66;
+  const usable = Math.max(120, width - 2 * PAD_X);
+  let y = PAD_Y;
+  for (const lvl of levels) {
+    const row = rows.get(lvl);
+    const r = Math.max(...row.map(nodeSize));
+    const cell = Math.max(MIN_CELL, 2 * r + 12);
+    const perLine = Math.max(1, Math.floor(usable / cell));
+    const lineH = 2 * r + LINE_GAP;
+    for (let i = 0; i < row.length; i++) {
+      const lineIdx = Math.floor(i / perLine);
+      const inLine = i % perLine;
+      const lineLen = Math.min(perLine, row.length - lineIdx * perLine);
+      // Each line is centred on its own width rather than stretched to the
+      // full one, so the last, shorter line of a wrapped row sits under the
+      // others instead of being spread thin across the whole canvas.
+      const x0 = width / 2 - (lineLen - 1) * cell / 2;
+      row[i].x = x0 + inLine * cell;
+      row[i].y = y + lineIdx * lineH + lineH / 2;
+    }
+    const lines = Math.ceil(row.length / perLine);
+    y += lines * lineH + ROW_GAP;
+  }
+  return { height: Math.ceil(y + PAD_Y - ROW_GAP), levels, rows };
 }
 
 function renderDepGraph(imports, dependents, centerPath) {
@@ -15064,11 +15339,18 @@ function renderDepGraph(imports, dependents, centerPath) {
         links.push({ source: pkg, target: dep, type: 'imports' });
       }
     }
+    // Every edge points the same way: source imports target. The reverse
+    // endpoint answers `{imported: [importers]}`, so this half is flipped on
+    // the way in rather than drawn as it arrives. Unflipped, an arrow from the
+    // centre to a dependent read "the centre imports this", which is the exact
+    // opposite of what that edge says, and the two halves of one picture
+    // asserted opposite meanings for the same arrowhead. filterDepGraphNodes
+    // used to undo it locally; now nothing has to.
     for (const [pkg, deps] of Object.entries(dependents || {})) {
       if (!nodes.has(pkg)) nodes.set(pkg, { id: pkg, group: 'dependent', depth: 999 });
       for (const dep of deps || []) {
         if (!nodes.has(dep)) nodes.set(dep, { id: dep, group: 'dependent', depth: 999 });
-        links.push({ source: pkg, target: dep, type: 'dependent' });
+        links.push({ source: dep, target: pkg, type: 'dependent' });
       }
     }
   }
@@ -15184,8 +15466,10 @@ function renderDepGraph(imports, dependents, centerPath) {
   }
 
   const width = container.clientWidth || 800;
-  const height = Math.max(600, window.innerHeight - 300);
-  container.style.minHeight = height + 'px';
+  // Mutable, because the funnel decides its own height: a package with 131
+  // dependents needs the rows it needs, and clipping them to the viewport
+  // would hide the row the reader opened the tab for.
+  let height = Math.max(600, window.innerHeight - 300);
 
   // Node size, by the same rule and the same formula as the contracts map.
   //
@@ -15221,11 +15505,47 @@ function renderDepGraph(imports, dependents, centerPath) {
   };
   const maxNodeSize = Math.max(...nodeArr.map(nodeSize));
 
+  // Which engine positions the nodes. The funnel needs a direction, and shared
+  // callers have none: "the same addresses called both" is symmetric, so there
+  // is no up and no down to lay out. Caller mode is force, always, and the
+  // layout pills say so by not being there.
+  const funnel = _depGraph.layout === 'funnel' && !callerMode;
+  let funnelLevels = null;
+  if (funnel) {
+    const laid = layoutFunnel(nodeArr, links, centerPath, width, nodeSize);
+    funnelLevels = laid.levels;
+    // The funnel is exactly as tall as its rows, and the 600px floor does not
+    // apply to it. That floor exists to stop a force simulation settling in a
+    // letterbox; a deterministic layout has no such problem, and honouring it
+    // put r/hub/core's four-row picture at the top of an 1,100px box with 800
+    // pixels of nothing under it. A graph that needs more than the viewport
+    // gets more than the viewport, and the page scrolls.
+    height = Math.max(240, laid.height);
+  }
+  container.style.minHeight = height + 'px';
+
   // Legend
   const legend = el('div', { style: { display: 'flex', gap: '16px', flexWrap: 'wrap', padding: '8px 12px', fontSize: '12px', color: 'var(--fg2)', alignItems: 'center' } });
-  for (let i = 0; i <= Math.min(maxDepth, DEPTH_COLORS.length - 1); i++) {
-    const dot = el('span', { style: { display: 'inline-block', width: '10px', height: '10px', borderRadius: '50%', background: depthColor(i), marginRight: '4px' } });
-    legend.appendChild(el('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '2px' } }, dot, i === 0 ? 'center' : 'depth ' + i));
+  const legendDot = (color, label) => {
+    const dot = el('span', { style: { display: 'inline-block', width: '10px', height: '10px', borderRadius: '50%', background: color, marginRight: '4px' } });
+    legend.appendChild(el('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '2px' } }, dot, label));
+  };
+  if (funnel) {
+    // Named by their relationship, not by a hop count, because that is what
+    // the rows mean here and a reader should not have to work out that "depth
+    // 1" above the centre and "depth 1" below it are opposite facts.
+    if (funnelLevels.some(l => l < 0)) legendDot(FUNNEL_UP_COLOR, 'imports this');
+    legendDot(depthColor(0), 'this package');
+    for (const lvl of funnelLevels.filter(l => l > 0 && l !== FUNNEL_ORPHAN)) {
+      legendDot(depthColor(lvl), lvl === 1 ? 'imported by it' : lvl + ' levels down');
+    }
+    if (funnelLevels.includes(FUNNEL_ORPHAN)) {
+      legendDot(FUNNEL_ORPHAN_COLOR, 'no path to it from here');
+    }
+  } else {
+    for (let i = 0; i <= Math.min(maxDepth, DEPTH_COLORS.length - 1); i++) {
+      legendDot(depthColor(i), i === 0 ? 'center' : 'depth ' + i);
+    }
   }
   // Shape legend
   legend.appendChild(el('span', { style: { marginLeft: '12px', borderLeft: '1px solid var(--border)', paddingLeft: '12px' } }));
@@ -15272,12 +15592,27 @@ function renderDepGraph(imports, dependents, centerPath) {
   //
   // Caller mode draws no arrow. "The same addresses called both" is symmetric,
   // and an arrowhead would assert a direction the data does not have.
+  //
+  // Keyed by colour rather than by depth, because the funnel colours a node by
+  // which side of the centre it is on and an arrow has to match the line it
+  // ends. A marker per depth cannot express "green", and an arrowhead in the
+  // wrong colour on a coloured line reads as a different kind of edge.
+  const nodeColor = funnel ? funnelColor : (d => depthColor(d.depth));
+  // A link takes the colour of what it points at: in the funnel that is always
+  // the row below, so a line leaving the green row is the colour of the thing
+  // being imported, which is the fact the edge states.
+  const linkColor = funnel ? (d => funnelColor(d.target)) : (d => depthColor(d.depth));
+  const markerId = new Map();
   const defs = svg.append('defs');
-  for (let i = 0; i <= maxDepth + 1; i++) {
-    defs.append('marker').attr('id', 'arrow-d' + i).attr('viewBox', '0 -5 10 10')
+  const arrowFor = (color) => {
+    if (markerId.has(color)) return markerId.get(color);
+    const id = 'arrow-' + markerId.size;
+    markerId.set(color, id);
+    defs.append('marker').attr('id', id).attr('viewBox', '0 -5 10 10')
       .attr('refX', 10).attr('refY', 0).attr('markerWidth', 6).attr('markerHeight', 6).attr('orient', 'auto')
-      .append('path').attr('d', 'M0,-5L10,0L0,5').attr('fill', depthColor(i));
-  }
+      .append('path').attr('d', 'M0,-5L10,0L0,5').attr('fill', color);
+    return id;
+  };
   // How far short of the target centre a line has to stop: its radius, plus the
   // arrowhead's own length where there is one (markerWidth 6 over a 10-unit
   // viewBox).
@@ -15285,20 +15620,33 @@ function renderDepGraph(imports, dependents, centerPath) {
   const headRoom = callerMode ? 0 : ARROW_LEN;
   const maxWeight = Math.max(1, d3.max(links, l => l.weight || 0) || 1);
 
-  const sim = d3.forceSimulation(nodeArr)
-    .force('link', d3.forceLink(links).id(d => d.id).distance(100))
-    .force('charge', d3.forceManyBody().strength(-250))
-    .force('center', d3.forceCenter(width / 2, height / 2))
-    // The collision radius tracked the old fixed node size. Sized nodes overlap
-    // without this, and the largest ones swallow their neighbours whole.
-    .force('collision', d3.forceCollide().radius(d => Math.max(35, nodeSize(d) + 12)));
-  // A graph of forty bubbles at forty pixels needs more room between them than
-  // one of forty dots, or the link lengths alone decide the layout and the
-  // sizing reads as crowding.
-  if (metricSpec) sim.force('link').distance(Math.max(100, maxNodeSize * 3));
+  // In force mode d3.forceLink rewrites every link's source and target from an
+  // id to the node object it names. The funnel has no simulation to do that,
+  // and trimmed() below reads d.source.x, so it is done here instead: one
+  // resolution step, whichever engine is about to draw.
+  let sim = null;
+  if (funnel) {
+    const byId = new Map(nodeArr.map(n => [n.id, n]));
+    for (const l of links) {
+      if (typeof l.source === 'string') l.source = byId.get(l.source);
+      if (typeof l.target === 'string') l.target = byId.get(l.target);
+    }
+  } else {
+    sim = d3.forceSimulation(nodeArr)
+      .force('link', d3.forceLink(links).id(d => d.id).distance(100))
+      .force('charge', d3.forceManyBody().strength(-250))
+      .force('center', d3.forceCenter(width / 2, height / 2))
+      // The collision radius tracked the old fixed node size. Sized nodes overlap
+      // without this, and the largest ones swallow their neighbours whole.
+      .force('collision', d3.forceCollide().radius(d => Math.max(35, nodeSize(d) + 12)));
+    // A graph of forty bubbles at forty pixels needs more room between them than
+    // one of forty dots, or the link lengths alone decide the layout and the
+    // sizing reads as crowding.
+    if (metricSpec) sim.force('link').distance(Math.max(100, maxNodeSize * 3));
+  }
 
   const linkEl = zoomG.append('g').selectAll('line').data(links).join('line')
-    .attr('stroke', d => depthColor(d.depth))
+    .attr('stroke', linkColor)
     .attr('stroke-opacity', 0.7)
     // In caller mode the weight is the number of addresses the two contracts
     // have in common, which is the whole quantity that mode is about: drawing
@@ -15307,21 +15655,26 @@ function renderDepGraph(imports, dependents, centerPath) {
     .attr('stroke-width', d => callerMode
       ? 1 + 5 * Math.sqrt((d.weight || 0) / maxWeight)
       : 1.5)
-    .attr('marker-end', d => callerMode ? null : 'url(#arrow-d' + d.depth + ')');
+    .attr('marker-end', d => callerMode ? null : 'url(#' + arrowFor(linkColor(d)) + ')');
 
   // Nodes: circle for p/, diamond for r/
   const nodeG = zoomG.append('g').selectAll('g').data(nodeArr).join('g')
     .style('cursor', 'pointer')
-    .on('click', (e, d) => navigate('/realm/' + d.id.replace('gno.land/', '')))
-    .call(d3.drag()
+    .on('click', (e, d) => navigate(depGraphHref(d.id)));
+  // Dragging is a simulation control: it pins a node and lets the physics
+  // re-settle around it. In the funnel the position is the answer, so a node
+  // the reader could drag out of its row would be saying something false.
+  if (sim) {
+    nodeG.call(d3.drag()
       .on('start', (e, d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
       .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; })
       .on('end', (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }));
+  }
 
   // Circle for packages
   nodeG.filter(d => !d.isRealm).append('circle')
     .attr('r', d => nodeSize(d))
-    .attr('fill', d => depthColor(d.depth))
+    .attr('fill', nodeColor)
     .attr('stroke', '#000').attr('stroke-width', 1);
 
   // Diamond for realms. Scaled by 1.28 against the circle so the two read as
@@ -15330,7 +15683,7 @@ function renderDepGraph(imports, dependents, centerPath) {
   // alone makes every realm look smaller than a package holding the same value.
   nodeG.filter(d => d.isRealm).append('polygon')
     .attr('points', d => { const s = nodeSize(d) * 1.28; return `0,${-s} ${s},0 0,${s} ${-s},0`; })
-    .attr('fill', d => depthColor(d.depth))
+    .attr('fill', nodeColor)
     .attr('stroke', '#000').attr('stroke-width', 1);
 
   // What a node is worth, on hover, because the size is a comparison and the
@@ -15339,6 +15692,10 @@ function renderDepGraph(imports, dependents, centerPath) {
   // title attribute cannot execute any of it.
   nodeG.append('title').text(d => {
     const lines = [d.id];
+    if (funnel && d.level === FUNNEL_ORPHAN) lines.push('no path to this package through the edges shown');
+    else if (funnel && d.level < 0) lines.push('imports this package');
+    else if (funnel && d.level === 1) lines.push('imported by this package');
+    else if (funnel && d.level > 1) lines.push('imported ' + d.level + ' levels down');
     if (metricSpec) lines.push(metricSpec.label + ': ' + fmtMetric(metricSpec, metricOf(d)));
     if (callerMode && d.depth > 0) {
       lines.push(fmtNum(d.shared) + ' of my ' + fmtNum((_depGraph.partners || {}).callers || 0)
@@ -15380,9 +15737,15 @@ function renderDepGraph(imports, dependents, centerPath) {
     }
   }
 
+  // Beside the node in the force view, centred under it in the funnel. A row
+  // layout puts the next node exactly where a right-hand label wants to be, so
+  // every label landed on its neighbour and the declutter pass answered by
+  // dropping half of each row. Under the node the two never compete, and a row
+  // of twenty keeps twenty names.
   const labelEl = svg.append('g').attr('pointer-events', 'none')
     .selectAll('text').data(nodeArr).join('text')
     .text(d => d.id.split('/').slice(-2).join('/'))
+    .attr('text-anchor', funnel ? 'middle' : 'start')
     .attr('font-size', LABEL_FONT).attr('fill', '#ccc');
 
   // The order the greedy pass considers labels in, which is the order that
@@ -15407,7 +15770,14 @@ function renderDepGraph(imports, dependents, centerPath) {
       // size, but the thing they sit beside is both sized by the metric and
       // scaled by the zoom. A fixed 14px put every label inside its own bubble
       // as soon as anything was sized.
-      const x = t.applyX(d.x) + nodeSize(d) * t.k + 6, y = t.applyY(d.y) + 4;
+      // A realm is drawn as a diamond at 1.28x the circle's radius, so its
+      // label has to clear that and not the radius: the centre node's name
+      // landed inside its own diamond otherwise, which is the one label on the
+      // graph that is never dropped and so never hidden.
+      const shape = nodeSize(d) * (d.isRealm ? 1.28 : 1) * t.k;
+      const beside = funnel ? 0 : shape + 6;
+      const below = funnel ? shape + LABEL_FONT + 2 : 4;
+      const x = t.applyX(d.x) + beside, y = t.applyY(d.y) + below;
       node.setAttribute('x', x);
       node.setAttribute('y', y);
 
@@ -15424,7 +15794,9 @@ function renderDepGraph(imports, dependents, centerPath) {
       // The box the text actually occupies, not just its baseline: two labels
       // one pixel apart vertically overlap on screen, and a grid keyed on the
       // baseline row alone puts them in different rows and lets both through.
-      const left = x, right = x + node.textContent.length * LABEL_FONT * LABEL_EM;
+      // Centred text grows both ways from x, so the box is not anchored at it.
+      const textW = node.textContent.length * LABEL_FONT * LABEL_EM;
+      const left = funnel ? x - textW / 2 : x, right = left + textW;
       const top = y - LABEL_FONT, bottom = y + 2;
 
       const cells = [];
@@ -15476,7 +15848,7 @@ function renderDepGraph(imports, dependents, centerPath) {
     };
   }
 
-  sim.on('tick', () => {
+  function paint() {
     linkEl.each(function (d) {
       const t = trimmed(d);
       this.setAttribute('x1', t.x1); this.setAttribute('y1', t.y1);
@@ -15484,7 +15856,13 @@ function renderDepGraph(imports, dependents, centerPath) {
     });
     nodeG.attr('transform', d => 'translate(' + d.x + ',' + d.y + ')');
     placeLabels();
-  });
+  }
+
+  // The funnel is laid out in one pass and never moves, so it paints once.
+  // Zooming still repositions the labels, which live outside the zoom group at
+  // a constant screen size, and zoom.labels above already does that.
+  if (sim) sim.on('tick', paint);
+  else paint();
 }
 
 // --- Search ---
@@ -18422,7 +18800,25 @@ function contractHover(sel, tip, get) {
     .on('mouseleave', () => tip.hide());
 }
 
-function contractOpen(d) { navigate('/realm/' + d.path.replace('gno.land/', '')); }
+// Clicking a contract on the map opens its own graph, drawn the way the map
+// was drawing it. The map's metric, scale, link mode and window are the same
+// four controls the deps tab has, so the handoff is a rename and not a
+// translation, and the reader keeps reading the same picture one level down.
+//
+// `none` is the one value that does not carry: the map can switch its edges
+// off to show the clusters alone, and a dependency graph with no edges is a
+// blank tab. It lands on imports, which is what the deps tab is for.
+function contractOpen(d) {
+  const q = new URLSearchParams();
+  const net = getNetwork();
+  if (net && net !== 'all') q.set('network', net);
+  q.set('tab', 'deps');
+  if (_contracts.edges === 'callers') q.set('glinks', 'callers');
+  if (_contracts.metric) q.set('gsize', _contracts.metric);
+  if (_contracts.scale === 'log') q.set('gscale', 'log');
+  if (_contracts.window && _contracts.window !== 'all') q.set('gperiod', _contracts.window);
+  navigate('/realm/' + d.path.replace('gno.land/', '') + '?' + q.toString());
+}
 
 // contractEdgePath draws a link as a curve that starts and ends on the two
 // bubbles' borders rather than at their centres.

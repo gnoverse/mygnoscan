@@ -595,53 +595,88 @@ func (d *DB) GetDependencyGraph(network, path string) (map[string][]string, erro
 	return graph, nil
 }
 
-// GetReverseGraph returns all packages that depend on path (recursive).
-
-func (d *DB) GetReverseGraph(network, path string) (map[string][]string, error) {
+// GetReverseGraph returns the packages that depend on path, out to maxDepth
+// hops. maxDepth 0 means unbounded, which is what this function always did.
+//
+// The cap exists because the unbounded answer is mostly not about the package
+// that was asked for. On mainnet 2026-09-23 `p/nt/ufmt/v0` has 131 direct
+// dependents and the unbounded walk returns 160 nodes and 446 edges: the extra
+// 29 packages and 315 edges are facts about ufmt's dependents' dependents, and
+// a graph drawn from them says "ufmt is connected to all this" when the edges
+// it added are somebody else's. One hop is the honest depth of "who uses me",
+// so it is what the deps tab asks for; the unbounded walk stays reachable for
+// a caller that genuinely wants the closure.
+//
+// Unlike the forward walk this one follows every edge, not just `gno.land/`
+// ones: a dependency row's package_path is always a deployed package, so there
+// is no stdlib import to skip on this side.
+func (d *DB) GetReverseGraph(network, path string, maxDepth int) (map[string][]string, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
 	graph := make(map[string][]string)
-	visited := make(map[string]bool)
+	visited := map[string]bool{}
 
-	var walk func(p string) error
-	walk = func(p string) error {
-		if visited[p] {
-			return nil
-		}
-		visited[p] = true
-
-		var rows *sql.Rows
-		var err error
-		rows, err = d.db.Query(`SELECT package_path FROM dependencies WHERE import_path = ? AND `+
-			d.networkFilter("network", network), p)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-
-		var deps []string
-		for rows.Next() {
-			var dep string
-			if err := rows.Scan(&dep); err != nil {
-				return err
+	// Breadth-first, and not the recursive closure this used to be. The old
+	// walk held a *sql.Rows open for every frame on the stack, because its
+	// `defer rows.Close()` could only fire once the whole traversal below it
+	// had finished: 160 concurrently open result sets on the ufmt query above.
+	// A queue closes each one before asking the next question, and it also
+	// makes "depth" a thing that exists rather than something to thread through
+	// recursion.
+	frontier := []string{path}
+	for depth := 0; len(frontier) > 0; depth++ {
+		var next []string
+		for _, p := range frontier {
+			if visited[p] {
+				continue
 			}
-			deps = append(deps, dep)
-		}
-		graph[p] = deps
+			visited[p] = true
 
-		for _, dep := range deps {
-			if err := walk(dep); err != nil {
-				return err
+			deps, err := d.reverseDeps(network, p)
+			if err != nil {
+				return nil, err
 			}
+			graph[p] = deps
+			next = append(next, deps...)
 		}
-		return nil
-	}
-
-	if err := walk(path); err != nil {
-		return nil, err
+		if maxDepth > 0 && depth+1 >= maxDepth {
+			// The frontier is recorded as reached but not expanded. Each node
+			// at the cap still gets its own (empty) entry below, so a reader
+			// can tell "this package has no dependents" from "we stopped
+			// looking here" only by the depth they asked for, which is the
+			// same contract the forward walk has always had at its leaves.
+			for _, p := range next {
+				if !visited[p] {
+					visited[p] = true
+					graph[p] = nil
+				}
+			}
+			break
+		}
+		frontier = next
 	}
 	return graph, nil
+}
+
+// reverseDeps is one hop: every deployed package that imports p.
+func (d *DB) reverseDeps(network, p string) ([]string, error) {
+	rows, err := d.db.Query(`SELECT package_path FROM dependencies WHERE import_path = ? AND `+
+		d.networkFilter("network", network), p)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var deps []string
+	for rows.Next() {
+		var dep string
+		if err := rows.Scan(&dep); err != nil {
+			return nil, err
+		}
+		deps = append(deps, dep)
+	}
+	return deps, rows.Err()
 }
 
 func (d *DB) GetTokenPackages(network string) ([]TokenInfo, error) {

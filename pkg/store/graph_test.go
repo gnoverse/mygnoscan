@@ -98,7 +98,7 @@ func TestDependencyGraphTerminatesOnACycle(t *testing.T) {
 func TestReverseGraphFindsDependents(t *testing.T) {
 	db := newGraphDB(t)
 
-	graph, err := db.GetReverseGraph("alpha", "gno.land/p/demo/util")
+	graph, err := db.GetReverseGraph("alpha", "gno.land/p/demo/util", 0)
 	if err != nil {
 		t.Fatalf("GetReverseGraph: %v", err)
 	}
@@ -108,6 +108,65 @@ func TestReverseGraphFindsDependents(t *testing.T) {
 	}
 	if got := graph["gno.land/p/demo/lib"]; len(got) != 1 || got[0] != "gno.land/r/demo/app" {
 		t.Errorf("lib dependents = %v, want [gno.land/r/demo/app]; the reverse walk stopped at depth 1", got)
+	}
+}
+
+// depth 1 is what the deps tab draws, and the whole point is that the second
+// hop is absent rather than merely undrawn: util's own dependents are a fact
+// about util, and lib's are a fact about lib.
+//
+// The capped frontier still appears as a key with no edges. Without that, the
+// funnel cannot tell a package it reached from one it never heard of, and lib
+// would be missing from a picture that has an edge pointing at it.
+func TestReverseGraphStopsAtTheRequestedDepth(t *testing.T) {
+	db := newGraphDB(t)
+
+	graph, err := db.GetReverseGraph("alpha", "gno.land/p/demo/util", 1)
+	if err != nil {
+		t.Fatalf("GetReverseGraph: %v", err)
+	}
+
+	if got := graph["gno.land/p/demo/util"]; len(got) != 1 || got[0] != "gno.land/p/demo/lib" {
+		t.Errorf("util dependents = %v, want [gno.land/p/demo/lib]", got)
+	}
+	edges, ok := graph["gno.land/p/demo/lib"]
+	if !ok {
+		t.Fatal("lib is missing from the depth-1 graph; the node an edge points at has to exist")
+	}
+	if len(edges) != 0 {
+		t.Errorf("lib dependents = %v at depth 1, want none: app is two hops from util", edges)
+	}
+	if _, found := graph["gno.land/r/demo/app"]; found {
+		t.Errorf("app reached the depth-1 graph: %v", graph)
+	}
+}
+
+// A cycle is legal in gno, and the reverse walk meets it the same way the
+// forward one does. Unbounded, a -> b -> a has to terminate rather than queue
+// forever.
+func TestReverseGraphTerminatesOnACycle(t *testing.T) {
+	db := newGraphDB(t)
+
+	done := make(chan map[string][]string, 1)
+	go func() {
+		g, err := db.GetReverseGraph("alpha", "gno.land/r/demo/a", 0)
+		if err != nil {
+			close(done)
+			return
+		}
+		done <- g
+	}()
+
+	select {
+	case g, ok := <-done:
+		if !ok {
+			t.Fatal("GetReverseGraph errored on a cycle")
+		}
+		if _, found := g["gno.land/r/demo/b"]; !found {
+			t.Errorf("b is missing from a's reverse graph: %v", g)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("GetReverseGraph did not return: the reverse walk is following the cycle forever")
 	}
 }
 
@@ -155,7 +214,7 @@ func TestGraphOnAnUnknownPackage(t *testing.T) {
 			return db.GetDependencyGraph("alpha", "gno.land/r/demo/nope")
 		}},
 		{"reverse", func() (map[string][]string, error) {
-			return db.GetReverseGraph("alpha", "gno.land/r/demo/nope")
+			return db.GetReverseGraph("alpha", "gno.land/r/demo/nope", 0)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
