@@ -53,10 +53,9 @@ const TABLES = [
   ['the storage table', '/storage?network=alpha', '#storage-content table', 'first claim'],
   // The home page's two windowed tables. Neither has a timestamp column of its
   // own, so the age beside the height is the only "when" either one carries.
-  // 7d because the fixture's calls sit a couple of days back and an empty
-  // table has no height to date.
-  ['the hot realms table', '/?network=alpha&window=7d', '#hot-realms', 'last call'],
-  ['the notable transfers table', '/?network=alpha&window=7d', '#hot-flows', 'block'],
+  // The fixture's recent tail is what puts rows in them at the default window.
+  ['the hot realms table', '/?network=alpha', '#hot-realms', 'last call'],
+  ['the notable transfers table', '/?network=alpha', '#hot-flows', 'block'],
 ];
 
 for (const [name, url, selector, header] of TABLES) {

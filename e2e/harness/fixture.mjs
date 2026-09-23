@@ -6,8 +6,6 @@
 // duplicating it in JavaScript would let the two drift silently.
 import { DatabaseSync } from 'node:sqlite';
 
-import { BLOCK_MS, blockTime } from './clock.mjs';
-
 export const NETWORKS = ['alpha', 'beta'];
 
 // One heavily-depended-upon realm, which is what makes the dependency graph
@@ -152,11 +150,59 @@ export const STORAGE_DEPLOYER = 'g1hogdeployer000000000000000000000000';
 // A single timestamp is merely dull in a table and fatal in a chart: every
 // time series drawn over this fixture collapsed into a single bucket, so a
 // chart that bucketed correctly and one that did not drew the same picture and
-// no assertion could tell them apart.
+// no assertion could tell them apart. One minute per block, which is roughly
+// gno.land's own cadence, and the same cadence the fake indexer's blocks use.
 //
-// The clock itself lives in harness/clock.mjs, which explains why the chain now
-// ends at roughly now instead of on a fixed date.
-export { BLOCK_MS, blockTime };
+// Deliberately a fixed date in the past, and the recent tail below is the
+// counterweight. Several tests turn on a window being *empty* (the storage
+// panel has to say it found nothing at 30d and something at 90d), which only a
+// chain older than those windows can prove. A fixture that is always recent and
+// one that is always ancient are equally untestable; this one is both.
+const GENESIS_MS = Date.UTC(2026, 7, 1, 12, 0, 0);
+export const BLOCK_MS = 60000;
+export function blockTime(height) {
+  return new Date(GENESIS_MS + height * BLOCK_MS).toISOString();
+}
+
+// --- the recent tail --------------------------------------------------------
+//
+// A slice of activity stamped relative to now rather than to GENESIS_MS, so a
+// windowed page has something to show. /api/pulse asks for the last hour, day
+// or week; against the ancient chain above it answered "nothing happened", five
+// panels rendered their empty state, and no assertion could tell that apart
+// from a broken query.
+//
+// Kept deliberately self-contained — its own library, its own two realms, its
+// own deployer, callers and token, none of them referenced anywhere else — so
+// that adding it cannot move a count some other test asserts on. Heights sit
+// far above everything else for the same reason.
+//
+// No storage events: the storage panel's empty state is asserted at 30d, and a
+// recent event would silently fill it.
+export const RECENT_BASE = 9000;
+export function recentTime(minutesAgo) {
+  return new Date(Date.now() - minutesAgo * 60000).toISOString();
+}
+
+export const FRESH_LIB = 'gno.land/p/fresh/kit';
+export const FRESH_REALM = 'gno.land/r/fresh/app';
+export const FRESH_SHOP = 'gno.land/r/fresh/shop';
+// An older package importing FRESH_LIB, so the hot-libraries panel can show a
+// window figure that differs from the all-time one — which is the whole point
+// of printing both: 2 of 3 is adoption, 2 of 300 is noise.
+export const FRESH_LEGACY = 'gno.land/r/fresh/legacy';
+export const FRESH_DEV = 'g1freshdev000000000000000000000000000';
+export const FRESH_VETERAN = 'g1freshveteran0000000000000000000000';
+export const FRESH_CALLER = 'g1freshcaller00000000000000000000000';
+export const FRESH_WHALE = 'g1freshwhale000000000000000000000000';
+export const FRESH_TOKEN = 'gno.land/r/fresh/app.freshcoin.0';
+// What pkg/gnoaddr derives for FRESH_REALM, not a decorative string: the page
+// resolves a transfer's ends by deriving every known path forward and matching,
+// so a made-up address would leave the realm unnamed while the test still
+// passed on "an address rendered".
+export const FRESH_REALM_ADDRESS = 'g165ajlk4c06fxcp54fms89668s9h0dtjuz889zq';
+// The largest ugnot move in the tail, paid out of the realm's own account.
+export const FRESH_PAYOUT_UGNOT = 42000000000;
 
 export function seed(dbPath) {
   const db = new DatabaseSync(dbPath);
@@ -355,6 +401,76 @@ export function seed(dbPath) {
     grc20('grc20-in-1', 0, GRC20_TOKEN, GRC20_FUNDER, HUB_ADDRESS, 400000, 4101);
     grc20('grc20-in-2', 0, GRC20_TOKEN, GRC20_FUNDER, HUB_ADDRESS, 250000, 4102);
     grc20('grc20-out', 0, GRC20_TOKEN, HUB_ADDRESS, GRC20_FUNDER, 150000, 4103);
+
+    // --- the recent tail, stamped against the wall clock ---------------------
+    //
+    // See the comment on recentTime above for why this exists beside an ancient
+    // chain rather than replacing it. Minutes-ago figures are chosen so the
+    // default 24h window holds all of it and the 1h window holds none, which is
+    // what lets the window control itself be asserted on.
+    const freshDeploy = (path, creator, height, minutesAgo, isRealm) => {
+      const name = path.split('/').pop();
+      const hash = `fresh-deploy-${name}`;
+      const when = recentTime(minutesAgo);
+      pkg.run('alpha', path, name, creator, height, when, hash, isRealm ? 1 : 0);
+      sub.run('alpha', hash, path, name, creator, height, when, isRealm ? 1 : 0);
+      file.run('alpha', path, `${name}.gno`,
+        `package ${name}\n\nfunc Render(path string) string { return "${name}" }\n`);
+      tx.run('alpha', hash, height, when, 100000, 200000, 1000);
+    };
+
+    // FRESH_VETERAN deployed long ago and again just now; FRESH_DEV has never
+    // deployed before, which is what the panel's "first deploy" badge claims.
+    addPackage('alpha', FRESH_LEGACY, FRESH_VETERAN, 600, true);
+    dep.run('alpha', FRESH_LEGACY, FRESH_LIB);
+
+    freshDeploy(FRESH_LIB, FRESH_DEV, RECENT_BASE, 300, false);
+    freshDeploy(FRESH_REALM, FRESH_DEV, RECENT_BASE + 1, 290, true);
+    freshDeploy(FRESH_SHOP, FRESH_VETERAN, RECENT_BASE + 2, 280, true);
+    dep.run('alpha', FRESH_REALM, FRESH_LIB);
+    dep.run('alpha', FRESH_SHOP, FRESH_LIB);
+
+    // Calls, in the window and in the one before it, so "vs before" is a
+    // comparison rather than a "new" badge. One failure, because a panel that
+    // cannot show a failed call hides the most interesting row on the page.
+    const freshCall = (hash, height, minutesAgo, caller, path, fn, ok) => {
+      usageCall.run('alpha', hash, 0, height, recentTime(minutesAgo), caller, path, fn, ok);
+      tx.run('alpha', hash, height, recentTime(minutesAgo), 70000, 100000, 700);
+    };
+    for (let i = 0; i < 6; i++) {
+      freshCall(`fresh-call-${i}`, RECENT_BASE + 10 + i, 240 - i * 30,
+        i % 2 ? FRESH_CALLER : FRESH_WHALE, FRESH_REALM, 'Buy', i === 4 ? 0 : 1);
+    }
+    for (let i = 0; i < 2; i++) {
+      freshCall(`fresh-shop-${i}`, RECENT_BASE + 20 + i, 200 - i * 20, FRESH_CALLER, FRESH_SHOP, 'List', 1);
+    }
+    // The previous 24h window: three calls yesterday, so today's six read as a
+    // rise rather than as something that has never happened before.
+    for (let i = 0; i < 3; i++) {
+      freshCall(`fresh-prev-${i}`, RECENT_BASE + 30 + i, 1800 + i * 10, FRESH_CALLER, FRESH_REALM, 'Buy', 1);
+    }
+
+    // ugnot, including one payout out of the realm's own account: the largest
+    // move in the tail, and the row that proves an address is resolved back to
+    // the package that owns it.
+    send.run('alpha', 'fresh-payout', RECENT_BASE + 40, recentTime(120),
+      FRESH_REALM_ADDRESS, FRESH_WHALE, `${FRESH_PAYOUT_UGNOT}ugnot`, FRESH_PAYOUT_UGNOT);
+    tx.run('alpha', 'fresh-payout', RECENT_BASE + 40, recentTime(120), 40000, 50000, 400);
+    for (let i = 0; i < 5; i++) {
+      const hash = `fresh-send-${i}`;
+      const when = recentTime(260 - i * 40);
+      send.run('alpha', hash, RECENT_BASE + 41 + i, when, FRESH_WHALE, FRESH_CALLER, '1500000ugnot', 1500000);
+      tx.run('alpha', hash, RECENT_BASE + 41 + i, when, 40000, 50000, 400);
+    }
+
+    // A GRC20 token of its own, minted and then moved, including one leg into
+    // the realm's account so both ends of the resolution are exercised.
+    const fresh20 = (hash, from, to, value, height, minutesAgo) =>
+      token.run('alpha', hash, 0, FRESH_TOKEN, FRESH_REALM, from, to, value, height, recentTime(minutesAgo));
+    fresh20('fresh20-mint', '', FRESH_WHALE, 5000000, RECENT_BASE + 50, 270);
+    fresh20('fresh20-1', FRESH_WHALE, FRESH_REALM_ADDRESS, 1200000, RECENT_BASE + 51, 230);
+    fresh20('fresh20-2', FRESH_WHALE, FRESH_CALLER, 300000, RECENT_BASE + 52, 190);
+    fresh20('fresh20-3', FRESH_REALM_ADDRESS, FRESH_CALLER, 90000, RECENT_BASE + 53, 150);
 
     db.exec('COMMIT');
   } finally {
