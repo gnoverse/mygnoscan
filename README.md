@@ -59,6 +59,7 @@ Everything lives in [`docs/`](docs/) — start there.
 | [docs/spec.md](docs/spec.md) | what mygnoscan is, the data model, how networks are scoped |
 | [docs/architecture.md](docs/architecture.md) | components, data flow, design decisions, known weak points |
 | [docs/api.md](docs/api.md) | full `/api/*` reference |
+| [docs/mcp.md](docs/mcp.md) | the read-only MCP endpoint at `/mcp`, for agents |
 | [docs/development.md](docs/development.md) | local development loop |
 | [docs/deployment.md](docs/deployment.md) | flags, config, operating notes |
 | [docs/screenshots.md](docs/screenshots.md) | regenerating the images above |
