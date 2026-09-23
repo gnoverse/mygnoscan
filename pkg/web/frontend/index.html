@@ -901,6 +901,7 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
         <div class="nav-kids">
           <a onclick="navigate('/developer/search')" id="nav-devsearch" title="full-text search over every file the chain stores"><span class="rail-label">code search</span></a>
           <a onclick="navigate('/developer/api')" id="nav-devapi" title="the HTTP API this explorer serves"><span class="rail-label">api</span></a>
+          <a onclick="navigate('/developer/mcp')" id="nav-devmcp" title="the MCP endpoint an agent connects to"><span class="rail-label">mcp</span></a>
         </div>
       </div>
       <div class="nav-group">
@@ -1109,6 +1110,7 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
   <div class="view" id="view-apps"><main><div id="apps-content"></div></main></div>
   <div class="view" id="view-developer"><main><div id="developer-content"></div></main></div>
   <div class="view" id="view-devapi"><main><div id="devapi-content"></div></main></div>
+  <div class="view" id="view-devmcp"><main><div id="devmcp-content"></div></main></div>
   <div class="view" id="view-gas"><main><div id="gas-content"></div></main></div>
   <div class="view" id="view-gas-realms"><main><div id="gas-realms-content"></div></main></div>
   <div class="view" id="view-gas-users"><main><div id="gas-users-content"></div></main></div>
@@ -2330,10 +2332,7 @@ function onNetworkChange() {
   // network switch resets it.
   const transferGraph = DASHBOARDS.flatMap(s => s.charts).find(c => c.id === 'transfer-graph');
   if (transferGraph && transferGraph.state) transferGraph.state.ego = null;
-  const params = new URLSearchParams(window.location.search);
-  if (n && n !== 'all') { params.set('network', n); } else { params.delete('network'); }
-  const newUrl = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
-  history.replaceState(null, '', newUrl);
+  urlSetParam('network', n === 'all' ? '' : n);
   renderFooterIndexer();
   renderNetworkSwatch();
   refreshHealthChip();
@@ -3261,6 +3260,7 @@ const NAV = [
   { id: 'developer', label: 'developer', path: '/developer', own: 'overview', children: [
     { id: 'devsearch', label: 'code search', path: '/developer/search' },
     { id: 'devapi', label: 'api', path: '/developer/api' },
+    { id: 'devmcp', label: 'mcp', path: '/developer/mcp' },
   ] },
   { id: 'blocks', label: 'blocks', path: '/blocks', own: 'blocks', children: [
     { id: 'txs', label: 'txs', path: '/txs' },
@@ -3409,6 +3409,7 @@ function route() {
   else if (path === '/apps') { view = 'apps'; }
   else if (path === '/developer' || path === '/developer/search') { view = 'developer'; }
   else if (path === '/developer/api') { view = 'devapi'; }
+  else if (path === '/developer/mcp') { view = 'devmcp'; }
   else if (path === '/txs') { view = 'txs'; }
   else if (path === '/blocks') { view = 'blocks'; }
   else if (path === '/accounts') { view = 'accounts'; }
@@ -3490,6 +3491,7 @@ function route() {
     case 'apps': loadApps(); break;
     case 'developer': loadDeveloper(); break;
     case 'devapi': loadDevApi(); break;
+    case 'devmcp': loadDevMcp(); break;
     case 'txs': enterTxs(); break;
     case 'blocks': loadBlocks(); break;
     case 'accounts': enterAccounts(urlAv); break;
@@ -7834,6 +7836,114 @@ async function loadDevApi() {
       el('td', {}, el('code', {}, e.path))));
   });
   box.appendChild(tbl);
+}
+
+// The MCP page: how an agent connects, and what it gets.
+//
+// A page rather than a paragraph in the API list, because connecting an MCP
+// client is a config file somebody has to paste, and a tool list is the thing
+// they will want to read before deciding to. The tool table is fetched from
+// the endpoint itself rather than written here, so it cannot describe a tool
+// the server does not serve.
+async function loadDevMcp() {
+  const container = clear('devmcp-content');
+  container.appendChild(el('h1', {}, 'mcp'));
+  container.appendChild(el('div', { style: { color: 'var(--fg2)', marginBottom: '12px' } },
+    'a read-only MCP endpoint, so an agent can ask this explorer the things a gno.land node cannot answer: ' +
+    'search every source file on chain, look up a declaration, read a realm\'s decoded state, decode a transaction.'));
+
+  const url = window.location.origin + '/mcp';
+
+  const conn = el('div', { className: 'card', style: { marginBottom: '16px' } });
+  conn.appendChild(el('div', { className: 'section-title' }, 'connect'));
+  const urlRow = el('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '10px' } },
+    el('code', {}, url), copyButton(url, 'copy the endpoint URL'));
+  conn.appendChild(urlRow);
+  conn.appendChild(el('div', { style: { color: 'var(--fg2)', fontSize: '12px', marginBottom: '10px' } },
+    'streamable HTTP, no authentication, no API key. Opening it in a browser answers 405: it speaks JSON-RPC over POST.'));
+
+  conn.appendChild(snippetBlock('claude mcp add --transport http mygnoscan ' + url, 'claude code'));
+  conn.appendChild(snippetBlock(JSON.stringify({
+    mcpServers: { mygnoscan: { type: 'http', url: url } },
+  }, null, 2), 'any client that takes a JSON config'));
+  container.appendChild(conn);
+
+  const tools = el('div', { className: 'card', style: { marginBottom: '16px' } });
+  tools.appendChild(el('div', { className: 'section-title' }, 'tools'));
+  container.appendChild(tools);
+  const body = el('div', {});
+  tools.appendChild(body);
+  skeletonBlock(body);
+  renderMcpTools(body);
+
+  const limits = el('div', { className: 'card' });
+  limits.appendChild(el('div', { className: 'section-title' }, 'limits, and what they mean'));
+  const ul = el('ul', { style: { margin: '0', paddingLeft: '18px', lineHeight: '1.7' } });
+  [
+    'rate limited per address, by requests per minute and by requests in flight. Over either, the answer is 429 with a Retry-After.',
+    'every tool result carries the index height for each chain and how far behind the chain it is. An agent should quote that height rather than call an indexed number current.',
+    'realm source and realm state are written by whoever deployed them. Results arrive nested under a data key, framed as data and never as instructions.',
+    'no tool writes. Nothing here signs, sends or prepares a transaction, by design.',
+  ].forEach(t => ul.appendChild(el('li', {}, t)));
+  limits.appendChild(ul);
+  container.appendChild(limits);
+}
+
+// snippetBlock is a labelled, copyable snippet. Not codeBlock, which is the
+// gno source renderer and syntax-highlights what it is given: a JSON config is
+// not gno, and a second top-level codeBlock would silently replace it.
+function snippetBlock(text, label) {
+  const wrap = el('div', { style: { marginBottom: '10px' } });
+  const head = el('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '3px' } },
+    el('span', { style: { color: 'var(--fg2)', fontSize: '12px' } }, label),
+    copyButton(text, 'copy'));
+  wrap.appendChild(head);
+  wrap.appendChild(el('pre', {
+    style: {
+      margin: '0', padding: '8px 10px', overflowX: 'auto',
+      background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: '4px',
+      fontFamily: 'var(--mono, monospace)', fontSize: '12px',
+    },
+  }, text));
+  return wrap;
+}
+
+// The tool list comes from the endpoint, over the same protocol a client uses.
+// Writing it out here instead would leave a page describing a server that has
+// moved on, which is the whole reason /api/endpoints is generated too.
+async function renderMcpTools(into) {
+  let tools;
+  try {
+    const r = await fetch('/mcp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+    });
+    if (!r.ok) throw new Error('the endpoint answered ' + r.status);
+    const d = await r.json();
+    if (d.error) throw new Error(d.error.message);
+    tools = (d.result && d.result.tools) || [];
+  } catch (err) {
+    into.textContent = '';
+    into.appendChild(el('div', { style: { color: 'var(--red)' } }, String(err.message || err)));
+    return;
+  }
+  into.textContent = '';
+  into.appendChild(el('div', { style: { color: 'var(--fg2)', fontSize: '12px', marginBottom: '8px' } },
+    fmtNum(tools.length) + ' tools, all read-only'));
+  tools.forEach(t => {
+    const row = el('div', { style: { marginBottom: '10px' } });
+    row.appendChild(el('div', {}, el('code', {}, t.name)));
+    row.appendChild(el('div', { style: { color: 'var(--fg2)', fontSize: '12px' } }, t.description || ''));
+    const props = (t.inputSchema && t.inputSchema.properties) || {};
+    const req = (t.inputSchema && t.inputSchema.required) || [];
+    const names = Object.keys(props).map(k => (req.indexOf(k) >= 0 ? k + '*' : k));
+    if (names.length) {
+      row.appendChild(el('div', { style: { color: 'var(--fg2)', fontSize: '12px' } },
+        'arguments: ' + names.join(', ')));
+    }
+    into.appendChild(row);
+  });
 }
 
 async function loadApps() {

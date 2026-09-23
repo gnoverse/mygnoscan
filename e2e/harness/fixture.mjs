@@ -225,9 +225,55 @@ export const USER_NAME = 'hub';
 export const USER_BOT = 'hubbot';
 export const USER_GONE = 'hubgone';
 
+// How long seed() waits for the binary to finish building the schema.
+// Generous on purpose: it is a bound on a broken run, not a budget for a
+// healthy one, which clears it in well under a second.
+const SCHEMA_TIMEOUT_MS = 30_000;
+
+// Every table seed() writes. Waited on as a set rather than on one of them,
+// because the binary creates its schema in stages: waiting on `packages`
+// alone moved the failure two hundred lines down to `package_submissions`.
+const SEEDED_TABLES = [
+  'bank_sends', 'calls', 'dependencies', 'msg_runs', 'package_files',
+  'packages', 'package_submissions', 'storage_events', 'token_transfers',
+  'transactions', 'users',
+];
+
+// waitForSchema blocks until the binary has created the tables seed() writes.
+//
+// The readiness probe in global-setup is /api/networks, which answers from the
+// parsed config and says nothing about the database. The binary creates its
+// schema, runs its migrations and takes the write lock for ANALYZE and the
+// first rollup build after that, so on a loaded machine seeding wins the race
+// and the whole suite dies at setup with "no such table: packages" or
+// "database is locked". Both read as a broken test run rather than as
+// contention, which is the expensive part: the suite looks red for a reason
+// that has nothing to do with the change under test.
+function waitForSchema(db) {
+  const deadline = Date.now() + SCHEMA_TIMEOUT_MS;
+  const marks = SEEDED_TABLES.map(() => '?').join(',');
+  const query = db.prepare(
+    `SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name IN (${marks})`);
+  for (;;) {
+    const row = query.get(...SEEDED_TABLES);
+    if (row && row.n === SEEDED_TABLES.length) return;
+    if (Date.now() > deadline) {
+      throw new Error(`the binary created ${row ? row.n : 0} of ${SEEDED_TABLES.length} ` +
+        `tables within ${SCHEMA_TIMEOUT_MS}ms`);
+    }
+    // Synchronous, because seed() is: a busy wait of a few milliseconds beats
+    // making every caller of this module async.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+  }
+}
+
 export function seed(dbPath) {
-  const db = new DatabaseSync(dbPath);
+  // The binary is already running against this file and holds the write lock
+  // through its startup work. node:sqlite defaults to failing immediately on a
+  // busy database; the Go side already waits 5s for the same reason.
+  const db = new DatabaseSync(dbPath, { timeout: SCHEMA_TIMEOUT_MS });
   try {
+    waitForSchema(db);
     db.exec('BEGIN');
 
     const pkg = db.prepare(`INSERT OR REPLACE INTO packages

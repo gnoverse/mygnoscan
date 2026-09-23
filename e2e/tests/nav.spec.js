@@ -126,3 +126,41 @@ test('the old /tokens url lands on grc20', async ({ page }) => {
   await expect(page.locator('.view.active main > .pagenav a.active')).toHaveText('grc20');
   expect(unexpected(seen.consoleErrors)).toEqual([]);
 });
+
+// The network selector writes ?network=, and it is the one control on the page
+// that changes what every other one means. It had no test: `onNetworkChange`
+// built its own URL from `location.pathname` plus a rebuilt query string, which
+// is correct only for as long as nobody adds a parameter it forgets to carry.
+//
+// What this pins is the carrying, not the writing. Switching network from a page
+// that already has state in its URL has to keep that state: the reader chose
+// both, and dropping one silently answers a question they did not ask.
+test('switching network writes ?network= and keeps the rest of the URL', async ({ page }) => {
+  const seen = watch(page);
+  // /txs rather than /packages?pv=inert, which would be the more obvious page to
+  // carry a parameter: the inert queue is a live vm/qinertpaths read and no RPC
+  // is configured here, so it fills the console with errors that have nothing to
+  // do with what this is testing. Two filters here also make the point better
+  // than one.
+  await page.goto('/txs?type=deploy&status=fail');
+  await settle(page);
+
+  await page.locator('#network-select').selectOption('beta');
+  await settle(page);
+
+  const params = new URL(page.url()).searchParams;
+  expect(params.get('network')).toBe('beta');
+  expect(params.get('type')).toBe('deploy');
+  expect(params.get('status')).toBe('fail');
+
+  // 'all' is the default and is deleted rather than spelled out, the same rule
+  // every other parameter on the site follows.
+  await page.locator('#network-select').selectOption('all');
+  await settle(page);
+  const after = new URL(page.url()).searchParams;
+  expect(after.has('network')).toBe(false);
+  expect(after.get('type')).toBe('deploy');
+
+  expect(seen.jsErrors).toEqual([]);
+  expect(unexpected(seen.consoleErrors)).toEqual([]);
+});
