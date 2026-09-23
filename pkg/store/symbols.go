@@ -180,7 +180,7 @@ func (d *DB) PackageSourceKey(network, pkgPath string) (string, error) {
 // declaration that was removed from the source has to disappear from the index,
 // and an upsert leaves it there forever. That is the failure mode where search
 // keeps offering a function nobody can call any more.
-func (d *DB) ReplaceSymbols(network, pkgPath, sourceKey string, rows []SymbolRow) error {
+func (d *DB) ReplaceSymbols(network, pkgPath, sourceKey, packageDoc string, rows []SymbolRow) error {
 	// writeMu, not mu. mu guards the configured-network list and is explicitly
 	// no longer a general database lock: taking it exclusively here would queue
 	// every reader behind an index pass, which is the stall #143 removed.
@@ -213,13 +213,14 @@ func (d *DB) ReplaceSymbols(network, pkgPath, sourceKey string, rows []SymbolRow
 		}
 	}
 	if _, err := tx.Exec(`INSERT INTO symbol_index
-		(network, package_path, source_key, symbol_count, indexed_at)
-		VALUES (?,?,?,?,CURRENT_TIMESTAMP)
+		(network, package_path, source_key, symbol_count, indexed_at, package_doc)
+		VALUES (?,?,?,?,CURRENT_TIMESTAMP,?)
 		ON CONFLICT(network, package_path) DO UPDATE SET
 		  source_key = excluded.source_key,
 		  symbol_count = excluded.symbol_count,
-		  indexed_at = excluded.indexed_at`,
-		network, pkgPath, sourceKey, len(rows)); err != nil {
+		  indexed_at = excluded.indexed_at,
+		  package_doc = excluded.package_doc`,
+		network, pkgPath, sourceKey, len(rows), packageDoc); err != nil {
 		return fmt.Errorf("record source key: %w", err)
 	}
 	return tx.Commit()

@@ -231,9 +231,15 @@ type awesomeResponse struct {
 	Synced       string `json:"synced"`
 	// AgeDays is computed rather than left to the browser, so the page says the
 	// same thing to a reader whose clock is wrong.
-	AgeDays  int                       `json:"age_days"`
-	Sections []registry.AwesomeSection `json:"sections"`
-	Entries  int                       `json:"entries"`
+	AgeDays int `json:"age_days"`
+	Entries int `json:"entries"`
+
+	// Apps is what the page draws: the entries with a page you can open, which
+	// is the only kind there is anything to photograph. Everything else on the
+	// list is real and is counted in Others rather than rendered, because a
+	// grid of pictures with grey holes where the SDKs are reads as broken.
+	Apps   []registry.AwesomeEntry `json:"apps"`
+	Others []registry.AwesomeGroup `json:"others"`
 
 	// The cross-check, in both directions. Neither is a promotion: one is the
 	// list of realms we describe that the community has not named, the other
@@ -269,8 +275,9 @@ func (a *API) HandleAwesome(w http.ResponseWriter, r *http.Request) {
 		Commit:               aw.Commit,
 		Synced:               aw.Synced,
 		AgeDays:              aw.SyncedAge(time.Now()),
-		Sections:             aw.Sections,
 		Entries:              aw.Count(),
+		Apps:                 aw.Apps(),
+		Others:               aw.Others(),
 		MissingFromAwesome:   a.registry.MissingFromAwesome(),
 		MissingFromDirectory: a.registry.MissingFromDirectory(),
 		InDirectory:          a.registry.AwesomeInDirectory(),
@@ -301,8 +308,8 @@ func (a *API) HandleAwesome(w http.ResponseWriter, r *http.Request) {
 			paths = append(paths, p)
 		}
 	}
-	for _, p := range aw.Paths() {
-		add(p)
+	for _, e := range aw.Apps() {
+		add(e.Path)
 	}
 	for _, app := range resp.MissingFromAwesome {
 		add(app.Path)

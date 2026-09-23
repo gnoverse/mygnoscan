@@ -67,10 +67,32 @@ blast radius: it appears on every page the address does.
 | `addresses.json` | bech32 address | every address link in the explorer |
 | `tokens.json` | `<realm path>.<name>.<id>`, the GRC20 event key | the token views |
 | `apps.json` | realm path | `/apps` |
-| `awesome.json` | **generated, never hand-edited** | `/apps?view=ecosystem` |
+| `awesome.json` | **generated, never hand-edited** | `/apps` |
+| `moderation.toml` | realm path | `/apps`, as a removal |
 
 Every file's `checked` is validated the same way and none may be dated in the
 future; `TestShippedDatesAreNotInTheFuture` covers all three.
+
+## The directory discovers itself, so these files only correct it
+
+`/apps` no longer reads `apps.json` as its list. It ranks every realm people
+actually call, describes each one with its own package doc comment, and
+photographs it. These files are the three levers over that:
+
+- **List**: an entry in `apps.json` is included whatever the chain says, and its
+  name, sentence, website and category override the derived ones. Being listed
+  is the vouch; there is no separate flag for it.
+- **Relate**: `supersedes` folds an older generation into the one that replaces
+  it, because two live deployments of the same idea is the normal state of a
+  chain nobody can delete from, and ranking them as peers sends people to last
+  year's version.
+- **Skip**: `moderation.toml` removes, and every entry must say why. Usage is
+  evidence of activity, not of worth.
+
+A `description` here is still the best one available and still wins over the
+realm's own doc comment, so writing one is worth doing. It is shown as one line;
+`checked` now travels in the card's provenance tooltip rather than in the dense
+table that used to print it.
 
 ## `awesome.json` is somebody else's list, and it is generated
 
@@ -88,6 +110,13 @@ the community maintains that list in their repo.** The right move when something
 is missing is a pull request there, and `/apps?view=ecosystem` exists partly to
 make that ask specific: it ranks this directory's entries that the list does not
 name, with the bullet line ready to paste.
+
+`make awesome` does more than copy the list. For every entry in an app section
+it resolves the page you would actually open, following a repository's declared
+homepage when the list links a repository, and it **drops anything that does not
+answer 200 with HTML**. That check is what keeps a confident screenshot of a
+dead host out of the grid. It also prints the host list gnoshot needs on its
+`-allow-site` flag, because that is configuration on another box.
 
 A snapshot rather than a live fetch, for the same reason everything else here is
 embedded: a page that read GitHub on every load would be down when GitHub is and
