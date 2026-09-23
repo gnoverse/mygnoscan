@@ -11,7 +11,10 @@ import { settle, unexpected, watch } from './helpers.js';
 test('the apps directory renders what each realm is for', async ({ page }) => {
   const seen = watch(page);
 
-  const response = await page.goto('/apps');
+  // The dense view. /apps now opens on a card grid (the app hub), and the
+  // table is what this test has always been about: the categories, the blurbs
+  // and the dates, in the form that shows all of them at once.
+  const response = await page.goto('/apps?view=table');
   expect(response.status()).toBe(200);
   await settle(page);
 
