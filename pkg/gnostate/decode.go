@@ -329,7 +329,7 @@ func (w *walker) rawValue(name string, ti *typeInfo, raw json.RawMessage, depth 
 		return n
 
 	case vFunc, vBound:
-		return Node{Name: name, Type: tname(ti), TypeID: tid(ti), Kind: KindFunc, Value: tname(ti)}
+		return w.funcValue(name, ti, raw)
 
 	case vPackage:
 		return Node{Name: name, Type: tname(ti), TypeID: tid(ti), Kind: KindPackage}
@@ -781,6 +781,12 @@ func stamp(n *Node, oi objectInfo) {
 	if sz, err := strconv.ParseInt(oi.LastObjectSize, 10, 64); err == nil {
 		n.Size = sz
 	}
+	if rc, err := strconv.ParseInt(oi.RefCount, 10, 64); err == nil {
+		n.Refs = rc
+	}
+	if mt, err := strconv.ParseInt(oi.ModTime, 10, 64); err == nil {
+		n.Rev = mt
+	}
 }
 
 func primitiveCode(t json.RawMessage) int64 {
@@ -832,4 +838,45 @@ func isFuncType(t json.RawMessage) bool {
 		return false
 	}
 	return head.Type == tFunc
+}
+
+// funcValue decodes a stored function.
+//
+// A gno realm can hold a function in a package variable (a handler, a
+// callback, a closure captured at init), and rendering that as the bare word
+// "func" is the least useful thing a state explorer can do with it. The wire
+// format carries everything needed to do better: the declared name and a
+// Source.Location with the file and the line span.
+func (w *walker) funcValue(name string, ti *typeInfo, raw json.RawMessage) Node {
+	var v struct {
+		ObjectInfo objectInfo `json:"ObjectInfo"`
+		Name       string     `json:"Name"`
+		IsMethod   bool       `json:"IsMethod"`
+		Source     struct {
+			Location struct {
+				PkgPath string `json:"PkgPath"`
+				File    string `json:"File"`
+				Span    struct {
+					Pos struct {
+						Line string `json:"Line"`
+					} `json:"Pos"`
+				} `json:"Span"`
+			} `json:"Location"`
+		} `json:"Source"`
+	}
+	_ = json.Unmarshal(raw, &v)
+
+	n := Node{Name: name, Type: tname(ti), TypeID: tid(ti), Kind: KindFunc}
+	stamp(&n, v.ObjectInfo)
+
+	n.Value = v.Name
+	if n.Value == "" {
+		n.Value = "func"
+	}
+	loc := v.Source.Location
+	n.File = loc.File
+	if ln, err := strconv.Atoi(loc.Span.Pos.Line); err == nil {
+		n.Line = ln
+	}
+	return n
 }
