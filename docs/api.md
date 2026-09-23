@@ -1247,3 +1247,12 @@ navigation.
 
 Everything else is unchanged: the same routes, the same query parameters, the
 same data. `?network=` composes with it as usual.
+
+## MCP
+
+`POST /mcp` serves the same index over the Model Context Protocol, for agents
+rather than browsers: seven read-only tools, no authentication, rate limited
+per address. Each tool resolves to one internal request against the route table
+documented above, so a tool's answer is an endpoint's answer.
+
+See [docs/mcp.md](mcp.md).
