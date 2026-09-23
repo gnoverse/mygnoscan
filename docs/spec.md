@@ -98,6 +98,24 @@ everything newer than the build, so the newest bucket does not lag the timer.
   that is 1,333,000,221,686,563 ugnot over 100 ugnot/byte, or 13.33 TB, the same
   sum the monorepo does in a comment beside the default price. `/storage` is built
   on it, and every one of its figures is per chain for that reason.
+- **Explanations are generated, and the generator may not add a fact.** A
+  Discover event is three layers: what happened (SQL, wrong only if the indexer
+  is), what it means, and why it matters. The last two are generated from a
+  closed `facts` map and may not introduce a single value absent from it, which
+  `pkg/discover` enforces mechanically: every number resolves to a fact through a
+  declared conversion table, every name shaped like a path, address or handle
+  appears in the facts, claim words like "first" and "biggest" need a fact that
+  licenses them, future tense is banned because the chain records what happened
+  and never what is next, and layer 2 carries no glossary headword at all. A
+  reader cannot see which layer they are reading, so the generated ones have to
+  be as safe as the queried one.
+- **One place defines the words, and it is a document.**
+  [`docs/glossary.md`](./glossary.md) is embedded in the binary and served parsed
+  at `GET /api/glossary`, so the file a contributor edits and the tooltip a reader
+  hovers are the same bytes. `pkg/glossary` enforces what the file claims about
+  itself: two columns, at most three sentences, cross-references marked in bold
+  and forming a DAG over defined headwords, and no gloss restated anywhere else in
+  the repo. Adding a term is a docs change and a CI run, never a code change.
 - **A per-row share of that capacity is unreadable, and that is the data, not
   the formatting.** At mainnet's 43.7 MB in use against 12.1 TB the largest
   namespace is 0.0002% of the disk and the rest are exponents, a column in which

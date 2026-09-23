@@ -1,0 +1,21 @@
+{
+  "facts": {
+    "actor_label": "@moul",
+    "first_ever": false,
+    "is_realm": true,
+    "namespace": "moul",
+    "num_files": 3,
+    "package_name": "hello"
+  },
+  "layers": {
+    "matters": {
+      "text": "Anyone can look at it or use it now, and nobody can change it except @moul. It is 3 files of code."
+    },
+    "means": {
+      "text": "@moul put a new app on the chain, called hello."
+    },
+    "what": {
+      "text": "MsgAddPackage published gno.land/r/moul/hello, 3 files, by g1manfred47kzduec920z88wfr64ylksmdcedlf5, at block 173108."
+    }
+  }
+}

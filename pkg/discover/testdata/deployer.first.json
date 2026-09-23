@@ -1,0 +1,20 @@
+{
+  "facts": {
+    "actor_address": "g1r6luttvrkksxh9h4asjq2qd8zsd5nlkrzvyjur",
+    "actor_label": "",
+    "distinct_deployers": 10,
+    "first_ever": true,
+    "package_name": "pixelgnomes"
+  },
+  "layers": {
+    "matters": {
+      "text": "A new builder arrived. Ten people have ever published on this chain."
+    },
+    "means": {
+      "text": "Somebody published on the chain for the first time, an app called pixelgnomes."
+    },
+    "what": {
+      "text": "g1r6luttvrkksxh9h4asjq2qd8zsd5nlkrzvyjur has no earlier successful MsgAddPackage on mainnet."
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "facts": {
+    "package_name": "gnomic_airdrop",
+    "wait_blocks": 4,
+    "wait_seconds": 13.2
+  },
+  "layers": {
+    "matters": {
+      "text": "Anyone can use it now. It waited 13 seconds to be checked and approved."
+    },
+    "means": {
+      "text": "An app called gnomic_airdrop was switched on."
+    },
+    "what": {
+      "text": "MsgEnablePackage enabled gno.land/r/nym-thegnomic001/gnomic_airdrop at block 173108, 4 blocks after submission."
+    }
+  }
+}
