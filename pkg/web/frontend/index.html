@@ -913,7 +913,7 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
         <div class="section-sub">the largest move of each asset, newest first. an end that resolves
           to a package is drawn as that package: a realm's account is a hash of its path, so this is
           derived rather than looked up, and anything left as an address belongs to no package we know.</div>
-        <table><thead><tr><th>block</th><th>asset</th><th>from</th><th>to</th><th>amount</th></tr></thead><tbody id="hot-flows"></tbody></table>
+        <table><thead><tr><th>block</th><th>asset</th><th>from</th><th>to</th><th>amount</th><th>tx</th></tr></thead><tbody id="hot-flows"></tbody></table>
       </div>
       <div class="section">
         <div class="section-title">hot developers</div>
@@ -4116,8 +4116,12 @@ function trendEl(cur, prev, hasPrev) {
   const pct = Math.round((cur - prev) / prev * 100);
   if (pct === 0) return el('span', { className: 'trend-flat' }, '=');
   const up = pct > 0;
+  // Past a point a percentage stops being readable: "122,900%" is a figure
+  // nobody sizes at a glance, and a quiet previous window produces it often.
+  // Say it as a multiple instead.
+  const size = Math.abs(pct) >= 1000 ? Math.round(cur / prev) + '×' : Math.abs(pct) + '%';
   const span = el('span', { className: up ? 'trend-up' : 'trend-down' },
-    (up ? '▲ ' : '▼ ') + Math.abs(pct) + '%');
+    (up ? '▲ ' : '▼ ') + size);
   span.title = fmtNum(prev) + ' in the window before';
   return span;
 }
@@ -4247,8 +4251,12 @@ function renderHomeWindow(pulse, current) {
   if (range) {
     range.textContent = '';
     if (pulse?.window?.since) {
-      range.appendChild(document.createTextNode('since '));
-      range.appendChild(timeEl(pulse.window.since));
+      // An absolute start, because that is the boundary a reader checks a
+      // figure against, and a ticking age for the close, because that is what
+      // says how stale the page is.
+      range.appendChild(document.createTextNode(
+        pulse.window.since.replace('T', ' ').replace(/(:\d\d)Z$/, ' UTC') + ' → read '));
+      range.appendChild(timeEl(pulse.window.until || pulse.window.since));
     }
   }
 }
@@ -4257,7 +4265,7 @@ async function loadHome() {
   const win = homeWindow();
   skeletonRows(clear('hot-realms'), 6, 5);
   skeletonRows(clear('hot-tokens'), 6, 4);
-  skeletonRows(clear('hot-flows'), 5, 4);
+  skeletonRows(clear('hot-flows'), 6, 4);
   skeletonRows(clear('hot-devs'), 5, 3);
   skeletonRows(clear('hot-libs'), 4, 3);
   skeletonRows(clear('recent-txs'), 5, 8);
@@ -4266,7 +4274,17 @@ async function loadHome() {
   skeletonRows(clear('top-accounts'), 4, 5);
   renderHomeWindow(null, win);
   try {
-    await apiSWR(['stats', 'pulse?window=' + win, 'realms?limit=10', 'txs?limit=20', 'blocks?limit=50', 'realms?limit=8&sort=importers', 'accounts?limit=8'], ([stats, pulse, realmsData, txsData, blocksData, dependedData, accountsData], swrMeta) => {
+    // The two indexer-backed paths are declared optional, so an indexer that is
+    // slow, rate-limited or down no longer takes the whole page with it.
+    //
+    // Everything else here reads local SQLite and cannot fail that way, which
+    // is precisely why it mattered: /api/txs returning 403 used to blank the
+    // stat row and all nine tables, including five that had their answer in
+    // hand. The feed says what happened instead of rendering as empty.
+    await apiSWR(['stats', 'pulse?window=' + win, 'realms?limit=10',
+      { path: 'txs?limit=20', fallback: { items: [], unavailable: true } },
+      { path: 'blocks?limit=50', fallback: [] },
+      'realms?limit=8&sort=importers', 'accounts?limit=8'], ([stats, pulse, realmsData, txsData, blocksData, dependedData, accountsData], swrMeta) => {
       document.getElementById('stat-txs').textContent = fmtNum(stats.total_txs);
       document.getElementById('stat-calls').textContent = fmtNum(stats.total_calls);
       document.getElementById('stat-deploys').textContent = fmtNum(stats.total_deploys);
@@ -4342,13 +4360,11 @@ async function loadHome() {
             : link(f.symbol || f.token, () => navigate(assetPath(f.token) + netSuffix(f.network)))),
           el('td', {}, flowEndEl(f.from, f.from_path, f.from_deposit, f.network, 'from')),
           el('td', {}, flowEndEl(f.to, f.to_path, f.to_deposit, f.network, 'to')),
-          el('td', {}, el('span', {},
-            f.native ? fmtGnotAmount(f.value) : fmtNum(f.value) + ' ' + (f.symbol || ''),
-            el('span', { className: 'block-ctx', style: { marginLeft: '8px' } },
-              txLink(f.tx_hash, f.block_height, f.network, { showBlock: false }))))
+          el('td', {}, f.native ? fmtGnotAmount(f.value) : fmtNum(f.value) + ' ' + (f.symbol || '')),
+          el('td', {}, txLink(f.tx_hash, f.block_height, f.network, { showBlock: false }))
         ));
       }
-      if (!(pulse?.hot_flows || []).length) emptyRow(flowBody, 5, 'no transfers in this window');
+      if (!(pulse?.hot_flows || []).length) emptyRow(flowBody, 6, 'no transfers in this window');
 
       const devBody = clear('hot-devs');
       for (const d of (pulse?.hot_devs || [])) {
@@ -4444,6 +4460,11 @@ async function loadHome() {
           el('td', { style: { color: 'var(--fg2)', fontSize: '12px' } }, when)
         ), liveRowKey(tx.network, tx.hash), Date.parse(tx.block_time) || 0));
       }
+      if (!(txsData?.items || []).length) {
+        emptyRow(txBody, 5, txsData?.unavailable
+          ? 'the indexer is not answering \u2014 everything above is read from local storage'
+          : 'no transactions yet');
+      }
     });
   } catch (err) {
     console.error('home:', err);
@@ -4456,7 +4477,7 @@ async function loadHome() {
     }
     failRows(clear('hot-realms'), 6, err, loadHome);
     failRows(clear('hot-tokens'), 6, err, loadHome);
-    failRows(clear('hot-flows'), 5, err, loadHome);
+    failRows(clear('hot-flows'), 6, err, loadHome);
     failRows(clear('hot-devs'), 5, err, loadHome);
     failRows(clear('hot-libs'), 4, err, loadHome);
     failRows(clear('top-depended'), 4, err, loadHome);
