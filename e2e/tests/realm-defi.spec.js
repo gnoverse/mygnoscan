@@ -98,6 +98,34 @@ test('the GRC20 half reads the ledger by the realm’s derived address', async (
   expect(unexpected(seen.consoleErrors)).toEqual([]);
 });
 
+// The legs the GRC20 curves are drawn from. The positions table says what the
+// realm holds and the charts say when it moved; neither names a counterparty,
+// which on a treasury is the question straight after "is it growing".
+test('the GRC20 transfers table names every leg, including the mint', async ({ page }) => {
+  const seen = watch(page);
+  await page.goto(`/realm/${HUB_ROUTE}?network=alpha&tab=defi`);
+  await settle(page);
+
+  const rows = page.locator('#defi-token-flows tbody tr');
+  await expect(rows).toHaveCount(4);
+
+  // Direction, signed against the realm's own account rather than reported raw.
+  const defi = page.locator('#tab-defi');
+  await expect(defi.locator('#defi-token-flows')).toContainText('+400,000');
+  await expect(defi.locator('#defi-token-flows')).toContainText('+250,000');
+  await expect(defi.locator('#defi-token-flows')).toContainText('-150,000');
+
+  // A leg with no sender is a mint, and saying so is the point: an empty
+  // counterparty cell reads as a value the indexer failed to report, when in
+  // fact there is no other end.
+  const mint = rows.filter({ hasText: 'mint' });
+  await expect(mint).toHaveCount(1);
+  await expect(mint).toContainText('+100,000');
+
+  expect(seen.jsErrors).toEqual([]);
+  expect(unexpected(seen.consoleErrors)).toEqual([]);
+});
+
 test('a realm with no money says so instead of drawing an empty chart', async ({ page }) => {
   const seen = watch(page);
   await page.goto('/realm/r/consumer42/app?network=alpha&tab=defi');

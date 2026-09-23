@@ -90,7 +90,10 @@ export const HUB_ADDRESS = 'g1qql00vm7xf0mydz74md9c57tuv34znm8wm9nxu';
 export const GRC20_REALM = 'gno.land/r/hub/token';
 export const GRC20_TOKEN = 'gno.land/r/hub/token.hubcoin.0';
 export const GRC20_FUNDER = 'g1grc20funder0000000000000000000000000';
-export const GRC20_IN = 650000;
+// Two ordinary receipts plus a direct mint, which is the leg with no sender at
+// all: the transfers table has to name that as a mint rather than leave the
+// counterparty cell blank, which would read as a value the indexer lost.
+export const GRC20_IN = 750000;
 export const GRC20_OUT = 150000;
 export const GRC20_BALANCE = GRC20_IN - GRC20_OUT;
 export const BUSY_CALLER = 'g1busycaller0000000000000000000000000';
@@ -401,6 +404,7 @@ export function seed(dbPath) {
     grc20('grc20-in-1', 0, GRC20_TOKEN, GRC20_FUNDER, HUB_ADDRESS, 400000, 4101);
     grc20('grc20-in-2', 0, GRC20_TOKEN, GRC20_FUNDER, HUB_ADDRESS, 250000, 4102);
     grc20('grc20-out', 0, GRC20_TOKEN, HUB_ADDRESS, GRC20_FUNDER, 150000, 4103);
+    grc20('grc20-mint-hub', 0, GRC20_TOKEN, '', HUB_ADDRESS, 100000, 4104);
 
     // --- the recent tail, stamped against the wall clock ---------------------
     //
