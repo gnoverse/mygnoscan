@@ -59,6 +59,13 @@ var NetworkScopedTables = []string{
 	// is exactly what a re-sync from the new genesis needs.
 	"transfer_edges",
 	"caller_edges",
+	// The native coin ledger. A reset leaves a dead chain's legs behind, and
+	// because the defi tab sums them against a *live* bank/balances read, the
+	// two would disagree by the whole of the old chain's history and the page
+	// would report the gap as an indexer problem. Its backfill markers go with
+	// it, in DeleteNetworkData: a cursor above the new chain's tip would mark
+	// the history closed before any of it had been read.
+	"coin_transfers",
 }
 
 // DeleteNetworkData removes every row belonging to a network, in one transaction.
@@ -96,6 +103,15 @@ func (d *DB) DeleteNetworkData(network string) (int64, error) {
 		`DELETE FROM sync_state WHERE key = ?`, BlocksBackfillDoneKey(network),
 	); err != nil {
 		return 0, fmt.Errorf("clear blocks backfill flag: %w", err)
+	}
+	// Both coin-ledger markers, for the same reason and with the same failure
+	// if forgotten: a done flag marks an emptied table as fully backfilled, and
+	// a cursor left above the new chain's tip means the walk that would refill
+	// it never starts.
+	for _, key := range []string{CoinBackfillDoneKey(network), CoinBackfillCursorKey(network)} {
+		if _, err := tx.Exec(`DELETE FROM sync_state WHERE key = ?`, key); err != nil {
+			return 0, fmt.Errorf("clear coin backfill state: %w", err)
+		}
 	}
 
 	// Derived rows go too, in the same transaction.

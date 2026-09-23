@@ -463,8 +463,51 @@ means only that the realm went past `coinFlowMaxTransactions` (50,000
 transactions), not that the indexer refused.
 
 The fix for the cost is a local `coin_transfers` table written by the syncer,
-the way `token_transfers` already is for GRC20. Until that exists, treat a large
-realm's defi tab as the one page on this site that leaves the box.
+the way `token_transfers` already is for GRC20. **That table now exists and is
+being filled** (see below); this endpoint has not been switched over to read it
+yet, so the cost above is still what a cold request pays.
+
+### The native coin ledger
+
+`coin_transfers` is one row per `TransferEvent` leg: `(network, tx_hash,
+event_idx)` keyed, `coins` kept verbatim and `ugnot` kept parsed beside it, and
+indexed on both `from_addr` and `to_addr` with height descending.
+
+It is filled from two directions, which is what makes it complete rather than
+merely current:
+
+- **Forward**, by the same `syncCalls` walk that already writes `calls`,
+  `bank_sends`, `storage_events` and `token_transfers`. The legs are in the
+  payload being iterated, so this costs no extra query.
+- **Backward**, by `backfillCoinTransfers`, a cursor-driven pass that walks the
+  history the forward cursor starts above. Without it the ledger would begin at
+  whatever height the database was at when this shipped, which is exactly how
+  the GRC20 ledger ended up reporting a truncated supply as exact.
+
+The backfill filters on `TransferEvent: {}` with no address inside it, which the
+indexer accepts as "carries one of these". That is what makes it cheap: mainnet's
+entire transfer history is about two 10,000-row pages rather than a re-walk of
+every transaction ever. It does one page per sync pass on purpose, because four
+back-to-back 10,000-row pages against the public indexer is what got the first
+live run answering `403`.
+
+Its state is two `sync_state` keys, `coin_backfill_cursor:<network>` and
+`coin_backfill_done:<network>`. Both are cleared by a chain reset along with the
+rows, and clearing them by hand is how you force a re-walk.
+
+⚠️ **The selection set has to ask for `success`, not merely filter on it.** A set
+that omits the field gets `success: false` on every row and a consumer that
+checks it then stores nothing, with no error anywhere. The first live backfill
+run walked 10,000 real transactions and wrote 0 legs for exactly that reason;
+`TestTransferQueriesSelectSuccessAndNotOnlyFilterOnIt` is the guard.
+
+⚠️ **`TransferEvent` is gated on a schema probe**, like the inert-lifecycle and
+session message types. `indexer.pearl.testnets.gno.land` answers `__type: null`
+for it (2026-09-23), and because this fragment rides the *shared* selection set,
+an ungated version would 422 every transaction query on that chain and take its
+whole sync down. The same gap is why `/api/realm/defi?network=pearl` answered a
+raw GraphQL validation error before this change; it now reports that the chain
+cannot be asked.
 
 GRC20 positions come from the local transfer ledger, which only ever saw what the
 syncer walked: `token_ledger_from` is the oldest row on that chain, and a

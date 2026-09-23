@@ -93,6 +93,12 @@ func SeedNetwork(t TB, db *DB, network string, height int) {
 	}); err != nil {
 		t.Fatalf("upsert user: %v", err)
 	}
+	if err := db.InsertCoinTransfer(network, "TXHASH", 0, CoinTransfer{
+		From: "g1from", To: "g1to", Coins: "1ugnot", Ugnot: 1,
+		BlockHeight: height, BlockTime: "",
+	}); err != nil {
+		t.Fatalf("insert coin transfer: %v", err)
+	}
 }
 
 // SQL exposes the underlying handle.

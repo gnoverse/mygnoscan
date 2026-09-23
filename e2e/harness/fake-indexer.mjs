@@ -313,7 +313,24 @@ export function startFakeIndexer() {
       }
 
       let data = {};
-      if (query.includes('latestBlockHeight')) {
+      if (query.includes('__type(name:')) {
+        // The schema probe, answered the way a real gno.land indexer answers it.
+        //
+        // This branch did not exist, so every probe came back `{data:{}}` and
+        // the client read every optional type as absent. That was invisible
+        // while the only consequence was trimming fragments the fixture never
+        // asserted on. It stopped being invisible when TransferEvent became a
+        // gated type: an absent answer there means "this chain cannot be asked
+        // about coins", and the whole defi tab correctly refused to render.
+        //
+        // Mainnet's shape, checked 2026-09-23: TransferEvent and
+        // MsgEnablePackage defined, MsgCreateSession not. The NoInertTypes and
+        // NoSessionTypes overrides above still take precedence, so a test can
+        // still ask for an older chain.
+        const known = ['TransferEvent', 'MsgEnablePackage'];
+        const name = known.find(n => query.includes(`__type(name: "${n}")`));
+        data = { __type: name ? { name } : null };
+      } else if (query.includes('latestBlockHeight')) {
         data = { latestBlockHeight: TIP };
       } else if (query.includes('getBlocks')) {
         data = { getBlocks: blocks() };
