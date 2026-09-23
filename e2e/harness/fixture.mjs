@@ -18,6 +18,13 @@ export const SHARED_PACKAGES = 12;
 
 export const HUB_CREATOR = 'g1hubcreator00000000000000000000000000';
 
+// The directory entries the fixture deploys. Real paths out of
+// pkg/registry/data/apps.json, because the registry ships inside the binary
+// and a made-up path would simply never match an entry.
+export const APP_BUSY = 'gno.land/r/gnoland/blog';
+export const APP_QUIET = 'gno.land/r/gnoland/wugnot';
+export const APP_ELSEWHERE = 'gno.land/r/gov/dao';
+
 // A pure package with a symbol table worth an outline. Kept beside the source
 // it is generated from so the two cannot drift: the counts below are what the
 // analyzer extracts from LIBRARY_SOURCE, and a test asserts they still are.
@@ -282,6 +289,29 @@ export function seed(dbPath) {
       addPackage('alpha', path, `g1consumer${i % 2}00000000000000000000000000`, height++, true);
       dep.run('alpha', path, HUB);
       for (let j = 0; j < 3; j++) dep.run('alpha', path, shared[(i + j) % shared.length]);
+    }
+
+    // Three of the curated directory's own paths, so /apps has something to
+    // draw. The registry is embedded in the binary and is the real file, so
+    // these have to be paths it actually lists; the point of seeding them is
+    // that the page has one card in each of its three states.
+    //
+    //   APP_BUSY   deployed here and called, by more than one person
+    //   APP_QUIET  deployed here and never called
+    //   APP_ELSEWHERE is deliberately absent: "not on this chain" is a state
+    //   the card draws differently from "nobody has used it", and getting
+    //   those two confused is the way this page would start lying.
+    addPackage('alpha', APP_BUSY, HUB_CREATOR, 700, true, 'tx-app-busy');
+    addPackage('alpha', APP_QUIET, HUB_CREATOR, 701, true, 'tx-app-quiet');
+    // Twenty days ago: inside the directory's default 30d window and outside
+    // every window /api/pulse asks about (hour, day, week). The recent tail
+    // below is deliberately self-contained so that adding to it cannot move a
+    // count another test asserts on, and the same care applies here.
+    for (let i = 0; i < 6; i++) {
+      const h = 1700 + i;
+      const when = recentTime(20 * 24 * 60 + i);
+      call.run('alpha', `app-busy-${i}`, h, when, `g1appuser${i}0000000000000000000000000`, APP_BUSY, 'Render');
+      tx.run('alpha', `app-busy-${i}`, h, when, 90000, 150000, 800);
     }
 
     // A second chain carrying the same package path, so anything that joins on

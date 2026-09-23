@@ -172,3 +172,84 @@ func TestPageFlowsClampsAndNeverReturnsNil(t *testing.T) {
 		})
 	}
 }
+
+// The sign flip is the whole risk here, and it is invisible: both conventions
+// produce a plausible leaderboard, and the wrong one says the biggest loser is
+// the biggest winner.
+func TestCounterpartiesForNetsFromTheCounterpartysSide(t *testing.T) {
+	txs := []indexer.Transaction{
+		// A player who staked 400 and was paid 100: down 300.
+		transferTx("a", 10, leg(outsider, realmAddr, "400ugnot")),
+		transferTx("b", 11, leg(realmAddr, outsider, "100ugnot")),
+		// One who only ever took money out: up 250.
+		transferTx("c", 12, leg(realmAddr, "g1winner000000000000000000000000000", "250ugnot")),
+		// A storage-deposit leg, which belongs to a different account and must
+		// not join the realm's own ledger.
+		transferTx("d", 13, leg("g1funder000000000000000000000000000", depositAddr, "900ugnot")),
+	}
+	flows, _ := coinFlowsFor(txs, realmAddr, depositAddr)
+
+	parties, total := counterpartiesFor(flows)
+	if total != 2 {
+		t.Fatalf("total = %d, want 2 (the storage-deposit funder is not one)", total)
+	}
+
+	byAddr := map[string]counterparty{}
+	for _, c := range parties {
+		byAddr[c.Address] = c
+	}
+	tests := []struct {
+		addr                string
+		sent, received, net int64
+		legs                int
+	}{
+		{outsider, 400, 100, -300, 2},
+		{"g1winner000000000000000000000000000", 0, 250, 250, 1},
+	}
+	for _, tc := range tests {
+		t.Run(tc.addr, func(t *testing.T) {
+			c, ok := byAddr[tc.addr]
+			if !ok {
+				t.Fatalf("missing")
+			}
+			if c.Sent != tc.sent || c.Received != tc.received {
+				t.Errorf("sent/received = %d/%d, want %d/%d", c.Sent, c.Received, tc.sent, tc.received)
+			}
+			if c.Net != tc.net {
+				t.Errorf("net = %d, want %d (positive means this account came out ahead)", c.Net, tc.net)
+			}
+			if c.Legs != tc.legs {
+				t.Errorf("legs = %d, want %d", c.Legs, tc.legs)
+			}
+		})
+	}
+
+	// Gross, not net: the 500-gross account that comes out level still outranks
+	// the 250-gross one that is up 250.
+	if parties[0].Address != outsider {
+		t.Errorf("ranked %q first, want the largest gross mover %q", parties[0].Address, outsider)
+	}
+}
+
+// Both directions have to survive the collapse. Netting at the point of
+// aggregation would make an account that moved 400 each way indistinguishable
+// from one that never moved any, which is the difference between a market
+// maker and a bystander.
+func TestCounterpartiesForKeepsBothDirections(t *testing.T) {
+	txs := []indexer.Transaction{
+		transferTx("a", 10, leg(outsider, realmAddr, "400ugnot")),
+		transferTx("b", 11, leg(realmAddr, outsider, "400ugnot")),
+	}
+	flows, _ := coinFlowsFor(txs, realmAddr, depositAddr)
+	parties, _ := counterpartiesFor(flows)
+	if len(parties) != 1 {
+		t.Fatalf("got %d counterparties, want 1", len(parties))
+	}
+	c := parties[0]
+	if c.Net != 0 {
+		t.Errorf("net = %d, want 0", c.Net)
+	}
+	if c.Sent != 400 || c.Received != 400 {
+		t.Errorf("sent/received = %d/%d, want 400/400: netting here loses the actor", c.Sent, c.Received)
+	}
+}

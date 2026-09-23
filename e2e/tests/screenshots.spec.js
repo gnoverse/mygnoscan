@@ -43,7 +43,12 @@ const PAGES = [
   // closure on. Without '+ imports' this is a handful of dots, which is the
   // regression a shot of the default view would never catch.
   ['contracts-active', '/contracts?view=bundled&edges=imports&metric=importers&flow=0&active=1&deps=1'],
+  // The hub in all three of its shapes: no chain picked (descriptions only,
+  // no numbers), a chain picked (cards with usage, and the candidates queue
+  // under them), and the dense table.
   ['apps', '/apps'],
+  ['apps-network', '/apps?network=alpha'],
+  ['apps-table', '/apps?network=alpha&view=table'],
   ['transactions', '/txs'],
   ['blocks', '/blocks'],
   ['accounts', '/accounts'],
@@ -85,6 +90,11 @@ const PAGES = [
   // The three tabs that carry a chart. Pinned to a network because the
   // storage tab refuses the all-chains case by design, and a shot of that
   // refusal would show none of what changed here.
+  // The defi tab in both graph modes. The two are different pictures of the
+  // same legs, and a shot of whichever happens to be the default would not
+  // show a change to the other at all.
+  ['realm-defi', `/realm/${HUB_ROUTE}?network=alpha&tab=defi`],
+  ['realm-defi-detail', `/realm/${HUB_ROUTE}?network=alpha&tab=defi&flow=detail`],
   ['realm-storage', `/realm/${HUB_ROUTE}?network=alpha&tab=storage`],
   ['realm-calls', `/realm/${HUB_ROUTE}?network=alpha&tab=calls`],
   ['realm-events', `/realm/${HUB_ROUTE}?network=alpha&tab=events`],
@@ -112,7 +122,9 @@ test.describe('screenshots', () => {
       await settle(page);
       // The dependency graph runs a force simulation that keeps moving after
       // the network goes quiet, so settle() is not enough for that one page.
-      if (path.includes('tab=deps')) {
+      // Both of these run a force simulation that keeps moving after the
+      // network goes quiet, so settle() is not enough for either.
+      if (path.includes('tab=deps') || path.includes('tab=defi')) {
         await page.waitForTimeout(2500);
       }
       await page.screenshot({ path: join(OUT, `${name}.png`), fullPage: true });

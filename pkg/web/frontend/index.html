@@ -482,6 +482,39 @@ td.shot-cell, th.shot-cell { width: 128px; padding-right: 0; }
 html:not(.has-shots) .shot-cell { display: none; }
 @media (prefers-reduced-motion: reduce) { .shot.loading { animation: none; } }
 @media (max-width: 720px) { .shot-thumb { display: none; } td.shot-cell { display: none; } }
+/* The app hub. A grid of pictures, because the question this page answers is
+   "show me what is being built here" and a monospace table answers a narrower
+   one. The dense table is still a click away. */
+.app-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); margin-top: 4px; }
+.app-card { display: flex; flex-direction: column; background: var(--bg2); border: 1px solid var(--border);
+            border-radius: 6px; overflow: hidden; }
+.app-card:hover { border-color: var(--fg2); }
+/* Fills the card width at 16:9 rather than the fixed 128px a listing thumb
+   uses. The `thumb` capture at 2x is 320px wide and about 6 KB, which covers a
+   card this size on a retina display; the `hero` capture is 39 KB and would be
+   six times the page weight for no visible gain at this size. First paint here
+   already waits on several hundred KB of blocking CDN script, so a grid of
+   pictures has to stay cheap. */
+.app-shot { width: 100%; aspect-ratio: 16 / 9; border: none; border-radius: 0;
+            border-bottom: 1px solid var(--border); }
+.app-card-body { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px 12px; flex: 1; }
+.app-card-head { display: flex; align-items: baseline; gap: 8px; justify-content: space-between; }
+.app-name { font-weight: bold; font-size: 13px; }
+.app-cat { font-size: 9px; letter-spacing: .06em; text-transform: uppercase; color: var(--fg2);
+           border: 1px solid var(--border); border-radius: 10px; padding: 1px 7px; white-space: nowrap; }
+/* Clamped, not truncated at a character count: the blurbs are several
+   sentences and the first one is always the summary. Hovering is not a way to
+   read the rest, so the card links through to the realm page for that. */
+.app-desc { color: var(--fg2); font-size: 11.5px; line-height: 1.5; white-space: normal; word-break: normal;
+            display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.app-card-off { opacity: 0.55; }
+.app-card-off:hover { opacity: 1; }
+.app-checked { font-size: 10px; }
+.app-stats { font-size: 11px; color: var(--fg); margin-top: auto; }
+.app-actions { display: flex; gap: 12px; font-size: 11px; padding-top: 2px; }
+.app-launch { white-space: nowrap; }
+.dim { color: var(--fg2); }
+@media (max-width: 720px) { .app-grid { grid-template-columns: 1fr; } }
 .skeleton-line { height: 16px; margin-bottom: 12px; }
 .skeleton-line:nth-child(1) { width: 80%; }
 .skeleton-line:nth-child(2) { width: 60%; }
@@ -7459,48 +7492,262 @@ async function loadParams() {
   }
 }
 
-// --- Apps: the curated directory ---------------------------------------------
+// --- Apps: the app hub -------------------------------------------------------
 //
 // What the realm list cannot be. /realms ranks every deployed package by
 // traffic, which answers "what is busy" and never "what is this for". This is
-// six sentences a human wrote, from pkg/registry/data/apps.json.
+// the sentences a human wrote, from pkg/registry/data/apps.json.
 //
-// Network-independent on purpose: what an app is for does not change between
-// chains even where the deployment does. Whether it is deployed on the network
-// you have selected is a question the realm page answers, and every row links
-// through to it.
+// It is a grid of pictures rather than a table because of who asks for it: the
+// question that produced this page was "is there a page where we can see the
+// dapps being built on Gno.land", from someone who wanted to look at them. A
+// three-column monospace table answers a different, narrower question, so it is
+// still here behind the view toggle rather than gone.
+//
+// The numbers on a card are the half a curated directory cannot have on its
+// own, and the half nobody else's app hub has at all: this one sits on an
+// indexer. They are per-chain and therefore absent until a chain is picked,
+// while the descriptions, which are true everywhere, are not.
+const APP_WINDOWS = ['24h', '7d', '30d', '90d'];
+const APP_WINDOW_DEFAULT = '30d';
+const APPS_JSON_URL = 'https://github.com/gnoverse/mygnoscan/blob/main/pkg/registry/data/apps.json';
+
+// The chain to offer when none is picked. mainnet when it is configured,
+// because that is the one a visitor almost always means; otherwise the first
+// configured chain, so a deployment without mainnet still gets the offer.
+function defaultNetworkName() {
+  const names = (_networks || []).map(n => (typeof n === 'string' ? n : n.id || n.name)).filter(Boolean);
+  if (!names.length) return '';
+  return names.includes('mainnet') ? 'mainnet' : names[0];
+}
+
+// Goes through the header's own select and its change handler rather than
+// writing localStorage directly: that handler also rewrites the URL and resets
+// state that does not survive a chain switch, and skipping it leaves the
+// selector showing one chain while the page shows another.
+function switchNetwork(name) {
+  const sel = document.getElementById('network-select');
+  if (!sel) return;
+  sel.value = name;
+  onNetworkChange();
+}
+
+function appsWindow() {
+  const w = urlParam('window');
+  return APP_WINDOWS.includes(w) ? w : APP_WINDOW_DEFAULT;
+}
+
 async function loadApps() {
   const container = clear('apps-content');
   skeletonBlock(container);
+  const q = new URLSearchParams({ window: appsWindow() });
+  const net = getNetwork();
+  if (net && net !== 'all') q.set('network', net);
   try {
-    await apiSWR('registry/apps', (data) => renderApps(container, data));
+    await apiSWR('registry/apps?' + q.toString(), (data) => renderApps(container, data));
   } catch (err) {
     failBlock(container, err, loadApps);
   }
 }
 
+// A chip strip. Reads its selection from the URL and writes it back, so every
+// view of this page is a link someone can paste.
+function appsChips(values, current, onPick, labelOf) {
+  const seg = el('div', { className: 'dash-seg' });
+  values.forEach(v => {
+    const b = el('button', { type: 'button', className: v === current ? 'on' : '' },
+      labelOf ? labelOf(v) : v);
+    b.addEventListener('click', () => onPick(v));
+    seg.appendChild(b);
+  });
+  return seg;
+}
+
+// One card. The picture is the point; everything else is one line.
+function appCard(app, stat, network) {
+  // An app the selected chain has never seen is still worth showing (the
+  // description is true everywhere), and is not worth the same attention as
+  // one that is live here. Dimmed rather than hidden or badged: a filter that
+  // silently dropped entries would make the directory look smaller than it is.
+  const absent = network && (!stat || !stat.deployed);
+  const card = el('div', { className: 'app-card' + (absent ? ' app-card-off' : '') });
+
+  const shot = shotEl(app.path, { size: 'thumb', cls: 'app-shot', network: network });
+  if (shot) card.appendChild(shot);
+
+  const body = el('div', { className: 'app-card-body' });
+  const head = el('div', { className: 'app-card-head' });
+  head.appendChild(el('span', { className: 'app-name' }, app.name));
+  head.appendChild(el('span', { className: 'app-cat' }, app.category));
+  body.appendChild(head);
+
+  body.appendChild(el('div', { className: 'app-desc' }, app.description || ''));
+  // A blurb is mostly durable, but the one volatile fact inside it is what a
+  // reader acts on, so the card carries the date the same way the table does.
+  // Dropping it here because a card is small would be keeping the claim and
+  // losing the thing that lets someone weigh it.
+  if (app.checked) {
+    body.appendChild(el('div', {
+      className: 'app-checked dim',
+      title: 'the volatile part of this description was last confirmed on this date',
+    }, 'checked ' + app.checked));
+  }
+
+  // The stats line says one of three different things, and conflating them is
+  // the way this page would start lying: picked and the app is not there,
+  // picked and nobody has called it, picked and here is how busy.
+  //
+  // With no chain picked there is no fourth thing to say here. The reason is
+  // the same for all ten cards, so it is said once in the intro instead of
+  // stamped on every card, where it was ten repetitions of a sentence that is
+  // about the page rather than about any app on it.
+  // Built either way, appended only when there is a chain to describe: an
+  // empty stats row still takes its margin and leaves a gap under every card
+  // that reads as a rendering bug.
+  const stats = el('div', { className: 'app-stats' });
+  if (network && (!stat || !stat.deployed)) {
+    stats.appendChild(el('span', { className: 'dim' }, 'not deployed on ' + network));
+  } else if (network && !stat.calls) {
+    stats.appendChild(el('span', { className: 'dim' }, 'deployed, never called'));
+  } else if (network) {
+    stats.appendChild(el('b', {}, fmtNum(stat.calls_window)));
+    stats.append(' calls · ');
+    stats.appendChild(el('b', {}, fmtNum(stat.callers)));
+    stats.append(' people');
+    const quiet = stat.calls_window === 0;
+    stats.appendChild(el('span', {
+      className: 'dim',
+      title: quiet
+        ? 'no calls in this window; ' + fmtNum(stat.calls) + ' all time'
+        : fmtNum(stat.calls) + ' calls all time, ' + fmtNum(stat.callers) + ' distinct callers',
+    }, quiet ? ' · quiet this ' + appsWindow() : ' · ' + appsWindow()));
+  }
+  if (network) body.appendChild(stats);
+
+  const actions = el('div', { className: 'app-actions' });
+  actions.appendChild(link('details',
+    () => navigate('/realm/' + app.path.replace('gno.land/', '') + netSuffix())));
+  // The external destination: the app's own front end when it has one, and the
+  // realm on gno.land when it does not. Both are the thing a visitor came to
+  // open, which is what "launch" means on every other app hub.
+  const launch = app.url || ('https://gno.land/' + app.path.replace(/^gno\.land\//, ''));
+  actions.appendChild(el('a', {
+    href: launch, target: '_blank', rel: 'noopener noreferrer', className: 'app-launch',
+  }, app.url ? 'launch ↗' : 'open on gno.land ↗'));
+  body.appendChild(actions);
+
+  card.appendChild(body);
+  return card;
+}
+
 function renderApps(container, data) {
   container.textContent = '';
   const apps = data.apps || [];
+  const stats = data.stats || {};
+  const network = data.network || '';
+  const category = urlParam('cat') || '';
+  const view = urlParam('view') === 'table' ? 'table' : 'cards';
 
   const intro = el('div', { className: 'section-sub' });
-  intro.append('a curated directory: what these realms are for, which no amount of on-chain data says. '
-    + 'entries are a pull request against ');
-  intro.appendChild(el('span', {}, 'pkg/registry/data/apps.json'));
+  intro.append('a curated directory: what these realms are for, which no amount of on-chain '
+    + 'data says. entries are a pull request against ');
+  intro.appendChild(el('a', { href: APPS_JSON_URL, target: '_blank', rel: 'noopener noreferrer' },
+    'pkg/registry/data/apps.json'));
   intro.append('.');
+  if (data.realms) {
+    // Said out loud, because a directory is always behind the chain and a page
+    // that hides that reads as "this is all there is".
+    intro.append(' ' + apps.length + ' listed, ' + fmtNum(data.realms)
+      + ' realms deployed on ' + network + '.');
+  }
   container.appendChild(intro);
+
+  // No chain picked, so there is nothing honest to say about usage: the same
+  // path is a different deployment on each chain. Offered as one click rather
+  // than as an instruction to go and find the selector, because this is the
+  // first thing a visitor sent to this page lands on.
+  if (!network) {
+    const hint = el('div', { className: 'section-sub' });
+    hint.append('usage is per chain, so none is shown across all of them. ');
+    const pick = defaultNetworkName();
+    if (pick) {
+      hint.appendChild(link('see which of these are live on ' + pick,
+        () => switchNetwork(pick)));
+    } else {
+      hint.append('pick one in the header to see which of these are live, and how busy.');
+    }
+    container.appendChild(hint);
+  }
 
   if (!apps.length) {
     container.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '12px' } }, 'no apps listed yet'));
     return;
   }
 
+  // Controls. Category and view are applied while rendering rather than to
+  // rows already painted, because an SWR render runs twice and anything done
+  // to the first pass's rows is thrown away by the second (AGENTS.md).
+  const cats = [''].concat(data.categories || []);
+  const bar = el('div', { className: 'dash-bar' });
+  bar.appendChild(el('span', { className: 'dash-grp' },
+    appsChips(cats, category, (v) => { urlSetParam('cat', v); renderApps(container, data); },
+      (v) => v || 'all')));
+  bar.appendChild(el('span', { className: 'dash-grp' },
+    el('span', { className: 'label' }, 'view'),
+    appsChips(['cards', 'table'], view,
+      (v) => { urlSetParam('view', v === 'cards' ? '' : v); renderApps(container, data); })));
+  if (network) {
+    bar.appendChild(el('span', { className: 'dash-grp' },
+      el('span', { className: 'label' }, 'window'),
+      // The window changes what the server counted, so this one refetches.
+      appsChips(APP_WINDOWS, appsWindow(), (v) => {
+        urlSetParam('window', v === APP_WINDOW_DEFAULT ? '' : v);
+        loadApps();
+      })));
+  }
+  container.appendChild(bar);
+
+  const shown = category ? apps.filter(a => a.category === category) : apps;
+  if (!shown.length) {
+    container.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '12px' } },
+      'nothing in this category'));
+  } else if (view === 'cards') {
+    const grid = el('div', { className: 'app-grid' });
+    // Busiest first once there is a chain to be busy on, so the page opens on
+    // what people actually use. Alphabetical within a category otherwise,
+    // which is what the server already sorted.
+    //
+    // Three tiers before the call count, because a card with no numbers on it
+    // would otherwise sort level with a live-but-quiet one and the grid would
+    // open on apps that are not even on this chain. Within a tier, ties keep
+    // the server's alphabetical order: sort is stable.
+    const tier = (app) => {
+      const s = stats[app.path];
+      if (!s || !s.deployed) return 2;
+      return s.calls ? 0 : 1;
+    };
+    const ordered = network
+      ? shown.slice().sort((a, b) => tier(a) - tier(b)
+        || ((stats[b.path] || {}).calls_window || 0) - ((stats[a.path] || {}).calls_window || 0))
+      : shown;
+    ordered.forEach(app => grid.appendChild(appCard(app, stats[app.path], network)));
+    container.appendChild(grid);
+  } else {
+    container.appendChild(appsTable(shown, stats, network));
+  }
+
+  if ((data.candidates || []).length) container.appendChild(appsCandidates(data, category));
+}
+
+// The dense view. Kept because a table is better than a grid for comparing, and
+// because it is what this page was before it had pictures.
+function appsTable(apps, stats, network) {
   const byCategory = new Map();
   for (const app of apps) {
     if (!byCategory.has(app.category)) byCategory.set(app.category, []);
     byCategory.get(app.category).push(app);
   }
-
+  const wrap = el('div');
   for (const [category, entries] of byCategory) {
     const section = el('div', { className: 'section', style: { marginTop: '24px' } });
     section.appendChild(el('div', { className: 'section-title' }, category));
@@ -7531,13 +7778,68 @@ function renderApps(container, data) {
           title: 'the volatile part of this description was last confirmed on this date',
         }, 'checked ' + app.checked));
       }
-      tbody.appendChild(el('tr', {}, nameCell, pathCell, descCell));
+      const stat = stats[app.path];
+      const usageCell = el('td', { style: { verticalAlign: 'top', whiteSpace: 'nowrap' } });
+      if (!network) usageCell.appendChild(el('span', { className: 'dim' }, '—'));
+      else if (!stat || !stat.deployed) usageCell.appendChild(el('span', { className: 'dim' }, 'not here'));
+      else usageCell.append(fmtNum(stat.calls_window) + ' / ' + fmtNum(stat.callers));
+      tbody.appendChild(el('tr', {}, nameCell, pathCell, descCell, usageCell));
     }
     section.appendChild(el('table', {},
-      el('thead', {}, el('tr', {}, el('th', {}, 'name'), el('th', {}, 'realm'), el('th', {}, 'what it is'))),
+      el('thead', {}, el('tr', {}, el('th', {}, 'name'), el('th', {}, 'realm'),
+        el('th', {}, 'what it is'),
+        el('th', { title: 'calls in the window / distinct callers all time' }, 'calls / people'))),
       tbody));
-    container.appendChild(section);
+    wrap.appendChild(section);
   }
+  return wrap;
+}
+
+// The suggestion queue: the busiest realms this directory does not mention.
+//
+// It is what turns "the directory is incomplete" from a complaint into a
+// worklist in traffic order. Nothing here is promoted automatically: curated
+// means a human wrote the sentence and merged it, and a page that auto-listed
+// whatever was busy would be a listing page, which already exists.
+function appsCandidates(data, category) {
+  const section = el('div', { className: 'section', style: { marginTop: '32px' } });
+  section.appendChild(el('div', { className: 'section-title' }, 'busy, and not described yet'));
+  const sub = el('div', { className: 'section-sub' });
+  sub.append('the most-called realms on ' + data.network + ' with no entry in the directory, '
+    + 'over the last ' + (data.window || APP_WINDOW_DEFAULT) + '. a suggestion queue, not a listing: '
+    + 'adding one means writing the sentence and opening a ');
+  sub.appendChild(el('a', { href: APPS_JSON_URL, target: '_blank', rel: 'noopener noreferrer' },
+    'pull request'));
+  sub.append('.');
+  section.appendChild(sub);
+
+  const tbody = el('tbody');
+  for (const c of data.candidates) {
+    const pathCell = el('td', {},
+      link(c.path, () => navigate('/realm/' + c.path.replace('gno.land/', '') + netSuffix())));
+    const byCell = el('td', {}, c.creator ? addrLink(c.creator) : el('span', { className: 'dim' }, '—'));
+    tbody.appendChild(el('tr', {},
+      pathCell,
+      el('td', { style: { textAlign: 'right' } }, fmtNum(c.calls)),
+      el('td', { style: { textAlign: 'right' } }, fmtNum(c.callers)),
+      byCell));
+  }
+  section.appendChild(el('table', {},
+    el('thead', {}, el('tr', {},
+      el('th', {}, 'realm'),
+      el('th', { style: { textAlign: 'right' } }, 'calls'),
+      el('th', { style: { textAlign: 'right' } }, 'people'),
+      el('th', {}, 'deployed by'))),
+    tbody));
+  // The filter above is about the directory, and this section is about what is
+  // missing from it. Saying so beats leaving a reader to wonder why a category
+  // filter did nothing here.
+  if (category) {
+    section.appendChild(el('div', {
+      style: { color: 'var(--fg2)', fontSize: '11px', marginTop: '6px' },
+    }, 'not filtered by category: these have no category yet, which is the point'));
+  }
+  return section;
 }
 
 async function loadSanity() {
@@ -10323,6 +10625,7 @@ function destroyDetailCharts() {
   _detailCharts.forEach(c => c.destroy());
   _detailCharts = [];
   disposeUsageTreemap();
+  disposeDefiFlowGraph();
 }
 
 // The usage treemap is ECharts, not Chart.js, so it disposes rather than
@@ -10333,6 +10636,15 @@ let _usageTreemapChart = null;
 function disposeUsageTreemap() {
   if (_usageTreemapChart && !_usageTreemapChart.isDisposed()) _usageTreemapChart.dispose();
   _usageTreemapChart = null;
+}
+
+// Same hazard, same handling, for the defi tab's money graph. It is also
+// redrawn in place by its own mode toggle, so the dispose has to be callable
+// from there and not only from a whole-page pass.
+let _defiFlowChart = null;
+function disposeDefiFlowGraph() {
+  if (_defiFlowChart && !_defiFlowChart.isDisposed()) _defiFlowChart.dispose();
+  _defiFlowChart = null;
 }
 
 // --- Realm usage: the calls tab -------------------------------------------
@@ -13285,6 +13597,10 @@ function renderRealmDefi(into, d, path) {
     });
   }
 
+  defiFlowGraphEl(into, d, path);
+  const parties = defiCounterpartiesTableEl(d);
+  if (parties) into.appendChild(parties);
+
   if (tokens.length) into.appendChild(defiTokensEl(d, tokens));
 
   if (flows.length) {
@@ -13354,6 +13670,269 @@ function defiFlowsPagerEl(into, d, path, flows) {
     renderRealmDefi(into, d, path);
   };
   wrap.appendChild(btn);
+  return wrap;
+}
+
+// --- The money graph: who paid this realm, and who it paid -------------------
+//
+// The table below answers "what happened" and cannot answer "who", which on
+// anything defi-shaped is the question. r/.../bubblerumble3 is 3,095 transfer
+// legs and twelve counterparties; only the second number is something a person
+// can hold in their head, and the leaderboard that falls out of it is the whole
+// story of the realm.
+//
+// Two modes over the same data:
+//
+//   combined  one node per counterparty, the legs aggregated into two arrows
+//   detail    one arrow per transfer leg, so bursts and payout clusters show
+//
+// `counterparties` is computed server-side over *every* leg, so the combined
+// view is complete even when the table below it is one page of several. Detail
+// mode draws the page that is loaded and says so, because that is all it has.
+const DEFI_GRAPH_NODES = 24;
+const DEFI_IN = '#51cf66';
+const DEFI_OUT = '#ff922b';
+
+function defiFlowMode() {
+  return urlParam('flow') === 'detail' ? 'detail' : 'combined';
+}
+
+// The label under a node. A realm path beats an address every time, and both
+// beat 40 characters of bech32.
+function defiNodeLabel(addr) {
+  if (!addr) return 'chain';
+  const info = addrInfo(addr);
+  return (info && info.label) || truncAddr(addr);
+}
+
+function defiFlowGraphEl(into, d, path) {
+  const parties = d.counterparties || [];
+  if (!parties.length) return;
+
+  const wrap = el('div', { style: { marginBottom: '20px' } });
+  const head = el('div', { className: 'dash-bar', style: { marginBottom: '6px' } });
+  head.appendChild(el('span', { className: 'section-title', style: { margin: '0', border: 'none', padding: '0' } },
+    'money flow'));
+  const mode = defiFlowMode();
+  const shownCount = Math.min(parties.length, DEFI_GRAPH_NODES);
+  const seg = el('div', { className: 'dash-seg' });
+  [['combined', 'combined'], ['detail', 'detail']].forEach(([id, label]) => {
+    const b = el('button', { type: 'button', className: id === mode ? 'on' : '' }, label);
+    b.addEventListener('click', () => {
+      urlSetParam('flow', id === 'combined' ? '' : id);
+      // Redraw in place rather than reloading the tab: the data is already
+      // here, and a refetch would cost the server another full derivation of
+      // the realm's history (see defiFlowsPagerEl).
+      into.textContent = '';
+      renderRealmDefi(into, d, path);
+    });
+    seg.appendChild(b);
+  });
+  head.appendChild(el('span', { className: 'dash-grp' }, seg));
+  wrap.appendChild(head);
+
+  // Height scales with how much there is to lay out. A fixed 420px box is a
+  // lake of empty around a realm with two counterparties, and too tight for
+  // one with twenty.
+  const height = Math.min(460, 240 + shownCount * 10);
+  const box = el('div', { id: 'defi-flow-graph', style: { width: '100%', height: height + 'px' } });
+  wrap.appendChild(box);
+
+  const note = el('div', { className: 'detail-chart-note' });
+  const bits = [];
+  if (mode === 'combined') {
+    bits.push(fmtNum(shownCount) + ' of ' + fmtNum(d.counterparties_total || parties.length)
+      + ' counterparties, over all ' + fmtNum(d.flows_total || 0) + ' transfers');
+  } else {
+    const drawn = (d.flows || []).filter(f => f.account === 'banker').length;
+    bits.push(fmtNum(drawn) + ' transfer legs drawn individually');
+    // Detail mode has only the page in hand, and saying so is the difference
+    // between a partial picture and a wrong one.
+    if ((d.flows_total || 0) > (d.flows || []).length) {
+      bits.push('the ' + fmtNum((d.flows || []).length) + ' most recent of ' + fmtNum(d.flows_total)
+        + '; load the rest below to draw them all');
+    }
+  }
+  bits.push('green in, orange out');
+  bits.push('node colour is that account’s own profit and loss, size is gross volume');
+  note.textContent = bits.join(' · ');
+  wrap.appendChild(note);
+
+  into.appendChild(wrap);
+
+  if (typeof echarts === 'undefined') {
+    box.textContent = '';
+    box.appendChild(el('div', { className: 'dash-msg' }, 'charts unavailable — the ECharts library failed to load'));
+    return;
+  }
+  // Deferred: ECharts measures the container, and a box that is not in the
+  // document yet measures zero. `into` is already attached by the time this
+  // runs because renderRealmDefi appends into a live tab, but the toggle path
+  // above rebuilds it, so measure after the current task either way.
+  setTimeout(() => {
+    if (!box.isConnected) return;
+    disposeDefiFlowGraph();
+    _defiFlowChart = echarts.init(box, null, { renderer: 'svg' });
+    _defiFlowChart.setOption(mode === 'detail'
+      ? defiDetailOption(d, parties)
+      : defiCombinedOption(d, parties));
+  }, 0);
+}
+
+// The realm sits at the centre and everything else hangs off it. `fixed` keeps
+// it there while the force layout settles the rest, which is what makes the
+// picture readable: a hub-and-spoke that wanders is just a hairball.
+function defiGraphNodes(d, parties) {
+  const top = parties.slice(0, DEFI_GRAPH_NODES);
+  const maxGross = top.reduce((m, c) => Math.max(m, c.sent + c.received), 1);
+  const nodes = [{
+    id: d.address,
+    name: (d.path || '').split('/').pop(),
+    symbolSize: 46,
+    itemStyle: { color: '#4ecdc4' },
+    label: { show: true, color: '#0a0a0a', fontWeight: 'bold', fontSize: 11, position: 'inside' },
+    _lines: [d.path, fmtGnotAmount(d.live_ugnot || 0) + ' held'],
+  }];
+  top.forEach(c => {
+    nodes.push({
+      id: c.address || '(chain)',
+      name: defiNodeLabel(c.address),
+      symbolSize: 9 + 22 * Math.sqrt((c.sent + c.received) / maxGross),
+      // Green is an account that came out ahead of this realm, red one that is
+      // down on it. Net is already from the counterparty's side (see
+      // pkg/httpapi/defi.go), so no flip here: doing it twice is the bug this
+      // colour would show most loudly.
+      itemStyle: { color: c.net >= 0 ? DEFI_IN : '#ff6b6b' },
+      label: { show: true, color: '#aaa', fontSize: 9, position: 'right' },
+      _lines: [
+        c.address || 'the chain itself',
+        'in ' + fmtGnotAmount(c.sent) + ' · out ' + fmtGnotAmount(c.received),
+        'net ' + (c.net >= 0 ? '+' : '') + fmtGnotAmount(c.net) + ' for this account',
+        fmtNum(c.legs) + (c.legs === 1 ? ' transfer' : ' transfers'),
+      ],
+    });
+  });
+  return { nodes, top };
+}
+
+function defiGraphBase(nodes, edges, repulsion) {
+  return dashBase({
+    tooltip: {
+      // An address and a realm path are both chain-chosen, so the tooltip is a
+      // DOM node and never a string the browser would parse as markup. Same
+      // rule as the dashboards' transfer graph.
+      formatter: p => dashTooltipNode(
+        p.dataType === 'edge'
+          ? (p.data._lines || [])
+          : ((p.data && p.data._lines) || [String(p.name)])),
+    },
+    series: [{
+      type: 'graph', layout: 'force', roam: true, draggable: true,
+      edgeSymbol: ['none', 'arrow'], edgeSymbolSize: 7,
+      // Centred as a fraction, not at a pixel. The realm used to be pinned at
+      // x:320 y:210, which is the middle of a box that happens to be 640 wide
+      // and is nowhere near the middle of the one this actually renders into.
+      center: ['50%', '50%'],
+      // The hub carries every edge, so gravity holds it in the middle without
+      // pinning it, and a reader can still drag it out of the way.
+      force: { repulsion: repulsion, edgeLength: [80, 190], gravity: 0.12 },
+      data: nodes, edges: edges,
+    }],
+  });
+}
+
+function defiCombinedOption(d, parties) {
+  const { nodes, top } = defiGraphNodes(d, parties);
+  const maxEdge = top.reduce((m, c) => Math.max(m, c.sent, c.received), 1);
+  const edges = [];
+  const width = v => 1 + 6 * Math.sqrt(v / maxEdge);
+  top.forEach(c => {
+    const id = c.address || '(chain)';
+    const label = defiNodeLabel(c.address);
+    if (c.sent) {
+      edges.push({
+        source: id, target: d.address, value: c.sent,
+        lineStyle: { color: DEFI_IN, width: width(c.sent), curveness: 0.12, opacity: 0.75 },
+        _lines: [label + ' → ' + (d.path || '').split('/').pop(), fmtGnotAmount(c.sent) + ' in'],
+      });
+    }
+    if (c.received) {
+      edges.push({
+        source: d.address, target: id, value: c.received,
+        lineStyle: { color: DEFI_OUT, width: width(c.received), curveness: 0.12, opacity: 0.75 },
+        _lines: [(d.path || '').split('/').pop() + ' → ' + label, fmtGnotAmount(c.received) + ' out'],
+      });
+    }
+  });
+  return defiGraphBase(nodes, edges, 420);
+}
+
+function defiDetailOption(d, parties) {
+  const { nodes, top } = defiGraphNodes(d, parties);
+  // Only legs whose counterparty has a node: the graph is capped at
+  // DEFI_GRAPH_NODES and an edge to a node that was cut would be an arrow into
+  // nothing.
+  const drawable = new Set(top.map(c => c.address || '(chain)'));
+  const legs = (d.flows || []).filter(f => f.account === 'banker'
+    && drawable.has(f.counterparty || '(chain)'));
+  const maxLeg = legs.reduce((m, f) => Math.max(m, Math.abs(f.amount)), 1);
+  const edges = legs.map((f, i) => {
+    const id = f.counterparty || '(chain)';
+    const label = defiNodeLabel(f.counterparty);
+    const into = f.amount >= 0;
+    const amount = Math.abs(f.amount);
+    return {
+      source: into ? id : d.address,
+      target: into ? d.address : id,
+      value: amount,
+      lineStyle: {
+        color: into ? DEFI_IN : DEFI_OUT, opacity: 0.4,
+        width: 0.5 + 3.4 * Math.sqrt(amount / maxLeg),
+        // Fanned, so parallel legs between the same pair are distinguishable
+        // instead of stacking into one thick line.
+        curveness: 0.06 + (i % 9) * 0.045,
+      },
+      _lines: [
+        into ? label + ' → this realm' : 'this realm → ' + label,
+        fmtGnotAmount(amount),
+        'block ' + fmtNum(f.block_height),
+      ],
+    };
+  });
+  return defiGraphBase(nodes, edges, 900);
+}
+
+// The leaderboard. The graph shows the shape; this is the same thing as
+// numbers, which is what anyone acts on.
+function defiCounterpartiesTableEl(d) {
+  const parties = d.counterparties || [];
+  if (!parties.length) return null;
+  const wrap = el('div', { style: { marginBottom: '20px' } });
+  const tbl = el('table', { id: 'defi-counterparties' });
+  tbl.appendChild(el('thead', {}, el('tr', {},
+    el('th', {}, 'account'),
+    el('th', { style: { textAlign: 'right' }, title: 'paid into this realm' }, 'in'),
+    el('th', { style: { textAlign: 'right' }, title: 'paid out by this realm' }, 'out'),
+    el('th', { style: { textAlign: 'right' }, title: 'out minus in: this account’s own profit and loss, not the realm’s' }, 'net'),
+    el('th', { style: { textAlign: 'right' } }, 'transfers'))));
+  const body = el('tbody');
+  parties.slice().sort((a, b) => b.net - a.net).forEach(c => {
+    body.appendChild(el('tr', {},
+      el('td', { className: 'truncate' }, c.address ? addrLink(c.address)
+        : el('span', { style: { color: 'var(--fg2)' }, title: 'no counterparty address: the chain itself' }, 'chain')),
+      el('td', { style: { textAlign: 'right' } }, fmtGnotAmount(c.sent)),
+      el('td', { style: { textAlign: 'right' } }, fmtGnotAmount(c.received)),
+      el('td', { style: { textAlign: 'right' } }, signedGnotEl(c.net)),
+      el('td', { style: { textAlign: 'right' } }, fmtNum(c.legs))));
+  });
+  tbl.appendChild(body);
+  wrap.appendChild(el('div', { className: 'section-title' }, 'counterparties'));
+  wrap.appendChild(tbl);
+  if ((d.counterparties_total || 0) > parties.length) {
+    wrap.appendChild(el('div', { className: 'detail-chart-note' },
+      'the ' + fmtNum(parties.length) + ' largest of ' + fmtNum(d.counterparties_total)
+      + ', by how much moved in both directions'));
+  }
   return wrap;
 }
 
