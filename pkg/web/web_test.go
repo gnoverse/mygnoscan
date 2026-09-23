@@ -431,3 +431,27 @@ func TestFeatureFlagIsInjectedOnlyWhenOn(t *testing.T) {
 		}
 	})
 }
+
+// TestNoUnguardedShotElAppend keeps a returns-null helper out of a call that
+// cannot take null.
+//
+// shotEl returns nil when no capture service is configured (FEATURES.shots
+// off), and `appendChild(null)` throws. One direct
+// `header.appendChild(shotEl(...))` therefore took the entire realm page down
+// on any deployment without screenshots: the exception escaped mid-render, so
+// there was no header and no tab strip at all, on every realm. It was
+// invisible wherever shots happen to be enabled, which is why a grep guard is
+// worth more here than a browser test.
+//
+// Every legitimate caller passes the result to el(), which skips a null child,
+// or assigns it and checks.
+func TestNoUnguardedShotElAppend(t *testing.T) {
+	index, err := Index()
+	if err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+	if bytes.Contains(index, []byte("appendChild(shotEl(")) {
+		t.Error("appendChild(shotEl(...)) appends a value that is null when screenshots are off, " +
+			"which throws and takes the whole page down; assign it and guard, or pass it through el()")
+	}
+}

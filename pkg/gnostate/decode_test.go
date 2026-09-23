@@ -412,3 +412,82 @@ func TestNodeCarriesTypeID(t *testing.T) {
 		t.Errorf("Type and TypeID are both %q; Type should be the shortened name", n.Type)
 	}
 }
+
+// TestDecodeObjectMetadata pins the three facts the UI hovers to show, and the
+// one it must not invent.
+//
+// Refs and Size are straightforward. Rev is ModTime, which is the owning
+// realm's own logical counter at the last write, not a clock: it is exposed so
+// the UI can order changes within a realm, and it is named `rev` rather than
+// anything time-shaped so nobody renders it as a date.
+func TestDecodeObjectMetadata(t *testing.T) {
+	pkg := `{"names":["held"],"values":[
+	  {"T":{"@type":"/gno.RefType","ID":"x.T"},
+	   "V":{"@type":"/gno.RefValue","ObjectID":"aa:1"}}]}`
+	res := &mapResolver{objects: map[string]string{
+		"aa:1": `{"objectid":"aa:1","value":{"@type":"/gno.StructValue",
+		  "ObjectInfo":{"ID":"aa:1","Hash":"deadbeef","OwnerID":"aa:0",
+		                "ModTime":"42","RefCount":"3","LastObjectSize":"512"},
+		  "Fields":[{"T":{"@type":"/gno.PrimitiveType","value":"16"},
+		             "V":{"@type":"/gno.StringValue","value":"hi"}}]}}`,
+	}}
+	tree, err := DecodePackage([]byte(pkg), res, Limits{})
+	if err != nil {
+		t.Fatalf("DecodePackage: %v", err)
+	}
+	n := find(tree.Nodes, "held")
+	if n == nil {
+		t.Fatal("held missing")
+	}
+	if n.Size != 512 {
+		t.Errorf("Size = %d, want 512", n.Size)
+	}
+	if n.Refs != 3 {
+		t.Errorf("Refs = %d, want 3", n.Refs)
+	}
+	if n.Rev != 42 {
+		t.Errorf("Rev = %d, want 42 (ModTime, the realm's own counter)", n.Rev)
+	}
+	if n.OwnerID != "aa:0" || n.Hash != "deadbeef" {
+		t.Errorf("owner/hash = %q/%q", n.OwnerID, n.Hash)
+	}
+}
+
+// TestDecodeFuncCarriesItsSource is what makes a stored function clickable.
+// A FuncValue carries its declared name and a Source.Location; without them
+// the UI can only render the word "func", which is the least useful thing a
+// state explorer can say about a handler a realm is holding.
+func TestDecodeFuncCarriesItsSource(t *testing.T) {
+	pkg := `{"names":["handler"],"values":[
+	  {"T":{"@type":"/gno.FuncType","Params":[],"Results":[]},
+	   "V":{"@type":"/gno.FuncValue",
+	        "ObjectInfo":{"ID":"fn:1","LastObjectSize":"523"},
+	        "Name":"OnUpgrade",
+	        "Source":{"@type":"/gno.RefNode","Location":{
+	           "PkgPath":"gno.land/r/x/y","File":"home.gno",
+	           "Span":{"Pos":{"Line":"92","Column":"1"}}}}}}]}`
+	// Top-level funcs are filtered out of the state tree as API, so this is
+	// decoded directly rather than through DecodePackage.
+	w := newWalker(nil, Limits{})
+	var blk pkgBlock
+	if err := json.Unmarshal([]byte(pkg), &blk); err != nil {
+		t.Fatal(err)
+	}
+	n := w.value("handler", blk.Values[0], 0)
+
+	if n.Kind != KindFunc {
+		t.Fatalf("kind = %q, want func", n.Kind)
+	}
+	if n.Value != "OnUpgrade" {
+		t.Errorf("value = %q, want the declared name", n.Value)
+	}
+	if n.File != "home.gno" || n.Line != 92 {
+		t.Errorf("source = %s:%d, want home.gno:92", n.File, n.Line)
+	}
+}
+
+// mapResolver serves objects from a map and knows no types.
+type mapResolver struct{ objects map[string]string }
+
+func (m *mapResolver) Object(oid string) ([]byte, error) { return []byte(m.objects[oid]), nil }
+func (m *mapResolver) Type(string) ([]byte, error)       { return nil, nil }

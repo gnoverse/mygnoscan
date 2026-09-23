@@ -68,6 +68,28 @@ type Node struct {
 	// what the storage deposit was charged against.
 	Size int64 `json:"size,omitempty"`
 
+	// Refs is the object's RefCount: how many stored references point at it.
+	// 1 for an ordinary field, higher for something genuinely shared.
+	Refs int64 `json:"refs,omitempty"`
+
+	// Rev is the object's ModTime, and the name is deliberate: ModTime is not
+	// a time. It is the owning realm's own logical counter at the moment the
+	// object was last written (gnovm: `oo.SetIsDirty(true, rlm.Time)`), so it
+	// orders changes within one realm and means nothing across realms, and it
+	// cannot be converted to a block height, a date or an age.
+	//
+	// What it does give, honestly, is "which parts of this realm changed most
+	// recently". Calling it a timestamp anywhere in the UI would be inventing
+	// a fact the chain does not have.
+	Rev int64 `json:"rev,omitempty"`
+
+	// File and Line locate a stored function's declaration in the realm's own
+	// source. A FuncValue carries its Source.Location on the wire, so a
+	// function held in state can be linked precisely to the line that declares
+	// it rather than rendered as an opaque "func".
+	File string `json:"file,omitempty"`
+	Line int    `json:"line,omitempty"`
+
 	// fromHeapItem records that this node is the contents of a heap item the
 	// walker unwrapped. It is unexported, so it never reaches the API; it
 	// exists only so a PointerValue can tell "index 0 of a heap item", where
