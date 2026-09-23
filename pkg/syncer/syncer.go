@@ -64,6 +64,7 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 	s.backfillBlockTimes(ctx)
 	s.backfillTransactions(ctx)
 	s.backfillValopers(ctx)
+	s.backfillTokenTransfers(ctx)
 	s.syncUsers(ctx)
 	if err := s.syncPackages(ctx); err != nil {
 		return fmt.Errorf("sync packages: %w", err)
@@ -879,6 +880,89 @@ func (s *Syncer) backfillValopers(ctx context.Context) {
 // Failures are logged and skipped rather than aborting the walk. A storage row
 // is derived detail — losing one costs a number on a page, where abandoning the
 // pass costs every call and send behind it.
+// backfillTokenTransfers walks the history the token ledger never saw.
+//
+// recordTokenTransfers rides the sync walk, and its comment says that is why it
+// "needs no separate backfill pass". That holds for a database built from
+// genesis by a binary that already had the feature. Sync resumes from the
+// highest stored height, so on a database that already existed the ledger can
+// only ever fill from the moment the feature shipped, and TokenSummaries then
+// presents that window as an exact supply: a holder who last moved tokens
+// before the cutoff is invisible, and a token minted before it has a supply of
+// whatever moved after.
+//
+// Same shape as the other repairs: a bounded batch per pass, a cursor that
+// survives restarts, and a stop condition that is reached rather than guessed.
+// The events are already selected by the sync query, so this is a re-walk and
+// not a new field.
+func (s *Syncer) backfillTokenTransfers(ctx context.Context) {
+	from, to, more, err := s.db.TokenBackfillRange(s.networkID, backfillTxBatch)
+	if err != nil {
+		log.Printf("[%s] token transfer backfill: %v", s.networkID, err)
+		return
+	}
+	if !more {
+		return
+	}
+
+	type blockTxs struct {
+		txs []indexer.Transaction
+		err error
+	}
+	heights := make([]int, 0, to-from)
+	for h := from; h < to; h++ {
+		heights = append(heights, h)
+	}
+	results := make([]blockTxs, len(heights))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, backfillConcurrency)
+	for i, h := range heights {
+		wg.Add(1)
+		go func(i, h int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			txs, err := s.client.GetTransactionsByBlock(ctx, h)
+			results[i] = blockTxs{txs: txs, err: err}
+		}(i, h)
+	}
+	wg.Wait()
+
+	// The cursor only advances over heights that actually answered. An
+	// unhealthy indexer must cost a retry, never a silent hole in the ledger
+	// that nothing will ever come back for.
+	// Collect first, then resolve block times in one pass, because that is
+	// where the canonical walk gets them: tx.BlockTime is not populated by
+	// GetTransactionsByBlock, and a row written with an empty block_time would
+	// land in the ledger and break the very window the page states.
+	var answered []indexer.Transaction
+	done := from
+	for i, r := range results {
+		if r.err != nil {
+			log.Printf("[%s] token transfer backfill at %d: %v", s.networkID, heights[i], r.err)
+			break
+		}
+		answered = append(answered, r.txs...)
+		done = heights[i] + 1
+	}
+	stored := 0
+	if len(answered) > 0 {
+		times := s.fetchBlockTimes(ctx, answered)
+		for _, tx := range answered {
+			stored += s.recordTokenTransfers(tx, times[tx.BlockHeight])
+		}
+	}
+	if done == from {
+		return // nothing answered; leave the cursor alone and retry next pass
+	}
+	if err := s.db.SetTokenBackfillCursor(s.networkID, done); err != nil {
+		log.Printf("[%s] token transfer backfill cursor: %v", s.networkID, err)
+		return
+	}
+	log.Printf("[%s] token transfer backfill: %d..%d, %d transfer(s) recovered",
+		s.networkID, from, done-1, stored)
+}
+
 // recordTokenTransfers stores the GRC20 Transfer events in a transaction.
 //
 // Rides the walk syncCalls already does: the events are in the payload being

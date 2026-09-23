@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"strconv"
 	"strings"
 	"time"
@@ -422,4 +423,90 @@ func (d *DB) SearchTokens(network, q string, limit int) ([]TokenSummary, error) 
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// tokenBackfillCursorKey names the sync_state row holding how far the token
+// ledger's historical walk has got, per network.
+func tokenBackfillCursorKey(network string) string {
+	return "token_backfill_cursor:" + network
+}
+
+// TokenBackfillRange returns the next batch of heights whose transfers have
+// never been walked, and reports whether any work is left.
+//
+// The ledger fills FORWARD from whenever the feature shipped, because
+// recordTokenTransfers rides the sync walk and sync resumes from the highest
+// stored height. On a database built from genesis by a binary that already had
+// the feature that is complete; on one that already existed it is a window, and
+// TokenSummaries presents a window as a total.
+//
+// So the gap is everything between the earliest block this instance stores and
+// the first height the ledger actually recorded. A cursor walks it oldest
+// first, a bounded batch per pass, and survives restarts the way the other
+// backfills do.
+func (d *DB) TokenBackfillRange(network string, batch int) (from, to int, more bool, err error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var lowest *int
+	if err = d.db.QueryRow(
+		`SELECT MIN(height) FROM blocks WHERE ` + d.networkFilter("network", network)).Scan(&lowest); err != nil {
+		return 0, 0, false, err
+	}
+	if lowest == nil {
+		return 0, 0, false, nil // nothing stored yet, nothing to repair
+	}
+
+	// The boundary is where the forward fill starts. With an empty ledger that
+	// is the sync tip, which means the whole stored history is the gap.
+	var boundary *int
+	if err = d.db.QueryRow(
+		`SELECT MIN(block_height) FROM token_transfers WHERE ` + d.networkFilter("network", network)).Scan(&boundary); err != nil {
+		return 0, 0, false, err
+	}
+	stop := 0
+	if boundary != nil {
+		stop = *boundary
+	} else {
+		var tip *int
+		if err = d.db.QueryRow(
+			`SELECT MAX(height) FROM blocks WHERE ` + d.networkFilter("network", network)).Scan(&tip); err != nil {
+			return 0, 0, false, err
+		}
+		if tip == nil {
+			return 0, 0, false, nil
+		}
+		stop = *tip + 1
+	}
+
+	from = *lowest
+	if cur, cerr := d.getSyncStateLocked(tokenBackfillCursorKey(network)); cerr == nil && cur != "" {
+		if n, perr := strconv.Atoi(cur); perr == nil && n > from {
+			from = n
+		}
+	}
+	if from >= stop {
+		return 0, 0, false, nil // the walk has met the forward fill
+	}
+	to = from + batch
+	if to > stop {
+		to = stop
+	}
+	return from, to, true, nil
+}
+
+// SetTokenBackfillCursor records how far the historical walk has got.
+func (d *DB) SetTokenBackfillCursor(network string, height int) error {
+	return d.SetSyncState(tokenBackfillCursorKey(network), strconv.Itoa(height))
+}
+
+// getSyncStateLocked is GetSyncState without taking the read lock again, for
+// callers that already hold it.
+func (d *DB) getSyncStateLocked(key string) (string, error) {
+	var val string
+	err := d.db.QueryRow(`SELECT value FROM sync_state WHERE key = ?`, key).Scan(&val)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return val, err
 }
