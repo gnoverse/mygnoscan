@@ -176,7 +176,7 @@ func TestAppsHubLayersTheSources(t *testing.T) {
 		}
 		if a.Description != "" {
 			switch a.DescriptionFrom {
-			case fromCurated, fromCommunity, fromChain:
+			case fromCurated, fromCommunity, fromChain, fromReadme:
 			default:
 				t.Errorf("%s has a description from %q", a.Name, a.DescriptionFrom)
 			}

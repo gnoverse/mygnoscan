@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -167,3 +168,91 @@ func (d *DB) PackageDocs(network string, paths []string) (map[string]string, err
 	}
 	return out, rows.Err()
 }
+
+// PackageReadmes returns the first descriptive line of each package's
+// README.md.
+//
+// The fallback below the package doc comment, and it matters more than that
+// ordering suggests: on mainnet most realms carry no `// Package x ...` comment
+// at all, and several of the busiest ship a README that opens with exactly the
+// sentence a card wants. gnoswap is the worked example, with a README on every
+// one of its six realms and a doc comment on one.
+//
+// Still the project's own words, which is the whole rule for a default. The
+// alternative is this repo writing a sentence about somebody else's code and
+// presenting it as description rather than as a guess.
+func (d *DB) PackageReadmes(network string, paths []string) (map[string]string, error) {
+	out := map[string]string{}
+	if len(paths) == 0 {
+		return out, nil
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	args := make([]any, 0, len(paths))
+	for _, p := range paths {
+		args = append(args, p)
+	}
+	// Bounded: a README can be tens of kilobytes and only its opening matters,
+	// so the database sends a prefix rather than the whole file for every realm
+	// on the page.
+	rows, err := d.db.Query(`
+		SELECT package_path, SUBSTR(body, 1, 2000) FROM package_files
+		WHERE `+d.networkFilter("network", network)+`
+		  AND LOWER(file_name) = 'readme.md'
+		  AND package_path IN (`+sqlPlaceholders(len(paths))+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var path, body string
+		if err := rows.Scan(&path, &body); err != nil {
+			return nil, err
+		}
+		if line := readmeLead(body); line != "" {
+			out[path] = line
+		}
+	}
+	return out, rows.Err()
+}
+
+// readmeLead finds the first line of a README that is prose about the project.
+//
+// Everything a README opens with that is not prose has to be stepped over, and
+// each of these was found in a real one: the `# Title` heading (which repeats
+// the name the card already shows), badge and image lines, HTML wrappers,
+// blockquotes, list items, code fences and front matter. Taking "the first
+// non-empty line" instead produces cards that say "# gns" or
+// "<div align="center">".
+func readmeLead(body string) string {
+	inFence := false
+	for _, raw := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
+		line := strings.TrimSpace(raw)
+		switch {
+		case line == "":
+			continue
+		case strings.HasPrefix(line, "```") || strings.HasPrefix(line, "~~~"):
+			inFence = !inFence
+			continue
+		case inFence:
+			continue
+		case strings.HasPrefix(line, "#"), strings.HasPrefix(line, "<"),
+			strings.HasPrefix(line, ">"), strings.HasPrefix(line, "!"),
+			strings.HasPrefix(line, "---"), strings.HasPrefix(line, "|"),
+			strings.HasPrefix(line, "-"), strings.HasPrefix(line, "*"),
+			strings.HasPrefix(line, "["):
+			continue
+		}
+		// Inline markdown is stripped rather than rendered: the frontend builds
+		// DOM and would otherwise print `**bold**` and `[text](url)` verbatim.
+		line = mdLink.ReplaceAllString(line, "$1")
+		line = strings.NewReplacer("**", "", "`", "", "_", "").Replace(line)
+		if line = strings.TrimSpace(line); len(line) > 2 {
+			return line
+		}
+	}
+	return ""
+}
+
+var mdLink = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`)

@@ -35,7 +35,8 @@ import (
 const (
 	fromCurated   = "curated"   // this repo's apps.json
 	fromCommunity = "community" // awesome-gno
-	fromChain     = "chain"     // the realm's own source or the chain's own numbers
+	fromChain     = "chain"     // the realm's own package doc comment
+	fromReadme    = "readme"    // the realm's own README
 	fromPath      = "path"      // derived from the path, the last resort
 )
 
@@ -280,6 +281,28 @@ func (a *API) HandleAppsHub(w http.ResponseWriter, r *http.Request) {
 				if c := byPath[p]; c != nil {
 					c.Calls, c.Callers, c.CallsWindow = s.Calls, s.Callers, s.CallsWindow
 					c.LastCall, c.DeployedAt = s.LastCall, s.DeployedAt
+				}
+			}
+		}
+	}
+
+	// Layer 2b: a README, for the realms that carry one and no doc comment.
+	//
+	// Worth its own pass because on mainnet it is the difference between a
+	// described grid and a mostly blank one: most realms have no package
+	// comment, and several of the busiest ship a README that opens with exactly
+	// the sentence a card wants.
+	if network != "" {
+		want := []string{}
+		for p, c := range byPath {
+			if c.Description == "" {
+				want = append(want, p)
+			}
+		}
+		if readmes, err := a.db.PackageReadmes(network, want); err == nil {
+			for p, lead := range readmes {
+				if c := byPath[p]; c != nil && c.Description == "" {
+					c.Description, c.DescriptionFrom = firstSentence(lead), fromReadme
 				}
 			}
 		}

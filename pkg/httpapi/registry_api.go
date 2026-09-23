@@ -155,7 +155,16 @@ func (a *API) HandleApps(w http.ResponseWriter, r *http.Request) {
 	seen := map[string]bool{}
 	cats := []string{}
 	paths := make([]string, 0, len(a.registry.Apps))
+	described := make([]registry.App, 0, len(a.registry.Apps))
 	for _, app := range a.registry.Apps {
+		// A relation-only entry ("v3 replaces v2") is a fact about two deploys,
+		// not a directory entry: it has no name and describes nothing. /apps
+		// uses it to fold one card into another; this endpoint is the curated
+		// *directory*, so it has nothing to say about it.
+		if app.Description == "" {
+			continue
+		}
+		described = append(described, app)
 		if !seen[app.Category] {
 			seen[app.Category] = true
 			cats = append(cats, app.Category)
@@ -163,7 +172,7 @@ func (a *API) HandleApps(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, app.Path)
 	}
 	sort.Strings(cats)
-	resp := appsResponse{Categories: cats, Apps: a.registry.Apps, Tokens: len(a.registry.Tokens)}
+	resp := appsResponse{Categories: cats, Apps: described, Tokens: len(a.registry.Tokens)}
 	if aw := a.registry.Awesome; aw != nil {
 		resp.Awesome = &awesomeSummary{
 			Entries:              aw.Count(),
