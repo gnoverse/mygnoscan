@@ -403,6 +403,22 @@ func matchesWhere(tx Transaction, where string) bool {
 		return true
 	}
 
+	// The event filters read the response, not the messages.
+	//
+	// `response: { events: { GnoEvent: { pkg_path: { eq: ... } } } }` is a
+	// different axis to a message's own pkg_path, and the two disagree in
+	// practice: a user registration is a call to r/sys/namereg/v0 whose event
+	// comes from r/sys/users, so a fake that only looked at messages answered
+	// GetEventsByPkgPath with nothing at all. Checked first because a
+	// transaction matching on this axis needs no message to match as well.
+	if len(eqs) > 0 && tx.Response != nil {
+		for _, ev := range tx.Response.Events {
+			if ev.PkgPath != "" && eqs[ev.PkgPath] {
+				return true
+			}
+		}
+	}
+
 	for _, msg := range tx.Messages {
 		if len(types) > 0 && !types[msg.Value.Typename] {
 			continue
