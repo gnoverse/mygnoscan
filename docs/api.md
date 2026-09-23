@@ -166,6 +166,78 @@ Nothing is derived from a namespace with more than one deployer. Seven exist on
 the live chains, and naming one of their deployers would present a guess as a
 fact.
 
+## The pulse: what happened in a window
+
+| endpoint | description |
+|---|---|
+| `GET /api/pulse` | everything the home page needs to say what is happening now: windowed counters against the equal window before, plus hot realms, hot assets, notable transfers, hot developers and hot libraries. `window`, `network`, `limit` |
+
+`window` is one of `1h`, `6h`, `24h`, `7d`, `30d`, defaulting to `24h`. An
+unrecognised value falls back to the default rather than erroring, and the
+response says which window it used. The list is fixed rather than free-form
+because each value is a cache key: an arbitrary `since` would give every visitor
+their own entry and the cache would never hit.
+
+**Every figure is scoped to the window, and paired with the one before it.**
+`current` and `prev` are the same shape over adjacent equal spans, so a caller
+can compute a delta for any field without a table of which ones are comparable.
+Comparing against an *equal-length* preceding window is the whole point: six
+hours measured against a week would invent a collapse that never happened.
+
+**The boundaries are in the response** (`window.since`, `window.until`,
+`window.prev_since`). This endpoint is cached and may be served stale, and "last
+hour" painted from a fifteen-minute-old entry is the hour that ended fifteen
+minutes ago. A reader can only catch that if the window says when it closed.
+
+### New is first submission, not latest
+
+`new_realms`, `new_packages` and the hot-libraries list all key off a path's
+*earliest* submission. Reading `packages.block_time` instead would count a
+redeploy as a new package, and under the inert code submission policy a stuck
+deploy is retried until it lands — so every retry would read as adoption.
+`deploys` is the other half of the distinction and counts submissions, which is
+why it can exceed the number of new paths.
+
+### Two ledgers in the assets list, and it says so
+
+`hot_tokens` ranks GRC20 assets from `token_transfers`, which is built from the
+chain's Transfer events. ugnot does not emit one: it moves through
+`BankMsgSend`. Leaving the chain's own coin out of a list headed "hot assets"
+would be the most misleading thing on the page, so it is folded in from
+`bank_sends` and marked `"native": true`. A GRC721 row carries
+`"fungible": false` and a zeroed volume, because its transfers carry no amount
+at all — that is "this arithmetic does not apply", not "nothing moved".
+
+### Notable transfers are ranked per asset, then ordered by recency
+
+A value is only comparable inside one denom: ranking 4,000 GNOT against 4,000
+units of a token with eighteen decimals would sort by nothing. So `hot_flows`
+takes the largest few of each asset, merges them, and orders the result
+newest-first. Each row carries its own unit, and nothing here converts between
+assets, because nothing here knows a price.
+
+### Both ends of a transfer are resolved, and a miss is not a claim
+
+`from_path` and `to_path` name the package that owns an address, with
+`from_deposit` / `to_deposit` distinguishing a package's storage deposit account
+from its banker. There is no lookup for this and there cannot be one: the
+address is the first twenty bytes of a hash of the path, so the server derives
+every known path forward and matches (`pkg/gnoaddr.Reverse`, two hashes per
+package). A hit is therefore a proof. A miss means "no package this explorer
+knows", which on a synced chain reads as a person — the derivation can prove a
+hit and cannot prove a human, and the field is absent rather than guessing.
+
+Run paths (`gno.land/e/<g1…>/run`) are deliberately not indexed. Their address
+is the *caller's* own, so indexing one would put a realm's name on a human's
+account: confidently wrong, which is worse than absent.
+
+### Standard library imports are excluded from hot libraries
+
+`std`, `strings` and `testing` would take the top three places on every chain in
+every window, and a list whose answer never changes tells a reader nothing about
+what is being adopted. `new_importers` is paired with `total_importers` for the
+same reason: 3 of 4 is a library being picked up, 3 of 300 is noise.
+
 ## Packages and realms
 
 | endpoint | description |

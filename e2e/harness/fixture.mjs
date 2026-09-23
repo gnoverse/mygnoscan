@@ -6,6 +6,8 @@
 // duplicating it in JavaScript would let the two drift silently.
 import { DatabaseSync } from 'node:sqlite';
 
+import { BLOCK_MS, blockTime } from './clock.mjs';
+
 export const NETWORKS = ['alpha', 'beta'];
 
 // One heavily-depended-upon realm, which is what makes the dependency graph
@@ -150,13 +152,11 @@ export const STORAGE_DEPLOYER = 'g1hogdeployer000000000000000000000000';
 // A single timestamp is merely dull in a table and fatal in a chart: every
 // time series drawn over this fixture collapsed into a single bucket, so a
 // chart that bucketed correctly and one that did not drew the same picture and
-// no assertion could tell them apart. One minute per block, which is roughly
-// gno.land's own cadence, and the same cadence the fake indexer's blocks use.
-const GENESIS_MS = Date.UTC(2026, 7, 1, 12, 0, 0);
-export const BLOCK_MS = 60000;
-export function blockTime(height) {
-  return new Date(GENESIS_MS + height * BLOCK_MS).toISOString();
-}
+// no assertion could tell them apart.
+//
+// The clock itself lives in harness/clock.mjs, which explains why the chain now
+// ends at roughly now instead of on a fixed date.
+export { BLOCK_MS, blockTime };
 
 export function seed(dbPath) {
   const db = new DatabaseSync(dbPath);

@@ -859,6 +859,14 @@ func initSchema(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_token_transfers_holder_from ON token_transfers(network, from_addr);
 		CREATE INDEX IF NOT EXISTS idx_token_transfers_holder_to ON token_transfers(network, to_addr);
 
+		-- "What moved in the last N hours" reads along time, and every index
+		-- above leads with token or with an address. The two time-ordered
+		-- readers (the 24h column on /assets, and the whole /api/pulse window)
+		-- were therefore scanning the table: correct, and quadratic in the
+		-- ledger. Height is in the key already; block_time is what the queries
+		-- actually bind, because a window is a wall-clock question.
+		CREATE INDEX IF NOT EXISTS idx_token_transfers_time ON token_transfers(network, block_time);
+
 		-- The rich list's only query: the top balances on one chain.
 		CREATE INDEX IF NOT EXISTS idx_balances_rank ON balances(network, ugnot DESC);
 
