@@ -4,8 +4,9 @@ Curated data that cannot be derived from a chain: what an address is called,
 which token is the real one, and what an app does.
 
 Everything here is embedded into the binary at build time and served through
-`/api/labels` and `/api/registry/apps`. Adding an entry is a pull request
-against one of these files, and nothing else.
+`/api/labels`, `/api/registry/apps` and `/api/registry/awesome`. Adding an entry
+is a pull request against one of these files, and nothing else. The exception is
+`awesome.json`, which is generated from another repo's README: see below.
 
 ## What belongs here, and what does not
 
@@ -66,9 +67,34 @@ blast radius: it appears on every page the address does.
 | `addresses.json` | bech32 address | every address link in the explorer |
 | `tokens.json` | `<realm path>.<name>.<id>`, the GRC20 event key | the token views |
 | `apps.json` | realm path | `/apps` |
+| `awesome.json` | **generated, never hand-edited** | `/apps?view=ecosystem` |
 
 Every file's `checked` is validated the same way and none may be dated in the
 future; `TestShippedDatesAreNotInTheFuture` covers all three.
+
+## `awesome.json` is somebody else's list, and it is generated
+
+[gnoverse/awesome-gno](https://github.com/gnoverse/awesome-gno) is the
+community's own answer to "what is being built on gno.land", and it holds the
+half this explorer is structurally blind to: a wallet, a VS Code extension, a
+language server, an SDK and a workshop are not realms, so no amount of indexing
+will ever surface them.
+
+It is the one file here nobody writes by hand. `make awesome` reads the README
+at a named commit, parses it, and writes the snapshot; `make awesome-check` says
+whether the committed copy is behind without writing one. **An edit here is
+lost on the next regeneration, and it is also the wrong place: the point is that
+the community maintains that list in their repo.** The right move when something
+is missing is a pull request there, and `/apps?view=ecosystem` exists partly to
+make that ask specific: it ranks this directory's entries that the list does not
+name, with the bullet line ready to paste.
+
+A snapshot rather than a live fetch, for the same reason everything else here is
+embedded: a page that read GitHub on every load would be down when GitHub is and
+different for two readers a minute apart. The cost is staleness, so the file
+carries the `commit` it came from and the day it was `synced`, and the page
+prints both rather than implying it is live. Neither target runs in CI: a red
+build because somebody else edited their README is a build nobody here can fix.
 
 Token keys are whatever the GRC20 `Transfer` event puts in its `token`
 attribute, verbatim. That is usually the full triple

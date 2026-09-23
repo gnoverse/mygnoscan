@@ -1,4 +1,4 @@
-.PHONY: test e2e screenshots run install dev build
+.PHONY: test e2e screenshots run install dev build awesome awesome-check
 
 build:
 	CGO_ENABLED=0 go build -o mygnoscan .
@@ -29,3 +29,17 @@ screenshots:
 
 dev:
 	goloop . -- go run .
+
+# Refreshes pkg/registry/data/awesome.json from gnoverse/awesome-gno, the
+# community's own list of what is being built on gno.land. The snapshot is
+# committed and embedded, so a build that cannot reach GitHub still builds and
+# two readers a minute apart see the same page; the cost is that it is only as
+# fresh as the last time somebody ran this. `awesome-check` answers whether it
+# is behind, without writing, and ignores the synced date because that moves on
+# its own. Neither is run by CI: a red build because somebody else edited their
+# README is a build nobody here can fix.
+awesome:
+	go run ./cmd/awesome-sync
+
+awesome-check:
+	go run ./cmd/awesome-sync --check

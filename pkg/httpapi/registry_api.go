@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/moul/mygnoscan/pkg/registry"
 	"github.com/moul/mygnoscan/pkg/store"
@@ -111,6 +112,26 @@ type appsResponse struct {
 	// that a curated list is always behind the chain.
 	Candidates []store.AppCandidate `json:"candidates,omitempty"`
 	Realms     int                  `json:"realms,omitempty"`
+
+	// Awesome is a three-number summary of the community list, carried here so
+	// the directory's own introduction can point at it with a figure rather
+	// than a vague nudge, without this page paying for the whole snapshot. The
+	// snapshot itself is a separate request, made when a reader opens the tab.
+	Awesome *awesomeSummary `json:"awesome,omitempty"`
+}
+
+// awesomeSummary is the headline of the cross-check: how big the community list
+// is, and how far the two lists are from agreeing with each other.
+type awesomeSummary struct {
+	Entries int `json:"entries"`
+	// MissingFromAwesome counts directory entries the community list does not
+	// name. It is the number the contribute call to action is built on.
+	MissingFromAwesome int `json:"missing_from_awesome"`
+	// MissingFromDirectory counts realms they name and we do not describe.
+	MissingFromDirectory int    `json:"missing_from_directory"`
+	Synced               string `json:"synced"`
+	AgeDays              int    `json:"age_days"`
+	Source               string `json:"source"`
 }
 
 // appsDefaultWindow is what "recently" means on the directory when the reader
@@ -143,6 +164,16 @@ func (a *API) HandleApps(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Strings(cats)
 	resp := appsResponse{Categories: cats, Apps: a.registry.Apps, Tokens: len(a.registry.Tokens)}
+	if aw := a.registry.Awesome; aw != nil {
+		resp.Awesome = &awesomeSummary{
+			Entries:              aw.Count(),
+			MissingFromAwesome:   len(a.registry.MissingFromAwesome()),
+			MissingFromDirectory: len(a.registry.MissingFromDirectory()),
+			Synced:               aw.Synced,
+			AgeDays:              aw.SyncedAge(time.Now()),
+			Source:               aw.Source,
+		}
+	}
 
 	// The directory itself answers for every chain; its usage figures cannot.
 	// Rather than 400 the whole page the way the graph endpoints do, the
@@ -176,5 +207,111 @@ func (a *API) HandleApps(w http.ResponseWriter, r *http.Request) {
 			resp.Realms = n
 		}
 	}
+	JSONResponse(w, resp)
+}
+
+// The community list, and the gap between it and ours.
+//
+// awesome-gno is the other curated answer to "what is being built on gno.land",
+// and it holds the part this explorer is structurally blind to: a wallet, an
+// editor extension, a language server and a workshop are not realms, so no
+// amount of indexing will ever surface them. Serving it here is not a mirror
+// for its own sake; it is what makes /apps a complete answer to the question
+// people actually arrive with.
+//
+// It is served from the vendored snapshot rather than fetched from GitHub per
+// request. See pkg/registry/awesome.go for why, and `make awesome` for how it
+// is refreshed.
+
+type awesomeResponse struct {
+	Source       string `json:"source"`
+	Readme       string `json:"readme"`
+	Contributing string `json:"contributing"`
+	Commit       string `json:"commit"`
+	Synced       string `json:"synced"`
+	// AgeDays is computed rather than left to the browser, so the page says the
+	// same thing to a reader whose clock is wrong.
+	AgeDays  int                       `json:"age_days"`
+	Sections []registry.AwesomeSection `json:"sections"`
+	Entries  int                       `json:"entries"`
+
+	// The cross-check, in both directions. Neither is a promotion: one is the
+	// list of realms we describe that the community has not named, the other
+	// the realms they name that we have not described.
+	MissingFromAwesome   []registry.App                 `json:"missing_from_awesome"`
+	MissingFromDirectory []registry.AwesomeRef          `json:"missing_from_directory"`
+	InDirectory          map[string]registry.AwesomeRef `json:"in_directory"`
+	// DirectoryByName is the same overlap keyed the other way, by the community
+	// list's own spelling, so an entry in the grid can say "this one is
+	// described next door" without the browser re-deriving the match.
+	DirectoryByName map[string]string `json:"directory_by_name"`
+
+	// Chain figures, present only when a single network was asked for, for the
+	// same reason as on /api/registry/apps: the same path is a different
+	// deployment per chain and a blended count is an invented one.
+	Network string                   `json:"network,omitempty"`
+	Window  string                   `json:"window,omitempty"`
+	Stats   map[string]store.AppStat `json:"stats,omitempty"`
+}
+
+// HandleAwesome serves the vendored awesome-gno snapshot, cross-checked against
+// the directory.
+func (a *API) HandleAwesome(w http.ResponseWriter, r *http.Request) {
+	aw := a.registry.Awesome
+	if aw == nil {
+		jsonError(w, "no awesome snapshot", 500)
+		return
+	}
+	resp := awesomeResponse{
+		Source:               aw.Source,
+		Readme:               aw.Readme,
+		Contributing:         aw.Contrib,
+		Commit:               aw.Commit,
+		Synced:               aw.Synced,
+		AgeDays:              aw.SyncedAge(time.Now()),
+		Sections:             aw.Sections,
+		Entries:              aw.Count(),
+		MissingFromAwesome:   a.registry.MissingFromAwesome(),
+		MissingFromDirectory: a.registry.MissingFromDirectory(),
+		InDirectory:          a.registry.AwesomeInDirectory(),
+		DirectoryByName:      a.registry.DirectoryByAwesomeName(),
+	}
+
+	network := a.networkParam(r)
+	if network == "" {
+		JSONResponse(w, resp)
+		return
+	}
+	window := r.URL.Query().Get("window")
+	if _, ok := usageWindows[window]; !ok {
+		window = appsDefaultWindow
+	}
+	resp.Network, resp.Window = network, window
+
+	// One query for both sides of the page: the realms the community list names,
+	// and the directory entries it does not. The second set is what makes the
+	// invitation rankable, because "this realm has 4,000 calls and nobody has
+	// added it to the community list" is an argument and "please contribute" is
+	// not.
+	seen := map[string]bool{}
+	paths := []string{}
+	add := func(p string) {
+		if p != "" && !seen[p] {
+			seen[p] = true
+			paths = append(paths, p)
+		}
+	}
+	for _, p := range aw.Paths() {
+		add(p)
+	}
+	for _, app := range resp.MissingFromAwesome {
+		add(app.Path)
+	}
+	stats, err := a.db.AppStats(network, paths, usageWindowCutoff(window))
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	resp.Stats = stats
 	JSONResponse(w, resp)
 }

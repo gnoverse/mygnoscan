@@ -87,6 +87,11 @@ type Registry struct {
 	Addresses map[string]Entry `json:"addresses"`
 	Tokens    map[string]Token `json:"tokens"`
 	Apps      []App            `json:"apps"`
+	// Awesome is the vendored snapshot of gnoverse/awesome-gno. It is the one
+	// part of this package nobody here writes by hand: it is generated from
+	// somebody else's list, and the whole point is that the community edits it
+	// there rather than here. See awesome.go.
+	Awesome *Awesome `json:"awesome"`
 }
 
 var (
@@ -113,6 +118,9 @@ func Load() (*Registry, error) {
 		return nil, err
 	}
 	if reg.Apps, err = loadApps(); err != nil {
+		return nil, err
+	}
+	if reg.Awesome, err = loadAwesome(); err != nil {
 		return nil, err
 	}
 	return &reg, nil
