@@ -7587,6 +7587,213 @@ function appsWindow() {
   return APP_WINDOWS.includes(w) ? w : APP_WINDOW_DEFAULT;
 }
 
+// The chain to offer when none is picked. mainnet when it is configured,
+// because that is the one a visitor almost always means; otherwise the first
+// configured chain, so a deployment without mainnet still gets the offer.
+function defaultNetworkName() {
+  const names = (_networks || []).map(n => (typeof n === 'string' ? n : n.id || n.name)).filter(Boolean);
+  if (!names.length) return '';
+  return names.includes('mainnet') ? 'mainnet' : names[0];
+}
+
+// Goes through the header's own select and its change handler rather than
+// writing localStorage directly: that handler also rewrites the URL and resets
+// state that does not survive a chain switch, and skipping it leaves the
+// selector showing one chain while the page shows another.
+function switchNetwork(name) {
+  const sel = document.getElementById('network-select');
+  if (!sel) return;
+  sel.value = name;
+  onNetworkChange();
+}
+
+// The developer section.
+//
+// Three questions a developer arrives with, that nothing else on the site
+// answered: what is running (versions), has anyone written this before (code
+// search), and how do I read this data myself (the API).
+//
+// Code search is the reason the section exists. gno stores source on chain, so
+// the whole corpus is in our database and no node can query it: until this,
+// the honest way to grep gno.land was to clone tx-exports.
+
+async function loadDeveloper() {
+  const container = clear('developer-content');
+  container.appendChild(el('h1', {}, 'developer'));
+
+  const q = new URL(window.location).searchParams.get('q') || '';
+  const kind = new URL(window.location).searchParams.get('kind') || '';
+
+  // Search first: it is why people come here.
+  const searchBox = el('div', { className: 'card', style: { marginBottom: '16px' } });
+  searchBox.appendChild(el('div', { className: 'section-title' }, 'search every file the chain stores'));
+
+  const input = el('input', {
+    type: 'search', id: 'code-q', placeholder: 'IterateByOffset, "func Render", avl…',
+    value: q, style: { width: '100%', padding: '7px 9px', fontFamily: 'var(--mono, monospace)' },
+  });
+  const kindSel = el('select', { id: 'code-kind', style: { padding: '6px' } },
+    el('option', { value: '' }, 'realms and packages'),
+    el('option', { value: 'realm' }, 'realms only'),
+    el('option', { value: 'package' }, 'pure packages only'));
+  kindSel.value = kind;
+
+  const results = el('div', { id: 'code-results', style: { marginTop: '12px' } });
+  const run = () => {
+    const term = input.value.trim();
+    // The query lives in the URL, so a search is a link someone can send.
+    urlSetParam('q', term || null);
+    urlSetParam('kind', kindSel.value || null);
+    runCodeSearch(results, term, kindSel.value);
+  };
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') run(); });
+  kindSel.addEventListener('change', run);
+
+  const row = el('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' } },
+    input, kindSel, el('button', { className: 'btn', onclick: run }, 'search'));
+  searchBox.appendChild(row);
+  searchBox.appendChild(el('div', { style: { color: 'var(--fg2)', fontSize: '12px', marginTop: '6px' } },
+    'full-text over every .gno source file and README the chain holds. "quoted phrase" for an exact match, trailing * for a prefix.'));
+  searchBox.appendChild(results);
+  container.appendChild(searchBox);
+
+  if (q) runCodeSearch(results, q, kind);
+
+  // Versions second: "which GnoVM is this chain running" costs a search today.
+  const versions = el('div', { className: 'card' });
+  versions.appendChild(el('div', { className: 'section-title' }, 'versions'));
+  const vbody = el('div', {});
+  versions.appendChild(vbody);
+  container.appendChild(versions);
+  skeletonBlock(vbody);
+  renderVersions(vbody);
+}
+
+function runCodeSearch(into, term, kind) {
+  into.textContent = '';
+  if (!term) return;
+  skeletonBlock(into);
+  (async () => {
+    let d;
+    try {
+      d = await api('code/search?q=' + encodeURIComponent(term) + (kind ? '&kind=' + kind : ''));
+    } catch (err) {
+      into.textContent = '';
+      into.appendChild(el('div', { style: { color: 'var(--red)' } }, String(err.message || err)));
+      return;
+    }
+    into.textContent = '';
+
+    // "no results" and "nothing indexed" look identical and mean opposite
+    // things, so the empty state names which one it is.
+    if (!d.hits.length) {
+      into.appendChild(el('div', { style: { color: 'var(--fg2)' } },
+        d.indexed === 0
+          ? 'the code index is empty on this network: it fills as packages sync'
+          : 'no match in ' + fmtNum(d.indexed) + ' indexed files'));
+      return;
+    }
+
+    into.appendChild(el('div', { style: { color: 'var(--fg2)', fontSize: '12px', marginBottom: '6px' } },
+      (d.capped ? 'first ' : '') + fmtNum(d.count) + ' of ' + fmtNum(d.indexed) + ' indexed files'));
+
+    const list = el('div', { className: 'code-hits' });
+    d.hits.forEach(h => {
+      const hit = el('div', { className: 'code-hit' });
+      const head = el('div', { className: 'code-hit-head' },
+        el('span', { className: 'badge' }, h.is_realm ? 'realm' : 'package'),
+        realmPathEl(h.path),
+        el('span', { className: 'code-hit-file' }, h.file));
+      hit.appendChild(head);
+      // The snippet arrives with the match wrapped in « », not in markup: the
+      // frontend builds DOM and must never parse a server string as HTML, and
+      // this is on-chain source, which is attacker-controlled.
+      hit.appendChild(snippetEl(h.snippet));
+      hit.addEventListener('click', () => navigate('/realm/' + h.path.replace('gno.land/', '') + '?tab=source&file=' + encodeURIComponent(h.file)));
+      list.appendChild(hit);
+    });
+    into.appendChild(list);
+  })();
+}
+
+// snippetEl renders «match» segments as highlighted spans, as text nodes.
+//
+// Whitespace is collapsed first. FTS5's snippet() takes a fixed number of
+// tokens, which on source code routinely spans a closing brace, a blank line
+// and the start of the next declaration; rendered literally each hit became
+// six lines tall and the list stopped being scannable. One line per hit is
+// what makes a result list readable, and the full text is one click away on
+// the source tab.
+function snippetEl(snippet) {
+  const line = el('div', { className: 'code-snippet' });
+  const parts = String(snippet || '').replace(/\s+/g, ' ').trim().split(/[«»]/);
+  parts.forEach((part, i) => {
+    if (!part) return;
+    // Odd indices are what sat between « and », i.e. the match.
+    line.appendChild(i % 2 ? el('mark', {}, part) : document.createTextNode(part));
+  });
+  return line;
+}
+
+async function renderVersions(into) {
+  let sanity = null, ver = null;
+  try {
+    [sanity, ver] = await Promise.all([api('sanity/overview'), fetch('/api/version').then(r => r.json())]);
+  } catch (err) {
+    into.textContent = '';
+    into.appendChild(el('div', { style: { color: 'var(--fg2)' } }, 'versions unavailable: ' + (err.message || err)));
+    return;
+  }
+  into.textContent = '';
+
+  const tbl = el('table');
+  const row = (k, v, title) => {
+    const tr = el('tr', {}, el('td', { style: { color: 'var(--fg2)', whiteSpace: 'nowrap' } }, k),
+      el('td', {}, v == null || v === '' ? el('span', { style: { color: 'var(--fg2)' } }, 'unknown') : v));
+    if (title) tr.title = title;
+    tbl.appendChild(tr);
+  };
+
+  const nets = (sanity && sanity.networks) || [];
+  const net = nets.find(n => n.network === getNetwork()) || nets[0];
+  if (net) {
+    row('chain id', net.chain_id, 'what the node reports as its network');
+    row('height', net.height ? fmtNum(net.height) : null);
+    row('node software', net.node_version, 'the gnoland release this RPC endpoint is running');
+  }
+  row('explorer build', ver && ver.git_hash, 'the commit this instance of mygnoscan was built from');
+  row('explorer built', ver && ver.build_time);
+  into.appendChild(tbl);
+}
+
+async function loadDevApi() {
+  const container = clear('devapi-content');
+  container.appendChild(el('h1', {}, 'api'));
+  container.appendChild(el('div', { style: { color: 'var(--fg2)', marginBottom: '12px' } },
+    'every endpoint below is public, read-only, and returns JSON. Pass ?network= to pick a chain.'));
+  const box = el('div', { className: 'card' });
+  container.appendChild(box);
+  skeletonBlock(box);
+  let d;
+  try {
+    d = await api('endpoints');
+  } catch (err) {
+    box.textContent = '';
+    box.appendChild(el('div', { style: { color: 'var(--red)' } }, String(err.message || err)));
+    return;
+  }
+  box.textContent = '';
+  box.appendChild(el('div', { className: 'section-title' }, fmtNum(d.count) + ' endpoints'));
+  const tbl = el('table');
+  tbl.appendChild(el('tr', {}, el('th', {}, 'method'), el('th', {}, 'path')));
+  (d.endpoints || []).forEach(e => {
+    tbl.appendChild(el('tr', {},
+      el('td', { style: { color: 'var(--fg2)' } }, e.method),
+      el('td', {}, el('code', {}, e.path))));
+  });
+  box.appendChild(tbl);
+}
+
 async function loadApps() {
   const container = clear('apps-content');
   skeletonBlock(container);
