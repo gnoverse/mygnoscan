@@ -35,6 +35,7 @@ path exists on multiple chains and means different things on each.
 | `transactions` | one transaction | height, time, gas used/wanted/fee, success |
 | `blocks` | one block per network | height, time, `num_txs`, and the interned proposer. `WITHOUT ROWID` — the range is contiguous by construction |
 | `proposers` | one validator address per network | interned so a block row stores an id, not a 40-byte address |
+| `users` | one registered name per network | keyed on the name, not the address: one address can hold several. `alias` marks a previous name, `deleted` a tombstone, and both stay, because `r/sys/users` never frees a name. Replayed from the realm's own events |
 | `sync_state` | key/value | sync bookkeeping, keyed with the network in the key |
 
 Derived, not stored:

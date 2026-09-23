@@ -64,6 +64,7 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 	s.backfillBlockTimes(ctx)
 	s.backfillTransactions(ctx)
 	s.backfillValopers(ctx)
+	s.syncUsers(ctx)
 	if err := s.syncPackages(ctx); err != nil {
 		return fmt.Errorf("sync packages: %w", err)
 	}

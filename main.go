@@ -66,6 +66,15 @@ func run() error {
 		// sooner than a production chain does.
 		symbolIndexEvery = flag.Duration("symbol-index-interval", symbolIndexInterval,
 			"how often to re-index package symbols; the staleness check is one query, so this is cheap")
+		// The MCP endpoint carries no authentication, because the data is a
+		// public chain and an API key would make it useless to the agents it
+		// exists for. Per-IP limits are what make that safe, so they are
+		// tunable but never absent by default. Zero disables a limit, which is
+		// for a single-user local run and not for anything reachable.
+		mcpPerMinute = flag.Int("mcp-rate", httpapi.MCPDefaultPerMinute,
+			"MCP requests per minute per client address (0 = unlimited)")
+		mcpConcurrent = flag.Int("mcp-concurrency", httpapi.MCPDefaultConcurrent,
+			"MCP requests in flight per client address (0 = unlimited)")
 	)
 	flag.Parse()
 
@@ -327,6 +336,21 @@ func run() error {
 	httpapi.InitLiveFeeds(cfg.Networks, clients)
 	mux.HandleFunc("GET /api/live", httpapi.LiveFeedHandler())
 
+	// The MCP endpoint, for agents. Registered on the same mux it dispatches
+	// into, which is what keeps a tool's answer identical to the REST
+	// endpoint's; the dispatcher is set below, once the cache exists.
+	mcp := api.NewMCPServer(httpapi.NewIPLimiter(*mcpPerMinute, *mcpConcurrent), gitHash)
+	// Both methods named rather than one method-less pattern. A pattern with
+	// no method conflicts with the SPA's "GET /" and Go's mux panics at
+	// registration: "matches fewer methods than /mcp, but has a more general
+	// path pattern". GET is registered only so the handler can answer it with
+	// a 405 and an Allow header, which is what a client opening the URL
+	// looking for an SSE stream needs to be told.
+	mux.HandleFunc("POST "+httpapi.MCPPath, mcp.Handle)
+	mux.HandleFunc("GET "+httpapi.MCPPath, mcp.Handle)
+	log.Printf("mcp: %s serves %d read-only tools, %d req/min and %d concurrent per address",
+		httpapi.MCPPath, httpapi.MCPToolCount(), *mcpPerMinute, *mcpConcurrent)
+
 	// Frontend: SPA handler serves index.html for all non-API routes
 	frontend, err := web.Handler(web.Options{AnalyticsScript: *analyticsScript, Shots: api.ShotsEnabled()})
 	if err != nil {
@@ -346,6 +370,13 @@ func run() error {
 	handler := httpapi.WithResponseCache(cache,
 		httpapi.RejectUnknownNetwork(cfg.Networks,
 			httpapi.WithCompression(mux)))
+
+	// A tool call goes through the cache, not straight at the mux: the reads
+	// behind get_realm_state and the analytics endpoints are the expensive
+	// ones, and an agent asking the same question twice should pay for it
+	// once. Compression is skipped on the way in, since an internal request
+	// sends no Accept-Encoding, so nothing is gzipped only to be gunzipped.
+	mcp.SetDispatcher(httpapi.WithResponseCache(cache, mux))
 
 	srv := &http.Server{
 		Addr:         *listenAddr,

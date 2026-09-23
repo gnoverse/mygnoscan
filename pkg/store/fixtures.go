@@ -88,6 +88,11 @@ func SeedNetwork(t TB, db *DB, network string, height int) {
 	}}); err != nil {
 		t.Fatalf("upsert caller edges: %v", err)
 	}
+	if err := db.UpsertUser(network, User{
+		Name: "someone", Address: "g1creator", TxHash: "TXHASH", BlockHeight: height,
+	}); err != nil {
+		t.Fatalf("upsert user: %v", err)
+	}
 	if err := db.InsertCoinTransfer(network, "TXHASH", 0, CoinTransfer{
 		From: "g1from", To: "g1to", Coins: "1ugnot", Ugnot: 1,
 		BlockHeight: height, BlockTime: "",

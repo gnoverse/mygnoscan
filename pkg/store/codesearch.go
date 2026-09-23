@@ -80,10 +80,15 @@ func (d *DB) IndexPackageFile(network, pkgPath, fileName, body string) error {
 
 // CodeIndexSize reports how many files are indexed, so the page can say
 // whether it is searching the whole chain or a cold start.
+//
+// An empty network means every configured network, the same as everywhere
+// else. It used to mean `network = ”`, which no row carries, so the number
+// that exists to tell "no match" apart from "nothing indexed" reported the
+// second one on the default view. See SearchCode.
 func (d *DB) CodeIndexSize(network string) (int, error) {
+	cond, args := d.networkParams("network", network)
 	var n int
-	err := d.db.QueryRow(
-		`SELECT count(*) FROM code_index WHERE network = ?`, network).Scan(&n)
+	err := d.db.QueryRow(`SELECT count(*) FROM code_index WHERE `+cond, args...).Scan(&n)
 	return n, err
 }
 
@@ -154,14 +159,24 @@ func (d *DB) SearchCode(o CodeSearchOpts) ([]CodeHit, error) {
 		filter = ` AND package_path LIKE 'gno.land/p/%'`
 	}
 
-	q := fmt.Sprintf(`
-		SELECT package_path, file_name, snippet(code_index, 3, '«', '»', '…', 12)
-		FROM code_index
-		WHERE code_index MATCH ? AND network = ?%s
-		ORDER BY rank
-		LIMIT ?`, filter)
+	// An empty network is every configured network, not the literal empty
+	// string. Bound through networkParams rather than concatenated, because
+	// the statement's other argument is a raw FTS5 query.
+	netCond, netArgs := d.networkParams("network", o.Network)
 
-	rows, err := d.db.Query(q, o.Query, o.Network, o.Limit)
+	q := fmt.Sprintf(`
+		SELECT network, package_path, file_name, snippet(code_index, 3, '«', '»', '…', 12)
+		FROM code_index
+		WHERE code_index MATCH ? AND %s%s
+		ORDER BY rank
+		LIMIT ?`, netCond, filter)
+
+	args := make([]any, 0, len(netArgs)+2)
+	args = append(args, o.Query)
+	args = append(args, netArgs...)
+	args = append(args, o.Limit)
+
+	rows, err := d.db.Query(q, args...)
 	if err != nil {
 		// The only reader-controlled input in this statement is the MATCH
 		// term, so a failure here is almost always their query rather than
@@ -180,10 +195,12 @@ func (d *DB) SearchCode(o CodeSearchOpts) ([]CodeHit, error) {
 	var out []CodeHit
 	for rows.Next() {
 		var h CodeHit
-		if err := rows.Scan(&h.Path, &h.File, &h.Snippet); err != nil {
+		// The row's own network, not the request's: with no network named the
+		// hits come from several chains and stamping them all with "" loses
+		// which one each belongs to, which is the column a link needs.
+		if err := rows.Scan(&h.Network, &h.Path, &h.File, &h.Snippet); err != nil {
 			return nil, err
 		}
-		h.Network = o.Network
 		h.IsRealm = strings.HasPrefix(h.Path, "gno.land/r/")
 		out = append(out, h)
 	}
