@@ -225,14 +225,9 @@ func (a *API) HandleShotSite(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "screenshots are not configured", http.StatusNotFound)
 		return
 	}
-	aw := a.registry.Awesome
-	if aw == nil {
-		http.Error(w, "no site list", http.StatusNotFound)
-		return
-	}
 	q := r.URL.Query()
 	site := q.Get("url")
-	if !aw.AllowsSite(site) {
+	if !a.registry.AllowsSite(site) {
 		// Deliberately the same answer as an unknown route: this endpoint has
 		// nothing to say about URLs it does not serve, and enumerating what it
 		// would accept is not its job.

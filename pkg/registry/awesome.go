@@ -220,19 +220,69 @@ func (a *Awesome) SiteHosts() []string {
 	return out
 }
 
+// SiteURLs is every off-chain page this explorer will photograph: the ones the
+// community list names, and the ones this repo's own registry does.
+//
+// Both, because both are somebody merging a pull request. Leaving apps.json out
+// was a real bug: Kourt's website is curated here rather than listed there, so
+// its card asked for a screenshot and got a 400 with nothing in any log to say
+// why.
+func (r *Registry) SiteURLs() []string {
+	seen := map[string]bool{}
+	out := []string{}
+	add := func(u string) {
+		if u != "" && !seen[u] {
+			seen[u] = true
+			out = append(out, u)
+		}
+	}
+	if r.Awesome != nil {
+		for _, e := range r.Awesome.Apps() {
+			add(e.Site)
+		}
+	}
+	for _, a := range r.Apps {
+		add(a.URL)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // AllowsSite reports whether a URL is one this explorer offers a picture of.
 //
-// Exact string match against the vendored list, not a host match: the host set
-// is what gnoshot is configured with, and this is the tighter gate in front of
-// it. A caller may ask for a screenshot of a page the community vouched for,
-// and for nothing else on that host.
-func (a *Awesome) AllowsSite(raw string) bool {
-	for _, e := range a.Apps() {
-		if e.Site != "" && e.Site == raw {
+// Exact string match, not a host match: the host set is what gnoshot is
+// configured with, and this is the tighter gate in front of it. A caller may
+// ask for a screenshot of a page a human merged, and for nothing else on that
+// host.
+func (r *Registry) AllowsSite(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	for _, u := range r.SiteURLs() {
+		if u == raw {
 			return true
 		}
 	}
 	return false
+}
+
+// SiteHostsAll is every host gnoshot must be told about, from both sources.
+func (r *Registry) SiteHostsAll() []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, raw := range r.SiteURLs() {
+		u, err := url.Parse(raw)
+		if err != nil {
+			continue
+		}
+		h := strings.ToLower(u.Hostname())
+		if h != "" && !seen[h] {
+			seen[h] = true
+			out = append(out, h)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // awesomeArchived names the sections whose entries are explicitly no longer

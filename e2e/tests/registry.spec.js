@@ -5,45 +5,43 @@ import { settle, unexpected, watch } from './helpers.js';
 // The curated registry, as it reaches a reader.
 //
 // The data now lives in pkg/registry/data/*.json and arrives over /api/labels
-// and /api/registry/apps. Before this it was a const inside index.html, so
-// there was nothing to test but the const itself.
+// and /api/apps. Before this it was a const inside index.html, so there was
+// nothing to test but the const itself.
 
-test('the apps directory renders what each realm is for', async ({ page }) => {
+test('a curated entry keeps its sentence, its category and its date', async ({ page }) => {
   const seen = watch(page);
 
-  // The dense view. /apps now opens on a card grid (the app hub), and the
-  // table is what this test has always been about: the categories, the blurbs
-  // and the dates, in the form that shows all of them at once.
-  const response = await page.goto('/apps?view=table');
+  const response = await page.goto('/apps?network=alpha');
   expect(response.status()).toBe(200);
   await settle(page);
 
   const content = page.locator('#apps-content');
 
-  // Categories are sections, and every row says what the thing does. A
-  // directory that only lists paths is what /realms already is.
-  await expect(content).toContainText('governance');
-  await expect(content).toContainText('GovDAO');
-  await expect(content).toContainText('proposals, votes');
+  // The registry's whole point: a sentence saying what a realm is for, which
+  // no amount of on-chain data produces.
+  const govdao = content.locator('.app-card').filter({ hasText: 'GovDAO' }).first();
+  await expect(govdao).toContainText('proposals, votes');
+  await expect(govdao.locator('.app-cat')).toHaveText('governance');
 
   // An entry whose blurb names a fact that can change under it says when that
-  // fact was last confirmed, so a reader can weigh it rather than assume it is
-  // current. Entries with nothing volatile in them carry no date and show none.
-  const dated = content.locator('tr', { hasText: 'Boards2' });
-  await expect(dated).toContainText(/checked \d{4}-\d{2}-\d{2}/);
-  await expect(content.locator('tr', { hasText: 'Valopers' })).not.toContainText('checked ');
+  // fact was last confirmed. The dense table that used to print it is gone, so
+  // it lives in the provenance mark: a rule that makes contributors write a
+  // date is only worth anything while a reader can still find the answer.
+  await expect(content.locator('.app-card').filter({ hasText: 'Boards2' }).first()
+    .locator('.app-prov')).toHaveAttribute('title', /last confirmed \d{4}-\d{2}-\d{2}/);
+  // And one with nothing volatile in it carries no date.
+  await expect(content.locator('.app-card').filter({ hasText: 'Valopers' }).first()
+    .locator('.app-prov')).not.toHaveAttribute('title', /last confirmed/);
 
   expect(seen.jsErrors, 'uncaught exceptions').toEqual([]);
   expect(unexpected(seen.consoleErrors), 'console errors').toEqual([]);
 
-  // The path is the link, because the path is the part that is on chain.
+  // The realm is the second link, and it is the part that is on chain.
   //
-  // Only the URL is asserted past this point: the directory is curated for real
-  // chains, so the realm it lands on is not in the harness fixture and the
-  // detail page 404s here. That is the fixture's limit, not the link's.
-  const realmLink = content.getByText('gno.land/r/gov/dao', { exact: true });
-  await expect(realmLink).toBeVisible();
-  await realmLink.click();
+  // Only the URL is asserted: the directory is curated for real chains, so the
+  // realm it lands on is not in the harness fixture and the detail page 404s
+  // here. That is the fixture's limit, not the link's.
+  await govdao.getByText('open realm', { exact: true }).click();
   await expect(page).toHaveURL(/\/realm\/r\/gov\/dao/);
 });
 

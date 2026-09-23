@@ -127,6 +127,7 @@ bounded at 3650 days instead.
 | `GET /api/networks` | configured network IDs — the fastest way to confirm which chains an instance is actually serving |
 | `GET /api/watch` | activity digest for a watchlist, plus a `transactions` timeline: the 50 most recent rows across every watched realm and address, merged and deduplicated. Repeated `realm=` and `address=` parameters, each optionally `id@height` — that height is the baseline `new_since` counts against (the timeline itself is not filtered by it). Answered from stored rows only, so a watchlist costs no indexer round-trips. Capped at 100 items |
 | `GET /api/labels` | display names for addresses: `{address: {label, kind, why}}`, the curated registry merged with what the chain proves |
+| `GET /api/apps` | the app hub, assembled: the chain's ranked realms, the community's off-chain apps, this repo's overrides, and the skip list, merged into one array of cards. Each card says where each of its fields came from |
 | `GET /api/registry/apps` | the curated app directory: `categories`, `apps`, a count of known tokens and an `awesome` summary of the community list. With a single `network`, also `stats` (per path: `deployed`, `calls`, `callers`, `calls_window`), `candidates` (the busiest realms with no entry, over `window`, default 30d) and `realms` (how many exist). Those are per-chain and absent without one, because the same path is a different deployment on each chain |
 | `GET /api/registry/awesome` | the vendored [awesome-gno](https://github.com/gnoverse/awesome-gno) snapshot: `apps` (the entries with a page you can open), `others` (what is on the list and has nothing to photograph, counted by section), `entries`, the `commit` it was read at and the day it was `synced`, plus the cross-check against the directory in both directions (`missing_from_awesome`, `missing_from_directory`, `in_directory`, `directory_by_name`). With a single `network`, `stats` for every realm either list names |
 | `GET /api/shot/site` | a screenshot of one listed off-chain app. `url` must appear verbatim in the vendored snapshot; anything else is a 400 |
@@ -167,6 +168,61 @@ live stops being true the moment the chain moves.
 Nothing is derived from a namespace with more than one deployer. Seven exist on
 the live chains, and naming one of their deployers would present a guess as a
 fact.
+
+### The app hub: three layers, and which one wins
+
+`/apps` used to be a curated list of ten entries against two hundred and ten
+realms, whose only contribution workflow was to stare at a JSON file. It now
+assembles itself from three layers.
+
+**The chain proposes.** `DiscoverApps` ranks every realm people actually call.
+The ranking is two constants in `pkg/store/discover.go` and nothing else:
+
+```
+score = callers_in_window * 10 + calls_in_window * 1
+```
+
+Distinct callers outrank raw calls by an order of magnitude because they answer
+different questions. Calls measure activity, and activity is trivially
+manufactured: one script in a loop is thousands of calls and one caller. Callers
+measure reach, and buying that costs a funded address per unit. Both are
+windowed, so a realm that was busy last year does not outrank one that is busy
+today. Realms only: a `p/` package has no page to open and belongs in
+`/packages`.
+
+**Every default is somebody's own word.** The description is the realm's own
+package doc comment, first sentence, stored in `symbol_index.package_doc` and
+written by whoever wrote the realm. The picture is a capture of the realm or of
+its website. Neither is this repo inventing a sentence about somebody else's
+code, which is what made auto-listing acceptable at all.
+
+**Curation corrects, with three small levers and no large one.**
+
+| lever | file | does |
+|---|---|---|
+| list | `apps.json`, awesome-gno | include something the ranking cannot see, and override its name, sentence, website or category |
+| relate | `apps.json` `supersedes` | fold an older generation into the one that replaces it |
+| skip | `moderation.toml` | remove something that should not be here, with a reason |
+
+Being listed means *included*, not *first*: a listed entry is floored at
+`scoreVouched` rather than promoted, so a realm people genuinely use still
+outranks it. Ranking listed entries to the top put Boards2, which nobody had
+called, above the busiest realm on the chain.
+
+**Every field says where it came from**, and the card shows it as one quiet
+mark: `curated` (this repo's registry), `community` (awesome-gno), `chain` (the
+realm's own doc), `path` (nobody has said anything yet). A reader who cannot
+tell a vouched-for sentence from a generated one has to trust both equally or
+neither.
+
+**The skip list is served, not merely applied.** A page that quietly dropped an
+entry would be indistinguishable from one that lost it, and an unexplained
+removal is indistinguishable from censorship, so `moderation` comes back in the
+response with each entry's reason and the page prints them.
+
+**The website leads and the realm is second.** Somebody sent here wants the
+thing itself; the realm page is what they want next, and only if they are the
+kind of person who wants it.
 
 ### The community list, and the gap
 

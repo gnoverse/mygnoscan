@@ -27,7 +27,7 @@ func TestReplaceSymbolsRoundTrip(t *testing.T) {
 		{Kind: "method", Recv: "Tree", Name: "Get", Signature: "func (t *Tree) Get(k string) any", Exported: true},
 		{Kind: "func", Name: "iterate", Signature: "func iterate()", Exported: false},
 	}
-	if err := db.ReplaceSymbols("alpha", "gno.land/p/x/y", "fp1", rows); err != nil {
+	if err := db.ReplaceSymbols("alpha", "gno.land/p/x/y", "fp1", "", rows); err != nil {
 		t.Fatal(err)
 	}
 	if k, _ := db.SymbolSourceKey("alpha", "gno.land/p/x/y"); k != "fp1" {
@@ -49,13 +49,13 @@ func TestReplaceSymbolsDropsWhatIsGone(t *testing.T) {
 	db := symbolTestDB(t)
 	path := "gno.land/r/x/app"
 
-	if err := db.ReplaceSymbols("alpha", path, "fp1", []SymbolRow{
+	if err := db.ReplaceSymbols("alpha", path, "fp1", "", []SymbolRow{
 		{Kind: "func", Name: "Bid", Exported: true},
 		{Kind: "func", Name: "Withdraw", Exported: true},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.ReplaceSymbols("alpha", path, "fp2", []SymbolRow{
+	if err := db.ReplaceSymbols("alpha", path, "fp2", "", []SymbolRow{
 		{Kind: "func", Name: "Bid", Exported: true},
 	}); err != nil {
 		t.Fatal(err)
@@ -77,7 +77,7 @@ func TestReplaceSymbolsDropsWhatIsGone(t *testing.T) {
 // function. Without recv in the primary key one silently replaces the other.
 func TestMethodsOnDifferentTypesAreDifferentSymbols(t *testing.T) {
 	db := symbolTestDB(t)
-	if err := db.ReplaceSymbols("alpha", "gno.land/p/x/y", "fp", []SymbolRow{
+	if err := db.ReplaceSymbols("alpha", "gno.land/p/x/y", "fp", "", []SymbolRow{
 		{Kind: "method", Recv: "Tree", Name: "String", Signature: "func (t Tree) String() string", Exported: true},
 		{Kind: "method", Recv: "Node", Name: "String", Signature: "func (n Node) String() string", Exported: true},
 		{Kind: "func", Name: "String", Signature: "func String() string", Exported: true},
@@ -95,7 +95,7 @@ func TestMethodsOnDifferentTypesAreDifferentSymbols(t *testing.T) {
 
 func TestSearchSymbolsRanksPrefixesFirst(t *testing.T) {
 	db := symbolTestDB(t)
-	if err := db.ReplaceSymbols("alpha", "gno.land/p/x/y", "fp", []SymbolRow{
+	if err := db.ReplaceSymbols("alpha", "gno.land/p/x/y", "fp", "", []SymbolRow{
 		{Kind: "func", Name: "unmarshalIterState", Exported: false},
 		{Kind: "func", Name: "IterateByOffset", Exported: true},
 		{Kind: "func", Name: "Iterate", Exported: true},
@@ -123,12 +123,12 @@ func TestSearchSymbolsRanksPrefixesFirst(t *testing.T) {
 // two chains is two packages with two different sources.
 func TestSearchSymbolsIsNetworkScoped(t *testing.T) {
 	db := symbolTestDB(t)
-	if err := db.ReplaceSymbols("alpha", "gno.land/r/x/app", "fp", []SymbolRow{
+	if err := db.ReplaceSymbols("alpha", "gno.land/r/x/app", "fp", "", []SymbolRow{
 		{Kind: "func", Name: "OnlyOnAlpha", Exported: true},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.ReplaceSymbols("beta", "gno.land/r/x/app", "fp", []SymbolRow{
+	if err := db.ReplaceSymbols("beta", "gno.land/r/x/app", "fp", "", []SymbolRow{
 		{Kind: "func", Name: "OnlyOnBeta", Exported: true},
 	}); err != nil {
 		t.Fatal(err)
@@ -158,7 +158,7 @@ func TestSearchSymbolsIsNetworkScoped(t *testing.T) {
 // wildcards of its own. "%" must not mean "every symbol on the chain".
 func TestSearchSymbolsEscapesWildcards(t *testing.T) {
 	db := symbolTestDB(t)
-	if err := db.ReplaceSymbols("alpha", "gno.land/p/x/y", "fp", []SymbolRow{
+	if err := db.ReplaceSymbols("alpha", "gno.land/p/x/y", "fp", "", []SymbolRow{
 		{Kind: "func", Name: "Alpha", Exported: true},
 		{Kind: "func", Name: "Beta", Exported: true},
 		{Kind: "func", Name: "A_B", Exported: true},
@@ -187,7 +187,7 @@ func TestSearchSymbolsEscapesWildcards(t *testing.T) {
 
 func TestSearchSymbolsEmptyQueryFindsNothing(t *testing.T) {
 	db := symbolTestDB(t)
-	if err := db.ReplaceSymbols("alpha", "gno.land/p/x/y", "fp", []SymbolRow{
+	if err := db.ReplaceSymbols("alpha", "gno.land/p/x/y", "fp", "", []SymbolRow{
 		{Kind: "func", Name: "Anything", Exported: true},
 	}); err != nil {
 		t.Fatal(err)
@@ -205,7 +205,7 @@ func TestSearchSymbolsEmptyQueryFindsNothing(t *testing.T) {
 
 func TestDeleteSymbolIndex(t *testing.T) {
 	db := symbolTestDB(t)
-	if err := db.ReplaceSymbols("alpha", "gno.land/p/x/y", "fp", []SymbolRow{
+	if err := db.ReplaceSymbols("alpha", "gno.land/p/x/y", "fp", "", []SymbolRow{
 		{Kind: "func", Name: "Gone", Exported: true},
 	}); err != nil {
 		t.Fatal(err)
@@ -229,7 +229,7 @@ func TestOrphanedSymbolIndexes(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, p := range []string{"gno.land/p/x/live", "gno.land/p/x/gone"} {
-		if err := db.ReplaceSymbols("alpha", p, "k", []SymbolRow{{Kind: "func", Name: "F", Exported: true}}); err != nil {
+		if err := db.ReplaceSymbols("alpha", p, "k", "", []SymbolRow{{Kind: "func", Name: "F", Exported: true}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -257,7 +257,7 @@ func TestSymbolIndexCandidatesIgnoresAnIndexedPackage(t *testing.T) {
 	if len(cands) != 1 {
 		t.Fatalf("candidates = %+v, want 1", cands)
 	}
-	if err := db.ReplaceSymbols("alpha", "gno.land/p/x/y", cands[0].SourceKey, nil); err != nil {
+	if err := db.ReplaceSymbols("alpha", "gno.land/p/x/y", cands[0].SourceKey, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	cands, err = db.SymbolIndexCandidates()
@@ -295,7 +295,7 @@ func TestSymbolWritesDoNotBlockOnReaders(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- db.ReplaceSymbols("alpha", "gno.land/p/x/y", "k", []SymbolRow{
+		done <- db.ReplaceSymbols("alpha", "gno.land/p/x/y", "k", "", []SymbolRow{
 			{Kind: "func", Name: "F", Exported: true},
 		})
 	}()
@@ -320,7 +320,7 @@ func TestSymbolWritesRemainSerialized(t *testing.T) {
 	finished := make(chan struct{})
 	go func() {
 		close(started)
-		_ = db.ReplaceSymbols("alpha", "gno.land/p/x/y", "k", nil)
+		_ = db.ReplaceSymbols("alpha", "gno.land/p/x/y", "k", "", nil)
 		close(finished)
 	}()
 

@@ -105,6 +105,11 @@ func run() error {
 	// Printed rather than left to be worked out, because it is configuration on
 	// another box: gnoshot refuses a host it was not told about, and the
 	// failure is a card with no picture and nothing in any log here.
+	//
+	// This is the community list's hosts only. apps.json can name a website
+	// too, so the authoritative set is `/api/apps` plus that file; run this,
+	// then check nothing in apps.json points at a host missing from the line
+	// below.
 	fmt.Printf("\ngnoshot needs these hosts on its -allow-site flag:\n\n  -allow-site '%s'\n",
 		strings.Join(hosts, ","))
 	return nil

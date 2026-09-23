@@ -102,7 +102,12 @@ func (a *Analyzer) IndexPackageSymbols(network, pkgPath string, files []indexer.
 }
 
 func (a *Analyzer) indexWithKey(network, pkgPath, key string, files []indexer.MemFile) error {
-	return a.db.ReplaceSymbols(network, pkgPath, key, FlattenSymbols(ExtractSymbols(files)))
+	syms := ExtractSymbols(files)
+	// The package doc travels with the symbols because it is extracted by the
+	// same parse and invalidated by the same source key. Storing it anywhere
+	// else would mean a second pass over the same files to keep a sentence in
+	// step with the declarations beside it.
+	return a.db.ReplaceSymbols(network, pkgPath, key, syms.PackageDoc, FlattenSymbols(syms))
 }
 
 // SymbolIndexResult is what one pass did.
