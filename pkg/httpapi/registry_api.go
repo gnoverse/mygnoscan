@@ -85,10 +85,26 @@ func appendChecked(why, checked string) string {
 }
 
 func (a *API) HandleLabels(w http.ResponseWriter, r *http.Request) {
-	derived, err := a.db.DerivedAddressLabels(a.networkParam(r))
+	network := a.networkParam(r)
+	derived, err := a.db.DerivedAddressLabels(network)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
+	}
+	// The registry overwrites the deploy-dominance guess for the same address,
+	// and both are "derived" so precedence could not settle it. It is not a
+	// tie: one is what r/sys/users records, the other is this repo noticing
+	// that an address deployed most of one namespace. Where they disagree the
+	// registry is right by construction, and they do disagree -- four of
+	// twelve mainnet namespaces resolve to a different account than their
+	// deploys suggest (see pkg/httpapi/namespaces.go).
+	registered, err := a.db.RegisteredAddressLabels(network)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	for addr, l := range registered {
+		derived[addr] = l
 	}
 	JSONResponse(w, mergeLabels(derived, a.registry.Addresses))
 }
