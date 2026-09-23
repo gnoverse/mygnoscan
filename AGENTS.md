@@ -47,6 +47,13 @@ Break these and things go wrong in ways that are hard to see:
   the explorer renders on-chain content, all of which is attacker-controlled.
   This is also why the optimistic-UI cache stores payloads and not rendered
   markup: a revived `innerHTML` would be the one place this stopped being true.
+- **`docs/glossary.md` defines the words, and nothing else does.** Nineteen terms,
+  embedded and served at `GET /api/glossary`. If a tooltip, a tile, an empty state
+  or a feed needs to explain what "parked" or "unique callers" means, it reads the
+  glossary; it does not write its own sentence. Two places defining one word is how
+  a reader gets told two different things, and `pkg/glossary` fails the build if a
+  gloss is restated anywhere in the repo. Adding a term is a docs change, not a
+  code change.
 - **A block height is drawn by `blockWithAge`, never by `blockLink` alone.**
   A bare height answers "which block" and leaves "when" to a second page load,
   which is the question a reader of a table actually had. The shape is

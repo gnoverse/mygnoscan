@@ -77,9 +77,21 @@ header .container { display: flex; align-items: center; gap: 16px; flex-wrap: wr
 body { padding-left: var(--rail-w); }
 .rail { position: fixed; left: 0; top: 0; bottom: 0; width: var(--rail-w); z-index: 110;
   background: var(--bg2); border-right: 1px solid var(--border);
-  display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden; }
-.rail::-webkit-scrollbar { width: 6px; }
-.rail::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  display: flex; flex-direction: column; overflow: hidden; }
+/* The nav scrolls, not the whole rail.
+   With overflow on the rail, the brand and the collapse button scrolled away
+   with the links, and worse: the rail became a scroll container the moment its
+   content passed the viewport, so a wheel anywhere over the left 172px scrolled
+   the nav by a few pixels instead of scrolling the page. Measured at a 1000px
+   viewport on 2026-09-23, the rail's content was exactly 1000px, so the next
+   entry anyone added tipped it over; adding `glossary` is what found it.
+   Confining the scroll to nav means the chrome stays pinned, the wheel only
+   goes to the nav when the cursor is actually on it, and the rail has room to
+   grow again. min-height:0 is required: a flex item will not shrink below its
+   content without it, and the overflow would never engage. */
+.rail nav { overflow-y: auto; overflow-x: hidden; min-height: 0; }
+.rail nav::-webkit-scrollbar { width: 6px; }
+.rail nav::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 .rail-top { display: flex; align-items: center; gap: 8px; padding: 12px 14px 10px; }
 .rail-top .logo { font-size: 15px; white-space: nowrap; overflow: hidden; }
 .rail nav { display: flex; flex-direction: column; gap: 1px; padding: 0 6px 8px; }
@@ -823,6 +835,10 @@ html.embed .rail { display: none !important; }
 html.embed body { padding-left: 0; }
 html.embed body { background: transparent; }
 html.embed .container { padding-top: 0; padding-bottom: 0; max-width: none; }
+/* A reference from one gloss to another headword. Marked, not linked: the row
+   it points at is on the same screen, and the hover highlight is what connects
+   them. */
+.gloss-ref { color: var(--accent); border-bottom: 1px dotted var(--accent); cursor: help; }
 /* Highlight on hover (addresses, tx hashes, event types, etc) */
 [data-hl].hl-active { outline: 2px solid #4ecdc4; outline-offset: 1px; background: rgba(78, 205, 196, 0.15); border-radius: 2px; }
 /* The same highlight on a map bubble. outline and background are no-ops on an
@@ -939,6 +955,7 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
           <a onclick="navigate('/govdao/params')" id="nav-params" title="chain parameters"><span class="rail-label">params</span></a>
         </div>
       </div>
+      <a onclick="navigate('/glossary')" id="nav-glossary" title="what the words on this site mean"><svg aria-hidden="true"><use href="#i-info"/></svg><span class="rail-label">glossary</span></a>
       <a onclick="navigate('/watch')" id="nav-watch" title="watch"><svg aria-hidden="true"><use href="#i-eye"/></svg><span class="rail-label">watch</span></a>
   </nav>
   <div class="rail-foot">
@@ -1105,6 +1122,7 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
   <div class="view" id="view-govdao-detail"><main><div id="govdao-detail-content"></div></main></div>
   <div class="view" id="view-analytics"><main><div id="analytics-content"></div></main></div>
   <div class="view" id="view-params"><main><div id="params-content"></div></main></div>
+  <div class="view" id="view-glossary"><main><div id="glossary-content"></div></main></div>
   <div class="view" id="view-sanity"><main><div id="sanity-content"></div></main></div>
   <div class="view" id="view-contracts"><main><div id="contracts-content"></div></main></div>
   <div class="view" id="view-apps"><main><div id="apps-content"></div></main></div>
@@ -3285,6 +3303,7 @@ const NAV = [
     { id: 'govdao-options', label: 'options', path: '/govdao/options' },
     { id: 'params', label: 'params', path: '/govdao/params' },
   ] },
+  { id: 'glossary', label: 'glossary', path: '/glossary' },
   { id: 'watch', label: 'watch', path: '/watch' },
 ];
 
@@ -3445,6 +3464,7 @@ function route() {
   // redirects: a redirect would rewrite a reader's URL under them for no
   // gain, and an old bookmark is not a mistake to correct.
   else if (path === '/params' || path === '/govdao/params') { view = 'params'; }
+  else if (path === '/glossary') { view = 'glossary'; }
   else if (path === '/sanity') { view = 'sanity'; }
   else if (path === '/watch') { view = 'watch'; }
   else if (path.startsWith('/block/')) { view = 'block-detail'; data = parseInt(path.slice(7)); }
@@ -3515,6 +3535,7 @@ function route() {
     case 'analytics': loadAnalytics(); break;
     case 'dashboards': loadDashboards(); break;
     case 'params': loadParams(); break;
+    case 'glossary': loadGlossary(); break;
     case 'sanity': loadSanity(); break;
     case 'block-detail': loadBlockDetail(data); break;
     case 'realm-detail': loadRealmDetail(data, urlTab); break;
@@ -7601,6 +7622,86 @@ async function loadParams() {
     await apiSWR('params', (data) => renderParams(container, data));
   } catch (err) {
     failBlock(container, err, loadParams);
+  }
+}
+
+// --- Glossary: what the words on this site mean ------------------------------
+//
+// Nineteen words appear all over this explorer with no explanation anywhere,
+// which is the whole of the complaint that produced this page. The definitions
+// live in docs/glossary.md and are served parsed at /api/glossary, so this page
+// is a rendering of that file and not a second opinion about it.
+
+// glossaryGlossEl turns one gloss into DOM.
+//
+// The glosses carry two bits of markup and no more: `code` and **a reference to
+// another headword**. Parsed here into nodes rather than assigned as HTML, per
+// the standing rule that this frontend builds DOM and never HTML strings. That
+// rule earns its keep on exactly this kind of text, which arrives from a file
+// and gets rendered verbatim.
+function glossaryGlossEl(gloss) {
+  const span = el('span');
+  // One expression for both markers so a `code` span inside a **reference**, or
+  // the reverse, cannot be split across two passes and left half-marked.
+  const re = /\*\*([^*]+)\*\*|`([^`]+)`/g;
+  let last = 0, m;
+  while ((m = re.exec(gloss)) !== null) {
+    if (m.index > last) span.append(gloss.slice(last, m.index));
+    if (m[1] !== undefined) {
+      const ref = el('span', { className: 'gloss-ref' }, m[1]);
+      ref.setAttribute('data-hl', 'gloss:' + m[1]);
+      ref.title = 'defined below';
+      span.appendChild(ref);
+    } else {
+      span.appendChild(el('code', {}, m[2]));
+    }
+    last = re.lastIndex;
+  }
+  if (last < gloss.length) span.append(gloss.slice(last));
+  return span;
+}
+
+function renderGlossary(container, data) {
+  container.textContent = '';
+  container.appendChild(el('div', { className: 'section-title' }, 'the words on this site'));
+  container.appendChild(el('div', { className: 'section-sub' },
+    'plain-language definitions for the jargon this explorer cannot avoid. one source: ' +
+    'docs/glossary.md in the repo, embedded in this binary and served at /api/glossary, ' +
+    'so a tooltip here and the document there can never drift apart.'));
+
+  const table = el('table');
+  table.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'term'), el('th', {}, 'means'))));
+  const body = el('tbody');
+  for (const term of data.order || []) {
+    const entry = (data.terms || {})[term];
+    if (!entry) continue;
+    const row = el('tr');
+    const head = el('td', { style: { whiteSpace: 'nowrap', verticalAlign: 'top' } });
+    const name = el('strong', {}, term);
+    // Shares the page's existing highlight group, so hovering a reference
+    // inside one gloss lights the row that defines it. A definition you have to
+    // go and find is a definition you skip.
+    name.setAttribute('data-hl', 'gloss:' + term);
+    head.appendChild(name);
+    row.appendChild(head);
+    row.appendChild(el('td', {}, glossaryGlossEl(entry.gloss || '')));
+    body.appendChild(row);
+  }
+  table.appendChild(body);
+  container.appendChild(table);
+
+  container.appendChild(el('div', { className: 'section-sub', style: { marginTop: '10px' } },
+    fmtNum((data.order || []).length) + ' terms \u00b7 version ' + (data.version || 'unknown') +
+    '. adding one is a change to that file and a CI run, never a code change.'));
+}
+
+async function loadGlossary() {
+  const container = clear('glossary-content');
+  skeletonBlock(container);
+  try {
+    await apiSWR('glossary', (data) => renderGlossary(container, data));
+  } catch (err) {
+    failBlock(container, err, loadGlossary);
   }
 }
 

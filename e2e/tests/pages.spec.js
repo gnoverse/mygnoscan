@@ -37,6 +37,7 @@ const ROUTES = [
   ['dashboards', '/dashboards'],
   ['params', '/params'],
   ['params under govdao', '/govdao/params'],
+  ['glossary', '/glossary'],
   ['sanity', '/sanity'],
   ['events', '/events'],
   ['realm detail', `/realm/${HUB_ROUTE}`],
@@ -153,4 +154,34 @@ test('the sanity page says whether our sync passes are succeeding', async ({ pag
 
   expect(seen.jsErrors).toEqual([]);
   expect(unexpected(seen.failedRequests)).toEqual([]);
+});
+
+// The glossary is the answer to "every one of these words is on the site with no
+// explanation anywhere". It is a rendering of docs/glossary.md, so the test that
+// matters is that the page and the endpoint agree: a page showing eighteen of the
+// file's nineteen terms is the drift the single-source rule exists to prevent.
+test('the glossary page renders every term the endpoint serves', async ({ page }) => {
+  const seen = watch(page);
+
+  const api = await (await page.request.get('/api/glossary')).json();
+  expect(api.count).toBeGreaterThan(0);
+  expect(api.order.length).toBe(api.count);
+
+  await page.goto('/glossary');
+  await settle(page);
+
+  const rows = page.locator('#glossary-content tbody tr');
+  await expect(rows).toHaveCount(api.count);
+  await expect(page.locator('#glossary-content')).toContainText('version ' + api.version);
+
+  // parked leans on inert, and the reference is marked so a reader can follow it.
+  // This is the one cross-reference in the shipped file, so it is also the proof
+  // that the bold-span parsing survived the round trip through JSON.
+  const ref = page.locator('#glossary-content .gloss-ref').filter({ hasText: 'inert' }).first();
+  await expect(ref).toBeVisible();
+  await ref.hover();
+  await expect(page.locator('#glossary-content [data-hl="gloss:inert"].hl-active').first()).toBeVisible();
+
+  expect(seen.jsErrors).toEqual([]);
+  expect(unexpected(seen.consoleErrors)).toEqual([]);
 });
