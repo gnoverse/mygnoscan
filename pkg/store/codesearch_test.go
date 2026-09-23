@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/moul/mygnoscan/pkg/config"
 )
 
 func seedFiles(t *testing.T, d *DB) {
@@ -297,5 +299,57 @@ func TestBackfillCodeIndexCompletesPartialIndex(t *testing.T) {
 	// And a complete index is left alone.
 	if n, err := d.BackfillCodeIndex(); err != nil || n != 0 {
 		t.Errorf("backfill on a complete index = %d, %v; want 0, nil", n, err)
+	}
+}
+
+// The default view names no network, and every other endpoint reads that as
+// "every configured network". Code search read it as the literal empty string,
+// which no row carries: a first-time visitor to /developer/search got zero
+// hits and an `indexed` of 0, so the page told them the index was empty when
+// it held the whole chain.
+func TestSearchCodeWithoutANetworkSearchesThemAll(t *testing.T) {
+	d := NewTestDB(t)
+	seedFiles(t, d)
+
+	// Nothing configured yet: the process has not resolved its networks, and
+	// the honest answer is every row rather than none.
+	hits, err := d.SearchCode(CodeSearchOpts{Query: "IterateByOffset"})
+	if err != nil {
+		t.Fatalf("SearchCode: %v", err)
+	}
+	if len(hits) != 2 {
+		t.Fatalf("hits = %d, want 2 (alpha and beta both declare it); got %+v", len(hits), hits)
+	}
+	nets := map[string]bool{}
+	for _, h := range hits {
+		// Each hit carries the network it came from, not the request's empty
+		// one: with several chains in the list, "" is not a chain you can link
+		// to.
+		nets[h.Network] = true
+	}
+	if !nets["alpha"] || !nets["beta"] {
+		t.Errorf("hit networks = %v, want alpha and beta", nets)
+	}
+
+	n, err := d.CodeIndexSize("")
+	if err != nil {
+		t.Fatalf("CodeIndexSize: %v", err)
+	}
+	if n != 4 {
+		t.Errorf("CodeIndexSize(\"\") = %d, want 4", n)
+	}
+
+	// Configured networks bound the set, so a retired chain's rows stay out of
+	// the all-networks view the same way they do everywhere else.
+	d.SetConfiguredNetworks([]config.NetworkConfig{{ID: "alpha"}})
+	hits, err = d.SearchCode(CodeSearchOpts{Query: "IterateByOffset"})
+	if err != nil {
+		t.Fatalf("SearchCode: %v", err)
+	}
+	if len(hits) != 1 || hits[0].Network != "alpha" {
+		t.Errorf("hits = %+v, want one alpha hit", hits)
+	}
+	if n, err := d.CodeIndexSize(""); err != nil || n != 3 {
+		t.Errorf("CodeIndexSize(\"\") = %d (err %v), want 3", n, err)
 	}
 }
