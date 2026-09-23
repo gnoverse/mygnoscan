@@ -77,9 +77,21 @@ header .container { display: flex; align-items: center; gap: 16px; flex-wrap: wr
 body { padding-left: var(--rail-w); }
 .rail { position: fixed; left: 0; top: 0; bottom: 0; width: var(--rail-w); z-index: 110;
   background: var(--bg2); border-right: 1px solid var(--border);
-  display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden; }
-.rail::-webkit-scrollbar { width: 6px; }
-.rail::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  display: flex; flex-direction: column; overflow: hidden; }
+/* The nav scrolls, not the whole rail.
+   With overflow on the rail, the brand and the collapse button scrolled away
+   with the links, and worse: the rail became a scroll container the moment its
+   content passed the viewport, so a wheel anywhere over the left 172px scrolled
+   the nav by a few pixels instead of scrolling the page. Measured at a 1000px
+   viewport on 2026-09-23, the rail's content was exactly 1000px, so the next
+   entry anyone added tipped it over; adding `glossary` is what found it.
+   Confining the scroll to nav means the chrome stays pinned, the wheel only
+   goes to the nav when the cursor is actually on it, and the rail has room to
+   grow again. min-height:0 is required: a flex item will not shrink below its
+   content without it, and the overflow would never engage. */
+.rail nav { overflow-y: auto; overflow-x: hidden; min-height: 0; }
+.rail nav::-webkit-scrollbar { width: 6px; }
+.rail nav::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 .rail-top { display: flex; align-items: center; gap: 8px; padding: 12px 14px 10px; }
 .rail-top .logo { font-size: 15px; white-space: nowrap; overflow: hidden; }
 .rail nav { display: flex; flex-direction: column; gap: 1px; padding: 0 6px 8px; }
