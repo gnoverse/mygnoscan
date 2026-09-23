@@ -4142,9 +4142,37 @@ async function loadHome() {
   }
 }
 
-let _realmsSort = 'last_call';
+// The directory's ordering, in the URL like every other control on these
+// pages.
+//
+// It used to be a variable and nothing else, which had two consequences that
+// only showed up together: `/packages?sort=symbols` was ignored, so a sorted
+// directory could not be linked, and a reload dropped the server ordering back
+// to the default while the page-local `s.` order restored from the URL. The
+// two then disagreed, and the table was the newest fifty rows sorted by
+// something else.
+//
+// Each listing keeps its own default, because "most recently called" is the
+// useful first view of realms and "newest" is the useful first view of
+// packages.
+const REALMS_SORT_DEFAULT = 'last_call';
+const PACKAGES_SORT_DEFAULT = 'newest';
+// The keys the server understands. An unknown one falls back rather than
+// reaching the API, so a hand-edited URL cannot produce a 400 or, worse, an
+// ordering nobody asked for that looks deliberate.
+const DIRECTORY_SORTS = ['newest', 'oldest', 'name', 'calls', 'importers', 'imports',
+  'users', 'gas', 'storage', 'last_call', 'symbols'];
+function directorySort(fallback) {
+  const v = urlParam('sort');
+  return DIRECTORY_SORTS.includes(v) ? v : fallback;
+}
+let _realmsSort = directorySort(REALMS_SORT_DEFAULT);
 async function loadRealms(page) {
   page = page || 0;
+  // Re-read per load rather than once at startup: route() runs on every
+  // navigation, and a pasted link or a back button has to land on the ordering
+  // the URL names.
+  _realmsSort = directorySort(REALMS_SORT_DEFAULT);
   const section = document.querySelector('#view-realms .section');
   const tbody = clear('realms-list');
   skeletonRows(tbody, 7, 10);
@@ -4156,7 +4184,7 @@ async function loadRealms(page) {
     const key = th.getAttribute('data-sort');
     th.classList.toggle('sort-desc', _realmsSort === key);
     th.classList.add('sortable');
-    th.onclick = () => { _realmsSort = key; loadRealms(0); };
+    th.onclick = () => { _realmsSort = key; urlSetParams({ sort: key }); loadRealms(0); };
   });
   try {
     await apiSWR('realms?limit=' + PAGE_SIZE + '&offset=' + (page * PAGE_SIZE) + '&sort=' + _realmsSort, (data, swrMeta) => {
@@ -4198,7 +4226,7 @@ async function loadRealms(page) {
   }
 }
 
-let _packagesSort = 'newest';
+let _packagesSort = directorySort(PACKAGES_SORT_DEFAULT);
 // The directory's two facets, in the URL so a filtered view is a link.
 //
 // `kind` is which half of the directory (everything, realms, or the pure
@@ -4300,6 +4328,7 @@ function renderPackageFacets(facets, showAllNamespaces) {
 
 async function loadPackages(page) {
   page = page || 0;
+  _packagesSort = directorySort(PACKAGES_SORT_DEFAULT);
   const section = document.querySelector('#view-packages .section');
   const tbody = clear('packages-list');
   skeletonRows(tbody, 11, 10);
@@ -4311,7 +4340,7 @@ async function loadPackages(page) {
     const key = th.getAttribute('data-sort');
     th.classList.toggle('sort-desc', _packagesSort === key);
     th.classList.add('sortable');
-    th.onclick = () => { _packagesSort = key; loadPackages(0); };
+    th.onclick = () => { _packagesSort = key; urlSetParams({ sort: key }); loadPackages(0); };
   });
   try {
     // Facets travel with the listing request, so the two cannot describe
