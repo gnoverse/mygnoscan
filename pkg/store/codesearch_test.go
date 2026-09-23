@@ -242,3 +242,60 @@ func TestBackfillCodeIndexChunks(t *testing.T) {
 		t.Errorf("index size = %d, want %d", size, files)
 	}
 }
+
+// TestBackfillCodeIndexCompletesPartialIndex is the second production failure,
+// and the one the first fix did not cover.
+//
+// The syncer writes to the index too, so on a real start it has already
+// indexed a handful of files by the time the backfill goroutine runs. Guarding
+// on "is the index non-empty" therefore concluded the work was done: the live
+// instance served `0 hits of 7 indexed files` out of a ~2,000 file corpus. The
+// guard has to ask whether the index is *complete*.
+func TestBackfillCodeIndexCompletesPartialIndex(t *testing.T) {
+	d := NewTestDB(t)
+	seedFiles(t, d)
+
+	var files int
+	if err := d.db.QueryRow(`SELECT count(*) FROM package_files`).Scan(&files); err != nil {
+		t.Fatal(err)
+	}
+	// Leave exactly one row, the way a syncer that just started would.
+	if _, err := d.db.Exec(
+		`DELETE FROM code_index WHERE rowid NOT IN (SELECT rowid FROM code_index LIMIT 1)`); err != nil {
+		t.Fatal(err)
+	}
+	var partial int
+	if err := d.db.QueryRow(`SELECT count(*) FROM code_index`).Scan(&partial); err != nil {
+		t.Fatal(err)
+	}
+	if partial == 0 || partial >= files {
+		t.Fatalf("precondition: index holds %d of %d files", partial, files)
+	}
+
+	if _, err := d.BackfillCodeIndex(); err != nil {
+		t.Fatalf("BackfillCodeIndex: %v", err)
+	}
+
+	var after int
+	if err := d.db.QueryRow(`SELECT count(*) FROM code_index`).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != files {
+		t.Errorf("index holds %d rows, want %d: a partly-filled index was treated as complete", after, files)
+	}
+
+	// Idempotent: the row the syncer had already indexed must not be doubled,
+	// which a plain INSERT backfill would have done.
+	hits, err := d.SearchCode(CodeSearchOpts{Network: "alpha", Query: "IterateByOffset"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 {
+		t.Errorf("%d hits for a symbol declared once; the backfill duplicated rows", len(hits))
+	}
+
+	// And a complete index is left alone.
+	if n, err := d.BackfillCodeIndex(); err != nil || n != 0 {
+		t.Errorf("backfill on a complete index = %d, %v; want 0, nil", n, err)
+	}
+}
