@@ -45,10 +45,12 @@ const PAGES = [
   ['contracts-active', '/contracts?view=bundled&edges=imports&metric=importers&flow=0&active=1&deps=1'],
   // The hub in all three of its shapes: no chain picked (descriptions only,
   // no numbers), a chain picked (cards with usage, and the candidates queue
-  // under them), and the dense table.
+  // under them), the dense table, and the community list with the cross-check
+  // under it.
   ['apps', '/apps'],
   ['apps-network', '/apps?network=alpha'],
   ['apps-table', '/apps?network=alpha&view=table'],
+  ['apps-ecosystem', '/apps?network=alpha&view=ecosystem'],
   ['transactions', '/txs'],
   ['blocks', '/blocks'],
   ['accounts', '/accounts'],

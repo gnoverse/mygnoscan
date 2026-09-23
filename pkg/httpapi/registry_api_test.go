@@ -139,3 +139,78 @@ func TestHandleApps(t *testing.T) {
 		}
 	}
 }
+
+func TestHandleAwesome(t *testing.T) {
+	api, _ := newTestAPI(t)
+
+	var resp awesomeResponse
+	getJSON(t, api.HandleAwesome, "/api/registry/awesome", &resp)
+
+	if resp.Entries < 40 {
+		t.Fatalf("got %d entries, which is too few to be the real list", resp.Entries)
+	}
+	if len(resp.Commit) != 40 {
+		t.Errorf("commit = %q, want the full sha the snapshot was read at", resp.Commit)
+	}
+	// Both directions of the cross-check are the point of the endpoint. The two
+	// lists overlap in a handful of entries out of eighty, so a zero on either
+	// side means the matching broke rather than that the lists agree.
+	if len(resp.MissingFromAwesome) == 0 {
+		t.Error("no directory entries reported as absent from the community list")
+	}
+	if len(resp.InDirectory) == 0 {
+		t.Error("no overlap found at all, which means the name and path matching is broken")
+	}
+	for _, app := range resp.MissingFromAwesome {
+		if _, ok := resp.InDirectory[app.Path]; ok {
+			// Being in both answers at once is the one contradiction this
+			// endpoint can produce, and a page built on it would print the
+			// same realm under "listed" and "not listed".
+			t.Errorf("%s is reported both matched and missing", app.Path)
+		}
+	}
+}
+
+// Without a network there are no numbers, and the list is still worth serving:
+// someone who came to find out whether gno.land has a VS Code extension should
+// not have to pick a chain first, and the extension is not on a chain anyway.
+func TestHandleAwesomeWithoutANetworkStillServesTheList(t *testing.T) {
+	api, _ := newTestAPI(t)
+
+	var resp awesomeResponse
+	getJSON(t, api.HandleAwesome, "/api/registry/awesome", &resp)
+
+	if len(resp.Sections) == 0 {
+		t.Fatal("no sections")
+	}
+	if resp.Network != "" || resp.Stats != nil {
+		t.Errorf("network = %q, stats = %v, want both absent", resp.Network, resp.Stats)
+	}
+}
+
+// The summary on /api/registry/apps is what the directory's own introduction
+// points at, so it has to agree with the endpoint it summarises. Two numbers
+// drifting apart would have the page say "8 are missing" above a table of six.
+func TestAppsSummaryAgreesWithTheAwesomeEndpoint(t *testing.T) {
+	api, _ := newTestAPI(t)
+
+	var apps appsResponse
+	getJSON(t, api.HandleApps, "/api/registry/apps", &apps)
+	var awesome awesomeResponse
+	getJSON(t, api.HandleAwesome, "/api/registry/awesome", &awesome)
+
+	if apps.Awesome == nil {
+		t.Fatal("/api/registry/apps carries no awesome summary")
+	}
+	if apps.Awesome.Entries != awesome.Entries {
+		t.Errorf("entries: apps says %d, awesome says %d", apps.Awesome.Entries, awesome.Entries)
+	}
+	if apps.Awesome.MissingFromAwesome != len(awesome.MissingFromAwesome) {
+		t.Errorf("missing: apps says %d, awesome says %d",
+			apps.Awesome.MissingFromAwesome, len(awesome.MissingFromAwesome))
+	}
+	if apps.Awesome.MissingFromDirectory != len(awesome.MissingFromDirectory) {
+		t.Errorf("inbound: apps says %d, awesome says %d",
+			apps.Awesome.MissingFromDirectory, len(awesome.MissingFromDirectory))
+	}
+}

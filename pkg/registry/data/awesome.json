@@ -1,0 +1,457 @@
+{
+  "source": "https://github.com/gnoverse/awesome-gno",
+  "readme": "https://github.com/gnoverse/awesome-gno/blob/main/README.md",
+  "contributing": "https://github.com/gnoverse/awesome-gno/blob/main/CONTRIBUTING.md",
+  "commit": "1fdfe66f85d395e70db583be0d89b6b6e63872ff",
+  "synced": "2026-09-23",
+  "sections": [
+    {
+      "title": "Official Links",
+      "slug": "official-links",
+      "entries": [
+        {
+          "name": "gno.land",
+          "url": "https://gno.land/",
+          "description": "The official website of gno.land."
+        },
+        {
+          "name": "gno monorepo",
+          "url": "https://github.com/gnolang/gno",
+          "description": "The official core repo of the project, containing the core libraries, tools, and example Gno code."
+        },
+        {
+          "name": "docs.gno.land",
+          "url": "https://docs.gno.land",
+          "description": "The official docs of gno.land."
+        },
+        {
+          "name": "r/docs",
+          "url": "https://staging.gno.land/r/docs/home",
+          "description": "The on-chain documentation realm, with runnable examples rendered directly in gno.land. Currently deployed on Staging only — it is not in the mainnet or testnet genesis.",
+          "path": "gno.land/r/docs/home"
+        },
+        {
+          "name": "gno.land events calendar",
+          "url": "https://gno.link/calendar",
+          "description": "The official gno.land Google calendar."
+        },
+        {
+          "name": "Plan",
+          "url": "https://github.com/gnolang/gno/blob/master/PLAN.md",
+          "description": "The foundational plan for gno.land."
+        },
+        {
+          "name": "Philosophy",
+          "url": "https://github.com/gnolang/gno/blob/master/PHILOSOPHY.md",
+          "description": "The fundamental philosophies of gno.land."
+        }
+      ]
+    },
+    {
+      "title": "gno.land Networks",
+      "slug": "gno-land-networks",
+      "note": "Testnets are renamed and replaced every few weeks. This list deliberately names only mainnet; for whichever testnet is current, follow the docs link — it is the one URL that stays correct.",
+      "entries": [
+        {
+          "name": "Gno networks",
+          "url": "https://docs.gno.land/resources/gnoland-networks",
+          "description": "Start here. The canonical list: the current testnet and its RPC, staging, deployment files, and archives of every past network. Testnet tokens come from the Gno Faucet Hub, listed under Tools below."
+        },
+        {
+          "name": "Mainnet",
+          "url": "https://github.com/gnolang/gno/tree/chain/mainnet/misc/deployments/mainnet.gno.land",
+          "description": "Chain id gnoland-1, live since 12 September 2026, served at gno.land. RPC https://rpc.gno.land:443. Real GNOT; there is no mainnet faucet."
+        },
+        {
+          "name": "Staging",
+          "url": "https://staging.gno.land/",
+          "description": "Rolling redeploy of master; state is best-effort and gets wiped on breaking changes."
+        }
+      ]
+    },
+    {
+      "title": "Apps",
+      "slug": "apps",
+      "note": "Apps developed by the gno.land team.",
+      "entries": [
+        {
+          "name": "Gno Playground",
+          "url": "https://play.gno.land/",
+          "description": "An online Gno editor that allows for quick testing, deploying, and sharing of Gno code, modeled after the Go Playground."
+        },
+        {
+          "name": "Gno Studio Connect",
+          "url": "https://gno.studio/connect",
+          "description": "A tool that makes interaction with Gno applications simple."
+        },
+        {
+          "name": "GnoChess",
+          "url": "https://github.com/gnoverse/gnochess",
+          "description": "A chess server implementation in Gno, complete with a frontend, faucet \u0026 tutorial to develop your own."
+        },
+        {
+          "name": "meme.land",
+          "url": "https://github.com/gnoverse/memeland",
+          "description": "An image sharing application built using Gno, React and Vue."
+        },
+        {
+          "name": "Gno Faucet Hub",
+          "url": "https://faucet.gno.land",
+          "description": "A central place for all gno.land faucets."
+        },
+        {
+          "name": "Is gno.land down?",
+          "url": "https://status.gnoteam.com",
+          "description": "A dashboard showing the status of gno.land services \u0026 networks."
+        },
+        {
+          "name": "OpenOcean",
+          "url": "https://github.com/Molaryy/openocean",
+          "description": "OpenSea Clone in Gno."
+        }
+      ]
+    },
+    {
+      "title": "Community Apps",
+      "slug": "community-apps",
+      "note": "Apps developed by the gno.land community.",
+      "entries": [
+        {
+          "name": "Gnoswap",
+          "url": "https://github.com/gnoswap-labs/gnoswap",
+          "description": "The first DEX built on gno.land (currently in beta)."
+        },
+        {
+          "name": "Adena Wallet",
+          "url": "https://adena.app/",
+          "description": "Friendly wallet that simplifies sending \u0026 receiving tokens, staking, NFT storage, and dapp connections."
+        },
+        {
+          "name": "Gnolove",
+          "url": "https://gnolove.world",
+          "description": "Community leaderboard and contributions analytics for builders of the Gnoland ecosystem."
+        },
+        {
+          "name": "Zenao",
+          "url": "https://zenao.io",
+          "description": "Organize events in seconds then build your resilient community \u0026 social organizations."
+        },
+        {
+          "name": "Gnomputer",
+          "url": "https://github.com/moul/gnomputer",
+          "description": "A windowed web workstation for browsing realms, source, and live chain activity."
+        },
+        {
+          "name": "dSocial",
+          "url": "https://github.com/gnoverse/dsocial",
+          "description": "Experimental social apps, tools, and dApps."
+        },
+        {
+          "name": "Kourt",
+          "url": "https://kourt.xyz",
+          "description": "Fact-staking courts where you stake a court's own coin on claims; the stake always returns 1x, only accuracy pays. Source, realm.",
+          "links": [
+            {
+              "text": "Source",
+              "url": "https://github.com/jaekwon/kourt"
+            },
+            {
+              "text": "realm",
+              "url": "https://gno.land/r/g1ecsuj0q572jr0dhu29q9njtnmw03hyu7tyyvv6/kourt"
+            }
+          ],
+          "path": "gno.land/r/g1ecsuj0q572jr0dhu29q9njtnmw03hyu7tyyvv6/kourt"
+        }
+      ]
+    },
+    {
+      "title": "Tools",
+      "slug": "tools",
+      "note": "Tools useful for developing in Gno.",
+      "entries": [
+        {
+          "name": "gnodev",
+          "url": "https://github.com/gnolang/gno/tree/master/contribs/gnodev",
+          "description": "Your Gno development companion, used for local Gno development."
+        },
+        {
+          "name": "Gno Debugger",
+          "url": "https://gno.land/r/gnoland/blog:p/gno-debugger",
+          "description": "A debugger that comes packaged with the GnoVM."
+        },
+        {
+          "name": "GnoScan",
+          "url": "https://gnoscan.io/",
+          "description": "A gno.land block explorer, making on-chain data legible and intuitive for everyone."
+        },
+        {
+          "name": "tx-indexer",
+          "url": "https://github.com/gnolang/tx-indexer",
+          "description": "A TM2 (Tendermint2) chain indexer with GraphQL support."
+        },
+        {
+          "name": "Supernova",
+          "url": "https://github.com/gnolang/supernova",
+          "description": "A stress testing tool for the Gno Tendermint2 blockchain."
+        },
+        {
+          "name": "Gno Extension for VS Code",
+          "url": "https://github.com/gnoverse/vscode-gno",
+          "description": "Official gnoverse-maintained language support for Gno in VS Code."
+        },
+        {
+          "name": "Gno-mode for Emacs",
+          "url": "https://gist.github.com/gfanton/6e233656dfeabd7a46f21f7507b6b311",
+          "description": "Major mode for editing Gno files in Emacs, based on go-mode. Work in progress."
+        },
+        {
+          "name": "Gno for Sublime Text",
+          "url": "https://github.com/gno-playground/gno-sublime-text",
+          "description": "Gno syntax highlighting for Sublime Text."
+        },
+        {
+          "name": ":GnoFileTest command for vim",
+          "url": "https://gist.github.com/grepsuzette/66f5cfaccc1a919c67f52bd7b31a3b09",
+          "description": "The :GnoFileTest snippet for vim."
+        },
+        {
+          "name": "gno.nvim",
+          "url": "https://github.com/x1unix/gno.nvim",
+          "description": "Gno language support for NeoVim."
+        },
+        {
+          "name": "gnopls",
+          "url": "https://github.com/gnoverse/gnopls",
+          "description": "A language server providing editor features like autocompletion, hover, and go-to-definition."
+        },
+        {
+          "name": "gno-mcp",
+          "url": "https://github.com/gnoverse/gno-mcp",
+          "description": "An MCP server and agent skill connecting realms to AI coding assistants like Claude, Cursor, and Gemini CLI."
+        },
+        {
+          "name": "gnobro",
+          "url": "https://github.com/gnolang/gno/tree/master/contribs/gnobro",
+          "description": "A terminal UI for browsing and exploring Gno realms, with real-time gnodev integration via WebSocket."
+        },
+        {
+          "name": "gnovanity",
+          "url": "https://github.com/gnoverse/gnovanity",
+          "description": "A command-line tool for generating vanity wallet addresses."
+        },
+        {
+          "name": "gnockpit",
+          "url": "https://github.com/gnoverse/gnockpit",
+          "description": "A real-time web dashboard for monitoring validator node health."
+        }
+      ]
+    },
+    {
+      "title": "Tutorials, Presentations, Resources",
+      "slug": "tutorials-presentations-resources",
+      "note": "Resources to help you understand how to get around gno.land and use Gno.",
+      "entries": [
+        {
+          "name": "Getting Started",
+          "url": "https://github.com/gnolang/getting-started",
+          "description": "A repo to help you get started with building realms in Gno."
+        },
+        {
+          "name": "A gentle introduction to gno.land",
+          "url": "https://www.youtube.com/watch?v=hTGeG0z09NU\u0026t=135s",
+          "description": "An intro presentation into gno.land (2024)."
+        },
+        {
+          "name": "gno-contracts",
+          "url": "https://github.com/moul/gno-contracts",
+          "description": "A collection of 50+ versioned, self-contained gno.land packages and realms by moul, tested against gno master."
+        },
+        {
+          "name": "Peer Dev Learning",
+          "url": "https://www.youtube.com/playlist?list=PLJZrQikyfMc-kBojXgAojOz4UQPuq4DiY",
+          "description": "A YouTube playlist of gno.land development tutorials by Peer Dev."
+        }
+      ]
+    },
+    {
+      "title": "SDKs \u0026 Clients",
+      "slug": "sdks-clients",
+      "note": "Connecting web2 to the gno.land blockchain.",
+      "entries": [
+        {
+          "name": "gnoclient",
+          "url": "https://github.com/gnolang/gno/tree/master/gno.land/pkg/gnoclient",
+          "description": "A Gno-Go package, allowing you to connect to gno.land chains via Go programs at will."
+        },
+        {
+          "name": "gnolang/blog",
+          "url": "https://github.com/gnolang/blog/tree/main/cmd/gnoblog-cli",
+          "description": "r/gnoland/blog client, or how to create custom gnokey clients, using the gnoclient package.",
+          "links": [
+            {
+              "text": "gnoclient",
+              "url": "https://github.com/gnolang/gno/tree/master/gno.land/pkg/gnoclient"
+            }
+          ]
+        },
+        {
+          "name": "tm2-js-client",
+          "url": "https://github.com/gnolang/tm2-js-client",
+          "description": "A TM2 JavaScript client library."
+        },
+        {
+          "name": "gno-js-client",
+          "url": "https://github.com/gnolang/gno-js-client",
+          "description": "A Gno JavaScript client library, built upon tm2-js with additional Gno-specific functionality."
+        },
+        {
+          "name": "gnonative",
+          "url": "https://github.com/gnolang/gnonative",
+          "description": "A framework for building and porting gno.land dApps in your native language, with React Native and Expo support."
+        }
+      ]
+    },
+    {
+      "title": "Frameworks",
+      "slug": "frameworks",
+      "note": "Collections of gno packages providing generic functionality which developers can extend with custom code to create applications.",
+      "entries": [
+        {
+          "name": "daokit",
+          "url": "https://github.com/samouraiworld/gnodaokit",
+          "description": "Create DAOs that can mirror real-world organizations."
+        },
+        {
+          "name": "gnit",
+          "url": "https://github.com/gnoverse/gnit",
+          "description": "A composable Git protocol package that lets any realm act as a Git repository."
+        }
+      ]
+    },
+    {
+      "title": "Socials",
+      "slug": "socials",
+      "note": "gno.land's official socials.",
+      "entries": [
+        {
+          "name": "Discord",
+          "url": "https://discord.com/invite/gnoland"
+        },
+        {
+          "name": "Telegram",
+          "url": "https://t.me/gnoland"
+        },
+        {
+          "name": "X/Twitter",
+          "url": "https://x.com/_gnoland"
+        },
+        {
+          "name": "YouTube",
+          "url": "https://www.youtube.com/@_gnoland"
+        }
+      ]
+    },
+    {
+      "title": "Misc",
+      "slug": "misc",
+      "note": "Miscellaneous.",
+      "entries": [
+        {
+          "name": "Branding \u0026 Assets",
+          "url": "https://github.com/gnolang/branding",
+          "description": "Official logo and assets."
+        },
+        {
+          "name": "Peace",
+          "url": "https://gno.land/r/gnoland/blog:p/peace",
+          "description": "A call for peace."
+        },
+        {
+          "name": "Workshops \u0026 Talks",
+          "url": "https://github.com/gnolang/workshops",
+          "description": "Slides, videos, and materials to gno.land workshops."
+        },
+        {
+          "name": "legacy Bounties (deprecated)",
+          "url": "https://github.com/gnolang/bounties",
+          "description": "Legacy official bounty board."
+        }
+      ]
+    },
+    {
+      "title": "Tips \u0026 Snippets",
+      "slug": "tips-snippets",
+      "note": "Note: We'd like to try a section with small tips \u0026 snippets and less curation. Please open PRs with just a link to a gist, tweet, screenshot, or discussion.",
+      "entries": [
+        {
+          "name": "Tendermint2 JSON-RPC Postman Collection",
+          "url": "https://gist.github.com/zivkovicmilos/d7b98103f0611ac3b26202a29cee02c4"
+        },
+        {
+          "name": "GoLand IDE Intellisense Workaround",
+          "url": "https://x.com/leohhhn/status/1836740567541367157",
+          "description": "Developing in the Gno monorepo can provide Gno Intellisense using the builtin Go language support."
+        }
+      ]
+    },
+    {
+      "title": "Archive",
+      "slug": "archive",
+      "note": "Older, outdated, or archived items.",
+      "entries": [
+        {
+          "name": "Keplr Integration",
+          "url": "https://github.com/gnolang/gno/pull/154",
+          "description": "WIP Integration with the Keplr browser extension."
+        },
+        {
+          "name": "Gno to Discord",
+          "url": "https://github.com/PoCInnovation/PoCLab",
+          "description": "Send notifications on Discord for new content on the r/demo/boards realm."
+        },
+        {
+          "name": "The Portal Loop",
+          "description": "The rolling testnet that used to serve the gno.land homepage; renamed to Staging, and gno.land now serves mainnet."
+        },
+        {
+          "name": "Betanet (gnoland1)",
+          "description": "Held the rpc.gno.land name before mainnet. Not to be confused with mainnet's gnoland-1."
+        },
+        {
+          "name": "Retired testnets",
+          "description": "Every testN.gno.land and its named successors. The hosts stop resolving once retired; use the archives below."
+        },
+        {
+          "name": "tx-exports",
+          "url": "https://github.com/gnolang/tx-exports",
+          "description": "Archived transaction data from past and present gno.land networks, one directory per network."
+        },
+        {
+          "name": "Hello Gno!",
+          "url": "https://github.com/xplrz/gnoland-workshop",
+          "description": "A step-by-step workshop on Gno and gno.land's main features."
+        },
+        {
+          "name": "\"go -\u003e gno\" presentation",
+          "url": "https://github.com/gnolang/workshops/tree/main/presentations/2023-06-26--go-to-gno--schollz",
+          "description": "\"Things I wish I knew when I started out with Gno, when coming from a Go background\" by Zack Scholl (2023)."
+        },
+        {
+          "name": "Failing In Public",
+          "url": "https://proggr.hashnode.dev/gnoland-initial-experience-gonzo-take-on-failing-in-public",
+          "description": "A gonzo journalist take on first gno/CosmosSDK experiences."
+        },
+        {
+          "name": "From Zero to gno.land Hero",
+          "url": "https://github.com/leohhhn/gno-fzgh/blob/main/README.md",
+          "description": "A complete 0 to 1 tutorial on building your first dApp in gno.land (2024)."
+        },
+        {
+          "name": "A Beginner’s Guide to the gno.land Testnet",
+          "url": "https://medium.com/@onbloc/a-beginners-guide-to-the-gnoland-testnet-6fdc693a48f4",
+          "description": "A visual guide to creating a wallet and receiving $GNOTs on the testnet (2022)."
+        }
+      ]
+    }
+  ]
+}
