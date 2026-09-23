@@ -62,8 +62,21 @@ test('with no network selected the blurbs stay and the numbers go', async ({ pag
 
   const content = page.locator('#apps-content');
   await expect(content).toContainText('Boards2');
-  await expect(content.locator('.app-stats').first()).toContainText('pick a network');
   await expect(content).not.toContainText('never called');
+  await expect(content).not.toContainText('not deployed on');
+
+  // Said once, about the page, rather than stamped on all ten cards: the
+  // reason is the same for every one of them and it is not a fact about any
+  // app. The cards carry no usage line at all here.
+  await expect(content).toContainText('usage is per chain');
+  await expect(content.locator('.app-card .app-stats')).toHaveCount(0);
+
+  // And it is one click, not an instruction to go and find the selector. The
+  // harness configures no mainnet, so the offer names the first chain.
+  await content.getByText('see which of these are live on alpha').click();
+  await settle(page);
+  await expect(page.locator('#network-select')).toHaveValue('alpha');
+  await expect(content.locator('.app-card .app-stats').first()).toContainText('calls');
 
   expect(seen.jsErrors, 'uncaught exceptions').toEqual([]);
 });
