@@ -10582,6 +10582,7 @@ function destroyDetailCharts() {
   _detailCharts.forEach(c => c.destroy());
   _detailCharts = [];
   disposeUsageTreemap();
+  disposeDefiFlowGraph();
 }
 
 // The usage treemap is ECharts, not Chart.js, so it disposes rather than
@@ -10592,6 +10593,15 @@ let _usageTreemapChart = null;
 function disposeUsageTreemap() {
   if (_usageTreemapChart && !_usageTreemapChart.isDisposed()) _usageTreemapChart.dispose();
   _usageTreemapChart = null;
+}
+
+// Same hazard, same handling, for the defi tab's money graph. It is also
+// redrawn in place by its own mode toggle, so the dispose has to be callable
+// from there and not only from a whole-page pass.
+let _defiFlowChart = null;
+function disposeDefiFlowGraph() {
+  if (_defiFlowChart && !_defiFlowChart.isDisposed()) _defiFlowChart.dispose();
+  _defiFlowChart = null;
 }
 
 // --- Realm usage: the calls tab -------------------------------------------
@@ -13544,6 +13554,10 @@ function renderRealmDefi(into, d, path) {
     });
   }
 
+  defiFlowGraphEl(into, d, path);
+  const parties = defiCounterpartiesTableEl(d);
+  if (parties) into.appendChild(parties);
+
   if (tokens.length) into.appendChild(defiTokensEl(d, tokens));
 
   if (flows.length) {
@@ -13613,6 +13627,269 @@ function defiFlowsPagerEl(into, d, path, flows) {
     renderRealmDefi(into, d, path);
   };
   wrap.appendChild(btn);
+  return wrap;
+}
+
+// --- The money graph: who paid this realm, and who it paid -------------------
+//
+// The table below answers "what happened" and cannot answer "who", which on
+// anything defi-shaped is the question. r/.../bubblerumble3 is 3,095 transfer
+// legs and twelve counterparties; only the second number is something a person
+// can hold in their head, and the leaderboard that falls out of it is the whole
+// story of the realm.
+//
+// Two modes over the same data:
+//
+//   combined  one node per counterparty, the legs aggregated into two arrows
+//   detail    one arrow per transfer leg, so bursts and payout clusters show
+//
+// `counterparties` is computed server-side over *every* leg, so the combined
+// view is complete even when the table below it is one page of several. Detail
+// mode draws the page that is loaded and says so, because that is all it has.
+const DEFI_GRAPH_NODES = 24;
+const DEFI_IN = '#51cf66';
+const DEFI_OUT = '#ff922b';
+
+function defiFlowMode() {
+  return urlParam('flow') === 'detail' ? 'detail' : 'combined';
+}
+
+// The label under a node. A realm path beats an address every time, and both
+// beat 40 characters of bech32.
+function defiNodeLabel(addr) {
+  if (!addr) return 'chain';
+  const info = addrInfo(addr);
+  return (info && info.label) || truncAddr(addr);
+}
+
+function defiFlowGraphEl(into, d, path) {
+  const parties = d.counterparties || [];
+  if (!parties.length) return;
+
+  const wrap = el('div', { style: { marginBottom: '20px' } });
+  const head = el('div', { className: 'dash-bar', style: { marginBottom: '6px' } });
+  head.appendChild(el('span', { className: 'section-title', style: { margin: '0', border: 'none', padding: '0' } },
+    'money flow'));
+  const mode = defiFlowMode();
+  const shownCount = Math.min(parties.length, DEFI_GRAPH_NODES);
+  const seg = el('div', { className: 'dash-seg' });
+  [['combined', 'combined'], ['detail', 'detail']].forEach(([id, label]) => {
+    const b = el('button', { type: 'button', className: id === mode ? 'on' : '' }, label);
+    b.addEventListener('click', () => {
+      urlSetParam('flow', id === 'combined' ? '' : id);
+      // Redraw in place rather than reloading the tab: the data is already
+      // here, and a refetch would cost the server another full derivation of
+      // the realm's history (see defiFlowsPagerEl).
+      into.textContent = '';
+      renderRealmDefi(into, d, path);
+    });
+    seg.appendChild(b);
+  });
+  head.appendChild(el('span', { className: 'dash-grp' }, seg));
+  wrap.appendChild(head);
+
+  // Height scales with how much there is to lay out. A fixed 420px box is a
+  // lake of empty around a realm with two counterparties, and too tight for
+  // one with twenty.
+  const height = Math.min(460, 240 + shownCount * 10);
+  const box = el('div', { id: 'defi-flow-graph', style: { width: '100%', height: height + 'px' } });
+  wrap.appendChild(box);
+
+  const note = el('div', { className: 'detail-chart-note' });
+  const bits = [];
+  if (mode === 'combined') {
+    bits.push(fmtNum(shownCount) + ' of ' + fmtNum(d.counterparties_total || parties.length)
+      + ' counterparties, over all ' + fmtNum(d.flows_total || 0) + ' transfers');
+  } else {
+    const drawn = (d.flows || []).filter(f => f.account === 'banker').length;
+    bits.push(fmtNum(drawn) + ' transfer legs drawn individually');
+    // Detail mode has only the page in hand, and saying so is the difference
+    // between a partial picture and a wrong one.
+    if ((d.flows_total || 0) > (d.flows || []).length) {
+      bits.push('the ' + fmtNum((d.flows || []).length) + ' most recent of ' + fmtNum(d.flows_total)
+        + '; load the rest below to draw them all');
+    }
+  }
+  bits.push('green in, orange out');
+  bits.push('node colour is that account’s own profit and loss, size is gross volume');
+  note.textContent = bits.join(' · ');
+  wrap.appendChild(note);
+
+  into.appendChild(wrap);
+
+  if (typeof echarts === 'undefined') {
+    box.textContent = '';
+    box.appendChild(el('div', { className: 'dash-msg' }, 'charts unavailable — the ECharts library failed to load'));
+    return;
+  }
+  // Deferred: ECharts measures the container, and a box that is not in the
+  // document yet measures zero. `into` is already attached by the time this
+  // runs because renderRealmDefi appends into a live tab, but the toggle path
+  // above rebuilds it, so measure after the current task either way.
+  setTimeout(() => {
+    if (!box.isConnected) return;
+    disposeDefiFlowGraph();
+    _defiFlowChart = echarts.init(box, null, { renderer: 'svg' });
+    _defiFlowChart.setOption(mode === 'detail'
+      ? defiDetailOption(d, parties)
+      : defiCombinedOption(d, parties));
+  }, 0);
+}
+
+// The realm sits at the centre and everything else hangs off it. `fixed` keeps
+// it there while the force layout settles the rest, which is what makes the
+// picture readable: a hub-and-spoke that wanders is just a hairball.
+function defiGraphNodes(d, parties) {
+  const top = parties.slice(0, DEFI_GRAPH_NODES);
+  const maxGross = top.reduce((m, c) => Math.max(m, c.sent + c.received), 1);
+  const nodes = [{
+    id: d.address,
+    name: (d.path || '').split('/').pop(),
+    symbolSize: 46,
+    itemStyle: { color: '#4ecdc4' },
+    label: { show: true, color: '#0a0a0a', fontWeight: 'bold', fontSize: 11, position: 'inside' },
+    _lines: [d.path, fmtGnotAmount(d.live_ugnot || 0) + ' held'],
+  }];
+  top.forEach(c => {
+    nodes.push({
+      id: c.address || '(chain)',
+      name: defiNodeLabel(c.address),
+      symbolSize: 9 + 22 * Math.sqrt((c.sent + c.received) / maxGross),
+      // Green is an account that came out ahead of this realm, red one that is
+      // down on it. Net is already from the counterparty's side (see
+      // pkg/httpapi/defi.go), so no flip here: doing it twice is the bug this
+      // colour would show most loudly.
+      itemStyle: { color: c.net >= 0 ? DEFI_IN : '#ff6b6b' },
+      label: { show: true, color: '#aaa', fontSize: 9, position: 'right' },
+      _lines: [
+        c.address || 'the chain itself',
+        'in ' + fmtGnotAmount(c.sent) + ' · out ' + fmtGnotAmount(c.received),
+        'net ' + (c.net >= 0 ? '+' : '') + fmtGnotAmount(c.net) + ' for this account',
+        fmtNum(c.legs) + (c.legs === 1 ? ' transfer' : ' transfers'),
+      ],
+    });
+  });
+  return { nodes, top };
+}
+
+function defiGraphBase(nodes, edges, repulsion) {
+  return dashBase({
+    tooltip: {
+      // An address and a realm path are both chain-chosen, so the tooltip is a
+      // DOM node and never a string the browser would parse as markup. Same
+      // rule as the dashboards' transfer graph.
+      formatter: p => dashTooltipNode(
+        p.dataType === 'edge'
+          ? (p.data._lines || [])
+          : ((p.data && p.data._lines) || [String(p.name)])),
+    },
+    series: [{
+      type: 'graph', layout: 'force', roam: true, draggable: true,
+      edgeSymbol: ['none', 'arrow'], edgeSymbolSize: 7,
+      // Centred as a fraction, not at a pixel. The realm used to be pinned at
+      // x:320 y:210, which is the middle of a box that happens to be 640 wide
+      // and is nowhere near the middle of the one this actually renders into.
+      center: ['50%', '50%'],
+      // The hub carries every edge, so gravity holds it in the middle without
+      // pinning it, and a reader can still drag it out of the way.
+      force: { repulsion: repulsion, edgeLength: [80, 190], gravity: 0.12 },
+      data: nodes, edges: edges,
+    }],
+  });
+}
+
+function defiCombinedOption(d, parties) {
+  const { nodes, top } = defiGraphNodes(d, parties);
+  const maxEdge = top.reduce((m, c) => Math.max(m, c.sent, c.received), 1);
+  const edges = [];
+  const width = v => 1 + 6 * Math.sqrt(v / maxEdge);
+  top.forEach(c => {
+    const id = c.address || '(chain)';
+    const label = defiNodeLabel(c.address);
+    if (c.sent) {
+      edges.push({
+        source: id, target: d.address, value: c.sent,
+        lineStyle: { color: DEFI_IN, width: width(c.sent), curveness: 0.12, opacity: 0.75 },
+        _lines: [label + ' → ' + (d.path || '').split('/').pop(), fmtGnotAmount(c.sent) + ' in'],
+      });
+    }
+    if (c.received) {
+      edges.push({
+        source: d.address, target: id, value: c.received,
+        lineStyle: { color: DEFI_OUT, width: width(c.received), curveness: 0.12, opacity: 0.75 },
+        _lines: [(d.path || '').split('/').pop() + ' → ' + label, fmtGnotAmount(c.received) + ' out'],
+      });
+    }
+  });
+  return defiGraphBase(nodes, edges, 420);
+}
+
+function defiDetailOption(d, parties) {
+  const { nodes, top } = defiGraphNodes(d, parties);
+  // Only legs whose counterparty has a node: the graph is capped at
+  // DEFI_GRAPH_NODES and an edge to a node that was cut would be an arrow into
+  // nothing.
+  const drawable = new Set(top.map(c => c.address || '(chain)'));
+  const legs = (d.flows || []).filter(f => f.account === 'banker'
+    && drawable.has(f.counterparty || '(chain)'));
+  const maxLeg = legs.reduce((m, f) => Math.max(m, Math.abs(f.amount)), 1);
+  const edges = legs.map((f, i) => {
+    const id = f.counterparty || '(chain)';
+    const label = defiNodeLabel(f.counterparty);
+    const into = f.amount >= 0;
+    const amount = Math.abs(f.amount);
+    return {
+      source: into ? id : d.address,
+      target: into ? d.address : id,
+      value: amount,
+      lineStyle: {
+        color: into ? DEFI_IN : DEFI_OUT, opacity: 0.4,
+        width: 0.5 + 3.4 * Math.sqrt(amount / maxLeg),
+        // Fanned, so parallel legs between the same pair are distinguishable
+        // instead of stacking into one thick line.
+        curveness: 0.06 + (i % 9) * 0.045,
+      },
+      _lines: [
+        into ? label + ' → this realm' : 'this realm → ' + label,
+        fmtGnotAmount(amount),
+        'block ' + fmtNum(f.block_height),
+      ],
+    };
+  });
+  return defiGraphBase(nodes, edges, 900);
+}
+
+// The leaderboard. The graph shows the shape; this is the same thing as
+// numbers, which is what anyone acts on.
+function defiCounterpartiesTableEl(d) {
+  const parties = d.counterparties || [];
+  if (!parties.length) return null;
+  const wrap = el('div', { style: { marginBottom: '20px' } });
+  const tbl = el('table', { id: 'defi-counterparties' });
+  tbl.appendChild(el('thead', {}, el('tr', {},
+    el('th', {}, 'account'),
+    el('th', { style: { textAlign: 'right' }, title: 'paid into this realm' }, 'in'),
+    el('th', { style: { textAlign: 'right' }, title: 'paid out by this realm' }, 'out'),
+    el('th', { style: { textAlign: 'right' }, title: 'out minus in: this account’s own profit and loss, not the realm’s' }, 'net'),
+    el('th', { style: { textAlign: 'right' } }, 'transfers'))));
+  const body = el('tbody');
+  parties.slice().sort((a, b) => b.net - a.net).forEach(c => {
+    body.appendChild(el('tr', {},
+      el('td', { className: 'truncate' }, c.address ? addrLink(c.address)
+        : el('span', { style: { color: 'var(--fg2)' }, title: 'no counterparty address: the chain itself' }, 'chain')),
+      el('td', { style: { textAlign: 'right' } }, fmtGnotAmount(c.sent)),
+      el('td', { style: { textAlign: 'right' } }, fmtGnotAmount(c.received)),
+      el('td', { style: { textAlign: 'right' } }, signedGnotEl(c.net)),
+      el('td', { style: { textAlign: 'right' } }, fmtNum(c.legs))));
+  });
+  tbl.appendChild(body);
+  wrap.appendChild(el('div', { className: 'section-title' }, 'counterparties'));
+  wrap.appendChild(tbl);
+  if ((d.counterparties_total || 0) > parties.length) {
+    wrap.appendChild(el('div', { className: 'detail-chart-note' },
+      'the ' + fmtNum(parties.length) + ' largest of ' + fmtNum(d.counterparties_total)
+      + ', by how much moved in both directions'));
+  }
   return wrap;
 }
 
