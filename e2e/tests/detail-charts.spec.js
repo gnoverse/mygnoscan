@@ -1,6 +1,8 @@
 import { expect, test } from '@playwright/test';
 
-import { BUSY_CALLER, HUB_ROUTE } from '../harness/fixture.mjs';
+import {
+  BUSY_CALLER, GRC20_BALANCE, GRC20_IN, GRC20_OUT, HUB_ROUTE,
+} from '../harness/fixture.mjs';
 import {
   TAB_EVENTS, TAB_GAS, TAB_GAS_FEE, TAB_GAS_USED, TAB_NET_BYTES, TAB_NET_FEE,
   TAB_DEPOSITED_FEE, TAB_REFUNDED_FEE, TAB_STORAGE,
@@ -164,6 +166,38 @@ test('the address page charts activity by message type', async ({ page }) => {
   expect(labels).toContain('MsgCall');
   expect(labels).toContain('BankMsgSend');
   expect(labels).toContain('MsgRun');
+
+  expect(seen.jsErrors).toEqual([]);
+  expect(unexpected(seen.consoleErrors)).toEqual([]);
+});
+
+// The money side gets the same treatment as the bytes side, in two halves: the
+// native curve over the banker's transfer legs, and one curve per GRC20 position
+// because two tokens share no unit and a single stacked chart would draw a total
+// nobody holds.
+test('the defi tab draws a native curve and one per GRC20 position', async ({ page }) => {
+  const seen = watch(page);
+  await page.goto(`/realm/${HUB_ROUTE}?network=alpha&tab=defi`);
+  await settle(page);
+
+  const drawn = await charts(page, 'defi');
+  expect(drawn, 'Chart.js did not load, so nothing was drawn').not.toBeNull();
+  expect(drawn.length).toBe(2);
+
+  expect(drawn[0].title).toContain('native balance');
+
+  const token = drawn[1];
+  expect(token.title).toContain('hubcoin balance');
+  // Direction, which is the thing a reconstruction gets wrong silently: the
+  // fixture both receives and spends this token, so a chart that ignored the
+  // sign of a leg would stack the gross figure on both bars.
+  expect(series(token, 'received').total).toBe(GRC20_IN);
+  expect(series(token, 'sent').total).toBe(-GRC20_OUT);
+  // Anchored on the position's balance rather than summed forward from zero
+  // over the legs on screen: the ledger page is capped across every token, and
+  // a curve that ended anywhere but where the table stands would be a lie the
+  // reader has no way to catch.
+  expect(series(token, 'balance held').last).toBe(GRC20_BALANCE);
 
   expect(seen.jsErrors).toEqual([]);
   expect(unexpected(seen.consoleErrors)).toEqual([]);

@@ -13357,11 +13357,102 @@ function defiFlowsPagerEl(into, d, path, flows) {
   return wrap;
 }
 
+// GRC20_CHART_MAX is how many token curves this tab will draw.
+//
+// One chart per token and never one chart for all of them: two GRC20 balances
+// share no unit, so stacking a stablecoin's units on top of a game's points
+// would draw a total nobody holds. Capped because a treasury that has touched a
+// dozen assets would otherwise hand the tab a dozen canvases, and the table
+// right below already names every one of them.
+const GRC20_CHART_MAX = 4;
+
+// defiTokenCharts is the GRC20 half of what the native chart above does for
+// ugnot and the storage tab does for bytes: bars are the movement in each
+// bucket, the line is the running balance.
+//
+// The line is anchored on the position's balance, which is summed over the whole
+// ledger, rather than started at zero and summed forward over the legs on
+// screen. d.token_flows is the most recent legs across *every* token the realm
+// holds (tokenFlowLimit in pkg/httpapi/defi.go), so a busy treasury would
+// otherwise draw a curve ending somewhere it has never been. Same arithmetic,
+// and the same reason, as the native curve anchoring on the chain's live
+// balance.
+//
+// Only fungible positions get a chart. GRC721 rides the same Transfer event and
+// carries no amount, so every leg parses to zero and the curve would be a flat
+// line on zero: that is not "holds none", it is "this arithmetic does not
+// apply", which is what the table's n/a already says.
+function defiTokenCharts(section, d, tokens) {
+  const byToken = new Map();
+  for (const f of (d.token_flows || [])) {
+    if (!byToken.has(f.token)) byToken.set(f.token, []);
+    byToken.get(f.token).push(f);
+  }
+  // Ranked by how much history is on hand rather than by balance: a position
+  // whose legs all fell outside the ledger page has nothing to draw, however
+  // large it is, and would spend a canvas saying so.
+  const drawable = tokens
+    .filter(t => t.fungible && (byToken.get(t.token) || []).length >= CHART_MIN_POINTS)
+    .sort((a, b) => byToken.get(b.token).length - byToken.get(a.token).length);
+  // Signed against the realm's own account. A mint carries an empty `from` and a
+  // burn an empty `to`, and from here both are still just received or sent.
+  const signed = f => (f.to === d.address ? f.value : -f.value);
+
+  for (const t of drawable.slice(0, GRC20_CHART_MAX)) {
+    const legs = byToken.get(t.token).slice().reverse();
+    const buckets = bucketCounts(legs, f => f.block_time,
+      f => (signed(f) < 0 ? 'sent' : 'received'), signed);
+    if (!buckets) continue;
+    const received = seriesData(buckets, 'received');
+    const sent = seriesData(buckets, 'sent');
+    const shown = legs.reduce((sum, f) => sum + signed(f), 0);
+    const before = t.balance - shown;
+    const held = runningTotal(received.map((v, i) => v + sent[i])).map(v => v + before);
+    const sym = t.display_symbol || t.symbol || t.token;
+    const note = [fmtNum(legs.length) + ' transfers plotted'];
+    if (t.transfers > legs.length) {
+      note.push('the ' + fmtNum(legs.length) + ' most recent of ' + fmtNum(t.transfers));
+    }
+    if (buckets.dropped) note.push(fmtNum(buckets.dropped) + ' with no block time, not plotted');
+    note.push('the line ends at ' + fmtTokenUnits(t.balance) + ' ' + sym);
+    detailChart(section, _detailCharts, {
+      title: sym + ' balance, per ' + buckets.unit,
+      note: note.join(' \u00b7 '),
+      data: {
+        labels: buckets.labels,
+        datasets: [
+          { label: 'received', data: received, backgroundColor: 'rgba(78,205,196,0.55)', borderColor: '#4ecdc4', borderWidth: 1, yAxisID: 'y', order: 3 },
+          { label: 'sent', data: sent, backgroundColor: 'rgba(255,107,107,0.55)', borderColor: '#ff6b6b', borderWidth: 1, yAxisID: 'y', order: 3 },
+          {
+            label: 'balance held', data: held, type: 'line', yAxisID: 'y1',
+            borderColor: '#ffd43b', backgroundColor: 'rgba(255,212,59,0.08)',
+            borderWidth: 2, tension: 0.2, fill: true, order: 1,
+          },
+        ],
+      },
+      scales: {
+        x: chartAxis({ stacked: true }),
+        y: chartAxis({ stacked: true, title: 'movement' }),
+        y1: chartAxis({ position: 'right', grid: false, title: 'held' }),
+      },
+    });
+  }
+  // Said out loud rather than silently dropped: a reader who counted four charts
+  // against nine rows in the table needs to know the other five were ranked out
+  // and not that they are empty.
+  if (drawable.length > GRC20_CHART_MAX) {
+    section.appendChild(el('div', { className: 'detail-chart-note' },
+      'charting the ' + GRC20_CHART_MAX + ' positions with the most history on hand, of '
+      + fmtNum(drawable.length) + ' with enough to draw.'));
+  }
+}
+
 // defiTokensEl is the GRC20 half: what the contract holds in tokens, and the
 // caveat that makes those figures a floor rather than a count.
 function defiTokensEl(d, tokens) {
   const section = el('div');
   section.appendChild(el('div', { className: 'section-title' }, 'GRC20 positions'));
+  defiTokenCharts(section, d, tokens);
   const tbl = el('table', { id: 'defi-tokens' });
   tbl.appendChild(el('thead', {}, el('tr', {},
     el('th', {}, 'token'), el('th', {}, 'realm'), el('th', {}, 'balance'),
