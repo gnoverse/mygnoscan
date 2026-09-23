@@ -160,6 +160,11 @@ func NewDB(path string) (*DB, error) {
 	}
 
 	// After initSchema, which is what creates the column on a fresh database.
+	if err := migrateAddPackageDoc(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate package_doc: %w", err)
+	}
+
 	if err := migrateBankSendUgnot(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate bank send ugnot: %w", err)
@@ -234,6 +239,30 @@ func migrateAddBlockTime(db *sql.DB) error {
 		if _, err := db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN block_time TEXT`, table)); err != nil {
 			return fmt.Errorf("add block_time to %s: %w", table, err)
 		}
+	}
+	return nil
+}
+
+// migrateAddPackageDoc adds package_doc to a symbol_index written before it
+// existed.
+//
+// Nothing backfills it, and nothing needs to. The column is filled by the next
+// symbol-index pass, which re-reads any package whose source key has moved and
+// which the syncer runs anyway; until then a realm falls back to having no
+// default description, which is what it had before this column existed. A
+// backfill would mean re-parsing every package on every chain at startup to
+// recover a sentence.
+func migrateAddPackageDoc(db *sql.DB) error {
+	exists, err := tableExists(db, "symbol_index")
+	if err != nil || !exists {
+		return err
+	}
+	has, err := columnExists(db, "symbol_index", "package_doc")
+	if err != nil || has {
+		return err
+	}
+	if _, err := db.Exec(`ALTER TABLE symbol_index ADD COLUMN package_doc TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add package_doc to symbol_index: %w", err)
 	}
 	return nil
 }
@@ -752,6 +781,14 @@ func initSchema(db *sql.DB) error {
 			source_key   TEXT NOT NULL,
 			symbol_count INTEGER NOT NULL DEFAULT 0,
 			indexed_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+			-- The doc comment on the package clause. Already extracted for
+			-- the docs tab and previously thrown away; kept because it is the
+			-- realm's own one-line answer to "what is this", written by the
+			-- person who wrote the realm. That makes it the right default for
+			-- a directory entry, and far better than the alternatives: a path
+			-- segment says nothing, and a sentence this repo invents is a
+			-- stranger's guess presented as fact.
+			package_doc  TEXT NOT NULL DEFAULT '',
 			PRIMARY KEY (network, package_path)
 		);
 
@@ -1115,4 +1152,34 @@ func migrateStorageUnlockSign(db *sql.DB) error {
 		log.Printf("migration: corrected the sign of %d storage unlock rows", n)
 	}
 	return nil
+}
+
+// networkParams is networkFilter with bound parameters instead of quoted
+// literals, for the query paths that take reader-supplied input beside the
+// network.
+//
+// networkFilter concatenates, which AGENTS.md flags as something not to add
+// more of. Code search is the first caller that needs the "every configured
+// network" case in a statement whose other argument is a raw FTS5 query, so
+// it gets the bound version rather than a third hand-escaped one.
+//
+// Returns a bare condition and its arguments, so callers supply their own
+// WHERE or AND. The condition is `1=1` with no arguments when nothing is
+// configured, which keeps every call site a plain string append.
+func (d *DB) networkParams(column, network string) (string, []any) {
+	if network != "" {
+		return column + " = ?", []any{network}
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if len(d.configured) == 0 {
+		return "1=1", nil
+	}
+	args := make([]any, 0, len(d.configured))
+	marks := make([]string, 0, len(d.configured))
+	for _, n := range d.configured {
+		args = append(args, n)
+		marks = append(marks, "?")
+	}
+	return column + " IN (" + strings.Join(marks, ",") + ")", args
 }
