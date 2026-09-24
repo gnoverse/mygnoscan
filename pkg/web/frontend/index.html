@@ -8322,6 +8322,9 @@ const PROVENANCE = {
   chain: ['◈', 'the realm’s own package doc comment, written by whoever wrote the realm'],
   readme: ['\u25c7', 'the opening line of the realm\u2019s own README'],
   path: ['·', 'nobody has described this yet; the name is its path'],
+  // Not a description: a measurement, and ours. Kept in the same table because
+  // the question a reader has is identical — who is telling me this.
+  inferred: ['◐', 'this explorer’s own measurement, not a chain fact'],
 };
 
 function provenanceMark(from, checked) {
@@ -11555,6 +11558,41 @@ function upgradeExportedPills(usage) {
 
 // usageStat is one figure in the summary strip, with an optional second line
 // of context under the number ("of 54", "3 of 8 exported").
+// renderOpenedHere fetches and draws the read count for one realm.
+//
+// Silent when nobody has opened it: a fresh realm reading "opened here 0" says
+// less than nothing, since the person reading that line is the first open and
+// the number is already wrong as they look at it.
+//
+// Takes the generation, like every other async writer on this tab: a response
+// that arrives after the reader navigated away must not append into the page
+// that replaced theirs. Without it the stat lands in a detached container and
+// is invisible, which is how the browser test caught it.
+function renderOpenedHere(stats, path, gen) {
+  if (!path) return;
+  (async () => {
+    let d;
+    try {
+      d = await api('views?path=' + encodeURIComponent(path));
+    } catch {
+      return; // a missing read count is never worth an error on a realm page
+    }
+    if (gen !== _detailGen) return;
+    const row = (d.realms || [])[0];
+    if (!row || !row.views) return;
+    const stat = usageStat('opened here', fmtNum(row.views), 'in the last ' + (d.window || '30d'));
+    const mark = provenanceMark('inferred');
+    if (mark) {
+      mark.title = 'how many times this realm was opened on mygnoscan. this explorer’s own '
+        + 'count, not a chain fact: the chain records no reads, and this sees nothing served '
+        + 'by gnoweb, Gnoscan or a wallet.';
+      stat.appendChild(document.createTextNode(' '));
+      stat.appendChild(mark);
+    }
+    stats.appendChild(stat);
+  })();
+}
+
 function usageStat(label, value, sub) {
   const stat = el('div', { className: 'stat' },
     el('span', { className: 'label' }, label),
@@ -11877,6 +11915,19 @@ function renderRealmUsage(host, detail, usage, gen) {
   stats.appendChild(usageStat('functions used', fmtNum(s.functions || 0),
     exported ? 'of ' + exported + ' exported' : null));
   if (s.gas_used) stats.appendChild(usageStat('gas used', fmtNum(s.gas_used)));
+  // Reads, which every other figure on this page is blind to.
+  //
+  // gno.land records none: a render leaves nothing behind, so a realm thousands
+  // of people read and nobody writes to looks dead in every column beside this
+  // one. This counts opens of this page, here, and says so — it is not traffic
+  // on gno.land, and gnoweb, Gnoscan and every wallet serve the same realms
+  // without any of it being visible from this server.
+  //
+  // Its own request, not a field on the detail payload: that endpoint is
+  // cached, so a count embedded in it would be frozen at whatever it was when
+  // the entry was stored, and every reader for the rest of the TTL would be
+  // told nobody had opened the page while being counted opening it.
+  renderOpenedHere(stats, detail.path, gen);
   if (s.first_time) {
     stats.appendChild(usageStat('first', timeEl(s.first_time)));
     stats.appendChild(usageStat('last', timeEl(s.last_time)));

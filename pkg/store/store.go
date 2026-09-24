@@ -59,6 +59,11 @@ var NetworkScopedTables = []string{
 	// is exactly what a re-sync from the new genesis needs.
 	"transfer_edges",
 	"caller_edges",
+	// Read counts are this explorer's own measurement, but they are keyed by a
+	// realm path on one chain. A reset means that chain's paths are gone, and
+	// keeping the counts would hand a rebuilt chain the popularity of a dead
+	// one, silently and in the direction of looking more used than it is.
+	"realm_views",
 	// The native coin ledger. A reset leaves a dead chain's legs behind, and
 	// because the defi tab sums them against a *live* bank/balances read, the
 	// two would disagree by the whole of the old chain's history and the page

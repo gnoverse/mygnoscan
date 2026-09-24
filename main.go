@@ -379,10 +379,17 @@ func run() error {
 	// is the cost of computing an answer, so its presence on a response means
 	// somebody paid for that answer and its absence means they did not.
 	cache := httpapi.NewResponseCache(httpapi.CacheTTL)
-	handler := httpapi.WithResponseCache(cache,
-		httpapi.RejectUnknownNetwork(cfg.Networks,
-			httpapi.WithServerTiming(
-				httpapi.WithCompression(mux))))
+	// The read counter is outside the cache, and that is not a preference: a
+	// cached answer never reaches the handler, so counting deeper would count
+	// the first reader of a realm and miss everyone who followed. The more a
+	// realm was read, the less it would appear to be read.
+	views := httpapi.NewViewCounter(db)
+	handler := httpapi.WithRealmViews(views,
+		httpapi.WithResponseCache(cache,
+			httpapi.RejectUnknownNetwork(cfg.Networks,
+				httpapi.WithServerTiming(
+					httpapi.WithCompression(mux)))))
+	go views.Run(ctx)
 
 	// A tool call goes through the cache, not straight at the mux: the reads
 	// behind get_realm_state and the analytics endpoints are the expensive
@@ -411,6 +418,7 @@ func run() error {
 		log.Printf("warmer: disabled (-warm-interval=0); readers pay the cold cost")
 	}
 	api.SetResponseCache(cache)
+	api.SetViewCounter(views)
 
 	// pprof on its own listener rather than on the public mux: a profile says
 	// more about this process than any page does, and the difference between

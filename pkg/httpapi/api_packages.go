@@ -395,6 +395,17 @@ type realmDetailResponse struct {
 	StorageDepositAddress string `json:"storage_deposit_address,omitempty"`
 }
 
+// Read counts are deliberately NOT on this response, and the reason is the
+// response cache.
+//
+// This is the most-requested endpoint here and it is cached, so a count
+// embedded in it is frozen at whatever it was when the entry was stored: the
+// first reader of a realm caches "nobody has opened this", and every reader for
+// the rest of the TTL is told the same thing while they themselves are being
+// counted. A number about how often a page is read cannot be served from a
+// cache filled by reading it. /api/views owns it instead, flushes the buffer
+// before answering, and the page fetches it separately.
+
 // normalizeTxHash accepts a transaction hash in either encoding in circulation
 // and returns the base64 form the indexer stores.
 //

@@ -49,6 +49,12 @@ type API struct {
 	responseCache *responseCache
 	warmer        *Warmer
 
+	// views counts realm page opens. Built outside this struct for the same
+	// reason the cache is: the middleware that feeds it wraps the cache, which
+	// wraps this. Nil in the tools and tests that run no counter, and every use
+	// of it is nil-safe.
+	views *ViewCounter
+
 	// syncHealth is how the sanity page answers "are our sync passes
 	// succeeding", which chain liveness cannot: a chain can be producing
 	// blocks perfectly while every query we send about it fails. Nil in the
@@ -905,6 +911,7 @@ func (a *API) RegisterRoutes(serveMux *http.ServeMux) {
 	mux.HandleFunc("GET /api/realm/defi/{path...}", a.HandleRealmDefi)
 	mux.HandleFunc("GET /api/realm/usage/{path...}", a.HandleRealmUsage)
 	mux.HandleFunc("GET /api/realm/{path...}", a.HandleRealm)
+	mux.HandleFunc("GET /api/views", a.HandleViews)
 	mux.HandleFunc("GET /api/packages", a.HandlePackages)
 	mux.HandleFunc("GET /api/packages/facets", a.HandlePackageFacets)
 	mux.HandleFunc("GET /api/tx/{hash}", a.HandleTx)
