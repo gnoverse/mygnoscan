@@ -131,6 +131,7 @@ bounded at 3650 days instead.
 | `GET /api/registry/apps` | the curated app directory: `categories`, `apps`, a count of known tokens and an `awesome` summary of the community list. With a single `network`, also `stats` (per path: `deployed`, `calls`, `callers`, `calls_window`), `candidates` (the busiest realms with no entry, over `window`, default 30d) and `realms` (how many exist). Those are per-chain and absent without one, because the same path is a different deployment on each chain |
 | `GET /api/registry/awesome` | the vendored [awesome-gno](https://github.com/gnoverse/awesome-gno) snapshot: `apps` (the entries with a page you can open), `others` (what is on the list and has nothing to photograph, counted by section), `entries`, the `commit` it was read at and the day it was `synced`, plus the cross-check against the directory in both directions (`missing_from_awesome`, `missing_from_directory`, `in_directory`, `directory_by_name`). With a single `network`, `stats` for every realm either list names |
 | `GET /api/shot/site` | a screenshot of one listed off-chain app. `url` must appear verbatim in the vendored snapshot; anything else is a 400 |
+| `GET /api/glossary` | plain-language definitions for the words this explorer uses: `{version, count, order, terms: {term: {gloss, also}}}`. `order` is the document's own ordering; `also` lists the other headwords a gloss leans on, so a renderer can gloss them on first use and a feed can inline them as parentheticals. Parsed from [`docs/glossary.md`](./glossary.md), which is the single source and wins over any other wording in the product. No `network`: the words mean the same thing on every chain |
 
 **Address labels are global, not per network.** An address is the same key on
 every chain, so a name earned on one applies everywhere.
@@ -191,8 +192,11 @@ today. Realms only: a `p/` package has no page to open and belongs in
 `/packages`.
 
 **Every default is somebody's own word.** The description is the realm's own
-package doc comment, first sentence, stored in `symbol_index.package_doc` and
-written by whoever wrote the realm. The picture is a capture of the realm or of
+package doc comment, first sentence, stored in `symbol_index.package_doc`; and
+where there is none, the opening line of its own README, which on mainnet is the
+difference between a described grid and a mostly blank one (most realms carry no
+package comment, and several of the busiest ship a README that opens with
+exactly the sentence a card wants). The picture is a capture of the realm or of
 its website. Neither is this repo inventing a sentence about somebody else's
 code, which is what made auto-listing acceptable at all.
 
@@ -201,6 +205,7 @@ code, which is what made auto-listing acceptable at all.
 | lever | file | does |
 |---|---|---|
 | list | `apps.json`, awesome-gno | include something the ranking cannot see, and override its name, sentence, website or category |
+| relate only | `apps.json`, `supersedes` alone | assert "v3 replaces v2" without inventing a description for somebody else's realm |
 | relate | `apps.json` `supersedes` | fold an older generation into the one that replaces it |
 | skip | `moderation.toml` | remove something that should not be here, with a reason |
 
@@ -211,7 +216,8 @@ called, above the busiest realm on the chain.
 
 **Every field says where it came from**, and the card shows it as one quiet
 mark: `curated` (this repo's registry), `community` (awesome-gno), `chain` (the
-realm's own doc), `path` (nobody has said anything yet). A reader who cannot
+realm's own doc comment), `readme` (its own README), `path` (nobody has said
+anything yet). A reader who cannot
 tell a vouched-for sentence from a generated one has to trust both equally or
 neither.
 
@@ -377,11 +383,12 @@ same reason: 3 of 4 is a library being picked up, 3 of 300 is noise.
 | `GET /api/realms` | list realms. `limit`, `offset` |
 | `GET /api/packages/facets` | counts per kind and per namespace, for the current filter |
 | `GET /api/symbols/search` | find a declaration by name. `q`, `network`, `limit` |
+| `GET /api/users/search` | find a registered user by name or address prefix. `q`, `network`, `limit`. See Search below |
 | `GET /api/symbols/status` | what the symbol index covers |
 | `GET /api/packages` | list all packages, realms and pure packages. `limit`, `offset` |
 | `GET /api/realm/{path...}` | detail for one package: metadata, source files, imports, dependents, callers, MsgRun references. `recent_calls` and `msgrun_refs` are the 50 most recent of each, and carry `block_time` where the syncer knew it (omitted otherwise, so a consumer plotting them on a time axis can say how many it left out). `address` and `storage_deposit_address` are the two accounts the package owns, derived from its path (see below) |
 | `GET /api/realm/usage/{path...}` | who calls one realm, aggregated over its whole history, plus one page of the message feed. See below |
-| `GET /api/deps/{path...}` | dependency graph as `{path: [imports]}`. `dir=dependents` reverses direction |
+| `GET /api/deps/{path...}` | dependency graph as `{path: [imports]}`. `dir=dependents` reverses direction, and defaults to one hop; `depth=N` caps the reverse walk, `depth=0` is unbounded |
 | `GET /api/realm/cousage/{path...}` | co-usage: what else the addresses that called this realm also called. `{path, network, window, callers, partners[], truncated}`, each partner `{path, shared, calls, callers}` ordered by `shared` descending. `window` = `all` (default), `90d`, `30d`, `7d`, `24h`, unknown values are a 400. `limit` defaults to 100, capped at 1000. **Resolves a single network** the same way the contracts map does |
 | `GET /api/storage/{path...}` | storage events for a package. **Requires `network`**: the figures are denominated amounts and blending chains would be meaningless |
 | `GET /api/realm/defi/{path...}` | what a package holds: its two accounts' live balances, every native transfer through them, and its GRC20 positions. **Requires `network`**. The `flows[]` table pages with `flows_limit` (default 500, capped at 5000, `0` for a totals-only read) and `flows_offset`, counting back from the newest leg; `flows_total` is the whole history and every balance figure is summed over all of it, never over the page. `counterparties[]` is the same legs collapsed by who was at the other end (`sent`, `received`, `net` from *that account's* side, `legs`), always over every leg and never over the page, ranked by gross and capped at 50 with `counterparties_total` beside it. See below |
@@ -456,8 +463,51 @@ means only that the realm went past `coinFlowMaxTransactions` (50,000
 transactions), not that the indexer refused.
 
 The fix for the cost is a local `coin_transfers` table written by the syncer,
-the way `token_transfers` already is for GRC20. Until that exists, treat a large
-realm's defi tab as the one page on this site that leaves the box.
+the way `token_transfers` already is for GRC20. **That table now exists and is
+being filled** (see below); this endpoint has not been switched over to read it
+yet, so the cost above is still what a cold request pays.
+
+### The native coin ledger
+
+`coin_transfers` is one row per `TransferEvent` leg: `(network, tx_hash,
+event_idx)` keyed, `coins` kept verbatim and `ugnot` kept parsed beside it, and
+indexed on both `from_addr` and `to_addr` with height descending.
+
+It is filled from two directions, which is what makes it complete rather than
+merely current:
+
+- **Forward**, by the same `syncCalls` walk that already writes `calls`,
+  `bank_sends`, `storage_events` and `token_transfers`. The legs are in the
+  payload being iterated, so this costs no extra query.
+- **Backward**, by `backfillCoinTransfers`, a cursor-driven pass that walks the
+  history the forward cursor starts above. Without it the ledger would begin at
+  whatever height the database was at when this shipped, which is exactly how
+  the GRC20 ledger ended up reporting a truncated supply as exact.
+
+The backfill filters on `TransferEvent: {}` with no address inside it, which the
+indexer accepts as "carries one of these". That is what makes it cheap: mainnet's
+entire transfer history is about two 10,000-row pages rather than a re-walk of
+every transaction ever. It does one page per sync pass on purpose, because four
+back-to-back 10,000-row pages against the public indexer is what got the first
+live run answering `403`.
+
+Its state is two `sync_state` keys, `coin_backfill_cursor:<network>` and
+`coin_backfill_done:<network>`. Both are cleared by a chain reset along with the
+rows, and clearing them by hand is how you force a re-walk.
+
+⚠️ **The selection set has to ask for `success`, not merely filter on it.** A set
+that omits the field gets `success: false` on every row and a consumer that
+checks it then stores nothing, with no error anywhere. The first live backfill
+run walked 10,000 real transactions and wrote 0 legs for exactly that reason;
+`TestTransferQueriesSelectSuccessAndNotOnlyFilterOnIt` is the guard.
+
+⚠️ **`TransferEvent` is gated on a schema probe**, like the inert-lifecycle and
+session message types. `indexer.pearl.testnets.gno.land` answers `__type: null`
+for it (2026-09-23), and because this fragment rides the *shared* selection set,
+an ungated version would 422 every transaction query on that chain and take its
+whole sync down. The same gap is why `/api/realm/defi?network=pearl` answered a
+raw GraphQL validation error before this change; it now reports that the chain
+cannot be asked.
 
 GRC20 positions come from the local transfer ledger, which only ever saw what the
 syncer walked: `token_ledger_from` is the oldest row on that chain, and a
@@ -1081,10 +1131,75 @@ Searches **package paths, names and creators only**. It does not search
 transaction hashes, block heights, or addresses — an address matches only when it
 happens to be a package creator.
 
+Realms come first and each kind is capped separately (ten apiece), rather than
+twenty rows ordered by deploy height. The search box draws realms and packages
+as two groups, and a flat limit let one namespace's realms fill it and leave the
+package group empty — which reads as "this namespace has no packages" rather
+than "you are looking at twenty realms".
+
 The UI covers the rest without asking the server: an address, a transaction hash
 or a block height is recognised by shape and offered as a direct destination
 above the package matches. A bare number is offered only when a network is
 selected, since a height identifies a different block on every chain.
+
+### User search
+
+```
+GET /api/users/search?q=<query>&network=<id>&limit=<n>
+```
+
+The chain's own name registry, `gno.land/r/sys/users`. Matches a name or an
+address prefix, ranked exact → prefix → substring, and a current name always
+outranks a previous one.
+
+A fourth endpoint rather than a group inside `/api/search`, for the same reason
+assets and symbols are their own: that response is an array of packages and
+every caller reads it as one. A user is not a package — 67 of mainnet's 78
+registrations on 2026-09-23 have never deployed anything, so folding them in
+would mean inventing a package row for each.
+
+Distinct from `/api/namespaces`, which answers a narrower question by a
+different method: that one resolves the handful of names that *do* own packages,
+one `vm/qeval` per name against the live chain, for the ownership labels the
+frontend paints on a path. This is the registry itself, replayed from events
+into a table.
+
+```json
+{
+  "network": "gnoland1",
+  "users": [
+    {
+      "network": "gnoland1", "name": "moul",
+      "address": "g1manfred47kzduec920z88wfr64ylksmdcedlf5",
+      "tx_hash": "...", "block_height": 0, "block_time": "...",
+      "packages": 41, "label": "@moul"
+    }
+  ]
+}
+```
+
+`alias: true` marks a previous name of the address; `deleted: true` a
+tombstone. Both stay in the answer on purpose. `r/sys/users` never frees a
+name — an old name from a rename stays resolvable, and a deleted user's name
+stays taken — so dropping either row would let the search imply the name is
+available. `packages` is how many packages the address has deployed on the same
+chain, and `label` the curated gloss from `pkg/registry/data/addresses.json`
+when there is one.
+
+**Where the rows come from.** `r/sys/users` emits `Registered {name, address}`,
+`Updated {alias, address}` and `Deleted {address}`, and the syncer replays all
+three. It is a pass of its own rather than a hook on the call walk for two
+reasons: a third of mainnet's registry was written at genesis, at height 0,
+which a cursor-driven walk above the last stored height never revisits; and the
+filtered query is 63 transactions against the walk's hundreds of thousands.
+Measured 2026-09-23, those 63 carry 78 `Registered` events and no `Updated` or
+`Deleted`, which is exactly the count the realm prints for itself.
+
+The registry also feeds `/api/labels`, where it overwrites the deploy-dominance
+guess for the same address. Both are `derived` so precedence cannot settle it,
+and it is not a tie: one is what the chain records, the other is this repo
+noticing that an address deployed most of one namespace. Four of twelve mainnet
+namespaces resolve to a different account than their deploys suggest.
 
 ### Faceting the directory
 

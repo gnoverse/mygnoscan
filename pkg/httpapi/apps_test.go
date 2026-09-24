@@ -59,7 +59,12 @@ func TestCollapseSupersededFoldsTheOlderGeneration(t *testing.T) {
 		Supersedes: []string{"gno.land/r/x/kourt"}}
 	other := &AppCard{Path: "gno.land/r/x/other", Name: "Other"}
 
-	got := collapseSuperseded([]*AppCard{v1, v3, other})
+	// The newer card first, which is the order that broke it: folding while
+	// building the output mutates a card already copied into the result, so the
+	// fold vanished for every chain whose newer generation outranked its
+	// predecessor. On mainnet that was bubblerumble and gnomi/pad, while Kourt
+	// worked because it happened to rank the other way.
+	got := collapseSuperseded([]*AppCard{v3, v1, other})
 
 	if len(got) != 2 {
 		t.Fatalf("got %d cards, want the older generation folded away: %+v", len(got), got)
@@ -91,7 +96,7 @@ func TestCollapseDoesNotNest(t *testing.T) {
 	v2 := &AppCard{Path: "gno.land/r/x/b", Name: "B", Supersedes: []string{"gno.land/r/x/a"}}
 	v3 := &AppCard{Path: "gno.land/r/x/c", Name: "C", Supersedes: []string{"gno.land/r/x/b"}}
 
-	got := collapseSuperseded([]*AppCard{v1, v2, v3})
+	got := collapseSuperseded([]*AppCard{v3, v2, v1})
 
 	if len(got) != 1 || got[0].Name != "C" {
 		t.Fatalf("got %+v, want only the newest", got)
@@ -176,7 +181,7 @@ func TestAppsHubLayersTheSources(t *testing.T) {
 		}
 		if a.Description != "" {
 			switch a.DescriptionFrom {
-			case fromCurated, fromCommunity, fromChain:
+			case fromCurated, fromCommunity, fromChain, fromReadme:
 			default:
 				t.Errorf("%s has a description from %q", a.Name, a.DescriptionFrom)
 			}
@@ -250,5 +255,34 @@ func TestAppsHubServesItsOwnSkipList(t *testing.T) {
 		if a.Path != "" && skipped[a.Path] {
 			t.Errorf("%s is on the skip list and in the grid", a.Path)
 		}
+	}
+}
+
+// The derived name is allowed to be poor. It is not allowed to be ambiguous:
+// the last segment alone produced `position`, `staker`, `gns` and two separate
+// cards both called `staker` on mainnet, which tells a reader nothing and tells
+// them it twice.
+func TestNameFromPath(t *testing.T) {
+	for _, tt := range []struct {
+		in, want, why string
+	}{
+		{"gno.land/r/gnoswap/v1/position", "gnoswap/position",
+			"a version names a generation, never a project"},
+		{"gno.land/r/gnoswap/v1/staker", "gnoswap/staker",
+			"and the namespace is what tells two stakers apart"},
+		{"gno.land/r/gnoland/blog", "gnoland/blog", "the ordinary case"},
+		{"gno.land/r/moul/config/v0", "moul/config", "trailing version dropped"},
+		{"gno.land/r/g1leu8d2vsplhehcfkjg50mwgdpxdkt8tztu95wr/kourtv3", "kourtv3",
+			"40 characters of address is noise to a reader"},
+		{"gno.land/r/demo/v0", "demo",
+			"a generation is not a name; two generations of one realm collapse here and supersedes tells them apart"},
+		{"gno.land/r/x/v1", "x", "and the namespace survives alone"},
+		{"gno.land/r/a/b/c/d", "c/d", "two segments is the most a card has room for"},
+	} {
+		t.Run(tt.in, func(t *testing.T) {
+			if got := nameFromPath(tt.in); got != tt.want {
+				t.Errorf("got %q, want %q (%s)", got, tt.want, tt.why)
+			}
+		})
 	}
 }

@@ -2,9 +2,16 @@ package indexer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 )
+
+// ErrNoTransferEvents reports that this chain's indexer does not define the
+// TransferEvent type, so native coin movement cannot be asked about at all.
+// It describes the chain, not a failure: an empty answer and an unanswerable
+// question are different facts and a page must not render them the same way.
+var ErrNoTransferEvents = errors.New("this chain's indexer does not index transfer events")
 
 // coinFlowMaxTransactions bounds one CoinFlows walk.
 //
@@ -40,6 +47,16 @@ const coinFlowMaxTransactions = 50000
 // So it walks the height cursor instead, the same way the syncer does, and
 // `truncated` now means only that a realm is past coinFlowMaxTransactions.
 func (c *Client) CoinFlows(ctx context.Context, addrs []string) (txs []Transaction, truncated bool, err error) {
+	// Asked before the query rather than learned from its failure. An indexer
+	// that does not define TransferEvent rejects the *filter* too, with a
+	// GraphQL validation error the reader then sees verbatim: on 2026-09-23
+	// `/api/realm/defi?network=pearl` answered `Field "TransferEvent" is not
+	// defined by type "NestedFilterEvent"`, which reads as a broken site rather
+	// than as a chain that cannot be asked.
+	if !c.SupportsTransferEvents(ctx) {
+		return nil, false, ErrNoTransferEvents
+	}
+
 	clauses := make([]string, 0, len(addrs)*2)
 	for _, a := range addrs {
 		if a == "" {
@@ -59,10 +76,13 @@ func (c *Client) CoinFlows(ctx context.Context, addrs []string) (txs []Transacti
 	where := fmt.Sprintf(`
 		success: { eq: true }
 		response: { events: { _or: [%s] } }`, strings.Join(clauses, " "))
-	const fields = `
-		hash
-		block_height
-		response { events { __typename ... on TransferEvent { from to coins } } }`
+	// coinTransferFields, shared with the backfill. It selects `success` even
+	// though the filter above already guarantees it: leaving the field out does
+	// not give you a field you ignore, it gives you one that is *false on every
+	// row*, and a consumer that checks it then silently stores nothing. The
+	// first live backfill run walked 10,000 real transactions and wrote 0 legs
+	// for exactly that reason.
+	const fields = coinTransferFields
 
 	// Ascending, because that is the only direction a height cursor can resume
 	// in: the indexer's cap keeps the *first* rows it iterated, so ASC hands
@@ -111,4 +131,69 @@ func reversed(txs []Transaction) []Transaction {
 		txs[i], txs[j] = txs[j], txs[i]
 	}
 	return txs
+}
+
+// coinTransferFields is the backfill's selection set.
+//
+// success, for the reason CoinFlows spells out above: a set that omits it hands
+// back `success: false` on every row rather than nothing, and the consumer then
+// silently stores none of them.
+const coinTransferFields = `
+		hash
+		block_height
+		success
+		response { events { __typename ... on TransferEvent { from to coins } } }`
+
+// CoinTransferWindow fetches the successful transactions carrying any
+// TransferEvent in the half-open height range (after, before), oldest first.
+//
+// The filter is `TransferEvent: {}` with no address inside it, which the indexer
+// accepts as "carries one of these" rather than rejecting as an empty predicate.
+// That is what makes backfilling this ledger cheap: mainnet's whole transfer
+// history is ~11,700 legs, against ~250,000 transactions if you walked
+// everything looking for them.
+//
+// ⚠️ **Bounded by height, not merely by cursor, and that is the point.**
+// transactionsFromHeight asks for everything above a cursor and takes whatever
+// the element cap returns, which here is a 10,000-row response every time. Run
+// against `indexer.gno.land` that earns a **403** within a couple of minutes,
+// from a residential IP and from val1 alike (both observed 2026-09-23), and
+// because the breaker is per-client and the syncer has one, that 403 stops
+// packages and calls syncing too. A window keeps each request small enough that
+// the backfill is invisible next to the traffic the syncer already makes.
+//
+// Truncation inside a window is still possible and still handled: the trailing
+// height is dropped, `truncated` is reported, and the caller resumes from the
+// last complete height rather than skipping to the window's end.
+func (c *Client) CoinTransferWindow(ctx context.Context, after, before int) ([]Transaction, bool, error) {
+	if !c.SupportsTransferEvents(ctx) {
+		return nil, false, ErrNoTransferEvents
+	}
+	q := fmt.Sprintf(`{
+		getTransactions(
+			where: {
+				block_height: { gt: %d, lt: %d }
+				success: { eq: true }
+				response: { events: { _or: [{ TransferEvent: {} }] } }
+			}
+			order: { heightAndIndex: ASC }
+		) { %s }
+	}`, after, before, coinTransferFields)
+
+	var result struct {
+		GetTransactions []Transaction `json:"getTransactions"`
+	}
+	err := c.query(ctx, q, nil, &result)
+	if err != nil && !errors.Is(err, ErrQueryTooLarge) {
+		return nil, false, err
+	}
+	if err == nil {
+		return result.GetTransactions, false, nil
+	}
+	txs := dropTrailingHeight(result.GetTransactions)
+	if len(txs) == 0 {
+		return nil, false, fmt.Errorf(
+			"a single block holds more than %d transfer transactions: %w", ElementCap, err)
+	}
+	return txs, true, nil
 }

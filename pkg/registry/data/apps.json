@@ -68,6 +68,19 @@
       "name": "Users",
       "category": "infrastructure",
       "description": "The on-chain username registry. It is what resolves a @handle to an address across the explorer."
+    },
+    {
+      "path": "gno.land/r/g1leu8d2vsplhehcfkjg50mwgdpxdkt8tztu95wr/bubblerumble3",
+      "supersedes": [
+        "gno.land/r/g1leu8d2vsplhehcfkjg50mwgdpxdkt8tztu95wr/bubblerumble",
+        "gno.land/r/g1leu8d2vsplhehcfkjg50mwgdpxdkt8tztu95wr/bubblerumble2"
+      ]
+    },
+    {
+      "path": "gno.land/r/g1n4pl5uc4yt5r96m9w6fmdznx3x0jyg8l6arhmt/gnomi/padv3",
+      "supersedes": [
+        "gno.land/r/g1n4pl5uc4yt5r96m9w6fmdznx3x0jyg8l6arhmt/gnomi/padv2"
+      ]
     }
   ]
 }

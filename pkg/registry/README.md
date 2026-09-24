@@ -85,12 +85,14 @@ photographs it. These files are the three levers over that:
 - **Relate**: `supersedes` folds an older generation into the one that replaces
   it, because two live deployments of the same idea is the normal state of a
   chain nobody can delete from, and ranking them as peers sends people to last
-  year's version.
+  year's version. An entry may carry **only** a path and `supersedes`: that is a
+  fact about two deploys, and requiring a description alongside it would force
+  you to invent one about somebody else's realm.
 - **Skip**: `moderation.toml` removes, and every entry must say why. Usage is
   evidence of activity, not of worth.
 
 A `description` here is still the best one available and still wins over the
-realm's own doc comment, so writing one is worth doing. It is shown as one line;
+realm's own doc comment and its README, so writing one is worth doing. It is shown as one line;
 `checked` now travels in the card's provenance tooltip rather than in the dense
 table that used to print it.
 

@@ -165,6 +165,11 @@ func NewDB(path string) (*DB, error) {
 		return nil, fmt.Errorf("migrate package_doc: %w", err)
 	}
 
+	if err := migrateAddDocPass(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate doc_pass: %w", err)
+	}
+
 	if err := migrateBankSendUgnot(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate bank send ugnot: %w", err)
@@ -263,6 +268,25 @@ func migrateAddPackageDoc(db *sql.DB) error {
 	}
 	if _, err := db.Exec(`ALTER TABLE symbol_index ADD COLUMN package_doc TEXT NOT NULL DEFAULT ''`); err != nil {
 		return fmt.Errorf("add package_doc to symbol_index: %w", err)
+	}
+	return nil
+}
+
+// migrateAddDocPass adds the extraction-version column beside package_doc.
+//
+// Separate from the column itself because the first deploy shipped without it,
+// and the two are now both in the CREATE TABLE for a fresh database.
+func migrateAddDocPass(db *sql.DB) error {
+	exists, err := tableExists(db, "symbol_index")
+	if err != nil || !exists {
+		return err
+	}
+	has, err := columnExists(db, "symbol_index", "doc_pass")
+	if err != nil || has {
+		return err
+	}
+	if _, err := db.Exec(`ALTER TABLE symbol_index ADD COLUMN doc_pass INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return fmt.Errorf("add doc_pass to symbol_index: %w", err)
 	}
 	return nil
 }
@@ -789,6 +813,15 @@ func initSchema(db *sql.DB) error {
 			-- segment says nothing, and a sentence this repo invents is a
 			-- stranger's guess presented as fact.
 			package_doc  TEXT NOT NULL DEFAULT '',
+			-- Which version of the extraction wrote this row.
+			--
+			-- package_doc alone cannot answer "has this been looked at", because
+			-- an empty doc is a real answer: most realms have no package comment.
+			-- Re-indexing on emptiness would re-read every one of them on every
+			-- pass, forever. So the row records the recipe that filled it, the
+			-- same way gnoshot versions its capture recipe, and bumping
+			-- DocPassVersion re-extracts everything exactly once.
+			doc_pass     INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY (network, package_path)
 		);
 
@@ -885,6 +918,45 @@ func initSchema(db *sql.DB) error {
 			PRIMARY KEY (network, tx_hash, event_idx)
 		) WITHOUT ROWID;
 
+		-- The user registry, replayed from what gno.land/r/sys/users emits.
+		--
+		-- The registry is the chain's own answer to "who is this name", and it is
+		-- not derivable from anything else this index holds. Namespaces read off
+		-- package paths cover 11 of mainnet's 78 registrations, because a name
+		-- does not have to deploy anything; the curated label file is a human's
+		-- notes, not a registry; and r/sys/namereg/v0 renders only the names it
+		-- issued itself, missing every genesis and GovDAO-allocated one, moul
+		-- and onbloc among them.
+		--
+		-- The events are Registered {name, address}, Updated {alias, address}
+		-- and Deleted {address}. Measured against indexer.gno.land on
+		-- 2026-09-23: 63 transactions, 78 Registered, no Updated or Deleted, which
+		-- is exactly the count r/sys/users prints for itself.
+		--
+		-- Keyed on the name rather than the address, because one address can hold
+		-- several: Updated adds an alias and the old name stays resolvable
+		-- (r/sys/users keeps it deliberately, as anti-rename-squat policy). alias
+		-- marks the rows that are not the address's current name, so a search can
+		-- rank them below it without losing them.
+		--
+		-- deleted is a tombstone, not a DELETE: r/sys/users never frees a name,
+		-- and a row that vanished would let the search claim the name is free.
+		CREATE TABLE IF NOT EXISTS users (
+			network      TEXT NOT NULL,
+			name         TEXT NOT NULL,
+			address      TEXT NOT NULL,
+			tx_hash      TEXT NOT NULL DEFAULT '',
+			block_height INTEGER NOT NULL DEFAULT 0,
+			block_time   TEXT NOT NULL DEFAULT '',
+			alias        BOOLEAN NOT NULL DEFAULT 0,
+			deleted      BOOLEAN NOT NULL DEFAULT 0,
+			PRIMARY KEY (network, name)
+		) WITHOUT ROWID;
+
+		-- "Who is g1..." is the other direction, and the address page asks it on
+		-- every load.
+		CREATE INDEX IF NOT EXISTS idx_users_address ON users(network, address);
+
 		CREATE INDEX IF NOT EXISTS idx_token_transfers_token ON token_transfers(network, token, block_height DESC);
 		CREATE INDEX IF NOT EXISTS idx_token_transfers_from ON token_transfers(network, token, from_addr);
 		CREATE INDEX IF NOT EXISTS idx_token_transfers_to ON token_transfers(network, token, to_addr);
@@ -903,6 +975,48 @@ func initSchema(db *sql.DB) error {
 		-- ledger. Height is in the key already; block_time is what the queries
 		-- actually bind, because a window is a wall-clock question.
 		CREATE INDEX IF NOT EXISTS idx_token_transfers_time ON token_transfers(network, block_time);
+
+		-- Native coin movement, one row per TransferEvent leg.
+		--
+		-- The same shape as token_transfers above, and for the same reason: the
+		-- chain emits TransferEvent on every sendCoins including a realm's own
+		-- banker moves, so summing the legs touching a realm's address
+		-- reproduces bank/balances exactly (ADR 0034). Without this table the
+		-- only way to ask that question was to re-walk the whole history from
+		-- the tx-indexer per request, which cost ~2.1s even for a realm holding
+		-- nothing, because the latency is resolving a chain-wide event filter
+		-- and not the payload.
+		--
+		-- coins is the chain's own string, verbatim, and ugnot is it parsed.
+		-- Both, for the reason bank_sends keeps both: a coin string is a *list*
+		-- ("5foo,100ugnot") and SQL cannot sum one without inventing a number
+		-- (ADR 0041). Anything denominated in something other than ugnot is
+		-- readable in coins and contributes 0 to ugnot, which is the honest
+		-- answer rather than a coerced one.
+		--
+		-- ⚠️ Not a substitute for a *signer's* balance. Gas collection and the
+		-- storage deposit go through SendCoinsUnrestricted, which emits nothing,
+		-- so this sum is short by exactly an account's gas spend. Neither
+		-- touches a realm's banker, which is why the realm case is exact and the
+		-- account case is not.
+		CREATE TABLE IF NOT EXISTS coin_transfers (
+			network      TEXT NOT NULL,
+			tx_hash      TEXT NOT NULL,
+			event_idx    INTEGER NOT NULL,
+			from_addr    TEXT NOT NULL DEFAULT '',
+			to_addr      TEXT NOT NULL DEFAULT '',
+			coins        TEXT NOT NULL DEFAULT '',
+			ugnot        INTEGER NOT NULL DEFAULT 0,
+			block_height INTEGER NOT NULL,
+			block_time   TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY (network, tx_hash, event_idx)
+		) WITHOUT ROWID;
+
+		-- Both directions, because a leg is read from whichever end asked. Height
+		-- descending is in the index rather than left to a sort: the page reads
+		-- newest-first and the table is the largest one a busy realm has.
+		CREATE INDEX IF NOT EXISTS idx_coin_transfers_from ON coin_transfers(network, from_addr, block_height DESC);
+		CREATE INDEX IF NOT EXISTS idx_coin_transfers_to   ON coin_transfers(network, to_addr, block_height DESC);
 
 		-- The rich list's only query: the top balances on one chain.
 		CREATE INDEX IF NOT EXISTS idx_balances_rank ON balances(network, ugnot DESC);

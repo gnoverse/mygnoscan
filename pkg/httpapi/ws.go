@@ -328,6 +328,20 @@ func LiveFeedHandler() http.HandlerFunc {
 			return
 		}
 
+		// The server sets WriteTimeout (main.go), an absolute deadline from
+		// the start of the response. A stream that never completes hits it and
+		// the connection is killed mid-message, which the browser reports as
+		// ERR_INCOMPLETE_CHUNKED_ENCODING and EventSource then reconnects
+		// through. Clearing the deadline for this one route is the documented
+		// way to stream under a server-wide write timeout.
+		//
+		// Best effort on purpose: if a wrapper in the chain does not support
+		// it, the stream keeps the server-wide deadline, which is exactly the
+		// behaviour before this line.
+		if err := http.NewResponseController(w).SetWriteDeadline(time.Time{}); err != nil {
+			log.Printf("live feed: could not clear the write deadline: %v", err)
+		}
+
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")

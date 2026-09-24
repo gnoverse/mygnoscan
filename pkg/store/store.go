@@ -44,6 +44,12 @@ var NetworkScopedTables = []string{
 	"transactions",
 	"blocks",
 	"proposers",
+	// The user registry is per chain: the same name can belong to different
+	// accounts on two of them, and a reset chain that kept the old one would
+	// have the search box answering with names nobody holds. The syncer replays
+	// the whole registry from genesis on every pass, so wiping costs nothing to
+	// recover.
+	"users",
 	// The edge rollups belong here for a reason their source tables do not make
 	// obvious: their sync cursor is MAX(last_height) over their own rows. Left
 	// behind by a reset, they would hold a dead chain's edges *and* a cursor
@@ -53,6 +59,13 @@ var NetworkScopedTables = []string{
 	// is exactly what a re-sync from the new genesis needs.
 	"transfer_edges",
 	"caller_edges",
+	// The native coin ledger. A reset leaves a dead chain's legs behind, and
+	// because the defi tab sums them against a *live* bank/balances read, the
+	// two would disagree by the whole of the old chain's history and the page
+	// would report the gap as an indexer problem. Its backfill markers go with
+	// it, in DeleteNetworkData: a cursor above the new chain's tip would mark
+	// the history closed before any of it had been read.
+	"coin_transfers",
 }
 
 // DeleteNetworkData removes every row belonging to a network, in one transaction.
@@ -91,6 +104,15 @@ func (d *DB) DeleteNetworkData(network string) (int64, error) {
 	); err != nil {
 		return 0, fmt.Errorf("clear blocks backfill flag: %w", err)
 	}
+	// Both coin-ledger markers, for the same reason and with the same failure
+	// if forgotten: a done flag marks an emptied table as fully backfilled, and
+	// a cursor left above the new chain's tip means the walk that would refill
+	// it never starts.
+	for _, key := range []string{CoinBackfillDoneKey(network), CoinBackfillCursorKey(network)} {
+		if _, err := tx.Exec(`DELETE FROM sync_state WHERE key = ?`, key); err != nil {
+			return 0, fmt.Errorf("clear coin backfill state: %w", err)
+		}
+	}
 
 	// Derived rows go too, in the same transaction.
 	//
@@ -117,6 +139,15 @@ type FileInfo struct {
 	Body string `json:"body"`
 }
 
+// searchKindLimit is how many rows each of the two kinds is guaranteed.
+//
+// The search box draws realms and packages as separate groups, so a single flat
+// LIMIT is the wrong shape: one namespace's realms can fill it and leave the
+// package group empty, which reads as "this namespace has no packages" rather
+// than "you are looking at twenty realms". Ten each keeps both groups populated
+// and the popup the same total size it was.
+const searchKindLimit = 10
+
 func (d *DB) Search(network, q string) ([]PackageInfo, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -125,17 +156,30 @@ func (d *DB) Search(network, q string) ([]PackageInfo, error) {
 	// columns into eleven destinations, so every search returned
 	// "expected 8 destination arguments in Scan, not 11" and the site's search
 	// box was dead for any query.
+	//
+	// Windowed by is_realm so the two kinds are capped independently, and
+	// ordered realms first: a realm is a thing a reader can open and use, a
+	// package is a library it imports, and asked for "moul" the first answer
+	// wanted is the former. Within a kind the order is still recency.
 	qStr := `
-		SELECT p.network, p.path, p.name, p.creator, p.block_height, p.tx_hash,
-		       p.is_realm, p.num_files,
-		       (SELECT COUNT(*) FROM calls c WHERE c.network = p.network AND c.pkg_path = p.path),
-		       (SELECT COUNT(*) FROM dependencies d WHERE d.network = p.network AND d.import_path = p.path),
-		       (SELECT COUNT(*) FROM dependencies d WHERE d.network = p.network AND d.package_path = p.path)
-		FROM packages p
-		WHERE (p.path LIKE ? OR p.name LIKE ? OR p.creator LIKE ?)`
+		SELECT network, path, name, creator, block_height, tx_hash, is_realm, num_files,
+		       calls, importers, imports
+		  FROM (
+			SELECT p.network, p.path, p.name, p.creator, p.block_height, p.tx_hash,
+			       p.is_realm, p.num_files,
+			       (SELECT COUNT(*) FROM calls c WHERE c.network = p.network AND c.pkg_path = p.path) AS calls,
+			       (SELECT COUNT(*) FROM dependencies d WHERE d.network = p.network AND d.import_path = p.path) AS importers,
+			       (SELECT COUNT(*) FROM dependencies d WHERE d.network = p.network AND d.package_path = p.path) AS imports,
+			       ROW_NUMBER() OVER (PARTITION BY p.is_realm ORDER BY p.block_height DESC) AS rn
+			  FROM packages p
+			 WHERE (p.path LIKE ? OR p.name LIKE ? OR p.creator LIKE ?)`
 	args := []any{"%" + q + "%", "%" + q + "%", "%" + q + "%"}
 	qStr += ` AND ` + d.networkFilter("p.network", network)
-	qStr += ` ORDER BY p.block_height DESC LIMIT 20`
+	qStr += `
+		  )
+		 WHERE rn <= ?
+		 ORDER BY is_realm DESC, block_height DESC`
+	args = append(args, searchKindLimit)
 
 	rows, err := d.db.Query(qStr, args...)
 	if err != nil {

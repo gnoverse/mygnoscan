@@ -199,7 +199,17 @@ func (w *gzipWriter) Flush() {
 func WithCompression(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("Vary", "Accept-Encoding")
-		if !acceptsGzip(r) {
+		// A streaming route is never wrapped, not even to be passed through.
+		// compressibleType already refuses text/event-stream, but that decision
+		// is made from the Content-Type on the FIRST WRITE, so until then the
+		// stream is running through a wrapper that holds bytes in `pending` and
+		// hides the underlying ResponseWriter from http.ResponseController.
+		//
+		// This is also why the drop only ever reproduced in a browser: curl
+		// sends no Accept-Encoding, so it was never wrapped, and the server
+		// "looked healthy in isolation" while every tab saw
+		// ERR_INCOMPLETE_CHUNKED_ENCODING.
+		if !acceptsGzip(r) || streamingPath(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -208,3 +218,7 @@ func WithCompression(next http.Handler) http.Handler {
 		next.ServeHTTP(gw, r)
 	})
 }
+
+// streamingPath reports whether a route holds its response open indefinitely.
+// Kept beside cacheable(), which excludes the same route for the same reason.
+func streamingPath(p string) bool { return p == "/api/live" }

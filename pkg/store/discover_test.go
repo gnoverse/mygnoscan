@@ -134,3 +134,80 @@ func TestDiscoverCarriesThePackageDocWithoutRequiringIt(t *testing.T) {
 		t.Error("a realm with no indexed doc dropped out of the directory")
 	}
 }
+
+// Everything a README opens with that is not prose has to be stepped over, and
+// every case here was found in a real one. "The first non-empty line" produces
+// cards that say "# gns" or `<div align="center">`.
+func TestReadmeLead(t *testing.T) {
+	for _, tt := range []struct {
+		name, in, want string
+	}{
+		{
+			name: "the title heading is the name the card already shows",
+			in:   "# gns\n\nThe governance token of GnoSwap.\n",
+			want: "The governance token of GnoSwap.",
+		},
+		{
+			name: "badges and a centred html header",
+			in:   "<div align=\"center\">\n  <img src=\"logo.png\" />\n</div>\n\n![badge](x.svg)\n\nA concentrated liquidity AMM.\n",
+			want: "A concentrated liquidity AMM.",
+		},
+		{
+			name: "a blockquote tagline is not the description",
+			in:   "# x\n\n> Do you gno?\n\nThe actual sentence.\n",
+			want: "The actual sentence.",
+		},
+		{
+			name: "a code fence is skipped whole, including prose inside it",
+			in:   "# x\n\n```\nthis is a usage example, not a description\n```\n\nWhat it really is.\n",
+			want: "What it really is.",
+		},
+		{
+			name: "inline markdown is stripped, because the page builds DOM",
+			in:   "# x\n\nA **staking** realm for [GnoSwap](https://gnoswap.io) positions.\n",
+			want: "A staking realm for GnoSwap positions.",
+		},
+		{
+			name: "a list is contents, not a summary",
+			in:   "# x\n\n- one\n- two\n\nThe summary.\n",
+			want: "The summary.",
+		},
+		{
+			name: "nothing but furniture yields nothing, rather than furniture",
+			in:   "# x\n\n![badge](x.svg)\n",
+			want: "",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := readmeLead(tt.in); got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// The README is read from the database the page already has, and only for the
+// realms that need it.
+func TestPackageReadmes(t *testing.T) {
+	db := seedDiscover(t)
+	if err := db.UpsertPackageFile("alpha", "gno.land/r/x/social", "README.md",
+		"# social\n\nA feed you can post to.\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpsertPackageFile("alpha", "gno.land/r/x/loop", "main.gno", "package loop"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := db.PackageReadmes("alpha", []string{"gno.land/r/x/social", "gno.land/r/x/loop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["gno.land/r/x/social"] != "A feed you can post to." {
+		t.Errorf("social = %q", got["gno.land/r/x/social"])
+	}
+	// A realm with no README is absent rather than empty, so the caller can
+	// tell "nothing to say" from "said nothing".
+	if _, ok := got["gno.land/r/x/loop"]; ok {
+		t.Error("a realm with no README came back with an entry")
+	}
+}

@@ -259,11 +259,27 @@ func loadApps() ([]App, error) {
 func validateApps(apps []App) error {
 	seen := map[string]bool{}
 	for _, a := range apps {
+		// An entry that only asserts a relation is complete without a name, a
+		// category or a sentence.
+		//
+		// "v3 replaces v2" is a fact about two deploys, checkable from the
+		// chain. Requiring a description alongside it would force a contributor
+		// to invent one about somebody else's realm in order to state it, and
+		// this package's whole rule is that a default must be the project's own
+		// words. Three bubblerumble generations ranked as peers on mainnet is
+		// the case that found this.
+		relationOnly := len(a.Supersedes) > 0 &&
+			strings.TrimSpace(a.Name) == "" &&
+			strings.TrimSpace(a.Category) == "" &&
+			strings.TrimSpace(a.Description) == ""
+
 		switch {
 		case !realmPath.MatchString(a.Path):
 			return fmt.Errorf("apps.json: %q is not a gno.land path", a.Path)
 		case seen[a.Path]:
 			return fmt.Errorf("apps.json: %s is listed twice", a.Path)
+		case relationOnly:
+			// Nothing further to check; the supersedes paths are validated below.
 		case strings.TrimSpace(a.Name) == "":
 			return fmt.Errorf("apps.json: %s has no name", a.Path)
 		case strings.TrimSpace(a.Category) == "":

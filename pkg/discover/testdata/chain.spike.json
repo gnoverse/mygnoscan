@@ -1,0 +1,20 @@
+{
+  "facts": {
+    "baseline_median": 46,
+    "day": "2026-09-18",
+    "excess": 557,
+    "new_addresses": 603,
+    "ratio": 13.1
+  },
+  "layers": {
+    "matters": {
+      "text": "A normal day is about 46, so that is 13 times normal. Something brought a lot of people at once."
+    },
+    "means": {
+      "text": "603 new wallets showed up on the chain in one day."
+    },
+    "what": {
+      "text": "603 addresses appeared on mainnet for the first time on 2026-09-18, against a 7-day median of 46."
+    }
+  }
+}

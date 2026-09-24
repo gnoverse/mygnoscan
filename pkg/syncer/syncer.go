@@ -64,6 +64,8 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 	s.backfillBlockTimes(ctx)
 	s.backfillTransactions(ctx)
 	s.backfillValopers(ctx)
+	s.backfillTokenTransfers(ctx)
+	s.syncUsers(ctx)
 	if err := s.syncPackages(ctx); err != nil {
 		return fmt.Errorf("sync packages: %w", err)
 	}
@@ -73,6 +75,13 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 	if err := s.syncMsgRuns(ctx); err != nil {
 		return fmt.Errorf("sync msg runs: %w", err)
 	}
+	// After syncCalls, which records the legs above its own cursor as it walks.
+	// This one closes the history below it, once, and then stops asking.
+	//
+	// Not fatal to the pass: a chain whose indexer cannot answer, or an indexer
+	// having a bad minute, must not stop packages and calls from syncing. It
+	// logs and returns, and the next pass resumes from the stored cursor.
+	s.backfillCoinTransfers(ctx)
 	// Last: both fold rows the passes above have just written.
 	if err := s.syncTransferEdges(); err != nil {
 		return fmt.Errorf("sync transfer edges: %w", err)
@@ -878,6 +887,89 @@ func (s *Syncer) backfillValopers(ctx context.Context) {
 // Failures are logged and skipped rather than aborting the walk. A storage row
 // is derived detail — losing one costs a number on a page, where abandoning the
 // pass costs every call and send behind it.
+// backfillTokenTransfers walks the history the token ledger never saw.
+//
+// recordTokenTransfers rides the sync walk, and its comment says that is why it
+// "needs no separate backfill pass". That holds for a database built from
+// genesis by a binary that already had the feature. Sync resumes from the
+// highest stored height, so on a database that already existed the ledger can
+// only ever fill from the moment the feature shipped, and TokenSummaries then
+// presents that window as an exact supply: a holder who last moved tokens
+// before the cutoff is invisible, and a token minted before it has a supply of
+// whatever moved after.
+//
+// Same shape as the other repairs: a bounded batch per pass, a cursor that
+// survives restarts, and a stop condition that is reached rather than guessed.
+// The events are already selected by the sync query, so this is a re-walk and
+// not a new field.
+func (s *Syncer) backfillTokenTransfers(ctx context.Context) {
+	from, to, more, err := s.db.TokenBackfillRange(s.networkID, backfillTxBatch)
+	if err != nil {
+		log.Printf("[%s] token transfer backfill: %v", s.networkID, err)
+		return
+	}
+	if !more {
+		return
+	}
+
+	type blockTxs struct {
+		txs []indexer.Transaction
+		err error
+	}
+	heights := make([]int, 0, to-from)
+	for h := from; h < to; h++ {
+		heights = append(heights, h)
+	}
+	results := make([]blockTxs, len(heights))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, backfillConcurrency)
+	for i, h := range heights {
+		wg.Add(1)
+		go func(i, h int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			txs, err := s.client.GetTransactionsByBlock(ctx, h)
+			results[i] = blockTxs{txs: txs, err: err}
+		}(i, h)
+	}
+	wg.Wait()
+
+	// The cursor only advances over heights that actually answered. An
+	// unhealthy indexer must cost a retry, never a silent hole in the ledger
+	// that nothing will ever come back for.
+	// Collect first, then resolve block times in one pass, because that is
+	// where the canonical walk gets them: tx.BlockTime is not populated by
+	// GetTransactionsByBlock, and a row written with an empty block_time would
+	// land in the ledger and break the very window the page states.
+	var answered []indexer.Transaction
+	done := from
+	for i, r := range results {
+		if r.err != nil {
+			log.Printf("[%s] token transfer backfill at %d: %v", s.networkID, heights[i], r.err)
+			break
+		}
+		answered = append(answered, r.txs...)
+		done = heights[i] + 1
+	}
+	stored := 0
+	if len(answered) > 0 {
+		times := s.fetchBlockTimes(ctx, answered)
+		for _, tx := range answered {
+			stored += s.recordTokenTransfers(tx, times[tx.BlockHeight])
+		}
+	}
+	if done == from {
+		return // nothing answered; leave the cursor alone and retry next pass
+	}
+	if err := s.db.SetTokenBackfillCursor(s.networkID, done); err != nil {
+		log.Printf("[%s] token transfer backfill cursor: %v", s.networkID, err)
+		return
+	}
+	log.Printf("[%s] token transfer backfill: %d..%d, %d transfer(s) recovered",
+		s.networkID, from, done-1, stored)
+}
+
 // recordTokenTransfers stores the GRC20 Transfer events in a transaction.
 //
 // Rides the walk syncCalls already does: the events are in the payload being
@@ -981,7 +1073,7 @@ func (s *Syncer) syncCalls(ctx context.Context) error {
 		return fmt.Errorf("last synced call height: %w", err)
 	}
 
-	callCount, sendCount, storageCount, transferCount := 0, 0, 0, 0
+	callCount, sendCount, storageCount, transferCount, coinCount := 0, 0, 0, 0, 0
 	err = walkTransactions(ctx, lastHeight, s.client.GetTransactionsFromHeight, func(txs []indexer.Transaction) {
 		times := s.fetchBlockTimes(ctx, txs)
 		for _, tx := range txs {
@@ -989,6 +1081,7 @@ func (s *Syncer) syncCalls(ctx context.Context) error {
 			s.upsertTx(tx, bt)
 			storageCount += s.recordStorageEvents(tx, bt)
 			transferCount += s.recordTokenTransfers(tx, bt)
+			coinCount += s.recordCoinTransfers(tx, bt)
 			for i, msg := range tx.Messages {
 				switch msg.Value.Typename {
 				case "MsgCall":
@@ -1026,8 +1119,8 @@ func (s *Syncer) syncCalls(ctx context.Context) error {
 			}
 		}
 	})
-	log.Printf("[%s] synced %d calls, %d sends, %d storage events, %d token transfers",
-		s.networkID, callCount, sendCount, storageCount, transferCount)
+	log.Printf("[%s] synced %d calls, %d sends, %d storage events, %d token transfers, %d coin transfers",
+		s.networkID, callCount, sendCount, storageCount, transferCount, coinCount)
 	if err != nil {
 		return fmt.Errorf("walk transactions: %w", err)
 	}
@@ -1066,4 +1159,177 @@ func (s *Syncer) syncMsgRuns(ctx context.Context) error {
 	})
 	log.Printf("[%s] synced %d msg_runs", s.networkID, count)
 	return err
+}
+
+// The historical backfill's budget: how many height windows one sync pass walks,
+// and how wide a window is.
+//
+// Sized against the rate limit, not against the work. An unbounded page (ask for
+// everything above the cursor, take what the element cap returns) is a
+// 10,000-row response every time, and running those back to back earned a **403
+// Forbidden** from `indexer.gno.land` within about two minutes, from this
+// container and from val1 alike (2026-09-23). Because the breaker is per-client
+// and the syncer has one, that 403 stops packages and calls syncing too: a
+// backfill nobody is waiting on must not be able to take the live sync down.
+//
+// 20,000 blocks over mainnet's ~250,000 is about 13 windows, so four per pass
+// finishes in roughly four passes, two minutes at the 30s interval, in requests
+// small enough to disappear into the traffic the syncer already makes.
+const (
+	coinBackfillWindowsPerPass = 4
+	coinBackfillWindowBlocks   = 20000
+)
+
+// recordCoinTransfers stores the native transfer legs in a transaction.
+//
+// Rides the walk syncCalls already does, exactly as recordTokenTransfers does
+// for GRC20: the events are in the payload being iterated, so this costs no
+// extra query and no separate pass. The shared field template carries the
+// TransferEvent fragment now (gated on the type being defined), which is what
+// makes them visible here at all; before that they were fetched only by the
+// defi tab's own per-request walk.
+func (s *Syncer) recordCoinTransfers(tx indexer.Transaction, blockTime string) int {
+	if tx.Response == nil || !tx.Success {
+		// A reverted transaction still reports its events, and counting those
+		// would invent transfers that never settled. Same rule as the token
+		// ledger, and the same reason CoinFlows filters success: true.
+		return 0
+	}
+	stored := 0
+	for i, ev := range tx.Response.Events {
+		if ev.Typename != "TransferEvent" {
+			continue
+		}
+		if ev.From == "" && ev.To == "" {
+			// Neither end named is not a leg anyone can attribute. An empty
+			// *single* end is meaningful (the chain itself: a fee collector, a
+			// genesis allocation) and is kept.
+			continue
+		}
+		if err := s.db.InsertCoinTransfer(s.networkID, tx.Hash, i, store.CoinTransfer{
+			From:        ev.From,
+			To:          ev.To,
+			Coins:       ev.Coins,
+			Ugnot:       store.ParseUgnot(ev.Coins),
+			BlockHeight: tx.BlockHeight,
+			BlockTime:   blockTime,
+		}); err != nil {
+			log.Printf("[%s] store coin transfer: %v", s.networkID, err)
+			continue
+		}
+		stored++
+	}
+	return stored
+}
+
+// backfillCoinTransfers walks the history the live pass will never revisit.
+//
+// The live half rides syncCalls, whose cursor is the highest height already in
+// `calls` or `bank_sends`, so on an existing database it starts at the tip and
+// everything below it stays invisible. That is precisely how the GRC20 ledger
+// shipped, and why /tokens reported a truncated supply as exact on every
+// deployment that predated it. This table does not get to repeat it.
+//
+// Cursor-driven and resumable: one bounded chunk per pass, the reached height
+// persisted, and a done marker so a finished chain stops asking. Overlap with
+// the live half is harmless and expected, because the insert is INSERT OR IGNORE
+// on (network, tx_hash, event_idx).
+//
+// No target height is recorded. The walk simply runs to the tip, and the live
+// pass covers the tip forward, so their union has no gap at any interleaving.
+func (s *Syncer) backfillCoinTransfers(ctx context.Context) {
+	done, err := s.db.GetSyncState(store.CoinBackfillDoneKey(s.networkID))
+	if err != nil {
+		log.Printf("[%s] coin backfill: read done marker: %v", s.networkID, err)
+		return
+	}
+	if done == "1" {
+		return
+	}
+
+	// The tip is the finish line, read once per pass. A window walk needs an end
+	// to stop at, and deriving one from the rows would stop early on any stretch
+	// of chain where nobody moved a coin.
+	tip, err := s.client.LatestBlockHeight(ctx)
+	if err != nil {
+		if errors.Is(err, indexer.ErrNoTransferEvents) {
+			s.markCoinBackfillDone("indexer does not define TransferEvent")
+			return
+		}
+		log.Printf("[%s] coin backfill: tip: %v", s.networkID, err)
+		return
+	}
+
+	cursor := 0
+	if raw, err := s.db.GetSyncState(store.CoinBackfillCursorKey(s.networkID)); err == nil && raw != "" {
+		if h, convErr := strconv.Atoi(raw); convErr == nil {
+			cursor = h
+		}
+	}
+
+	windows, stored := 0, 0
+	for windows < coinBackfillWindowsPerPass {
+		if cursor >= tip {
+			s.markCoinBackfillDone(fmt.Sprintf("reached the tip at height %d", tip))
+			break
+		}
+		// Half-open, exclusive at both ends the way the indexer reads gt/lt, so
+		// `before` is one past the last height this window covers.
+		before := min(cursor+coinBackfillWindowBlocks+1, tip+1)
+		txs, truncated, err := s.client.CoinTransferWindow(ctx, cursor, before)
+		if err != nil {
+			if errors.Is(err, indexer.ErrNoTransferEvents) {
+				// Not a failure and not worth retrying every 30 seconds: this
+				// chain's indexer cannot answer the question at all. Marking it
+				// done stops the asking; a later indexer upgrade is a manual
+				// clear of the key, the same as any other backfill marker.
+				s.markCoinBackfillDone("indexer does not define TransferEvent")
+			} else {
+				// Everything else is transient, and the cursor is already
+				// stored: the next pass picks up exactly where this one stopped.
+				log.Printf("[%s] coin backfill: %v", s.networkID, err)
+			}
+			return
+		}
+
+		if len(txs) > 0 {
+			times := s.fetchBlockTimes(ctx, txs)
+			for _, tx := range txs {
+				stored += s.recordCoinTransfers(tx, times[tx.BlockHeight])
+			}
+		}
+
+		// A truncated window is not finished, so resume inside it rather than
+		// jumping to its end: skipping here would lose every leg above the cut
+		// permanently, because nothing ever revisits a height below the cursor.
+		next := before - 1
+		if truncated && len(txs) > 0 {
+			next = txs[len(txs)-1].BlockHeight
+		}
+		if next <= cursor {
+			// No forward progress is possible, which means one block holds more
+			// matching transactions than a query can return. Stopping beats
+			// looping on it forever.
+			log.Printf("[%s] coin backfill: stuck at height %d, stopping", s.networkID, cursor)
+			return
+		}
+		cursor = next
+		if err := s.db.SetSyncState(store.CoinBackfillCursorKey(s.networkID), strconv.Itoa(cursor)); err != nil {
+			log.Printf("[%s] coin backfill: save cursor: %v", s.networkID, err)
+			return
+		}
+		windows++
+	}
+	if stored > 0 {
+		log.Printf("[%s] coin backfill: %d legs over %d window(s), at height %d of %d",
+			s.networkID, stored, windows, cursor, tip)
+	}
+}
+
+func (s *Syncer) markCoinBackfillDone(reason string) {
+	if err := s.db.SetSyncState(store.CoinBackfillDoneKey(s.networkID), "1"); err != nil {
+		log.Printf("[%s] coin backfill: mark done: %v", s.networkID, err)
+		return
+	}
+	log.Printf("[%s] coin backfill: done, %s", s.networkID, reason)
 }

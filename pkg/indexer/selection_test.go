@@ -68,17 +68,26 @@ func TestSelectionSets_CarryTheOptionalFragmentsVerbatim(t *testing.T) {
 			if !strings.Contains(tc.fields, sessionFragments) {
 				t.Error("set does not carry the session fragments verbatim")
 			}
+
+			// The one that takes a whole chain down when it drifts: pearl's
+			// indexer does not define TransferEvent (probed 2026-09-23), so a
+			// set the trimmer cannot reach here 422s every transaction query
+			// on that network, not merely the view that wanted coins.
+			if !strings.Contains(tc.fields, transferFragments) {
+				t.Error("set does not carry the transfer fragments verbatim")
+			}
 		})
 	}
 }
 
-func TestTrimFields_StripsBothGroupsFromEverySet(t *testing.T) {
+func TestTrimFields_StripsEveryOptionalGroupFromEverySet(t *testing.T) {
 	for _, tc := range selectionSets() {
 		t.Run(tc.name, func(t *testing.T) {
-			// A chain that defines neither optional type
+			// A chain that defines none of the optional types
 			c := &Client{typeSupport: map[string]bool{
-				inertProbeType:   false,
-				sessionProbeType: false,
+				inertProbeType:    false,
+				sessionProbeType:  false,
+				transferProbeType: false,
 			}}
 
 			trimmed := c.trimFields(context.Background(), tc.fields)
@@ -90,8 +99,10 @@ func TestTrimFields_StripsBothGroupsFromEverySet(t *testing.T) {
 			for _, unwanted := range []string{
 				inertFragments,
 				sessionFragments,
+				transferFragments,
 				"MsgEnablePackage",
 				"MsgCreateSession",
+				"TransferEvent",
 			} {
 				if strings.Contains(trimmed, unwanted) {
 					t.Errorf("trimmed set still contains %q", unwanted)
