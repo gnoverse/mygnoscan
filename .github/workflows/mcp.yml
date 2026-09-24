@@ -1,0 +1,106 @@
+name: mcp
+
+# The MCP endpoint checked against the specification rather than against our
+# own reading of it.
+#
+# /mcp is hand-rolled over encoding/json: four methods and no SDK, which is the
+# right trade for a dependency list that is otherwise one SQLite driver, but it
+# means nothing else is keeping us honest about the wire format. The official
+# conformance suite is what does that, and it found a real gap the first time it
+# ran (no Host or Origin validation, which the specification makes a MUST).
+#
+# Failures that are deliberate live in mcp/conformance-baseline.yaml, with the
+# reason written down. The suite exits non-zero on an unexpected failure *and*
+# on a baseline entry that has started passing, so the file cannot quietly rot
+# into a mute button.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+concurrency:
+  group: mcp-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  # Pinned, because the suite gains scenarios: an unpinned run would turn a
+  # green pull request red for a reason that has nothing to do with its diff.
+  # Bump it deliberately, and re-baseline in the same commit.
+  CONFORMANCE_VERSION: 0.1.16
+  MCP_PORT: 8901
+
+jobs:
+  conformance:
+    name: mcp conformance
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Build
+        run: go build -o /tmp/mygnoscan .
+
+      # No sync and no reachable indexer on purpose. Every conformance scenario
+      # is about the wire format, not about chain data, so the run must not
+      # depend on somebody else's testnet being up.
+      #
+      # Both rate limits are off. With the defaults the suite trips them partway
+      # through and later scenarios fail with 429s that look like protocol bugs:
+      # measured 2026-09-25, dns-rebinding-protection and prompts-list both pass
+      # alone and both failed in a full run at 60/min. Turning them off is right
+      # here and nowhere else.
+      #
+      # -mcp-public-origin is what makes the DNS-rebinding scenario meaningful:
+      # without it the server can only compare a browser's Host and Origin
+      # against each other, which deflects a page but not a client that writes
+      # its own headers.
+      - name: Start the server
+        run: |
+          /tmp/mygnoscan \
+            -listen 127.0.0.1:${MCP_PORT} \
+            -db /tmp/mcp-conformance.db \
+            -network conformance \
+            -indexer http://127.0.0.1:1/graphql/query \
+            -sync=false \
+            -block-history-days -1 \
+            -mcp-rate 0 \
+            -mcp-concurrency 0 \
+            -mcp-public-origin http://127.0.0.1:${MCP_PORT} \
+            > /tmp/mygnoscan.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -sf -o /dev/null "http://127.0.0.1:${MCP_PORT}/api/version"; then
+              echo "up after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::the server did not come up"
+          cat /tmp/mygnoscan.log
+          exit 1
+
+      # Not piped into anything. The suite's exit code is the result, and a
+      # pipe would report the exit code of whatever it was piped into.
+      - name: Conformance suite
+        run: |
+          npx --yes "@modelcontextprotocol/conformance@${CONFORMANCE_VERSION}" server \
+            --url "http://127.0.0.1:${MCP_PORT}/mcp" \
+            --expected-failures mcp/conformance-baseline.yaml
+
+      - name: Server log on failure
+        if: failure()
+        run: cat /tmp/mygnoscan.log

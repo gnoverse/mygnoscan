@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 )
 
 // These fixtures are gov/dao's actual Render() output, captured live from
@@ -259,10 +258,7 @@ func TestResolveGnoUsername(t *testing.T) {
 }
 
 func TestResolveGnoUsernameCachedFallsBackOnFailure(t *testing.T) {
-	usernameCache.mu.Lock()
-	usernameCache.byName = map[string]string{}
-	usernameCache.fetched = map[string]time.Time{}
-	usernameCache.mu.Unlock()
+	usernameCache.reset()
 
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -293,9 +289,7 @@ func TestResolveGnoUsernameCachedFallsBackOnFailure(t *testing.T) {
 	// address should still come back rather than an empty string — a
 	// transient RPC hiccup should not un-link a name that resolved fine a
 	// moment ago.
-	usernameCache.mu.Lock()
-	usernameCache.fetched["aeddi"] = time.Now().Add(-2 * usernameCacheTTL)
-	usernameCache.mu.Unlock()
+	usernameCache.expireAll()
 
 	second := resolveGnoUsernameCached(context.Background(), srv.URL, "aeddi")
 	if second != first {

@@ -166,13 +166,11 @@ func decodeSessionRaw(msg indexer.TxMessage, g *sessionRawGrant) bool {
 // (MessageRoute is `vm` and `bank` only), so the only way to find them is to
 // walk every block and look, which is what this does, a bounded batch per pass.
 func (s *Syncer) backfillSessions(ctx context.Context) {
-	tip, err := s.getLastBlockHeight(ctx, "blocks")
-	if err == nil && tip != nil {
-		// Pin the boundary before the first batch, so the sweep has a fixed
-		// finish line rather than chasing the tip forever.
-		if perr := s.db.PinSessionBackfillStop(s.networkID, *tip); perr != nil {
-			log.Printf("[%s] session backfill pin: %v", s.networkID, perr)
-		}
+	// Pin the boundary before the first batch, so the sweep has a fixed finish
+	// line rather than chasing the tip forever. The store reads the tip itself;
+	// see PinSessionBackfillStop for why it is not passed in.
+	if err := s.db.PinSessionBackfillStop(s.networkID); err != nil {
+		log.Printf("[%s] session backfill pin: %v", s.networkID, err)
 	}
 
 	from, to, more, err := s.db.SessionBackfillRange(s.networkID, backfillTxBatch)

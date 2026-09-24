@@ -1,0 +1,60 @@
+# Scenarios the MCP conformance suite reports as failures, and why each one is
+# expected rather than a defect.
+#
+# Run by .github/workflows/mcp.yml against a locally started binary. The suite
+# exits non-zero on an unexpected failure *and* on a stale entry, so a scenario
+# listed here that starts passing breaks the build until it is removed. That
+# ratchet is the point: this file is a record of deliberate gaps, not a mute
+# button.
+#
+# Regenerate the evidence with:
+#   npx @modelcontextprotocol/conformance server --url http://127.0.0.1:8899/mcp \
+#     --scenario <name> --verbose
+#
+# Two groups, and nothing else belongs here.
+#
+# 1. Capabilities this server does not declare. Each answers -32601 "unknown
+#    method", which is the correct response, and the suite runs the whole spec
+#    surface regardless of what initialize advertised. A read-only explorer has
+#    no logging levels, no completions, no elicitation, no sampling, and its
+#    resources and prompts lists are empty by design.
+#
+# 2. Scenarios that require the server under test to implement fixture tools
+#    with fixed names (test_simple_text, test_error_handling and friends). The
+#    suite is built for SDKs and reference servers. Adding a test_simple_text
+#    tool to a production explorer so a conformance run goes green would be
+#    putting the test in the product.
+
+server:
+  # Group 1: undeclared capabilities, answered -32601.
+  - logging-set-level
+  - completion-complete
+  - elicitation-sep1034-defaults
+  - elicitation-sep1330-enums
+  - resources-read-text
+  - resources-read-binary
+  - resources-templates-read
+  - resources-subscribe
+  - resources-unsubscribe
+  - prompts-get-simple
+  - prompts-get-with-args
+  - prompts-get-embedded-resource
+  - prompts-get-with-image
+
+  # Group 3: stateless by design. The suite warns that no session id came
+  # back, and counts a warning as a failure. /mcp holds no per-client state on
+  # purpose, so there is no session id to hand out and no SSE stream to open a
+  # second one on.
+  - server-sse-multiple-streams
+
+  # Group 2: fixture tools we will not ship.
+  - tools-call-simple-text
+  - tools-call-error
+  - tools-call-image
+  - tools-call-audio
+  - tools-call-embedded-resource
+  - tools-call-mixed-content
+  - tools-call-with-logging
+  - tools-call-with-progress
+  - tools-call-sampling
+  - tools-call-elicitation

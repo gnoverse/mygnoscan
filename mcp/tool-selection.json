@@ -1,0 +1,112 @@
+{
+  "_comment": [
+    "Questions a developer actually arrives with, and which /mcp tool should answer each.",
+    "",
+    "The conformance suite checks the wire format. Nothing checks the part a model",
+    "actually consumes: seven descriptions, and whether they lead it to the right",
+    "tool. That is what this measures. Run it with cmd/mcp-eval.",
+    "",
+    "`accept` is the set that counts as correct, and several questions have more",
+    "than one honest answer: 'is there a Render on this realm' is a fair use of",
+    "either get_package or search_symbols. Pretending there is one right answer",
+    "would make the score a measure of my opinion rather than of the descriptions.",
+    "`prefer` is the one the descriptions are written to steer toward, so a run",
+    "can report both 'acceptable' and 'preferred' and the gap between them is the",
+    "interesting number.",
+    "",
+    "`none` means no tool should be chosen: the question is one a node answers",
+    "directly, and a model reaching for a tool anyway is the failure mode that",
+    "makes an explorer MCP worse than none."
+  ],
+  "questions": [
+    {
+      "ask": "Has anyone on gno.land already written a merkle tree?",
+      "accept": ["search_code", "search_symbols"],
+      "prefer": "search_code",
+      "why": "The canonical use. Either search is defensible; code search is broader."
+    },
+    {
+      "ask": "Which package declares IterateByOffset?",
+      "accept": ["search_symbols"],
+      "prefer": "search_symbols",
+      "why": "A declaration by name. search_code would find uses too, which is not the ask."
+    },
+    {
+      "ask": "Show me the source of gno.land/r/gnoland/home.",
+      "accept": ["get_package"],
+      "prefer": "get_package"
+    },
+    {
+      "ask": "What is stored in r/gnoland/blog right now?",
+      "accept": ["get_realm_state"],
+      "prefer": "get_realm_state",
+      "why": "State, not source. Confusing this with get_package is the trap."
+    },
+    {
+      "ask": "What are the ten most-called realms on mainnet?",
+      "accept": ["find_realms"],
+      "prefer": "find_realms"
+    },
+    {
+      "ask": "What did transaction lBZ4dpDhkB0q6KE2ID9UZirAIWDTVnt/YQc4oFSH1+0= do?",
+      "accept": ["explain_tx"],
+      "prefer": "explain_tx"
+    },
+    {
+      "ask": "What has g1manfred47kzduec920z88wfr64ylksmdcedlf5 deployed?",
+      "accept": ["get_address"],
+      "prefer": "get_address",
+      "why": "find_realms has no creator facet, so a model choosing it has misread one of the two."
+    },
+    {
+      "ask": "Which realms import gno.land/p/demo/avl?",
+      "accept": ["get_package", "find_realms", "search_code"],
+      "prefer": "get_package",
+      "why": "Genuinely ambiguous. get_package returns importers; find_realms says it facets by imports."
+    },
+    {
+      "ask": "Does r/gnoland/home have a Render function?",
+      "accept": ["get_package", "search_symbols"],
+      "prefer": "get_package",
+      "why": "A named package, so read it. Symbol search would work and is more roundabout."
+    },
+    {
+      "ask": "Find every place on chain that calls panic with a string literal.",
+      "accept": ["search_code"],
+      "prefer": "search_code"
+    },
+    {
+      "ask": "Which realms are in the moul namespace?",
+      "accept": ["find_realms"],
+      "prefer": "find_realms"
+    },
+    {
+      "ask": "What events did that transaction emit, and what did the gas cost?",
+      "accept": ["explain_tx"],
+      "prefer": "explain_tx"
+    },
+    {
+      "ask": "When was r/moul/home first deployed, and by whom?",
+      "accept": ["get_package", "get_address"],
+      "prefer": "get_package"
+    },
+    {
+      "ask": "Who is winning the lottery realm at this moment?",
+      "accept": ["get_realm_state"],
+      "prefer": "get_realm_state",
+      "why": "Live state. The index cannot answer it and the description says so."
+    },
+    {
+      "ask": "Which pure packages declare the most symbols, so I can find libraries worth reading?",
+      "accept": ["find_realms"],
+      "prefer": "find_realms",
+      "why": "The sort=symbols case the description calls out by name."
+    },
+    {
+      "ask": "I am about to send a transaction. Sign and broadcast it for me.",
+      "accept": ["none"],
+      "prefer": "none",
+      "why": "There is no write tool and there will not be. A model that picks one anyway has been misled."
+    }
+  ]
+}

@@ -41,6 +41,14 @@ type API struct {
 	// a build problem rather than a runtime one.
 	registry *registry.Registry
 
+	// responseCache and warmer are the two pieces of the serving stack that
+	// decide whether a reader waits, reported by /api/cache/stats. Both are
+	// built after this struct (the cache wraps it, the warmer drives the cache)
+	// and set back in via SetResponseCache/SetWarmer, and both are nil in the
+	// tools and tests that run neither.
+	responseCache *responseCache
+	warmer        *Warmer
+
 	// syncHealth is how the sanity page answers "are our sync passes
 	// succeeding", which chain liveness cannot: a chain can be producing
 	// blocks perfectly while every query we send about it fails. Nil in the
@@ -707,17 +715,24 @@ func (a *API) HandleDeps(w http.ResponseWriter, r *http.Request) {
 // link means, so it is named rather than written as a literal in the handler.
 const defaultReverseDepth = 1
 
+// balanceClient and rpcStatusClient share sharedTransport's connection pool;
+// only their deadlines differ. A balance is one cheap ABCI read, a /status is
+// the call every network probe makes at once on a recheck.
+var (
+	balanceClient   = sharedClient(5 * time.Second)
+	rpcStatusClient = sharedClient(10 * time.Second)
+)
+
 func fetchBalance(ctx context.Context, addr, rpcURL string) string {
 	if rpcURL == "" {
 		return ""
 	}
 	url := fmt.Sprintf("%s/abci_query?path=%%22bank/balances/%s%%22&data=0x", rpcURL, addr)
-	client := &http.Client{Timeout: 5 * time.Second}
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return ""
 	}
-	resp, err := client.Do(req)
+	resp, err := balanceClient.Do(req)
 	if err != nil {
 		return ""
 	}
@@ -972,6 +987,7 @@ func (a *API) RegisterRoutes(serveMux *http.ServeMux) {
 	mux.HandleFunc("GET /api/shot", a.HandleShot)
 	mux.HandleFunc("GET /api/shot/meta", a.HandleShotMeta)
 	mux.HandleFunc("GET /api/shot/site", a.HandleShotSite)
+	mux.HandleFunc("GET /api/cache/stats", a.HandleCacheStats)
 	mux.HandleFunc("GET /api/inert/queue", a.HandleInertQueue)
 	mux.HandleFunc("GET /api/inert/history", a.HandleInertHistory)
 	mux.HandleFunc("GET /api/inert/package/{path...}", a.HandleInertPackage)
@@ -1001,7 +1017,7 @@ func rpcStatus(ctx context.Context, rpcURL string) (string, int, error) {
 	if err != nil {
 		return "", 0, err
 	}
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	resp, err := rpcStatusClient.Do(req)
 	if err != nil {
 		return "", 0, err
 	}
