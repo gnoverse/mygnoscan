@@ -8188,9 +8188,21 @@ function appCard(card, network) {
       stats.append(' people · ');
       stats.appendChild(el('b', {}, fmtNum(card.calls_window || 0)));
       stats.append(' calls');
+      // What the figures cover. A folded card counts every realm it folded,
+      // the generations it replaced included, because they are one app and one
+      // app is one card: bubblerumble4 shipped with 348 calls beside the 4,160
+      // on the pools it replaced, and reporting only the new one said the game
+      // was three days old and barely played. Distinct callers are re-read
+      // rather than added, so the tooltip can say "people" and mean it.
+      const over = card.folded_realms
+        ? ' across ' + fmtNum(card.folded_realms) + ' realms: this one and the ones it '
+          + ((card.parts || []).length && (card.previous || []).length ? 'includes and replaces'
+            : (card.parts || []).length ? 'includes' : 'replaces')
+        : '';
       stats.appendChild(el('span', {
         className: 'dim',
-        title: fmtNum(card.calls) + ' calls all time, ' + fmtNum(card.callers) + ' distinct callers',
+        title: fmtNum(card.calls) + ' calls all time, ' + fmtNum(card.callers)
+          + ' distinct callers' + over,
       }, ' · ' + appsWindow()));
     } else {
       stats.appendChild(el('span', { className: 'dim' }, 'quiet this ' + appsWindow()));

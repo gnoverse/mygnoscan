@@ -1,7 +1,11 @@
 package httpapi
 
 import (
+	"fmt"
 	"testing"
+	"time"
+
+	"github.com/moul/mygnoscan/pkg/store"
 )
 
 // The layering is the design, so these are the tests that matter: which source
@@ -323,13 +327,12 @@ func TestCollapseFollowsTheChainToTheSurvivor(t *testing.T) {
 // and a governance staker, all busy, all current, all one DEX, and discovery
 // ranked six of them as peers under names taken from their paths.
 func TestFoldCoveredMakesOneCardOfOneApp(t *testing.T) {
-	api, _ := newTestAPI(t)
 	head := &AppCard{Path: "gno.land/r/swap/router", Name: "Swap", Covers: []string{"gno.land/r/swap/*"}}
 	part := &AppCard{Path: "gno.land/r/swap/staker", Name: "swap/staker"}
 	deep := &AppCard{Path: "gno.land/r/swap/gov/staker", Name: "gov/staker"}
 	other := &AppCard{Path: "gno.land/r/swapper/thing", Name: "not it"}
 
-	got := api.foldCovered([]*AppCard{head, part, deep, other}, "", "")
+	got := foldCovered([]*AppCard{head, part, deep, other})
 
 	if len(got) != 2 {
 		t.Fatalf("got %d cards, want the parts folded: %+v", len(got), got)
@@ -353,11 +356,10 @@ func TestFoldCoveredMakesOneCardOfOneApp(t *testing.T) {
 // A card that covers is never itself a part, or two apps claiming each other
 // would fold the page flat.
 func TestFoldCoveredNeverFoldsACoveringCard(t *testing.T) {
-	api, _ := newTestAPI(t)
 	a := &AppCard{Path: "gno.land/r/x/a", Name: "A", Covers: []string{"gno.land/r/x/*"}}
 	b := &AppCard{Path: "gno.land/r/x/b", Name: "B", Covers: []string{"gno.land/r/x/*"}}
 
-	got := api.foldCovered([]*AppCard{a, b}, "", "")
+	got := foldCovered([]*AppCard{a, b})
 
 	if len(got) != 2 {
 		t.Fatalf("got %d cards, want both: %+v", len(got), got)
@@ -380,5 +382,63 @@ func TestNormalizeAppName(t *testing.T) {
 	}
 	if normalizeAppName("GnoScan") == normalizeAppName("mygnoscan") {
 		t.Error("two different explorers were merged into one card")
+	}
+}
+
+// A superseded generation is the same app at an earlier date, so its traffic is
+// the app's traffic. bubblerumble4 shipped with 348 calls beside the 4,160 on
+// the pools it replaced, and a card reporting only the new realm said the game
+// was three days old and barely played.
+func TestRefoldStatsCountsEveryRealmTheCardFolded(t *testing.T) {
+	api, db := newTestAPI(t)
+	when := time.Now().UTC().Format("2006-01-02T15:04:05Z")
+	seed := func(path string, callers ...string) {
+		for i, c := range callers {
+			if err := db.InsertCall("alpha", fmt.Sprintf("tx-%s-%d", path, i), 100+i, 0, when,
+				c, path, "Bid", true); err != nil {
+				t.Fatalf("InsertCall: %v", err)
+			}
+		}
+	}
+	// Two generations and one shared player, which is the case that decides
+	// whether callers may be added: they may not.
+	seed("gno.land/r/x/game4", "g1alice", "g1bob")
+	seed("gno.land/r/x/game3", "g1alice", "g1carol", "g1dave")
+
+	newer := &AppCard{Path: "gno.land/r/x/game4", Name: "Game"}
+	newer.Previous = append(newer.Previous, AppCard{Path: "gno.land/r/x/game3", Name: "game3", Calls: 3})
+
+	api.refoldStats([]*AppCard{newer}, "alpha", "")
+
+	if newer.Calls != 5 {
+		t.Errorf("calls = %d, want 5: the app's, not the newest realm's", newer.Calls)
+	}
+	// Four distinct people, not 2+3: alice played both generations, and adding
+	// the counts would claim a reach the game does not have.
+	if newer.Callers != 4 {
+		t.Errorf("callers = %d, want 4 distinct across both generations", newer.Callers)
+	}
+	if newer.FoldedRealms != 2 {
+		t.Errorf("folded_realms = %d, want the card plus the generation it replaced", newer.FoldedRealms)
+	}
+	if newer.Score != 4*store.ScoreCallerWeight+5*store.ScoreCallWeight {
+		t.Errorf("score = %d, not recomputed from the folded figures", newer.Score)
+	}
+	// The generation it replaced keeps its own figures for the tooltip.
+	if newer.Previous[0].Calls != 3 {
+		t.Error("the folded generation lost its own numbers")
+	}
+}
+
+// A card that folded nothing is left alone: its figures are already its own,
+// and re-reading them would be a query per card for no answer.
+func TestRefoldStatsLeavesAnUnfoldedCardAlone(t *testing.T) {
+	api, _ := newTestAPI(t)
+	plain := &AppCard{Path: "gno.land/r/x/plain", Name: "Plain", Calls: 3, Score: 9}
+
+	api.refoldStats([]*AppCard{plain}, "alpha", "30d")
+
+	if plain.Calls != 3 || plain.Score != 9 || plain.FoldedRealms != 0 {
+		t.Errorf("an unfolded card was rewritten: %+v", plain)
 	}
 }
