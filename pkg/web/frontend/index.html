@@ -1844,6 +1844,20 @@ function allowPathEl(entry) {
   return span;
 }
 
+// fmtGnot renders a session spend figure without rounding it away.
+//
+// Not fmtBalanceStr, which floors to two decimal places of GNOT: a session's
+// spend runs from a few thousand ugnot upwards, so it renders "9350ugnot" as
+// "0 GNOT" and reports a key that has been spending as one that never has.
+// Three significant figures keep the small end readable and leave a whole
+// number of GNOT written as a whole number.
+function fmtGnot(coin) {
+  const m = String(coin || '').match(/^(\d+)ugnot$/);
+  if (!m) return fmtCoins(coin);
+  const gnot = Number(m[1]) / 1000000;
+  return (Number.isInteger(gnot) ? fmtNum(gnot) : Number(gnot.toPrecision(3))) + ' GNOT';
+}
+
 // fmtSpend says how much of a session's cap is gone, and over what window.
 //
 // The window is the half that gets dropped, and dropping it inverts the
@@ -1852,11 +1866,9 @@ function allowPathEl(entry) {
 // tighter grant look like the looser one.
 function fmtSpend(s) {
   if (!s.spend_limit) return 'unlimited';
-  const used = s.spend_used ? fmtBalanceStr(s.spend_used) : '0 GNOT';
-  const window = s.spend_period
-    ? 'per ' + fmtDuration(s.spend_period)
-    : 'lifetime';
-  return used + ' of ' + fmtBalanceStr(s.spend_limit) + ' (' + window + ')';
+  const used = s.spend_used ? fmtGnot(s.spend_used) : '0 GNOT';
+  const period = s.spend_period ? 'per ' + fmtDuration(s.spend_period) : 'lifetime';
+  return used + ' of ' + fmtGnot(s.spend_limit) + ' (' + period + ')';
 }
 
 // Which field names the signer, per message type.
@@ -12961,10 +12973,9 @@ function renderSessions(container, sessions) {
       // decode, and guessing either way would be worse than saying so.
       scopeTd.appendChild(el('span', { style: { color: 'var(--fg2)' } }, 'not stated'));
     } else {
-      for (const [i, entry] of paths.entries()) {
-        if (i) scopeTd.appendChild(el('div'));
-        scopeTd.appendChild(allowPathEl(entry));
-      }
+      // One line per entry rather than a comma list: bubblerumble's grant has
+      // five, and run together they read as one long path nobody parses.
+      for (const entry of paths) scopeTd.appendChild(el('div', {}, allowPathEl(entry)));
     }
 
     tbody.appendChild(el('tr', {},
