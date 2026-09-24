@@ -78,11 +78,13 @@ test('when it genuinely does not fit, the namespace elides and the name survives
 
 // The group order is the answer to a real complaint: typing "moul" on mainnet
 // led with the MOULTEST token, and no query on any chain could return a user at
-// all. Users, then assets, then realms, then packages, then symbols.
+// all. Users, then assets, then realms, then symbols, then packages.
 //
 // The fixture registers `hub` to HUB's own deployer, which is also the namespace
 // of a realm (r/hub/core) and a package (p/hub/toolkit), so one query exercises
-// three of the five groups at once and the order between them is observable.
+// four of the five groups at once and the order between them is observable.
+// Symbols are the fifth and need their own query, below: no declaration in the
+// fixture's library is named after a namespace.
 test('a user leads the results, and realms are their own group above packages', async ({ page }) => {
   const seen = watch(page);
   await page.goto('/');
@@ -125,4 +127,40 @@ test('a user result routes to the address page', async ({ page }) => {
   await expect(row).toBeVisible({ timeout: 15_000 });
   await row.click();
   await expect(page).toHaveURL(/\/address\/g1hubbot/);
+});
+
+// Symbols sit above packages, which is where they were before the user group
+// existed. The argument is only ever about these two: somebody typing a
+// CamelCase identifier wants the declaration, not the paths whose text happens
+// to contain it. It is a separate test because no one fixture query reaches all
+// five groups.
+//
+// `re` is the query that reaches four: it is inside `Registry`, `Reset` and
+// `Tree` in the library's source, inside `gno.land/r/fresh/*` and
+// `gno.land/p/fresh/kit`, and inside the `freshcoin` token key. It matches no
+// registered name, which is why `hub` is still the test above.
+test('symbols rank above packages, and below the realms and assets a name means', async ({ page }) => {
+  const seen = watch(page);
+  await page.goto('/');
+  const input = page.locator('#search-input');
+  await input.click();
+  await input.fill('re');
+  await expect(page.locator('#search-results .search-result').first()).toBeVisible({ timeout: 15_000 });
+
+  const labels = (await page.locator('#search-results .search-section-label').allInnerTexts())
+    .map(s => s.toLowerCase());
+  expect(labels).toContain('symbols');
+  expect(labels).toContain('packages');
+  // The pair this test exists for, asserted as neighbours in the rendered
+  // order rather than as two independent indexes.
+  expect(labels.indexOf('symbols')).toBeLessThan(labels.indexOf('packages'));
+  // And it does not climb past the two groups that answer "what can I open".
+  for (const above of ['grc20 assets', 'realms']) {
+    if (labels.includes(above)) {
+      expect(labels.indexOf(above)).toBeLessThan(labels.indexOf('symbols'));
+    }
+  }
+
+  expect(unexpected(seen.failedRequests)).toEqual([]);
+  expect(seen.jsErrors).toEqual([]);
 });

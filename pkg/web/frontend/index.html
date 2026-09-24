@@ -16671,7 +16671,7 @@ document.getElementById('search-input').addEventListener('input', function() {
 
       // The order of the groups below is deliberate, and is the answer to a
       // real complaint: typing "moul" used to lead with the MOULTEST token.
-      // Users, then assets, then realms, then packages, then symbols. It runs
+      // Users, then assets, then realms, then symbols, then packages. It runs
       // from "who" through "what can I hold" and "what can I open" down to
       // "what can I import", which is the order the questions are asked in.
 
@@ -16731,15 +16731,14 @@ document.getElementById('search-input').addEventListener('input', function() {
         results.appendChild(el('div', { className: 'search-section-label' }, 'realms'));
         for (const r of realms) results.appendChild(pkgRow(r));
       }
-      if (pkgs.length) {
-        results.appendChild(el('div', { className: 'search-section-label' }, 'packages'));
-        for (const r of pkgs) results.appendChild(pkgRow(r));
-      }
 
-      // Symbols last. A CamelCase identifier matches none of the four groups
-      // above, so that reader loses nothing by it sitting there, and it stops a
-      // query like "moul" answering with eight declarations before the
-      // namespace it named.
+      // Symbols above packages, which is where they were before the user group
+      // existed and where moul put them back. The argument is about these two
+      // specifically: somebody typing a CamelCase identifier wants the
+      // declaration, not the four paths whose text happens to contain it, and a
+      // package match for a symbol query is the weaker answer of the two. It
+      // does not reach past packages, because a realm and an asset are things a
+      // reader opens rather than imports.
       const syms = (symbols && symbols.symbols) || [];
       if (syms.length) {
         results.appendChild(el('div', { className: 'search-section-label' }, 'symbols'));
@@ -16755,6 +16754,11 @@ document.getElementById('search-input').addEventListener('input', function() {
                 + '?tab=docs&sym=' + encodeURIComponent(sym.name));
             }));
         }
+      }
+
+      if (pkgs.length) {
+        results.appendChild(el('div', { className: 'search-section-label' }, 'packages'));
+        for (const r of pkgs) results.appendChild(pkgRow(r));
       }
 
       if (!direct.length && !people.length && !tokens.length && !syms.length && !rows.length) {

@@ -235,15 +235,55 @@ func TestSessionGrantsScopeByNetwork(t *testing.T) {
 // cannot keep moving the finish line the forward fill is already covering.
 func TestSessionBackfillStopIsPinnedOnce(t *testing.T) {
 	db := NewTestDB(t)
-	if err := db.PinSessionBackfillStop("mainnet", 500); err != nil {
+	if err := db.UpsertBlock("mainnet", 500, "2026-09-20T00:00:00Z", 0, 0); err != nil {
+		t.Fatalf("seed block: %v", err)
+	}
+	if err := db.PinSessionBackfillStop("mainnet"); err != nil {
 		t.Fatalf("pin: %v", err)
 	}
-	if err := db.PinSessionBackfillStop("mainnet", 9000); err != nil {
+	// The chain moves on; the finish line must not.
+	if err := db.UpsertBlock("mainnet", 9000, "2026-09-21T00:00:00Z", 0, 0); err != nil {
+		t.Fatalf("seed later block: %v", err)
+	}
+	if err := db.PinSessionBackfillStop("mainnet"); err != nil {
 		t.Fatalf("pin again: %v", err)
 	}
 	_, _, stop := db.SessionBackfillProgress("mainnet")
 	if stop != 500 {
 		t.Errorf("stop = %d, want 500: a second pin must not move the finish line", stop)
+	}
+}
+
+// Pinning before any block is stored must leave the boundary unset, not zero:
+// a zero stop would declare the sweep finished before it had anything to sweep.
+func TestPinIsSkippedWithNoBlocks(t *testing.T) {
+	db := NewTestDB(t)
+	if err := db.PinSessionBackfillStop("mainnet"); err != nil {
+		t.Fatalf("pin with no blocks: %v", err)
+	}
+	done, _, stop := db.SessionBackfillProgress("mainnet")
+	if stop != 0 || done {
+		t.Errorf("stop=%d done=%v, want 0/false", stop, done)
+	}
+}
+
+// The regression this whole change is about: the tip is read from the blocks
+// table, whose height column is `height`. Reaching for LastBlockHeight, which
+// selects `block_height`, errors, and a caller that skips on error leaves the
+// boundary unset and the sweep never reporting complete.
+func TestPinReadsTheBlocksTip(t *testing.T) {
+	db := NewTestDB(t)
+	for _, h := range []int{100, 250, 175} {
+		if err := db.UpsertBlock("mainnet", h, "2026-09-20T00:00:00Z", 0, 0); err != nil {
+			t.Fatalf("seed block %d: %v", h, err)
+		}
+	}
+	if err := db.PinSessionBackfillStop("mainnet"); err != nil {
+		t.Fatalf("pin: %v", err)
+	}
+	_, _, stop := db.SessionBackfillProgress("mainnet")
+	if stop != 250 {
+		t.Errorf("stop = %d, want 250 (the highest stored block)", stop)
 	}
 }
 
@@ -253,7 +293,10 @@ func TestSessionBackfillProgressReportsIncomplete(t *testing.T) {
 	if done, _, _ := db.SessionBackfillProgress("mainnet"); done {
 		t.Error("an unrun sweep reports complete")
 	}
-	if err := db.PinSessionBackfillStop("mainnet", 1000); err != nil {
+	if err := db.UpsertBlock("mainnet", 1000, "2026-09-20T00:00:00Z", 0, 0); err != nil {
+		t.Fatalf("seed block: %v", err)
+	}
+	if err := db.PinSessionBackfillStop("mainnet"); err != nil {
 		t.Fatalf("pin: %v", err)
 	}
 	if err := db.SetSessionBackfillCursor("mainnet", 400); err != nil {
@@ -268,5 +311,37 @@ func TestSessionBackfillProgressReportsIncomplete(t *testing.T) {
 	}
 	if done, _, _ := db.SessionBackfillProgress("mainnet"); !done {
 		t.Error("cursor reaching stop should report complete")
+	}
+}
+
+// The empty index is the state every instance is in until the sweep finds its
+// first grant, so it is the one case the sessions page must survive. SUM over
+// zero rows is NULL rather than 0, which made this a 500 rather than a zeroed
+// summary: caught by a smoke test against a fresh database, not by any test
+// above, because all of them seed rows first.
+func TestSessionStatsOnAnEmptyIndex(t *testing.T) {
+	db := NewTestDB(t)
+
+	st, err := db.SessionStats("mainnet", testNow)
+	if err != nil {
+		t.Fatalf("SessionStats on an empty index: %v", err)
+	}
+	if st.Total != 0 || st.Live != 0 || st.Expired != 0 || st.Revoked != 0 || st.Masters != 0 {
+		t.Errorf("expected an all-zero summary, got %+v", st)
+	}
+
+	grants, total, err := db.SessionGrants("mainnet", 50, 0)
+	if err != nil {
+		t.Fatalf("SessionGrants on an empty index: %v", err)
+	}
+	if len(grants) != 0 || total != 0 {
+		t.Errorf("got %d grants / total %d, want 0/0", len(grants), total)
+	}
+	realms, err := db.SessionRealms("mainnet", 10)
+	if err != nil {
+		t.Fatalf("SessionRealms on an empty index: %v", err)
+	}
+	if len(realms) != 0 {
+		t.Errorf("got %d realms, want 0", len(realms))
 	}
 }

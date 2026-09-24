@@ -618,3 +618,149 @@ func TestMCPReachesATransactionWhoseHashHasASlash(t *testing.T) {
 		t.Error("the request fell through to the SPA, so the hash was not escaped")
 	}
 }
+
+// Host and Origin validation, which the specification makes a MUST against DNS
+// rebinding: a page on evil.com whose DNS answers 127.0.0.1 gets the browser to
+// POST at an MCP server on the reader's own machine.
+//
+// The two halves are deliberately different. Without a public origin
+// configured, all the server can do is check that a browser's own Host and
+// Origin agree, which is a real same-origin test because a browser sets both
+// itself and a page cannot lie about either. With one configured, both are
+// checked against a known answer, which is what also stops a client writing its
+// own headers. The conformance suite is that second case: it sends
+// Host: evil.example.com and Origin: http://evil.example.com together, and a
+// pair check alone would wave it through.
+func TestMCPOriginValidation(t *testing.T) {
+	tests := []struct {
+		name         string
+		publicOrigin string
+		allowed      []string
+		host         string
+		origin       string
+		wantStatus   int
+	}{
+		{
+			name: "a CLI client sends no Origin and is the normal case",
+			host: "mygnoscan.example", origin: "", wantStatus: 200,
+		},
+		{
+			name: "a browser on our own page",
+			host: "mygnoscan.example", origin: "https://mygnoscan.example", wantStatus: 200,
+		},
+		{
+			name: "a browser on somebody else's page",
+			host: "mygnoscan.example", origin: "https://evil.example.com", wantStatus: 403,
+		},
+		{
+			// A developer with the explorer on one local port and their own
+			// page on another. Loopback is not reachable from the internet.
+			name: "a page served from loopback",
+			host: "127.0.0.1:8888", origin: "http://localhost:3000", wantStatus: 200,
+		},
+		{
+			name:    "an origin the operator allowed",
+			allowed: []string{"https://partner.example"},
+			host:    "mygnoscan.example", origin: "https://partner.example", wantStatus: 200,
+		},
+		{
+			name:    "a wildcard is a choice an operator can make",
+			allowed: []string{"*"},
+			host:    "mygnoscan.example", origin: "https://anything.example", wantStatus: 200,
+		},
+		{
+			// The whole reason the flag exists. Forging both headers defeats
+			// the pair check, and this is what the conformance suite sends.
+			name: "forging Host to match a forged Origin, without a public origin",
+			host: "evil.example.com", origin: "http://evil.example.com", wantStatus: 200,
+		},
+		{
+			name:         "forging both, with a public origin configured",
+			publicOrigin: "http://127.0.0.1:8901",
+			host:         "evil.example.com", origin: "http://evil.example.com", wantStatus: 403,
+		},
+		{
+			name:         "a forged Host alone, with a public origin configured",
+			publicOrigin: "http://127.0.0.1:8901",
+			host:         "evil.example.com", origin: "", wantStatus: 403,
+		},
+		{
+			name:         "the real host, with a public origin configured",
+			publicOrigin: "http://127.0.0.1:8901",
+			host:         "127.0.0.1:8901", origin: "http://127.0.0.1:8901", wantStatus: 200,
+		},
+		{
+			// Loopback stays acceptable whatever the public origin says, so a
+			// health check against the listen address is not locked out of the
+			// endpoint it is checking.
+			name:         "loopback is accepted beside a configured public origin",
+			publicOrigin: "https://mygnoscan.example",
+			host:         "127.0.0.1:8888", origin: "", wantStatus: 200,
+		},
+		{
+			name:         "the public origin's own page, behind a proxy",
+			publicOrigin: "https://mygnoscan.example",
+			host:         "mygnoscan.example", origin: "https://mygnoscan.example", wantStatus: 200,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, _ := newTestMCP(t)
+			s.SetPublicOrigin(tt.publicOrigin)
+			s.SetAllowedOrigins(tt.allowed)
+
+			r := httptest.NewRequest(http.MethodPost, MCPPath,
+				strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+			r.Host = tt.host
+			if tt.origin != "" {
+				r.Header.Set("Origin", tt.origin)
+			}
+			w := httptest.NewRecorder()
+			s.Handle(w, r)
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d: %s", w.Code, tt.wantStatus, w.Body.String())
+			}
+		})
+	}
+}
+
+// A refused origin must not also spend the caller's rate budget: the page is
+// not the client, and charging the address would let any site burn a reader's
+// allowance on a server they never chose to talk to.
+func TestMCPRefusedOriginCostsNoRate(t *testing.T) {
+	api, _ := newTestAPI(t)
+	mux := http.NewServeMux()
+	api.RegisterRoutes(mux)
+	s := api.NewMCPServer(NewIPLimiter(2, 0), "test")
+	s.SetDispatcher(mux)
+
+	post := func(origin string) int {
+		r := httptest.NewRequest(http.MethodPost, MCPPath,
+			strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+		r.RemoteAddr = "203.0.113.11:4242"
+		r.Host = "mygnoscan.example"
+		if origin != "" {
+			r.Header.Set("Origin", origin)
+		}
+		w := httptest.NewRecorder()
+		s.Handle(w, r)
+		return w.Code
+	}
+
+	for i := 0; i < 5; i++ {
+		if got := post("https://evil.example.com"); got != http.StatusForbidden {
+			t.Fatalf("refusal %d: status = %d, want 403", i, got)
+		}
+	}
+	// The budget of two is untouched.
+	for i := 0; i < 2; i++ {
+		if got := post(""); got != http.StatusOK {
+			t.Fatalf("request %d: status = %d, want 200; the refusals were charged", i, got)
+		}
+	}
+	if got := post(""); got != http.StatusTooManyRequests {
+		t.Errorf("status = %d, want 429 once the budget is spent", got)
+	}
+}

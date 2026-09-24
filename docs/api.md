@@ -1274,7 +1274,15 @@ a path, a name or a creator never finds it.
 
 A second endpoint rather than a third group inside `/api/search`, for the same
 reason `/api/assets/search` is its own: that response is an array of packages
-and every caller treats it as one. The frontend asks for all three in parallel.
+and every caller treats it as one. The frontend asks for all four in parallel
+and draws them as **users, assets, realms, symbols, packages**.
+
+Symbols sit **above packages** and below the rest. The argument is only ever
+about that one pair: somebody typing a CamelCase identifier wants the
+declaration, not the paths whose text happens to contain it, and a package match
+for a symbol query is the weaker answer of the two. It does not reach past
+realms or assets, which answer "what can I open" rather than "what can I
+import". `e2e/tests/search.spec.js` pins the pair.
 
 ```json
 {
