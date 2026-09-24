@@ -373,7 +373,15 @@ func (d *DB) SessionBackfillRange(network string, batch int) (from, to int, more
 
 // PinSessionBackfillStop records the boundary the sweep runs up to, once.
 // A second call is a no-op, so the boundary cannot drift onto a later tip.
-func (d *DB) PinSessionBackfillStop(network string, height int) error {
+//
+// Reads the tip itself rather than accepting one from the caller. The obvious
+// helper to reach for, LastBlockHeight, selects `block_height`, and the blocks
+// table calls that column `height`, so asking it for the blocks tip returns an
+// error. A caller that then skips pinning on error, which is the natural way to
+// write it, leaves the boundary unset and the sweep unable to say it has
+// finished. That shipped once; taking the argument away is what stops it
+// shipping again.
+func (d *DB) PinSessionBackfillStop(network string) error {
 	existing, err := d.GetSyncState(sessionBackfillStopKey(network))
 	if err != nil {
 		return err
@@ -381,7 +389,21 @@ func (d *DB) PinSessionBackfillStop(network string, height int) error {
 	if existing != "" {
 		return nil
 	}
-	return d.SetSyncState(sessionBackfillStopKey(network), strconv.Itoa(height))
+
+	d.mu.RLock()
+	var tip *int
+	err = d.db.QueryRow(
+		`SELECT MAX(height) FROM blocks WHERE ` + d.networkFilter("network", network)).Scan(&tip)
+	d.mu.RUnlock()
+	if err != nil {
+		return err
+	}
+	if tip == nil {
+		// No blocks stored yet. Leaving it unpinned is right: pinning zero
+		// would declare the sweep finished before it had anything to sweep.
+		return nil
+	}
+	return d.SetSyncState(sessionBackfillStopKey(network), strconv.Itoa(*tip))
 }
 
 // SetSessionBackfillCursor records how far the sweep has got.
