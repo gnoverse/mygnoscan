@@ -6,8 +6,17 @@ on:
       - main
   pull_request:
 
+# A pull request wants one run per branch: a push supersedes the run before it
+# and cancelling the old one is the point. A push to main wants the opposite.
+# Sharing a per-ref group there meant every queued e2e was superseded by the
+# next merge and cancelled before it ever started: measured 2026-09-23, both
+# 5decf4c and 5b14b34 show `e2e: cancelled` beside `docker: success`. main's
+# e2e is the fallback whenever a PR merges on a base that has since moved, and
+# a backstop that never fires is worse than none, because it gets relied on.
+# One group per commit on main, so a run is only ever cancelled by a newer run
+# for the same commit, which cannot happen.
 concurrency:
-  group: e2e-${{ github.ref }}
+  group: e2e-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
