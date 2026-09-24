@@ -42,14 +42,22 @@
       "path": "gno.land/r/gnoswap/router",
       "name": "GnoSwap",
       "category": "defi",
-      "description": "Concentrated-liquidity AMM. The router is the entry point; positions, staker and gns are the rest of it.",
-      "url": "https://gnoswap.io"
+      "description": "Concentrated-liquidity AMM. The router is the entry point, and the pool, position, staker, gns, gnft and governance realms under gno.land/r/gnoswap are the rest of the same DEX.",
+      "url": "https://gnoswap.io",
+      "covers": [
+        "gno.land/r/gnoswap/*"
+      ],
+      "checked": "2026-09-24"
     },
     {
       "path": "gno.land/r/gov/dao",
       "name": "GovDAO",
       "category": "governance",
-      "description": "Chain governance: proposals, votes and the executors that change parameters under r/sys/params."
+      "description": "Chain governance: proposals, votes and the executors that change parameters under r/sys/params. The r/sys realms below are what it writes to, not separate apps.",
+      "covers": [
+        "gno.land/r/sys/*"
+      ],
+      "checked": "2026-09-24"
     },
     {
       "path": "gno.land/r/sys/params",
@@ -80,6 +88,17 @@
       "path": "gno.land/r/g1n4pl5uc4yt5r96m9w6fmdznx3x0jyg8l6arhmt/gnomi/padv3",
       "supersedes": [
         "gno.land/r/g1n4pl5uc4yt5r96m9w6fmdznx3x0jyg8l6arhmt/gnomi/padv2"
+      ]
+    },
+    {
+      "path": "gno.land/r/g1leu8d2vsplhehcfkjg50mwgdpxdkt8tztu95wr/bubblerumble4",
+      "name": "Bubble Rumble",
+      "category": "games",
+      "description": "Last bidder wins. A bid pushes the pool's clock out and splits itself: 55% into the pot, 30% credited at once to the bidders before you, 10% to whoever invited you, 5% to the pool's creator, settled by a flag war on the pool's last day. v4 adds the shot, extra money on a bid that can pop the bubble and take the pot on a commit-reveal draw.",
+      "url": "https://bubblerumble.net",
+      "checked": "2026-09-24",
+      "supersedes": [
+        "gno.land/r/g1leu8d2vsplhehcfkjg50mwgdpxdkt8tztu95wr/bubblerumble3"
       ]
     }
   ]

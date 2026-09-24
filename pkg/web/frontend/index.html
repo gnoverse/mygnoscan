@@ -8228,12 +8228,79 @@ function appCard(card, network) {
     body.appendChild(prev);
   }
 
+  // The realms this app is made of, folded in for the opposite reason: not
+  // "here is where it used to be" but "you are already looking at it". A DEX
+  // deployed as six realms is one product, and six cards told a visitor there
+  // were six of it. Each part keeps its own link, because they are real realms
+  // with real state and somebody came here looking for one of them.
+  if ((card.parts || []).length) {
+    const parts = el('div', { className: 'app-prev' });
+    parts.append('includes ');
+    card.parts.forEach((p, i) => {
+      if (i) parts.append(', ');
+      parts.appendChild(link(nameOrPath(p),
+        () => navigate('/realm/' + p.path.replace('gno.land/', '') + netSuffix())));
+    });
+    body.appendChild(parts);
+  }
+
   box.appendChild(body);
   return box;
 }
 
 function nameOrPath(card) {
   return card.name || String(card.path || '').replace(/^gno\.land\//, '');
+}
+
+// The facets, beyond the category.
+//
+// A category answers "what kind of thing is this" and there are four of them,
+// so it is the only filter this page had and it could not answer the questions
+// people actually arrive with. These are three different axes, and each is a
+// real question somebody asked out loud:
+//
+//	where it came from   is this a realm the chain proposed, or something a
+//	                     human vouched for, here or on the community list
+//	what it is           a realm, a website, or both
+//
+// Each is a URL parameter, so any combination of them is a link somebody can
+// send. `all` is not a value; it is the parameter being absent.
+const APP_FACETS = [
+  {
+    param: 'src', label: 'source',
+    // Ordered by how much a human had to do with it, least first, because that
+    // is the axis a reader is actually asking about.
+    options: [
+      { v: 'discovered', label: 'auto-discovered', why: 'the chain ranked it here by what people do with it; nobody wrote an entry',
+        match: (a) => a.via === 'discovered' && a.name_from !== 'curated' },
+      { v: 'curated', label: 'described here', why: 'somebody wrote this entry in mygnoscan’s own apps.json: a better name, a real sentence, the website',
+        match: (a) => a.name_from === 'curated' || a.description_from === 'curated' },
+      { v: 'community', label: 'on awesome-gno', why: 'named by the community list, which is the only source for the apps that are not realms',
+        match: (a) => a.via === 'community' || a.name_from === 'community' || a.description_from === 'community' },
+    ],
+  },
+  {
+    param: 'has', label: 'has',
+    options: [
+      { v: 'realm', label: 'a realm', why: 'deployed on a chain, so this explorer can show its source, its state and who calls it',
+        match: (a) => !!a.path },
+      { v: 'site', label: 'a website', why: 'a front end of its own, outside the chain',
+        match: (a) => !!a.website },
+      { v: 'both', label: 'both', why: 'a realm and a front end built on it',
+        match: (a) => !!a.path && !!a.website },
+    ],
+  },
+];
+
+// appsFacetFilter reads the URL and returns a predicate over cards.
+function appsFacetFilter() {
+  const picked = [];
+  APP_FACETS.forEach(f => {
+    const v = urlParam(f.param);
+    const opt = f.options.find(o => o.v === v);
+    if (opt) picked.push(opt.match);
+  });
+  return (a) => picked.every(m => m(a));
 }
 
 function renderApps(container, data) {
@@ -8270,10 +8337,42 @@ function renderApps(container, data) {
   }
   container.appendChild(bar);
 
-  const shown = category ? apps.filter(a => a.category === category) : apps;
+  // The facets get their own row. Each chip carries the count it would leave,
+  // computed against the other facets as they stand, so a chip that would empty
+  // the page says so before it is clicked rather than after.
+  const facetBar = el('div', { className: 'dash-bar' });
+  APP_FACETS.forEach(f => {
+    const current = urlParam(f.param) || '';
+    const values = [''].concat(f.options.map(o => o.v));
+    const strip = appsChips(values, current, (v) => {
+      urlSetParam(f.param, v || null);
+      renderApps(container, data);
+    }, (v) => {
+      if (!v) return 'all';
+      const opt = f.options.find(o => o.v === v);
+      const others = APP_FACETS.filter(o => o !== f).map(o => {
+        const picked = o.options.find(x => x.v === urlParam(o.param));
+        return picked ? picked.match : null;
+      }).filter(Boolean);
+      const n = apps.filter(a => (!category || a.category === category)
+        && opt.match(a) && others.every(m => m(a))).length;
+      return opt.label + ' ' + n;
+    });
+    // The reason each chip exists, on hover: these are provenance questions and
+    // a two-word chip cannot carry the answer.
+    Array.from(strip.children).forEach((b, i) => {
+      if (i > 0) b.title = f.options[i - 1].why;
+    });
+    facetBar.appendChild(el('span', { className: 'dash-grp' },
+      el('span', { className: 'label' }, f.label), strip));
+  });
+  container.appendChild(facetBar);
+
+  const keep = appsFacetFilter();
+  const shown = apps.filter(a => (!category || a.category === category) && keep(a));
   if (!shown.length) {
     container.appendChild(el('p', { className: 'dim', style: { fontSize: '12px' } },
-      network ? 'nothing here yet' : 'nothing in this category'));
+      network ? 'nothing matches these filters' : 'nothing in this category'));
   } else {
     const grid = el('div', { className: 'app-grid' });
     shown.forEach(c => grid.appendChild(appCard(c, network)));

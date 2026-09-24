@@ -60,6 +60,31 @@ that makes it worth using.
 One entry per pull request where you can. A name is a small change with a large
 blast radius: it appears on every page the address does.
 
+## One app is one card: `supersedes` and `covers`
+
+A chain shows an app as the several realms it was deployed as, and `/apps` ranks
+realms. Left alone it draws GnoSwap six times, once per realm, five of them
+named after their paths. Two fields fix that, and they are not the same claim:
+
+| field | means | the card says |
+|---|---|---|
+| `supersedes` | the same app, at an earlier date | `replaces …` |
+| `covers` | a live part of the app on this card | `includes …` |
+
+`covers` takes an exact path or a `/*` prefix (`gno.land/r/gnoswap/*`), and a
+prefix is the better default because a list of paths goes stale the next time
+somebody deploys, silently and in the direction of showing more cards. A card
+that covers is never itself covered, and the first claim on a path wins, so two
+overlapping prefixes are stable rather than dependent on map order.
+
+Both fold rather than drop: the parts and the older generations are carried on
+the card, each with its own link. They are real realms with real state, and
+somebody came here looking for one of them.
+
+A folded card's figures are re-read over the whole family rather than summed.
+Calls add up; callers do not, because the same people use the router and the
+staker, and adding those counts would print a reach the app does not have.
+
 ## Files
 
 | file | keyed by | used by |
