@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/moul/mygnoscan/pkg/indexer"
 	"github.com/moul/mygnoscan/pkg/store"
@@ -25,6 +26,16 @@ import (
 // so calls and bank_sends record the master and the session address appears
 // nowhere. The chain will not close the loop either: auth/accounts/<session>
 // returns null. Only the grant transaction ties key to account.
+
+// How hard this sweep leans on the indexer.
+//
+// Gentler than the shared backfillConcurrency: this runs on top of normal sync
+// catch-up, which is already the traffic the indexer rate-limits, and a 403
+// here costs a whole pass rather than one row.
+const (
+	sessionBackfillConcurrency = 4
+	sessionBackfillRetryPause  = 3 * time.Second
+)
 
 // sessionRawGrant is the JSON inside UnexpectedMessage.raw for
 // auth/create_session. Field names are the struct tags in
@@ -196,7 +207,7 @@ func (s *Syncer) backfillSessions(ctx context.Context) {
 	}
 	results := make([]blockTxs, len(heights))
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, backfillConcurrency)
+	sem := make(chan struct{}, sessionBackfillConcurrency)
 	for i, h := range heights {
 		wg.Add(1)
 		go func(i, h int) {
@@ -204,6 +215,24 @@ func (s *Syncer) backfillSessions(ctx context.Context) {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			txs, err := s.client.GetTransactionsByBlock(ctx, h)
+			if err != nil {
+				// One retry, after a pause. A rate-limited indexer answers 403
+				// and this sweep is exactly the traffic that earns one: it adds
+				// a burst of block queries on top of normal sync catch-up.
+				//
+				// Worth retrying rather than leaving to the next pass because
+				// the batch is scanned from the top down and stops at the first
+				// failure, so a single refused height at the top costs the
+				// whole pass. Observed on mainnet 2026-09-25, where height
+				// 306501 got a 403 and the cursor did not move at all.
+				select {
+				case <-ctx.Done():
+					results[i] = blockTxs{err: ctx.Err()}
+					return
+				case <-time.After(sessionBackfillRetryPause):
+				}
+				txs, err = s.client.GetTransactionsByBlock(ctx, h)
+			}
 			results[i] = blockTxs{txs: txs, err: err}
 		}(i, h)
 	}

@@ -73,3 +73,53 @@ func TestSignerAddressWithoutAKey(t *testing.T) {
 		}
 	}
 }
+
+// gno has two key types and they derive addresses differently. Using the
+// secp256k1 rule on an ed25519 key still produces a valid-looking g1 address,
+// just one that matches no account, so the only assertion worth making is
+// against what the chain itself reports.
+//
+// Both cases below are real grants read off a live chain on 2026-09-25:
+// the secp256k1 one from mainnet block 272956, the ed25519 one from pearl block
+// 3986, each checked against auth/accounts/<master>/sessions.
+func TestAddressFromPubKeyHandlesBothKeyTypes(t *testing.T) {
+	tests := []struct {
+		name string
+		pub  []byte
+		want string
+	}{
+		{
+			name: "secp256k1, 33 bytes, ripemd160(sha256())",
+			pub: []byte{2, 147, 52, 73, 49, 114, 213, 70, 63, 43, 241, 103, 46, 138, 61, 165,
+				120, 105, 81, 185, 211, 81, 9, 152, 248, 88, 199, 168, 87, 110, 43, 246, 208},
+			want: "g1rrtqvv2kcffw0nezkecxmxyqa6u9wy06e03fck",
+		},
+		{
+			// Dropped entirely until 2026-09-25: the syncer logged
+			// "undecodable session_key (32 bytes)" and moved on, so pearl's
+			// ed25519 sessions were missing from the index while every
+			// secp256k1 one was present.
+			name: "ed25519, 32 bytes, truncated sha256",
+			pub: []byte{225, 225, 113, 57, 134, 226, 81, 153, 172, 168, 221, 141, 234, 2, 146, 139,
+				183, 21, 105, 251, 157, 149, 168, 236, 146, 159, 32, 245, 122, 81, 128, 117},
+			want: "g1reezf9yfv3qutdn0cse0vtlaqg4tvrd6fys7qd",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := AddressFromPubKey(tt.pub); got != tt.want {
+				t.Errorf("AddressFromPubKey = %q, want %q (the address the chain reports)", got, tt.want)
+			}
+		})
+	}
+}
+
+// A length that is neither key type must derive nothing rather than a
+// plausible address keyed onto an account that does not exist.
+func TestAddressFromPubKeyRejectsOtherLengths(t *testing.T) {
+	for _, n := range []int{0, 20, 31, 34, 64} {
+		if got := AddressFromPubKey(make([]byte, n)); got != "" {
+			t.Errorf("AddressFromPubKey(%d bytes) = %q, want empty", n, got)
+		}
+	}
+}
