@@ -248,9 +248,101 @@ func TestSessionBackfillStopIsPinnedOnce(t *testing.T) {
 	if err := db.PinSessionBackfillStop("mainnet"); err != nil {
 		t.Fatalf("pin again: %v", err)
 	}
-	_, _, stop := db.SessionBackfillProgress("mainnet")
-	if stop != 500 {
-		t.Errorf("stop = %d, want 500: a second pin must not move the finish line", stop)
+	// Asserted through the batch, which is where the boundary is actually used.
+	// The sweep must still start just past 500, not chase the new tip at 9000.
+	_, to, more, err := db.SessionBackfillRange("mainnet", 100)
+	if err != nil || !more {
+		t.Fatalf("batch: more=%v err=%v", more, err)
+	}
+	if to != 501 {
+		t.Errorf("batch ends at %d, want 501: a second pin must not move the finish line", to)
+	}
+}
+
+// The sweep runs newest first, so the first batch it hands back must be the one
+// touching the boundary, not the one at genesis.
+//
+// This is the whole point of the direction: sessions landed on mainnet around
+// height 270,000 of 306,000, so an upward sweep walks about a day of blocks
+// that cannot hold a grant before reaching any. Measured on mainnet 2026-09-24.
+func TestSessionBackfillSweepsNewestFirst(t *testing.T) {
+	db := NewTestDB(t)
+	for _, h := range []int{1, 500, 1000} {
+		if err := db.UpsertBlock("mainnet", h, "2026-09-20T00:00:00Z", 0, 0); err != nil {
+			t.Fatalf("seed block %d: %v", h, err)
+		}
+	}
+	if err := db.PinSessionBackfillStop("mainnet"); err != nil {
+		t.Fatalf("pin: %v", err)
+	}
+
+	from, to, more, err := db.SessionBackfillRange("mainnet", 100)
+	if err != nil || !more {
+		t.Fatalf("first batch: more=%v err=%v", more, err)
+	}
+	// Boundary is 1000, so the first batch is [901, 1001): the newest blocks.
+	if to != 1001 || from != 901 {
+		t.Errorf("first batch = [%d, %d), want [901, 1001): the newest blocks first", from, to)
+	}
+
+	// After sweeping it, the next batch is the one below.
+	if err := db.SetSessionBackfillCursor("mainnet", from); err != nil {
+		t.Fatalf("cursor: %v", err)
+	}
+	from2, to2, more2, err := db.SessionBackfillRange("mainnet", 100)
+	if err != nil || !more2 {
+		t.Fatalf("second batch: more=%v err=%v", more2, err)
+	}
+	if to2 != 901 || from2 != 801 {
+		t.Errorf("second batch = [%d, %d), want [801, 901): counting down", from2, to2)
+	}
+}
+
+// The sweep ends when it reaches the oldest block stored, and does not run off
+// below it.
+func TestSessionBackfillStopsAtTheOldestBlock(t *testing.T) {
+	db := NewTestDB(t)
+	for _, h := range []int{950, 1000} {
+		if err := db.UpsertBlock("mainnet", h, "2026-09-20T00:00:00Z", 0, 0); err != nil {
+			t.Fatalf("seed block: %v", err)
+		}
+	}
+	if err := db.PinSessionBackfillStop("mainnet"); err != nil {
+		t.Fatalf("pin: %v", err)
+	}
+	from, _, more, err := db.SessionBackfillRange("mainnet", 500)
+	if err != nil || !more {
+		t.Fatalf("batch: more=%v err=%v", more, err)
+	}
+	if from != 950 {
+		t.Errorf("from = %d, want 950: the batch must clamp to the oldest stored block", from)
+	}
+	if err := db.SetSessionBackfillCursor("mainnet", from); err != nil {
+		t.Fatalf("cursor: %v", err)
+	}
+	if _, _, more, err = db.SessionBackfillRange("mainnet", 500); err != nil || more {
+		t.Errorf("after reaching the oldest block more=%v err=%v, want false/nil", more, err)
+	}
+	done, at, stop := db.SessionBackfillProgress("mainnet")
+	if !done {
+		t.Error("reaching the oldest block should report complete")
+	}
+	// Reported counting up, because a progress figure that fell as work
+	// advanced would read as going backwards.
+	if at != stop || stop != 51 {
+		t.Errorf("progress = %d/%d, want 51/51 (blocks 950..1000 inclusive)", at, stop)
+	}
+}
+
+// Nothing is swept before the boundary exists, or the sweep would count down
+// from zero.
+func TestSessionBackfillWaitsForThePin(t *testing.T) {
+	db := NewTestDB(t)
+	if err := db.UpsertBlock("mainnet", 1000, "2026-09-20T00:00:00Z", 0, 0); err != nil {
+		t.Fatalf("seed block: %v", err)
+	}
+	if _, _, more, err := db.SessionBackfillRange("mainnet", 100); err != nil || more {
+		t.Errorf("unpinned sweep offered work: more=%v err=%v", more, err)
 	}
 }
 
@@ -281,36 +373,55 @@ func TestPinReadsTheBlocksTip(t *testing.T) {
 	if err := db.PinSessionBackfillStop("mainnet"); err != nil {
 		t.Fatalf("pin: %v", err)
 	}
-	_, _, stop := db.SessionBackfillProgress("mainnet")
-	if stop != 250 {
-		t.Errorf("stop = %d, want 250 (the highest stored block)", stop)
+	// Asserted through the first batch rather than through the progress figure,
+	// which reports a span rather than a height: the sweep must start at the
+	// tip, so its first batch is the one ending just past 250.
+	_, to, more, err := db.SessionBackfillRange("mainnet", 100)
+	if err != nil || !more {
+		t.Fatalf("batch: more=%v err=%v", more, err)
+	}
+	if to != 251 {
+		t.Errorf("first batch ends at %d, want 251 (just past the highest stored block)", to)
 	}
 }
 
 func TestSessionBackfillProgressReportsIncomplete(t *testing.T) {
 	db := NewTestDB(t)
-	// Never run: not complete, and distinguishable from "swept and found none".
+	// Never pinned: not complete, and distinguishable from "swept and found none".
 	if done, _, _ := db.SessionBackfillProgress("mainnet"); done {
 		t.Error("an unrun sweep reports complete")
 	}
-	if err := db.UpsertBlock("mainnet", 1000, "2026-09-20T00:00:00Z", 0, 0); err != nil {
-		t.Fatalf("seed block: %v", err)
+	for _, h := range []int{1, 1000} {
+		if err := db.UpsertBlock("mainnet", h, "2026-09-20T00:00:00Z", 0, 0); err != nil {
+			t.Fatalf("seed block %d: %v", h, err)
+		}
 	}
 	if err := db.PinSessionBackfillStop("mainnet"); err != nil {
 		t.Fatalf("pin: %v", err)
 	}
-	if err := db.SetSessionBackfillCursor("mainnet", 400); err != nil {
-		t.Fatalf("cursor: %v", err)
-	}
+
+	// Pinned but nothing swept yet: zero of the whole span.
 	done, at, stop := db.SessionBackfillProgress("mainnet")
-	if done || at != 400 || stop != 1000 {
-		t.Errorf("progress = %v %d/%d, want false 400/1000", done, at, stop)
+	if done || at != 0 || stop != 1000 {
+		t.Errorf("fresh pin = %v %d/%d, want false 0/1000", done, at, stop)
 	}
-	if err := db.SetSessionBackfillCursor("mainnet", 1000); err != nil {
+
+	// The cursor counts DOWN from the boundary; progress is reported counting
+	// up, because a figure that fell as work advanced would read as going
+	// backwards.
+	if err := db.SetSessionBackfillCursor("mainnet", 600); err != nil {
 		t.Fatalf("cursor: %v", err)
 	}
-	if done, _, _ := db.SessionBackfillProgress("mainnet"); !done {
-		t.Error("cursor reaching stop should report complete")
+	done, at, stop = db.SessionBackfillProgress("mainnet")
+	if done || at != 401 || stop != 1000 {
+		t.Errorf("progress = %v %d/%d, want false 401/1000", done, at, stop)
+	}
+
+	if err := db.SetSessionBackfillCursor("mainnet", 1); err != nil {
+		t.Fatalf("cursor: %v", err)
+	}
+	if done, _, _ = db.SessionBackfillProgress("mainnet"); !done {
+		t.Error("a cursor at the oldest stored block should report complete")
 	}
 }
 
