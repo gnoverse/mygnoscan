@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"syscall"
@@ -73,6 +74,14 @@ func run() error {
 		// for a single-user local run and not for anything reachable.
 		mcpPerMinute = flag.Int("mcp-rate", httpapi.MCPDefaultPerMinute,
 			"MCP requests per minute per client address (0 = unlimited)")
+		pprofAddr = flag.String("pprof", "",
+			"serve net/http/pprof on this address; bind to localhost, the profiles are not public data")
+
+		warmEvery = flag.Duration("warm-interval", httpapi.WarmInterval,
+			"how long the cache warmer waits between passes; 0 disables it")
+		warmNetworks = flag.String("warm-networks", "",
+			"also warm these networks' govdao endpoints: a comma-separated list, or \"all\"")
+
 		mcpConcurrent = flag.Int("mcp-concurrency", httpapi.MCPDefaultConcurrent,
 			"MCP requests in flight per client address (0 = unlimited)")
 	)
@@ -366,10 +375,14 @@ func run() error {
 	// compressed and a hit does not re-gzip 3.5 MB of JSON per reader. The
 	// cache key carries the negotiated encoding to keep those two facts
 	// consistent (see cacheKey).
+	// WithServerTiming sits inside the cache on purpose: the number it reports
+	// is the cost of computing an answer, so its presence on a response means
+	// somebody paid for that answer and its absence means they did not.
 	cache := httpapi.NewResponseCache(httpapi.CacheTTL)
 	handler := httpapi.WithResponseCache(cache,
 		httpapi.RejectUnknownNetwork(cfg.Networks,
-			httpapi.WithCompression(mux)))
+			httpapi.WithServerTiming(
+				httpapi.WithCompression(mux))))
 
 	// A tool call goes through the cache, not straight at the mux: the reads
 	// behind get_realm_state and the analytics endpoints are the expensive
@@ -377,6 +390,40 @@ func run() error {
 	// once. Compression is skipped on the way in, since an internal request
 	// sends no Accept-Encoding, so nothing is gzipped only to be gunzipped.
 	mcp.SetDispatcher(httpapi.WithResponseCache(cache, mux))
+
+	// The warmer drives `handler`, the same stack a browser hits, so the
+	// entries it fills are keyed exactly as a reader's request would key them.
+	// Pointing it at `mux` instead would compute everything and cache nothing.
+	//
+	// Started after the background DB work settles, because a warmer racing a
+	// cold sync would cache the answers of a half-populated database for a
+	// whole TTL. See pkg/httpapi/warmer.go for why this exists at all.
+	var warmer *httpapi.Warmer
+	if *warmEvery > 0 {
+		warmer = httpapi.NewWarmer(handler, httpapi.ParseWarmNetworks(*warmNetworks, cfg.IDs()), *warmEvery)
+		api.SetWarmer(warmer)
+		go func() {
+			db.WaitBackground()
+			warmer.Run(ctx)
+		}()
+	} else {
+		log.Printf("warmer: disabled (-warm-interval=0); readers pay the cold cost")
+	}
+	api.SetResponseCache(cache)
+
+	// pprof on its own listener rather than on the public mux: a profile says
+	// more about this process than any page does, and the difference between
+	// "diagnosable" and "exposed" should be which interface it binds to, not a
+	// path nobody guesses.
+	if *pprofAddr != "" {
+		go func() {
+			log.Printf("pprof: listening on %s", *pprofAddr)
+			pprofSrv := &http.Server{Addr: *pprofAddr, Handler: http.DefaultServeMux}
+			if err := pprofSrv.ListenAndServe(); err != http.ErrServerClosed {
+				log.Printf("pprof: %v", err)
+			}
+		}()
+	}
 
 	srv := &http.Server{
 		Addr:         *listenAddr,
