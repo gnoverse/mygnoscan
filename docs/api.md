@@ -513,6 +513,14 @@ GRC20 positions come from the local transfer ledger, which only ever saw what th
 syncer walked: `token_ledger_from` is the oldest row on that chain, and a
 position is a floor rather than a figure whenever it postdates the deploy.
 
+The GRC20 transfer table pages on its own pair of names, `token_flows_limit`
+(default 500, capped at 5000, `0` for a totals-only read) and
+`token_flows_offset`, reported back as `token_flows_shown` / `token_flows_total`
+/ `token_flows_offset`. The total is a `COUNT(*)` over the whole set rather than
+a figure derived from the positions' own counts: a page exactly as long as the
+limit says nothing without it, and `r/gnoswap/pool` and `r/gnoswap/router` both
+sat on the old bare cap of 500 with nothing on the page able to say so.
+
 ### Realm usage
 
 `/api/realm/usage/{path...}` is what the realm page's calls tab is built on,
