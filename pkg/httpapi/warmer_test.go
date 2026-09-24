@@ -2,12 +2,15 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/moul/mygnoscan/pkg/syncer"
 )
 
 // The warmer fills the response cache under the keys a browser produces, so
@@ -113,5 +116,76 @@ func TestParseWarmNetworks(t *testing.T) {
 		if got := ParseWarmNetworks(tt.raw, configured); len(got) != tt.want {
 			t.Errorf("ParseWarmNetworks(%q) = %v, want %d entries", tt.raw, got, tt.want)
 		}
+	}
+}
+
+// The warmer does not start against a database that is still filling.
+//
+// Warming early caches the half-empty answer, and CacheStaleGrace then serves
+// it for up to fifteen minutes after it stopped being true. The browser suite
+// found this the first time the warmer ran: /api/accounts is first in the
+// sorted plan, it was warmed before the fixture wrote a row, and the activity
+// tab had nothing to rank.
+func TestWarmerWaitsForASyncPass(t *testing.T) {
+	health := syncer.NewRegistry()
+	wm := &Warmer{plan: []string{"/api/accounts"}, interval: time.Hour}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		wm.WaitReady(context.Background(), health, 10*time.Second)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("WaitReady returned before any sync pass succeeded")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	health.Record("mainnet", nil)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("WaitReady did not return after a successful sync pass")
+	}
+}
+
+// A failed pass is not readiness: the database is no more populated than it
+// was, and caching what it holds now would pin the failure's view of it.
+func TestWarmerDoesNotTreatAFailedPassAsReady(t *testing.T) {
+	health := syncer.NewRegistry()
+	health.Record("mainnet", errors.New("indexer unreachable"))
+	wm := &Warmer{plan: []string{"/api/accounts"}, interval: time.Hour}
+
+	start := time.Now()
+	wm.WaitReady(context.Background(), health, 300*time.Millisecond)
+	if elapsed := time.Since(start); elapsed < 300*time.Millisecond {
+		t.Errorf("WaitReady returned after %v, want it to wait out the grace", elapsed)
+	}
+}
+
+// A deployment with -sync=false never records a pass, and refusing to warm at
+// all there would be worse than warming against what the database holds.
+func TestWarmerWarmsAnywayAfterTheGrace(t *testing.T) {
+	health := syncer.NewRegistry()
+	wm := &Warmer{plan: []string{"/api/accounts"}, interval: time.Hour}
+
+	start := time.Now()
+	wm.WaitReady(context.Background(), health, 200*time.Millisecond)
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("WaitReady blocked for %v with sync off, want it to give up after the grace", elapsed)
+	}
+}
+
+// No health registry at all (the tools and tests that run no sync loop) is not
+// a reason to block forever.
+func TestWarmerWithoutHealthDoesNotBlock(t *testing.T) {
+	wm := &Warmer{plan: []string{"/api/accounts"}, interval: time.Hour}
+	done := make(chan struct{})
+	go func() { defer close(done); wm.WaitReady(context.Background(), nil, time.Hour) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("WaitReady blocked with a nil registry")
 	}
 }

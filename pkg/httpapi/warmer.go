@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/moul/mygnoscan/pkg/syncer"
 )
 
 // The cache warmer: keep the answers hot so no reader is ever the first one.
@@ -137,6 +139,52 @@ func NewWarmer(handler http.Handler, networks []string, interval time.Duration) 
 		interval = WarmInterval
 	}
 	return &Warmer{handler: handler, plan: WarmPlan(networks), interval: interval}
+}
+
+// WarmReadyGrace bounds how long WaitReady waits for a sync pass before
+// warming anyway. A deployment with -sync=false never records one, and refusing
+// to warm at all there would be worse than warming against whatever the
+// database already holds.
+const WarmReadyGrace = 2 * time.Minute
+
+// WaitReady blocks until this process is serving answers worth storing.
+//
+// Warming a database that is still filling caches the half-empty answer, and
+// CacheStaleGrace then serves it for up to fifteen minutes after it became
+// wrong. That is not hypothetical: it is what this warmer did to the browser
+// suite the first time it ran, where the binary starts against an empty file
+// and the fixture is written behind it. /api/accounts is first in the sorted
+// plan, so it was warmed empty while later targets were warmed after the rows
+// landed, and exactly one test failed.
+//
+// A completed sync pass is the cheapest honest signal that the database holds
+// what it is going to hold. It is not a guarantee, and it cannot be: nothing
+// the process can observe covers a database being written behind its back. A
+// harness that does that should pass -warm-interval=0 and say why.
+func (wm *Warmer) WaitReady(ctx context.Context, health *syncer.Registry, grace time.Duration) {
+	if health == nil {
+		return
+	}
+	if grace <= 0 {
+		grace = WarmReadyGrace
+	}
+	deadline := time.Now().Add(grace)
+	for {
+		for _, h := range health.Snapshot() {
+			if h.LastSuccessAt != "" {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			log.Printf("warmer: no sync pass in %s, warming against the database as it stands", grace)
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Second):
+		}
+	}
 }
 
 // Run warms continuously until ctx is done. Blocks; call it in a goroutine.

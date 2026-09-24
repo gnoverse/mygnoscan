@@ -404,6 +404,7 @@ func run() error {
 		api.SetWarmer(warmer)
 		go func() {
 			db.WaitBackground()
+			warmer.WaitReady(ctx, syncHealth, httpapi.WarmReadyGrace)
 			warmer.Run(ctx)
 		}()
 	} else {
