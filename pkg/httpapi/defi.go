@@ -49,8 +49,14 @@ const coinFlowLimit = 500
 // page with ?flows_offset.
 const coinFlowMaxLimit = 5000
 
-// tokenFlowLimit is the same bound for the GRC20 side.
-const tokenFlowLimit = 500
+// tokenFlowLimit is the default page of GRC20 transfers, and tokenFlowMaxLimit
+// the largest ?token_flows_limit may ask for. The same pair as the native side,
+// and the same reasoning: the default is what the endpoint always returned, the
+// ceiling keeps a whale from handing a browser an unbounded document.
+const (
+	tokenFlowLimit    = 500
+	tokenFlowMaxLimit = 5000
+)
 
 // counterpartyLimit bounds the collapsed view of the same legs.
 //
@@ -153,6 +159,13 @@ type realmDefiResponse struct {
 
 	Tokens     []tokenPositionRow    `json:"tokens"`
 	TokenFlows []store.TokenTransfer `json:"token_flows"`
+	// The same three the native side reports, and for the same reason: a page
+	// that is exactly as long as the limit is indistinguishable from a complete
+	// history without a total beside it. r/gnoswap/pool and r/gnoswap/router
+	// both sat on 500 with nothing saying so.
+	TokenFlowsShown  int `json:"token_flows_shown"`
+	TokenFlowsTotal  int `json:"token_flows_total"`
+	TokenFlowsOffset int `json:"token_flows_offset"`
 	// TokenLedgerFrom is the oldest transfer in the local GRC20 ledger on this
 	// chain. Anything a package received before it is invisible here, so a
 	// position is a floor rather than a figure whenever this is later than the
@@ -239,12 +252,30 @@ func (a *API) HandleRealmDefi(w http.ResponseWriter, r *http.Request) {
 		resp.Tokens = append(resp.Tokens, row)
 	}
 	if len(resp.Tokens) > 0 {
-		flows, err := a.db.HolderTransfers(network, addr, tokenFlowLimit)
+		q := r.URL.Query()
+		limit := intParam(q, "token_flows_limit", tokenFlowLimit, tokenFlowMaxLimit)
+		offset := intParam(q, "token_flows_offset", 0, 0)
+
+		total, err := a.db.HolderTransferCount(network, addr)
+		if err != nil {
+			jsonError(w, err.Error(), 500)
+			return
+		}
+		// Clamped before the query and reported back, so a caller paging by
+		// adding what it holds to what it was given terminates instead of
+		// walking forever asking for nothing.
+		if offset > total {
+			offset = total
+		}
+		flows, err := a.db.HolderTransfers(network, addr, limit, offset)
 		if err != nil {
 			jsonError(w, err.Error(), 500)
 			return
 		}
 		resp.TokenFlows = flows
+		resp.TokenFlowsTotal = total
+		resp.TokenFlowsOffset = offset
+		resp.TokenFlowsShown = len(flows)
 		resp.TokenLedgerFrom = a.db.EarliestTokenTransfer(network)
 	}
 

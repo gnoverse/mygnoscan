@@ -14378,7 +14378,20 @@ const DEFI_FLOWS_PAGE = 5000;
 
 function defiPath(path, offset) {
   return 'realm/defi/' + path.replace('gno.land/', '')
-    + '?flows_limit=' + DEFI_FLOWS_PAGE + (offset ? '&flows_offset=' + offset : '');
+    + '?flows_limit=' + DEFI_FLOWS_PAGE + (offset ? '&flows_offset=' + offset : '')
+    + '&token_flows_limit=' + DEFI_FLOWS_PAGE;
+}
+
+// defiTokenFlowsPath pages the GRC20 half alone.
+//
+// flows_limit=0 is the point: one request carries both halves, and paging the
+// token table through defiPath would re-send every native leg to append a few
+// token rows. Zero is a legitimate totals-only ask on that side, so the balance
+// figures still come back and only the table nobody asked for is left out.
+function defiTokenFlowsPath(path, offset) {
+  return 'realm/defi/' + path.replace('gno.land/', '')
+    + '?flows_limit=0&token_flows_limit=' + DEFI_FLOWS_PAGE
+    + (offset ? '&token_flows_offset=' + offset : '');
 }
 
 function renderRealmDefi(into, d, path) {
@@ -14478,7 +14491,7 @@ function renderRealmDefi(into, d, path) {
   const parties = defiCounterpartiesTableEl(d);
   if (parties) into.appendChild(parties);
 
-  if (tokens.length) into.appendChild(defiTokensEl(d, tokens));
+  if (tokens.length) into.appendChild(defiTokensEl(d, tokens, path));
 
   if (flows.length) {
     into.appendChild(el('div', { className: 'section-title' }, 'native transfers'));
@@ -14913,7 +14926,7 @@ function defiTokenCharts(section, d, tokens) {
 
 // defiTokensEl is the GRC20 half: what the contract holds in tokens, and the
 // caveat that makes those figures a floor rather than a count.
-function defiTokensEl(d, tokens) {
+function defiTokensEl(d, tokens, path) {
   const section = el('div');
   section.appendChild(el('div', { className: 'section-title' }, 'GRC20 positions'));
   defiTokenCharts(section, d, tokens);
@@ -14949,7 +14962,7 @@ function defiTokensEl(d, tokens) {
       + d.token_ledger_from.slice(0, 10)
       + '. Anything received before then is not in it, so these are floors rather than balances.'));
   }
-  defiTokenFlowsEl(section, d, tokens);
+  defiTokenFlowsEl(section, d, tokens, path);
   return section;
 }
 
@@ -14960,7 +14973,7 @@ function defiTokensEl(d, tokens) {
 // The positions table says what the realm holds and the charts say when it
 // moved; neither names a counterparty, which on a treasury is usually the
 // question after "is it growing".
-function defiTokenFlowsEl(section, d, tokens) {
+function defiTokenFlowsEl(section, d, tokens, path) {
   const flows = d.token_flows || [];
   if (!flows.length) return;
   // Fungibility is a property of the position, not of the leg, and it decides
@@ -14997,16 +15010,52 @@ function defiTokenFlowsEl(section, d, tokens) {
   }
   tbl.appendChild(body);
   section.appendChild(tbl);
-  // tokenFlowLimit in pkg/httpapi/defi.go caps this at one page across *every*
-  // token the realm holds, and there is no pager to walk past it. The positions
-  // above count the whole ledger, so the two disagreeing is the signal, and
-  // saying so is what stops a reader treating the newest page as the history.
-  const total = tokens.reduce((sum, t) => sum + (t.transfers || 0), 0);
+  // token_flows_total is the server's COUNT over the whole ledger, not a total
+  // derived here by summing the positions' own counts. The derived figure was
+  // close enough to look right and is not the same number: it counts what each
+  // position saw, and this counts rows, so the two part company on a leg that
+  // touches a token the positions table folded. A pager has to page against the
+  // count it is actually paging through.
+  const total = d.token_flows_total || 0;
   if (total > flows.length) {
-    section.appendChild(el('div', { className: 'detail-chart-note' },
-      'showing the ' + fmtNum(flows.length) + ' most recent of ' + fmtNum(total)
-      + ', across every token above. The positions and the curves are computed over all of them.'));
+    section.appendChild(defiTokenFlowsPagerEl(d, flows, total, path));
   }
+}
+
+// defiTokenFlowsPagerEl is the native pager's counterpart, and exists for the
+// same reason: the table used to stop at 500 with a sentence explaining that it
+// had and no way to see the rest. r/gnoswap/pool and r/gnoswap/router both sit
+// exactly on that cap, which is indistinguishable from a complete history
+// without a total beside it.
+function defiTokenFlowsPagerEl(d, flows, total, path) {
+  const remaining = total - flows.length;
+  const wrap = el('div', { className: 'detail-chart-note' });
+  wrap.appendChild(el('span', {},
+    'showing the ' + fmtNum(flows.length) + ' most recent of ' + fmtNum(total)
+    + ', across every token above. The positions and the curves are computed over all of them. '));
+  const btn = el('button', { className: 'pager-btn', style: { marginLeft: '8px' } },
+    'load ' + fmtNum(Math.min(remaining, DEFI_FLOWS_PAGE)) + ' older');
+  btn.onclick = async () => {
+    btn.disabled = true;
+    btn.textContent = 'loading\u2026';
+    let next;
+    try {
+      next = await api(defiTokenFlowsPath(path, flows.length));
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = 'could not load: ' + err.message;
+      return;
+    }
+    // Merged into the object the caller holds, so a third press continues from
+    // where the second stopped. Only the token half is replaced: the response
+    // that answered this asked for flows_limit=0, so its `flows` is empty by
+    // design and overwriting the native table with it would blank it.
+    d.token_flows = flows.concat(next.token_flows || []);
+    const into = clear('tab-defi');
+    renderRealmDefi(into, d, path);
+  };
+  wrap.appendChild(btn);
+  return wrap;
 }
 
 // signedUnitsEl is signedGnotEl for a token amount: coloured by direction, and

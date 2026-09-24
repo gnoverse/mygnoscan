@@ -140,3 +140,65 @@ test('a realm with no money says so instead of drawing an empty chart', async ({
   expect(seen.jsErrors).toEqual([]);
   expect(unexpected(seen.consoleErrors)).toEqual([]);
 });
+
+// The GRC20 half used to cap at 500 across every token a realm holds, with no
+// offset and no total, so a realm sitting exactly on the cap was
+// indistinguishable from one whose history is 500 long. Both r/gnoswap/pool and
+// r/gnoswap/router do sit on it.
+test('the GRC20 transfers page, and the response says how many there are', async ({ request }) => {
+  const whole = await request.get(`/api/realm/defi/${HUB_ROUTE}?network=alpha`);
+  expect(whole.status()).toBe(200);
+  const all = await whole.json();
+  const total = all.token_flows_total;
+  expect(total).toBeGreaterThan(1);
+  expect(all.token_flows).toHaveLength(total);
+  expect(all.token_flows_shown).toBe(total);
+  expect(all.token_flows_offset).toBe(0);
+
+  // One row at a time, walked to the end: every leg seen exactly once and in
+  // the same order the unpaged answer gave them.
+  const walked = [];
+  for (let offset = 0; offset < total; offset++) {
+    const res = await request.get(
+      `/api/realm/defi/${HUB_ROUTE}?network=alpha&token_flows_limit=1&token_flows_offset=${offset}`);
+    expect(res.status()).toBe(200);
+    const page = await res.json();
+    expect(page.token_flows_total).toBe(total);
+    expect(page.token_flows_offset).toBe(offset);
+    expect(page.token_flows_shown).toBe(1);
+    walked.push(page.token_flows[0].tx_hash);
+  }
+  expect(walked).toEqual(all.token_flows.map(f => f.tx_hash));
+
+  // Past the end is an empty page at a clamped offset, not an error and not a
+  // wrapped-around first page: a reader adding what it holds to what it was
+  // given has to be able to stop.
+  const over = await request.get(
+    `/api/realm/defi/${HUB_ROUTE}?network=alpha&token_flows_offset=9999`);
+  const tail = await over.json();
+  expect(tail.token_flows).toEqual([]);
+  expect(tail.token_flows_offset).toBe(total);
+});
+
+test('a truncated GRC20 table offers to load the rest', async ({ page }) => {
+  const seen = watch(page);
+  // The fixture cannot reach the 5,000-row page the frontend asks for, so the
+  // truncation is stubbed: what is under test is that the page believes
+  // token_flows_total over the length of the array it was handed.
+  await page.route('**/api/realm/defi/**', async route => {
+    const res = await route.fetch();
+    const body = await res.json();
+    body.token_flows_total = body.token_flows.length + 42;
+    await route.fulfill({ response: res, json: body });
+  });
+
+  await page.goto(`/realm/${HUB_ROUTE}?network=alpha&tab=defi`);
+  await settle(page);
+
+  const note = page.locator('#tab-defi .detail-chart-note', { hasText: 'across every token above' });
+  await expect(note).toContainText('most recent of');
+  await expect(note.locator('button.pager-btn')).toContainText('load 42 older');
+
+  expect(seen.jsErrors, 'uncaught exceptions').toEqual([]);
+  expect(unexpected(seen.consoleErrors), 'console errors').toEqual([]);
+});
