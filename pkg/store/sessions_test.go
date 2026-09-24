@@ -270,3 +270,35 @@ func TestSessionBackfillProgressReportsIncomplete(t *testing.T) {
 		t.Error("cursor reaching stop should report complete")
 	}
 }
+
+// The empty index is the state every instance is in until the sweep finds its
+// first grant, so it is the one case the sessions page must survive. SUM over
+// zero rows is NULL rather than 0, which made this a 500 rather than a zeroed
+// summary: caught by a smoke test against a fresh database, not by any test
+// above, because all of them seed rows first.
+func TestSessionStatsOnAnEmptyIndex(t *testing.T) {
+	db := NewTestDB(t)
+
+	st, err := db.SessionStats("mainnet", testNow)
+	if err != nil {
+		t.Fatalf("SessionStats on an empty index: %v", err)
+	}
+	if st.Total != 0 || st.Live != 0 || st.Expired != 0 || st.Revoked != 0 || st.Masters != 0 {
+		t.Errorf("expected an all-zero summary, got %+v", st)
+	}
+
+	grants, total, err := db.SessionGrants("mainnet", 50, 0)
+	if err != nil {
+		t.Fatalf("SessionGrants on an empty index: %v", err)
+	}
+	if len(grants) != 0 || total != 0 {
+		t.Errorf("got %d grants / total %d, want 0/0", len(grants), total)
+	}
+	realms, err := db.SessionRealms("mainnet", 10)
+	if err != nil {
+		t.Fatalf("SessionRealms on an empty index: %v", err)
+	}
+	if len(realms) != 0 {
+		t.Errorf("got %d realms, want 0", len(realms))
+	}
+}
