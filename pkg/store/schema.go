@@ -1058,6 +1058,29 @@ func initSchema(db *sql.DB) error {
 			PRIMARY KEY (network, tx_hash, event_idx)
 		) WITHOUT ROWID;
 
+		-- How many times a realm was opened on this explorer, per day.
+		--
+		-- The one table here that is not a fact about the chain. gno.land records
+		-- no reads: vm/qrender and vm/qeval leave nothing behind, so a realm that
+		-- thousands of people read and nobody writes to is indistinguishable from
+		-- a dead one in every other table in this file. This is the only read
+		-- signal anything here can honestly produce, and it is bounded to exactly
+		-- what it says: somebody opened this page, here.
+		--
+		-- Deliberately not a log. No address, no IP, no user agent, no session:
+		-- a count per realm per day, which answers "did anyone look" and cannot
+		-- be made to answer "who looked".
+		CREATE TABLE IF NOT EXISTS realm_views (
+			network TEXT NOT NULL,
+			path    TEXT NOT NULL,
+			day     TEXT NOT NULL,
+			views   INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (network, path, day)
+		) WITHOUT ROWID;
+
+		-- The ranking query: one network, a day range, summed per path.
+		CREATE INDEX IF NOT EXISTS idx_realm_views_day ON realm_views(network, day);
+
 		-- Both directions, because a leg is read from whichever end asked. Height
 		-- descending is in the index rather than left to a sort: the page reads
 		-- newest-first and the table is the largest one a busy realm has.

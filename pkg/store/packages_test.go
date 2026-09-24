@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 )
@@ -52,5 +53,61 @@ func TestGetPackageDetailToleratesMissingBlockTime(t *testing.T) {
 	}
 	if detail.BlockTime != "" {
 		t.Errorf("BlockTime = %q, want empty", detail.BlockTime)
+	}
+}
+
+// The detail endpoint and the listing must answer the same numbers for the same
+// realm, because they serialize the same struct.
+//
+// They did not. GetPackageDetail read nine columns into a PackageDetail whose
+// embedded PackageInfo carries nineteen, so `calls`, `unique_users`,
+// `importers`, `gas_used` and the rest went out as zeros on
+// GET /api/realm/{path} for every realm on the chain, r/gnoswap/router at 8,285
+// calls included. A zero reads as an answer rather than as an absence: it cost
+// a wrong conclusion about which realms had ever been called (2026-09-24).
+func TestPackageDetailAgreesWithTheListing(t *testing.T) {
+	db := NewTestDB(t)
+	const path = "gno.land/r/x/busy"
+	when := "2026-09-20T10:00:00Z"
+	if err := db.UpsertPackage("alpha", path, "busy", "g1creator", "tx-deploy", 100, when, true, 2); err != nil {
+		t.Fatalf("UpsertPackage: %v", err)
+	}
+	for i, caller := range []string{"g1one", "g1two", "g1one"} {
+		if err := db.InsertCall("alpha", fmt.Sprintf("tx-%d", i), 101+i, 0, when, caller, path, "Post", true); err != nil {
+			t.Fatalf("InsertCall: %v", err)
+		}
+	}
+
+	listed, err := db.ListPackages("alpha", PackageFilter{}, 10, 0, "")
+	if err != nil {
+		t.Fatalf("ListPackages: %v", err)
+	}
+	var want PackageInfo
+	for _, p := range listed {
+		if p.Path == path {
+			want = p
+		}
+	}
+	if want.Calls != 3 || want.UniqueUsers != 2 {
+		t.Fatalf("the listing itself is wrong: %+v", want)
+	}
+
+	got, err := db.GetPackageDetail("alpha", path)
+	if err != nil {
+		t.Fatalf("GetPackageDetail: %v", err)
+	}
+	if got.Calls != want.Calls {
+		t.Errorf("detail calls = %d, listing says %d", got.Calls, want.Calls)
+	}
+	if got.UniqueUsers != want.UniqueUsers {
+		t.Errorf("detail unique_users = %d, listing says %d", got.UniqueUsers, want.UniqueUsers)
+	}
+	if got.LastCallHeight != want.LastCallHeight {
+		t.Errorf("detail last_call_height = %d, listing says %d", got.LastCallHeight, want.LastCallHeight)
+	}
+	// call_count predates this and stays: it is in the public API.
+	if got.CallCount != got.Calls {
+		t.Errorf("call_count = %d and calls = %d, which is two answers to one question",
+			got.CallCount, got.Calls)
 	}
 }

@@ -314,6 +314,10 @@ func (d *DB) SessionRealms(network string, limit int) ([]SessionRealm, error) {
 // 2026-09-23) that a chain can legitimately have none, and "no rows yet" would
 // then be indistinguishable from "the forward fill has not started", making the
 // walk re-run over the whole chain on every pass forever.
+//
+// The cursor holds the lowest height swept so far, because this sweep runs
+// NEWEST FIRST. See SessionBackfillRange for why that direction and not the
+// other one.
 func sessionBackfillCursorKey(network string) string { return "session_backfill_cursor:" + network }
 func sessionBackfillStopKey(network string) string   { return "session_backfill_stop:" + network }
 
@@ -321,8 +325,23 @@ func sessionBackfillStopKey(network string) string   { return "session_backfill_
 // session messages, and whether any work is left.
 //
 // The forward fill rides the sync walk and so only ever covers blocks synced
-// after this feature shipped. Everything below that boundary has to be swept
-// once, oldest first, bounded per pass, resumable across restarts.
+// after this feature shipped. Everything below that boundary has to be swept,
+// bounded per pass, resumable across restarts.
+//
+// **Newest first**, which is the opposite of how the token ledger sweeps, and
+// deliberately so. Sessions are a recent chain feature: gnolang/gno#5307 landed
+// on mainnet on 2026-09-17, around height 270,000 of 306,000, so the oldest
+// 88% of the chain provably contains no grant at all. Sweeping upward from
+// genesis spends roughly 25 hours at 100 blocks per 30s pass walking blocks
+// that cannot contain a hit before reaching the ones that do, and the page
+// shows an empty index that whole time. Measured on mainnet 2026-09-24, which
+// is what prompted the direction change.
+//
+// Downward also degrades better in general: recent grants are the ones anyone
+// is looking for, so an interrupted sweep has found the useful half.
+//
+// The cursor is therefore the LOWEST height swept so far, and it counts down
+// from the pinned boundary toward the oldest stored block.
 func (d *DB) SessionBackfillRange(network string, batch int) (from, to int, more bool, err error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -336,37 +355,30 @@ func (d *DB) SessionBackfillRange(network string, batch int) (from, to int, more
 		return 0, 0, false, nil // nothing stored yet, nothing to sweep
 	}
 
-	// The boundary is pinned the first time this runs, to the tip as it stood
-	// then. After that it never moves, so the sweep terminates instead of
-	// chasing a tip the forward fill is already covering.
+	// The boundary is pinned the first time the sweep runs, to the tip as it
+	// stood then, and never moves. Without it there is nothing to count down
+	// from.
 	stop := 0
 	if v, serr := d.getSyncStateLocked(sessionBackfillStopKey(network)); serr == nil && v != "" {
 		stop, _ = strconv.Atoi(v)
 	}
 	if stop == 0 {
-		var tip *int
-		if err = d.db.QueryRow(
-			`SELECT MAX(height) FROM blocks WHERE ` + d.networkFilter("network", network)).Scan(&tip); err != nil {
-			return 0, 0, false, err
-		}
-		if tip == nil {
-			return 0, 0, false, nil
-		}
-		stop = *tip + 1
+		return 0, 0, false, nil // not pinned yet; PinSessionBackfillStop runs first
 	}
 
-	from = *lowest
+	// to is exclusive and starts at the boundary, walking down.
+	to = stop + 1
 	if cur, cerr := d.getSyncStateLocked(sessionBackfillCursorKey(network)); cerr == nil && cur != "" {
-		if n, perr := strconv.Atoi(cur); perr == nil && n > from {
-			from = n
+		if n, perr := strconv.Atoi(cur); perr == nil && n < to {
+			to = n
 		}
 	}
-	if from >= stop {
-		return 0, 0, false, nil // the sweep has met the forward fill
+	if to <= *lowest {
+		return 0, 0, false, nil // the sweep has reached the oldest block stored
 	}
-	to = from + batch
-	if to > stop {
-		to = stop
+	from = to - batch
+	if from < *lowest {
+		from = *lowest
 	}
 	return from, to, true, nil
 }
@@ -413,17 +425,40 @@ func (d *DB) SetSessionBackfillCursor(network string, height int) error {
 
 // SessionBackfillProgress reports the sweep's position for the page footer, so
 // a partial index says so instead of presenting itself as the whole chain.
+//
+// `at` and `stop` are reported as blocks *swept* out of blocks *to sweep*,
+// counting up, even though the walk itself counts down. The reader wants a
+// progress figure, not the cursor's raw value, and a number that fell as work
+// progressed would read as going backwards.
 func (d *DB) SessionBackfillProgress(network string) (done bool, at, stop int) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
+
+	var boundary, cursor int
 	if v, err := d.getSyncStateLocked(sessionBackfillStopKey(network)); err == nil && v != "" {
-		stop, _ = strconv.Atoi(v)
+		boundary, _ = strconv.Atoi(v)
 	}
+	if boundary == 0 {
+		return false, 0, 0 // never pinned, which is not the same as done
+	}
+	var lowest *int
+	if err := d.db.QueryRow(
+		`SELECT MIN(height) FROM blocks WHERE ` + d.networkFilter("network", network)).Scan(&lowest); err != nil || lowest == nil {
+		return false, 0, 0
+	}
+
+	stop = boundary - *lowest + 1 // the whole span to sweep
+	cursor = boundary + 1         // nothing swept yet
 	if v, err := d.getSyncStateLocked(sessionBackfillCursorKey(network)); err == nil && v != "" {
-		at, _ = strconv.Atoi(v)
+		if n, perr := strconv.Atoi(v); perr == nil {
+			cursor = n
+		}
 	}
-	// stop == 0 means the sweep has never run, which is not the same as done.
-	return stop > 0 && at >= stop, at, stop
+	at = boundary - cursor + 1
+	if at < 0 {
+		at = 0
+	}
+	return cursor <= *lowest, at, stop
 }
 
 // sortSessionRealms orders by masters, then grants, then path.

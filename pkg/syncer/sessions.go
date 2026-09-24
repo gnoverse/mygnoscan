@@ -165,6 +165,10 @@ func decodeSessionRaw(msg indexer.TxMessage, g *sessionRawGrant) bool {
 // below it unindexed. auth messages cannot be filtered for in GraphQL at all
 // (MessageRoute is `vm` and `bank` only), so the only way to find them is to
 // walk every block and look, which is what this does, a bounded batch per pass.
+//
+// Unlike backfillTokenTransfers it walks NEWEST FIRST. Sessions landed on
+// mainnet around height 270,000 of 306,000, so sweeping up from genesis spends
+// about a day on blocks that cannot hold a grant. See SessionBackfillRange.
 func (s *Syncer) backfillSessions(ctx context.Context) {
 	// Pin the boundary before the first batch, so the sweep has a fixed finish
 	// line rather than chasing the tip forever. The store reads the tip itself;
@@ -207,15 +211,20 @@ func (s *Syncer) backfillSessions(ctx context.Context) {
 
 	// The cursor only advances over heights that answered, so an unhealthy
 	// indexer costs a retry rather than a permanent hole nothing comes back for.
+	// Walking newest first, so the cursor records the LOWEST height that
+	// answered and the scan runs down from the top of the batch. A gap stops
+	// the cursor above it, so the missing heights are retried rather than
+	// skipped past.
 	var answered []indexer.Transaction
-	done := from
-	for i, r := range results {
+	done := to
+	for i := len(results) - 1; i >= 0; i-- {
+		r := results[i]
 		if r.err != nil {
 			log.Printf("[%s] session backfill at %d: %v", s.networkID, heights[i], r.err)
 			break
 		}
 		answered = append(answered, r.txs...)
-		done = heights[i] + 1
+		done = heights[i]
 	}
 	stored := 0
 	if len(answered) > 0 {
@@ -227,7 +236,7 @@ func (s *Syncer) backfillSessions(ctx context.Context) {
 			stored += s.recordSessions(tx, times[tx.BlockHeight])
 		}
 	}
-	if done == from {
+	if done == to {
 		return // nothing answered; leave the cursor alone and retry next pass
 	}
 	if err := s.db.SetSessionBackfillCursor(s.networkID, done); err != nil {
@@ -236,6 +245,6 @@ func (s *Syncer) backfillSessions(ctx context.Context) {
 	}
 	if stored > 0 {
 		log.Printf("[%s] session backfill: %d..%d, %d grant(s) recovered",
-			s.networkID, from, done-1, stored)
+			s.networkID, done, to-1, stored)
 	}
 }
