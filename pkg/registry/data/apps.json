@@ -106,6 +106,13 @@
       "name": "moul's blog",
       "category": "content",
       "description": "A personal blog that is a realm: one author, and posts that live in chain storage rather than in the code. Writing one is a single Set transaction, so publishing never redeploys and never costs a deploy."
+    },
+    {
+      "path": "gno.land/r/moul/home",
+      "name": "moul's home",
+      "category": "content",
+      "description": "A profile page that is a realm. gnoweb builds /u/moul by calling Render on the realm at exactly r/<username>/home and embedding the result, so the page is whatever this realm decides to print.",
+      "url": "https://gno.land/u/moul"
     }
   ]
 }
