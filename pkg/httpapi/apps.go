@@ -97,6 +97,10 @@ type AppCard struct {
 	// already are.
 	Covers []string  `json:"covers,omitempty"`
 	Parts  []AppCard `json:"parts,omitempty"`
+	// FoldedRealms is how many realms the figures above cover, this one
+	// included. Present only when something was folded, so a reader can tell a
+	// card's own traffic from an app's.
+	FoldedRealms int `json:"folded_realms,omitempty"`
 	// CommunityURL is where awesome-gno points, when that is not the website:
 	// usually the source repository.
 	CommunityURL string `json:"community_url,omitempty"`
@@ -359,7 +363,8 @@ func (a *API) HandleAppsHub(w http.ResponseWriter, r *http.Request) {
 	// Fold before ranking, not after. A folded card is ranked on what the whole
 	// app does, and GnoSwap's router alone is a fraction of that.
 	kept := collapseSuperseded(order)
-	kept = a.foldCovered(kept, network, window)
+	kept = foldCovered(kept)
+	a.refoldStats(kept, network, window)
 	rankApps(kept)
 	resp.Apps = materialize(kept)
 	resp.Categories = categoriesOf(resp.Apps)
@@ -553,7 +558,7 @@ func collapseSuperseded(order []*AppCard) []*AppCard {
 // The parts are carried, not dropped, and each keeps its own link: they are
 // real realms with real state, and somebody who came looking for
 // r/gnoswap/position has to be able to reach it.
-func (a *API) foldCovered(cards []*AppCard, network, window string) []*AppCard {
+func foldCovered(cards []*AppCard) []*AppCard {
 	parentOf := map[string]*AppCard{}
 	for _, parent := range cards {
 		for _, pat := range parent.Covers {
@@ -587,24 +592,47 @@ func (a *API) foldCovered(cards []*AppCard, network, window string) []*AppCard {
 		}
 		out = append(out, c)
 	}
-	// The figures have to be re-read, not summed. Calls add up; callers do not,
-	// because the same people use the router and the staker. AppFamilyStat
-	// answers both exactly, and the score is recomputed from it with the same
-	// weights discovery uses, so a folded card is ranked against the others on
-	// the same scale.
+	return out
+}
+
+// refoldStats re-reads a folded card's figures over every realm it folded.
+//
+// One app is one card, so it has to be one set of numbers too, and a card that
+// folded five realms and then reported the traffic of one of them was quietly
+// the wrong claim in both directions: it under-counts the app, and it ranks it
+// below realms it dwarfs.
+//
+// Both kinds of fold count, and the second one is the correction. A part is
+// obviously the same app. A *superseded generation* is the same app as well,
+// just at an earlier date: bubblerumble4 shipped this morning with 348 calls
+// while the pools on bubblerumble3 carry 4,160, and a card that showed only the
+// new one said the game was three days old and barely played.
+//
+// Re-read rather than summed, because calls add up and callers do not: the same
+// people use GnoSwap's router and its staker, and they follow a game from one
+// generation to the next. AppFamilyStat answers both exactly with one query,
+// and the score is recomputed from the window with discovery's own weights, so
+// a folded card is ranked against the others on the same scale.
+func (a *API) refoldStats(cards []*AppCard, network, window string) {
 	if network == "" {
-		return out
+		return
 	}
-	for _, c := range out {
-		if len(c.Parts) == 0 {
+	for _, c := range cards {
+		if len(c.Parts) == 0 && len(c.Previous) == 0 {
 			continue
 		}
-		paths := make([]string, 0, len(c.Parts)+1)
-		if c.Path != "" {
-			paths = append(paths, c.Path)
+		paths := make([]string, 0, len(c.Parts)+len(c.Previous)+1)
+		add := func(p string) {
+			if p != "" {
+				paths = append(paths, p)
+			}
 		}
+		add(c.Path)
 		for _, p := range c.Parts {
-			paths = append(paths, p.Path)
+			add(p.Path)
+		}
+		for _, p := range c.Previous {
+			add(p.Path)
 		}
 		fam, err := a.db.AppFamilyStat(network, paths, usageWindowCutoff(window))
 		if err != nil {
@@ -616,8 +644,10 @@ func (a *API) foldCovered(cards []*AppCard, network, window string) []*AppCard {
 			c.LastCall = fam.LastCall
 		}
 		c.Score = fam.CallersWindow*store.ScoreCallerWeight + fam.CallsWindow*store.ScoreCallWeight
+		// What the figures now cover, so the card can say so rather than
+		// letting a reader assume one realm.
+		c.FoldedRealms = len(paths)
 	}
-	return out
 }
 
 // coversPath reports whether a `covers` pattern names this path. A trailing

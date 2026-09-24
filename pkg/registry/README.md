@@ -81,9 +81,14 @@ Both fold rather than drop: the parts and the older generations are carried on
 the card, each with its own link. They are real realms with real state, and
 somebody came here looking for one of them.
 
-A folded card's figures are re-read over the whole family rather than summed.
-Calls add up; callers do not, because the same people use the router and the
-staker, and adding those counts would print a reach the app does not have.
+A folded card's figures cover every realm it folded, **both kinds**, and are
+re-read over that set rather than summed. Calls add up; distinct callers do not,
+because the same people use the router and the staker and they follow a game
+from one generation to the next, so adding those counts would print a reach the
+app does not have. An older generation counts for the same reason a part does:
+it is the same app, at an earlier date. bubblerumble4 shipped with 348 calls
+beside the 4,160 on the pools it replaced, and a card showing only the new realm
+said the game was three days old and barely played.
 
 ## Files
 
