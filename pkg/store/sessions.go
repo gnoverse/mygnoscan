@@ -209,10 +209,14 @@ func (d *DB) SessionStats(network string, now int64) (SessionStats, error) {
 
 	var st SessionStats
 	var first, latest sql.NullInt64
+	// COALESCE on the two SUMs, not decoration: SUM over zero rows is NULL, not
+	// 0, so without it this fails to scan on a chain that has no grants yet.
+	// That is the state every instance is in until the sweep finds its first
+	// one, which made it the one case the page had to survive.
 	err := d.db.QueryRow(`
 		SELECT COUNT(*),
-		       SUM(CASE WHEN revoked_height IS NOT NULL THEN 1 ELSE 0 END),
-		       SUM(CASE WHEN revoked_height IS NULL AND expires_at != 0 AND expires_at <= ? THEN 1 ELSE 0 END),
+		       COALESCE(SUM(CASE WHEN revoked_height IS NOT NULL THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(CASE WHEN revoked_height IS NULL AND expires_at != 0 AND expires_at <= ? THEN 1 ELSE 0 END), 0),
 		       COUNT(DISTINCT master),
 		       MIN(granted_height), MAX(granted_height)
 		  FROM session_grants
