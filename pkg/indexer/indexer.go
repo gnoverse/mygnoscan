@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -136,8 +137,31 @@ func newIndexerClient(urls []string, timeout time.Duration) *Client {
 	}
 	return &Client{
 		urls:   normalized,
-		client: &http.Client{Timeout: timeout},
+		client: &http.Client{Timeout: timeout, Transport: indexerTransport},
 	}
+}
+
+// indexerTransport is the connection pool every indexer client shares.
+//
+// Leaving Transport nil falls back to http.DefaultTransport, whose
+// MaxIdleConnsPerHost is 2. GetBlocksByHeights fans out ten concurrent
+// requests at one endpoint, so eight of every ten were opening a fresh TCP
+// and TLS connection to a host the process had just finished talking to.
+// The pool is shared across the serve and sync clients on purpose: they hold
+// separate timeouts and separate circuit breakers, which is what has to stay
+// separate, but they talk to the same hosts.
+var indexerTransport = &http.Transport{
+	Proxy: http.ProxyFromEnvironment,
+	DialContext: (&net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}).DialContext,
+	MaxIdleConns:          100,
+	MaxIdleConnsPerHost:   16,
+	IdleConnTimeout:       90 * time.Second,
+	TLSHandshakeTimeout:   10 * time.Second,
+	ExpectContinueTimeout: 1 * time.Second,
+	ForceAttemptHTTP2:     true,
 }
 
 // activeURL is the endpoint currently in use, or "" when none was configured.

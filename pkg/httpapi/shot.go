@@ -79,7 +79,7 @@ func (a *API) gnowebURLFor(network, pkgPath string) (string, error) {
 // shotClient is separate from the indexer clients: a capture that is still
 // being taken answers in milliseconds with a placeholder, so a long timeout
 // here would only ever be waiting on something that has already gone wrong.
-var shotClient = &http.Client{Timeout: 15 * time.Second}
+var shotClient = sharedClient(15 * time.Second)
 
 // HandleShot proxies one image.
 //
