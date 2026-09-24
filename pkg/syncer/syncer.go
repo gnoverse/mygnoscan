@@ -65,6 +65,7 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 	s.backfillTransactions(ctx)
 	s.backfillValopers(ctx)
 	s.backfillTokenTransfers(ctx)
+	s.backfillSessions(ctx)
 	s.syncUsers(ctx)
 	if err := s.syncPackages(ctx); err != nil {
 		return fmt.Errorf("sync packages: %w", err)
@@ -1074,6 +1075,7 @@ func (s *Syncer) syncCalls(ctx context.Context) error {
 	}
 
 	callCount, sendCount, storageCount, transferCount, coinCount := 0, 0, 0, 0, 0
+	sessionCount := 0
 	err = walkTransactions(ctx, lastHeight, s.client.GetTransactionsFromHeight, func(txs []indexer.Transaction) {
 		times := s.fetchBlockTimes(ctx, txs)
 		for _, tx := range txs {
@@ -1082,6 +1084,7 @@ func (s *Syncer) syncCalls(ctx context.Context) error {
 			storageCount += s.recordStorageEvents(tx, bt)
 			transferCount += s.recordTokenTransfers(tx, bt)
 			coinCount += s.recordCoinTransfers(tx, bt)
+			sessionCount += s.recordSessions(tx, bt)
 			for i, msg := range tx.Messages {
 				switch msg.Value.Typename {
 				case "MsgCall":
@@ -1119,8 +1122,8 @@ func (s *Syncer) syncCalls(ctx context.Context) error {
 			}
 		}
 	})
-	log.Printf("[%s] synced %d calls, %d sends, %d storage events, %d token transfers, %d coin transfers",
-		s.networkID, callCount, sendCount, storageCount, transferCount, coinCount)
+	log.Printf("[%s] synced %d calls, %d sends, %d storage events, %d token transfers, %d coin transfers, %d session grants",
+		s.networkID, callCount, sendCount, storageCount, transferCount, coinCount, sessionCount)
 	if err != nil {
 		return fmt.Errorf("walk transactions: %w", err)
 	}

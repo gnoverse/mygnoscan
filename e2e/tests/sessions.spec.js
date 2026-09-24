@@ -87,6 +87,29 @@ test('an account page names the keys that sign for it', async ({ page }) => {
   expect(unexpected(seen.failedRequests)).toEqual([]);
 });
 
+// An empty spend_limit is the most restrictive grant there is, not the least.
+// The chain rejects any non-zero amount from a session that has none
+// (tm2/pkg/sdk/auth/spend.go), so such a key can only make calls that move
+// nothing. This rendered as "unlimited" until 2026-09-25, which told a reader
+// the opposite of the truth about the most locked-down key on the page.
+test('a key with no spend limit reads as unable to spend, not unlimited', async ({ page }) => {
+  await stubSessions(page, {
+    address: MASTER, supported: true,
+    sessions: [{
+      address: 'g1nospend00000000000000000000000000000', master: MASTER,
+      allow_paths: ['vm/exec:gno.land/r/moul/faucet'],
+      spend_limit: '', spend_period: 0, expires_at: 4102444800, sequence: 7,
+    }],
+  });
+
+  await page.goto('/address/' + MASTER);
+  await settle(page);
+
+  const row = page.locator('#address-detail-content tr', { hasText: 'g1nospend' });
+  await expect(row).toContainText('cannot spend');
+  await expect(row, 'an empty limit is not permission to spend freely').not.toContainText('unlimited');
+});
+
 test('an expired key does not read like a live one', async ({ page }) => {
   await stubSessions(page, SESSIONS);
 

@@ -55,10 +55,24 @@ func SignerAddress(contentRaw string) string {
 	}
 	pub := rest[j+1 : j+1+compressedPubKeyLen]
 
-	// ripemd160(sha256(pubkey)), the classic Bitcoin-style derivation gno
-	// inherits — *not* the truncated sha256 some other Tendermint key types
-	// use. Getting this wrong yields a valid-looking bech32 address that
-	// matches nothing, which reads as "every transaction is session-signed".
+	return AddressFromPubKey(pub)
+}
+
+// AddressFromPubKey derives a g1 address from a 33-byte compressed secp256k1
+// public key.
+//
+// ripemd160(sha256(pubkey)), the classic Bitcoin-style derivation gno
+// inherits, *not* the truncated sha256 some other Tendermint key types use.
+// Getting this wrong yields a valid-looking bech32 address that matches
+// nothing, which reads as "every transaction is session-signed".
+//
+// Exported because the session grant in an auth/create_session carries its key
+// as those raw bytes and not as an address, so the syncer has to do this same
+// derivation to know which account a grant is even about.
+func AddressFromPubKey(pub []byte) string {
+	if len(pub) != compressedPubKeyLen {
+		return ""
+	}
 	sum := sha256.Sum256(pub)
 	h := ripemd160.New()
 	h.Write(sum[:])

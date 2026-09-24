@@ -933,6 +933,7 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
         <a onclick="navigate('/defi')" id="nav-defi" title="the money side: accounts, coins, grc20"><svg aria-hidden="true"><use href="#i-coin"/></svg><span class="rail-label">defi</span></a>
         <div class="nav-kids">
           <a onclick="navigate('/accounts')" id="nav-accounts" title="accounts, balances and the rich list"><span class="rail-label">accounts</span></a>
+          <a onclick="navigate('/sessions')" id="nav-sessions" title="delegated signing keys: who lets what sign for them"><span class="rail-label">sessions</span></a>
           <a onclick="navigate('/coins')" id="nav-coins" title="native ugnot: transfers, volume, who moves it"><span class="rail-label">coins</span></a>
           <a onclick="navigate('/grc20')" id="nav-grc20" title="grc20 assets, supply and holders"><span class="rail-label">grc20</span></a>
         </div>
@@ -1122,6 +1123,7 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
   <div class="view" id="view-govdao-detail"><main><div id="govdao-detail-content"></div></main></div>
   <div class="view" id="view-analytics"><main><div id="analytics-content"></div></main></div>
   <div class="view" id="view-params"><main><div id="params-content"></div></main></div>
+  <div class="view" id="view-sessions"><main><div id="sessions-content"></div></main></div>
   <div class="view" id="view-glossary"><main><div id="glossary-content"></div></main></div>
   <div class="view" id="view-sanity"><main><div id="sanity-content"></div></main></div>
   <div class="view" id="view-contracts"><main><div id="contracts-content"></div></main></div>
@@ -1865,7 +1867,13 @@ function fmtGnot(coin) {
 // stricter than a rolling one, so rendering both as a bare "x of y" makes the
 // tighter grant look like the looser one.
 function fmtSpend(s) {
-  if (!s.spend_limit) return 'unlimited';
+  // An empty spend_limit is the MOST restrictive value, not the least: the
+  // chain rejects any non-zero amount from a session that has none
+  // (tm2/pkg/sdk/auth/spend.go, "no spend limit set, no spending allowed"), so
+  // such a key can only make calls that move nothing and cost it no gas.
+  // Rendering it "unlimited" said the exact opposite about the most locked-down
+  // grant there is.
+  if (!s.spend_limit) return 'cannot spend';
   const used = s.spend_used ? fmtGnot(s.spend_used) : '0 GNOT';
   const period = s.spend_period ? 'per ' + fmtDuration(s.spend_period) : 'lifetime';
   return used + ' of ' + fmtGnot(s.spend_limit) + ' (' + period + ')';
@@ -3300,6 +3308,7 @@ const NAV = [
   ] },
   { id: 'defi', label: 'defi', path: '/defi', own: 'overview', children: [
     { id: 'accounts', label: 'accounts', path: '/accounts' },
+    { id: 'sessions', label: 'sessions', path: '/sessions' },
     { id: 'coins', label: 'coins', path: '/coins' },
     { id: 'grc20', label: 'grc20', path: '/grc20' },
   ] },
@@ -3444,6 +3453,7 @@ function route() {
   else if (path === '/txs') { view = 'txs'; }
   else if (path === '/blocks') { view = 'blocks'; }
   else if (path === '/accounts') { view = 'accounts'; }
+  else if (path === '/sessions') { view = 'sessions'; }
   else if (path === '/defi') { view = 'defi'; }
   else if (path === '/coins') { view = 'coins'; }
   // /tokens was this page's URL when it was one page carrying both the bank
@@ -3547,6 +3557,7 @@ function route() {
     case 'analytics': loadAnalytics(); break;
     case 'dashboards': loadDashboards(); break;
     case 'params': loadParams(); break;
+    case 'sessions': loadSessions(); break;
     case 'glossary': loadGlossary(); break;
     case 'sanity': loadSanity(); break;
     case 'block-detail': loadBlockDetail(data); break;
@@ -7705,6 +7716,171 @@ function renderGlossary(container, data) {
   container.appendChild(el('div', { className: 'section-sub', style: { marginTop: '10px' } },
     fmtNum((data.order || []).length) + ' terms \u00b7 version ' + (data.version || 'unknown') +
     '. adding one is a change to that file and a CI run, never a code change.'));
+}
+
+// --- Sessions: delegation, chain-wide ---------------------------------------
+//
+// The account page answers "what has THIS account delegated", live from RPC.
+// This answers the question RPC cannot be asked at all: who on this chain
+// delegates, to what, and what has been handed back.
+//
+// It reads the index rather than the chain, because there is no enumerate-all
+// endpoint: auth/accounts/<addr>/sessions needs an address you already have.
+// The index is replayed from the auth/* transactions, which is also the only
+// place a revoked or expired grant still exists, since the chain forgets both.
+
+// sessionState classifies a grant the way the page counts it.
+//
+// Revocation beats expiry when both apply. A key that was revoked and would
+// also have lapsed by now was stopped by somebody, and calling that "expired"
+// hides the act. The server's SessionStats partitions the same way, so the
+// badges and the counters cannot disagree.
+function sessionState(g) {
+  if (g.revoked_height != null) return 'revoked';
+  if (g.expires_at && g.expires_at * 1000 <= Date.now()) return 'expired';
+  return 'live';
+}
+
+const SESSION_STATE_BADGE = { live: 'ok', expired: 'session', revoked: 'reject' };
+
+function sessionStateEl(g) {
+  const st = sessionState(g);
+  return badge(SESSION_STATE_BADGE[st], st);
+}
+
+function renderSessionsPage(container, data) {
+  const stats = data.stats || {};
+  const grants = data.grants || [];
+  const realms = data.realms || [];
+
+  container.appendChild(el('h2', { style: { margin: '16px 0 4px' } }, 'Sessions'));
+  container.appendChild(el('div', { className: 'section-sub' },
+    'a session is a delegated signing key. it signs for a master account, and the master stays the caller of ' +
+    'every message it sends, so none of these appear as senders anywhere else in this explorer.'));
+
+  const bar = el('div', { className: 'stats-bar' });
+  const stat = (label, value, title) => {
+    const d = el('div', { className: 'stat' },
+      el('span', { className: 'label' }, label), el('span', { className: 'value' }, fmtNum(value)));
+    if (title) d.title = title;
+    return d;
+  };
+  bar.appendChild(stat('grants', stats.total || 0, 'every grant ever made, including the ones that have ended'));
+  bar.appendChild(stat('live', stats.live || 0, 'not revoked, not expired'));
+  bar.appendChild(stat('expired', stats.expired || 0, 'lapsed on their own'));
+  bar.appendChild(stat('revoked', stats.revoked || 0, 'handed back before they lapsed'));
+  bar.appendChild(stat('accounts', stats.masters || 0, 'distinct accounts that have delegated at least once'));
+  container.appendChild(bar);
+
+  // How much of the chain this has actually seen. The index fills forward from
+  // whenever the feature shipped and sweeps backwards on a cursor, so a small
+  // number can mean "few grants" or "not looked yet", and those are different.
+  const scanned = data.scanned || {};
+  if (!scanned.complete) {
+    const note = el('div', { className: 'section-sub', style: { color: 'var(--yellow, var(--fg2))' } });
+    note.append('still reading back through the chain' +
+      (scanned.stop ? ' (' + fmtNum(scanned.at || 0) + ' of ' + fmtNum(scanned.stop) + ' blocks swept)' : '') +
+      '. counts below are what has been found so far, not the whole chain.');
+    container.appendChild(note);
+  }
+
+  if (!grants.length) {
+    container.appendChild(el('div', { style: { color: 'var(--fg2)', padding: '16px 0' } },
+      scanned.complete
+        ? 'no account on this chain has delegated a signing key.'
+        : 'no grants found yet. the sweep is still running.'));
+    return;
+  }
+
+  // What people delegate TO, which is the question the grant log cannot answer
+  // at a glance.
+  if (realms.length) {
+    container.appendChild(el('div', { className: 'section-title', style: { marginTop: '20px' } },
+      'delegated to'));
+    container.appendChild(el('div', { className: 'section-sub' },
+      'ranked by how many distinct accounts granted a key to each, not by how many grants: one account ' +
+      'delegating the same realm five times is one adopter, not five.'));
+    const rt = el('table');
+    rt.appendChild(el('thead', {}, el('tr', {},
+      el('th', {}, 'realm'), el('th', {}, 'accounts'), el('th', {}, 'grants'))));
+    const rb = el('tbody');
+    for (const r of realms) {
+      const td = el('td');
+      // "*" and bank/send name no realm, so they stay literal rather than
+      // becoming a link to a package that does not exist.
+      if (r.path.startsWith('gno.land/')) td.appendChild(realmPathEl(r.path));
+      else td.appendChild(el('span', {}, r.path === '*' ? 'anything' : r.path));
+      rb.appendChild(el('tr', {}, td, el('td', {}, fmtNum(r.masters)), el('td', {}, fmtNum(r.grants))));
+    }
+    rt.appendChild(rb);
+    container.appendChild(rt);
+  }
+
+  container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } },
+    data.total > grants.length
+      ? 'every grant (' + fmtNum(grants.length) + ' of ' + fmtNum(data.total) + ' most recent)'
+      : 'every grant (' + fmtNum(grants.length) + ')'));
+
+  const tbl = el('table');
+  tbl.appendChild(el('thead', {}, el('tr', {},
+    el('th', {}, 'key'),
+    el('th', {}, 'signs for'),
+    el('th', {}, 'may call'),
+    el('th', {}, 'limit'),
+    el('th', {}, 'state'),
+    el('th', {}, 'granted'))));
+  const tb = el('tbody');
+  for (const g of grants) {
+    const scopeTd = el('td');
+    const paths = g.allow_paths || [];
+    if (!paths.length) scopeTd.appendChild(el('span', { style: { color: 'var(--fg2)' } }, 'not stated'));
+    else for (const entry of paths) scopeTd.appendChild(el('div', {}, allowPathEl(entry)));
+
+    const stateTd = el('td', {}, sessionStateEl(g));
+    // When it ended, beside how it ended: "revoked" alone leaves the reader
+    // asking the obvious next question.
+    if (g.revoked_height != null) {
+      stateTd.appendChild(el('div', { className: 'block-ctx' }, 'at ' + fmtNum(g.revoked_height)));
+    } else if (g.expires_at) {
+      stateTd.appendChild(el('div', { className: 'block-ctx' }, fmtExpiry(g.expires_at)));
+    } else {
+      stateTd.appendChild(el('div', { className: 'block-ctx' }, 'never expires'));
+    }
+
+    const grantedTd = el('td');
+    grantedTd.appendChild(blockWithAge(g.granted_height, g.granted_time, g.network));
+    if (g.granted_tx) {
+      grantedTd.appendChild(el('div', {}, txLink(g.granted_tx, g.granted_height, g.network)));
+    }
+
+    tb.appendChild(el('tr', {},
+      el('td', {}, addrLinkFull(g.session_addr, g.network)),
+      el('td', {}, addrLinkFull(g.master, g.network)),
+      scopeTd,
+      el('td', {}, fmtSpend(g)),
+      stateTd,
+      grantedTd));
+  }
+  tbl.appendChild(tb);
+  container.appendChild(tbl);
+
+  container.appendChild(el('div', { className: 'section-sub', style: { marginTop: '12px' } },
+    'replayed from the auth/create_session, auth/revoke_session and auth/revoke_all_sessions transactions. ' +
+    'spend figures here are the cap the grant set; what a key has actually spent moves without a ' +
+    'transaction and is only on its master\'s page, read live from the chain.'));
+}
+
+async function loadSessions() {
+  const container = clear('sessions-content');
+  skeletonBlock(container);
+  try {
+    await apiSWR('sessions', (data) => {
+      container.textContent = '';
+      renderSessionsPage(container, data);
+    });
+  } catch (err) {
+    failBlock(container, err, loadSessions);
+  }
 }
 
 async function loadGlossary() {
@@ -13030,6 +13206,86 @@ async function loadTxDetail(hash) {
   } catch (err) { container.textContent = ''; container.appendChild(el('p', { style: { color: 'var(--red)', padding: '20px' } }, 'Error: ' + err.message)); }
 }
 
+// renderSessionIdentity says whose key this address is, when it is one.
+//
+// This is the page that used to be blank. A session signs for its master and
+// the master is recorded as the caller of every message, so a session address
+// has no transactions, no deploys and no balance: every list below this is
+// empty for it, and without this block the page looked like an account that
+// had never done anything.
+//
+// The chain cannot fill it either. auth/accounts/<session_addr> returns null,
+// because a session is not a plain account, and only the grant transaction
+// ties the key to the account it signs for. That transaction is what this
+// reads, out of the index.
+function renderSessionIdentity(container, identity, addr) {
+  if (!identity || !identity.is_session) return;
+  const grants = identity.grants || [];
+  if (!grants.length) return;
+
+  // Newest first from the server. A key can be granted, revoked and granted
+  // again, so the current grant leads and the rest are history.
+  const current = grants[0];
+  const box = el('div', { className: 'card', style: { margin: '12px 0' } });
+
+  const head = el('div', { style: { marginBottom: '6px' } });
+  head.appendChild(badge('session', 'session key'));
+  head.append(' this address does not act for itself. it signs on behalf of ');
+  head.appendChild(addrLinkFull(current.master));
+  head.append(', and every message it sends is recorded under that account, not this one.');
+  box.appendChild(head);
+
+  const rows = el('div', { style: { fontSize: '13px' } });
+  const row = (k, v) => {
+    const d = el('div', { className: 'pd-row' });
+    d.appendChild(el('span', { style: { color: 'var(--fg2)' } }, k + ': '));
+    if (typeof v === 'string') d.append(v); else d.appendChild(v);
+    return d;
+  };
+
+  const scope = el('span');
+  const paths = current.allow_paths || [];
+  if (!paths.length) scope.appendChild(el('span', { style: { color: 'var(--fg2)' } }, 'not stated'));
+  else for (const entry of paths) scope.appendChild(el('div', {}, allowPathEl(entry)));
+  rows.appendChild(row('may call', scope));
+  rows.appendChild(row('limit', fmtSpend(current)));
+
+  const state = el('span');
+  state.appendChild(sessionStateEl(current));
+  if (current.revoked_height != null) {
+    state.append(' ');
+    state.appendChild(blockWithAge(current.revoked_height, current.revoked_time, current.network));
+  } else if (current.expires_at) {
+    state.append(' ' + fmtExpiry(current.expires_at));
+  } else {
+    state.append(' never expires');
+  }
+  rows.appendChild(row('state', state));
+
+  const granted = el('span');
+  granted.appendChild(blockWithAge(current.granted_height, current.granted_time, current.network));
+  if (current.granted_tx) {
+    granted.append(' ');
+    granted.appendChild(txLink(current.granted_tx, current.granted_height, current.network));
+  }
+  rows.appendChild(row('granted', granted));
+
+  if (grants.length > 1) {
+    rows.appendChild(row('history', fmtNum(grants.length) + ' grants to this key; the rest have ended'));
+  }
+  box.appendChild(rows);
+
+  // Where the reader actually wants to go next. The transactions this key
+  // signed are on the master's page, because that is the account they name.
+  const link = el('div', { style: { marginTop: '8px', fontSize: '12px' } });
+  link.append('what it signed is under ');
+  link.appendChild(addrLinkFull(current.master));
+  link.append(', since that account is the caller on every one.');
+  box.appendChild(link);
+
+  container.appendChild(box);
+}
+
 // renderSessions draws the delegated signing keys an account has granted.
 //
 // The account page is the only place this fact can appear. A session signs on
@@ -13110,7 +13366,10 @@ async function loadAddressDetail(addr) {
     // unreachable, must cost this page nothing. The fallback is the same shape
     // the endpoint returns, so the renderer has one case, not two.
     const sessionsPath = { path: 'address/' + addr + '/sessions', fallback: { supported: false, sessions: [] } };
-    await apiSWR(['address/' + addr, 'blocks?limit=50', sessionsPath], ([data, blocksData, sessionsData], swrMeta) => {
+    // Whose key this is, if it is one. Optional for the same reason: an
+    // instance whose index has not swept this far must not take the page down.
+    const identityPath = { path: 'address/' + addr + '/session', fallback: { is_session: false, grants: [] } };
+    await apiSWR(['address/' + addr, 'blocks?limit=50', sessionsPath, identityPath], ([data, blocksData, sessionsData, identityData], swrMeta) => {
       ++_detailGen;
       destroyDetailCharts();
       // Block time lookup
@@ -13152,6 +13411,10 @@ async function loadAddressDetail(addr) {
       addrRow.appendChild(watchButton('addresses', addr, lastHeight));
       container.appendChild(addrRow);
       _watchTarget = { kind: 'addresses', id: addr, height: lastHeight };
+      // Before the stats. "this address has no transactions" and "this address
+      // is a key that signs under another account" look identical otherwise,
+      // and only one of them means the page is empty for a reason.
+      renderSessionIdentity(container, identityData, addr);
       // Stats bar
       const txs = data.transactions || [];
       const pkgs = data.packages || [];
@@ -14378,7 +14641,20 @@ const DEFI_FLOWS_PAGE = 5000;
 
 function defiPath(path, offset) {
   return 'realm/defi/' + path.replace('gno.land/', '')
-    + '?flows_limit=' + DEFI_FLOWS_PAGE + (offset ? '&flows_offset=' + offset : '');
+    + '?flows_limit=' + DEFI_FLOWS_PAGE + (offset ? '&flows_offset=' + offset : '')
+    + '&token_flows_limit=' + DEFI_FLOWS_PAGE;
+}
+
+// defiTokenFlowsPath pages the GRC20 half alone.
+//
+// flows_limit=0 is the point: one request carries both halves, and paging the
+// token table through defiPath would re-send every native leg to append a few
+// token rows. Zero is a legitimate totals-only ask on that side, so the balance
+// figures still come back and only the table nobody asked for is left out.
+function defiTokenFlowsPath(path, offset) {
+  return 'realm/defi/' + path.replace('gno.land/', '')
+    + '?flows_limit=0&token_flows_limit=' + DEFI_FLOWS_PAGE
+    + (offset ? '&token_flows_offset=' + offset : '');
 }
 
 function renderRealmDefi(into, d, path) {
@@ -14478,7 +14754,7 @@ function renderRealmDefi(into, d, path) {
   const parties = defiCounterpartiesTableEl(d);
   if (parties) into.appendChild(parties);
 
-  if (tokens.length) into.appendChild(defiTokensEl(d, tokens));
+  if (tokens.length) into.appendChild(defiTokensEl(d, tokens, path));
 
   if (flows.length) {
     into.appendChild(el('div', { className: 'section-title' }, 'native transfers'));
@@ -14913,7 +15189,7 @@ function defiTokenCharts(section, d, tokens) {
 
 // defiTokensEl is the GRC20 half: what the contract holds in tokens, and the
 // caveat that makes those figures a floor rather than a count.
-function defiTokensEl(d, tokens) {
+function defiTokensEl(d, tokens, path) {
   const section = el('div');
   section.appendChild(el('div', { className: 'section-title' }, 'GRC20 positions'));
   defiTokenCharts(section, d, tokens);
@@ -14949,7 +15225,7 @@ function defiTokensEl(d, tokens) {
       + d.token_ledger_from.slice(0, 10)
       + '. Anything received before then is not in it, so these are floors rather than balances.'));
   }
-  defiTokenFlowsEl(section, d, tokens);
+  defiTokenFlowsEl(section, d, tokens, path);
   return section;
 }
 
@@ -14960,7 +15236,7 @@ function defiTokensEl(d, tokens) {
 // The positions table says what the realm holds and the charts say when it
 // moved; neither names a counterparty, which on a treasury is usually the
 // question after "is it growing".
-function defiTokenFlowsEl(section, d, tokens) {
+function defiTokenFlowsEl(section, d, tokens, path) {
   const flows = d.token_flows || [];
   if (!flows.length) return;
   // Fungibility is a property of the position, not of the leg, and it decides
@@ -14997,16 +15273,52 @@ function defiTokenFlowsEl(section, d, tokens) {
   }
   tbl.appendChild(body);
   section.appendChild(tbl);
-  // tokenFlowLimit in pkg/httpapi/defi.go caps this at one page across *every*
-  // token the realm holds, and there is no pager to walk past it. The positions
-  // above count the whole ledger, so the two disagreeing is the signal, and
-  // saying so is what stops a reader treating the newest page as the history.
-  const total = tokens.reduce((sum, t) => sum + (t.transfers || 0), 0);
+  // token_flows_total is the server's COUNT over the whole ledger, not a total
+  // derived here by summing the positions' own counts. The derived figure was
+  // close enough to look right and is not the same number: it counts what each
+  // position saw, and this counts rows, so the two part company on a leg that
+  // touches a token the positions table folded. A pager has to page against the
+  // count it is actually paging through.
+  const total = d.token_flows_total || 0;
   if (total > flows.length) {
-    section.appendChild(el('div', { className: 'detail-chart-note' },
-      'showing the ' + fmtNum(flows.length) + ' most recent of ' + fmtNum(total)
-      + ', across every token above. The positions and the curves are computed over all of them.'));
+    section.appendChild(defiTokenFlowsPagerEl(d, flows, total, path));
   }
+}
+
+// defiTokenFlowsPagerEl is the native pager's counterpart, and exists for the
+// same reason: the table used to stop at 500 with a sentence explaining that it
+// had and no way to see the rest. r/gnoswap/pool and r/gnoswap/router both sit
+// exactly on that cap, which is indistinguishable from a complete history
+// without a total beside it.
+function defiTokenFlowsPagerEl(d, flows, total, path) {
+  const remaining = total - flows.length;
+  const wrap = el('div', { className: 'detail-chart-note' });
+  wrap.appendChild(el('span', {},
+    'showing the ' + fmtNum(flows.length) + ' most recent of ' + fmtNum(total)
+    + ', across every token above. The positions and the curves are computed over all of them. '));
+  const btn = el('button', { className: 'pager-btn', style: { marginLeft: '8px' } },
+    'load ' + fmtNum(Math.min(remaining, DEFI_FLOWS_PAGE)) + ' older');
+  btn.onclick = async () => {
+    btn.disabled = true;
+    btn.textContent = 'loading\u2026';
+    let next;
+    try {
+      next = await api(defiTokenFlowsPath(path, flows.length));
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = 'could not load: ' + err.message;
+      return;
+    }
+    // Merged into the object the caller holds, so a third press continues from
+    // where the second stopped. Only the token half is replaced: the response
+    // that answered this asked for flows_limit=0, so its `flows` is empty by
+    // design and overwriting the native table with it would blank it.
+    d.token_flows = flows.concat(next.token_flows || []);
+    const into = clear('tab-defi');
+    renderRealmDefi(into, d, path);
+  };
+  wrap.appendChild(btn);
+  return wrap;
 }
 
 // signedUnitsEl is signedGnotEl for a token amount: coloured by direction, and

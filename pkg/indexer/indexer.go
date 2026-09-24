@@ -723,6 +723,17 @@ type MessageValue struct {
 	SpendLimit  string   `json:"spend_limit,omitempty"`
 	SpendPeriod int      `json:"spend_period,omitempty"`
 
+	// Raw is UnexpectedMessage's only field: the message's own JSON, for a type
+	// this indexer does not model.
+	//
+	// It is how the session messages arrive on every chain served today. The
+	// typed fragments above are selected only when the indexer defines them,
+	// and none does (probed on mainnet and pearl, 2026-09-23, both __type
+	// null), so without this an auth/create_session is a __typename and
+	// nothing else. UnexpectedMessage itself is the indexer's fallback type
+	// and needs no probe: both chains answer for it.
+	Raw string `json:"raw,omitempty"`
+
 	// Common
 	Send       string `json:"send,omitempty"`
 	MaxDeposit string `json:"max_deposit,omitempty"`
@@ -836,6 +847,9 @@ const txFieldsTemplate = `
 			}
 			... on MsgRevokeAllSessions {
 				creator
+			}
+			... on UnexpectedMessage {
+				raw
 			}
 		}
 	}

@@ -100,6 +100,12 @@
       "supersedes": [
         "gno.land/r/g1leu8d2vsplhehcfkjg50mwgdpxdkt8tztu95wr/bubblerumble3"
       ]
+    },
+    {
+      "path": "gno.land/r/moul/blog",
+      "name": "moul's blog",
+      "category": "content",
+      "description": "A personal blog that is a realm: one author, and posts that live in chain storage rather than in the code. Writing one is a single Set transaction, so publishing never redeploys and never costs a deploy."
     }
   ]
 }

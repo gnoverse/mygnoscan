@@ -513,6 +513,14 @@ GRC20 positions come from the local transfer ledger, which only ever saw what th
 syncer walked: `token_ledger_from` is the oldest row on that chain, and a
 position is a floor rather than a figure whenever it postdates the deploy.
 
+The GRC20 transfer table pages on its own pair of names, `token_flows_limit`
+(default 500, capped at 5000, `0` for a totals-only read) and
+`token_flows_offset`, reported back as `token_flows_shown` / `token_flows_total`
+/ `token_flows_offset`. The total is a `COUNT(*)` over the whole set rather than
+a figure derived from the positions' own counts: a page exactly as long as the
+limit says nothing without it, and `r/gnoswap/pool` and `r/gnoswap/router` both
+sat on the old bare cap of 500 with nothing on the page able to say so.
+
 ### Realm usage
 
 `/api/realm/usage/{path...}` is what the realm page's calls tab is built on,
@@ -826,6 +834,8 @@ labels this figure "recent" for the same reason.
 |---|---|
 | `GET /api/address/{addr}` | activity for an address, **from local storage**: calls, deploys, runs, sends (both directions), with `total` covering its whole history and `limit`/`offset` paging the rows. `balance` comes from RPC and is present only when a single network is selected **and** that RPC has been confirmed to serve the same chain as the network's indexer — an unverified or mismatched RPC yields an empty balance rather than one from another chain. The indexer cannot serve this at chain scale — five address predicates over unindexed fields means a scan |
 | `GET /api/address/{addr}/sessions` | the delegated signing keys this account has granted, read live from RPC (`auth/accounts/{addr}/sessions`). There is no indexed alternative: the tx-indexer defines no `MsgCreateSession` on any chain served here, so no grant has ever reached storage. `supported` separates "this account delegates nothing" from "this chain has never heard of sessions", which are otherwise the same empty payload; it is `false` for a chain that answers `std.UnknownRequestError`, for an unreachable RPC, and in all-networks mode, since a grant is per chain. Sorted by soonest expiry, with a never-expiring grant last. Answers only "what has this account delegated", never "whose session is this address": `auth/accounts/{session_addr}` returns null, because a session is not a plain account |
+| `GET /api/address/{addr}/session` | the opposite question: **whose** session is this address. Answers what neither the chain nor the rest of this index can: `auth/accounts/{session_addr}` returns null because a session is not a plain account, and a session-signed transaction records the **master** as its caller, so the session address appears in no call, send or deploy. Replayed from the `auth/create_session` transaction instead. Also returns `granted`, the grants this address has made, with the revoked and expired ones the live RPC read drops. `scan_complete` distinguishes "not a session" from "not swept this far yet" |
+| `GET /api/sessions` | delegation chain-wide: `stats` (grants, and the live/expired/revoked partition, counted against one instant so they always sum), `realms` ranked by distinct delegating accounts rather than grant count, and the grant log, newest first. `scanned` reports how far the historical sweep has got, so a partial index says so instead of presenting itself as the whole chain |
 | `GET /api/accounts` | most active accounts. `limit` (default 100, max 500), `offset`, and `sort` = `calls`, `deploys`, `runs`, `sends` or total activity. One row per `(address, network)`: the same key on two chains is two different actors, and each row carries its `network` |
 
 ## Validators
