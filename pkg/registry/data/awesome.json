@@ -2,8 +2,8 @@
   "source": "https://github.com/gnoverse/awesome-gno",
   "readme": "https://github.com/gnoverse/awesome-gno/blob/main/README.md",
   "contributing": "https://github.com/gnoverse/awesome-gno/blob/main/CONTRIBUTING.md",
-  "commit": "1fdfe66f85d395e70db583be0d89b6b6e63872ff",
-  "synced": "2026-09-23",
+  "commit": "85d5dd1db8fd5929087097a03e4c18979537e633",
+  "synced": "2026-09-24",
   "sections": [
     {
       "title": "Official Links",
@@ -82,24 +82,10 @@
           "site_from": "listed"
         },
         {
-          "name": "Gno Studio Connect",
-          "url": "https://gno.studio/connect",
-          "description": "A tool that makes interaction with Gno applications simple.",
-          "site": "https://gno.studio/connect",
-          "site_from": "listed"
-        },
-        {
           "name": "GnoChess",
           "url": "https://github.com/gnoverse/gnochess",
           "description": "A chess server implementation in Gno, complete with a frontend, faucet \u0026 tutorial to develop your own.",
           "site": "https://gnochess.com",
-          "site_from": "repo-homepage"
-        },
-        {
-          "name": "meme.land",
-          "url": "https://github.com/gnoverse/memeland",
-          "description": "An image sharing application built using Gno, React and Vue.",
-          "site": "https://meme.gnoteam.com",
           "site_from": "repo-homepage"
         },
         {
@@ -269,6 +255,13 @@
           "name": "gnockpit",
           "url": "https://github.com/gnoverse/gnockpit",
           "description": "A real-time web dashboard for monitoring validator node health."
+        },
+        {
+          "name": "mygnoscan",
+          "url": "https://github.com/gnoverse/mygnoscan",
+          "description": "A fast, minimal block explorer with realm dependency graphs and usage tracking.",
+          "site": "https://mygnoscan.moul.p2p.team/",
+          "site_from": "repo-homepage"
         }
       ]
     },
@@ -429,6 +422,16 @@
           "name": "Keplr Integration",
           "url": "https://github.com/gnolang/gno/pull/154",
           "description": "WIP Integration with the Keplr browser extension."
+        },
+        {
+          "name": "Gno Studio Connect",
+          "url": "https://gno.studio/connect",
+          "description": "A tool that makes interaction with Gno applications simple. Its network selector only offers retired testnets, so it cannot reach mainnet."
+        },
+        {
+          "name": "meme.land",
+          "url": "https://github.com/gnoverse/memeland",
+          "description": "An image sharing application built using Gno, React and Vue. The hosted front end no longer reaches a chain."
         },
         {
           "name": "Gno to Discord",

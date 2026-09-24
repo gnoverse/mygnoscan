@@ -72,7 +72,7 @@ func TestCollapseSupersededFoldsTheOlderGeneration(t *testing.T) {
 	var kourt *AppCard
 	for i := range got {
 		if got[i].Name == "Kourt v3" {
-			kourt = &got[i]
+			kourt = got[i]
 		}
 		if got[i].Name == "Kourt" {
 			t.Error("the superseded generation is still ranked as a peer")
@@ -284,5 +284,101 @@ func TestNameFromPath(t *testing.T) {
 				t.Errorf("got %q, want %q (%s)", got, tt.want, tt.why)
 			}
 		})
+	}
+}
+
+// A four-generation chain must land on the generation that survived, not on the
+// one that merely replaced this one.
+//
+// bubblerumble is the case: 4 replaces 3, and 3 replaces 2 and 1. Hanging 1 and
+// 2 off card 3 hangs them off a card that is not in the output, so two
+// generations disappear from a page whose whole promise about the old ones is
+// that it does not pretend they are gone.
+func TestCollapseFollowsTheChainToTheSurvivor(t *testing.T) {
+	v1 := &AppCard{Path: "gno.land/r/x/br", Name: "1"}
+	v2 := &AppCard{Path: "gno.land/r/x/br2", Name: "2"}
+	v3 := &AppCard{Path: "gno.land/r/x/br3", Name: "3",
+		Supersedes: []string{"gno.land/r/x/br", "gno.land/r/x/br2"}}
+	v4 := &AppCard{Path: "gno.land/r/x/br4", Name: "4", Supersedes: []string{"gno.land/r/x/br3"}}
+
+	got := collapseSuperseded([]*AppCard{v1, v2, v3, v4})
+
+	if len(got) != 1 || got[0].Name != "4" {
+		t.Fatalf("got %d cards, want only the newest: %+v", len(got), got)
+	}
+	names := map[string]bool{}
+	for _, p := range got[0].Previous {
+		names[p.Name] = true
+	}
+	for _, want := range []string{"1", "2", "3"} {
+		if !names[want] {
+			t.Errorf("generation %s vanished instead of folding into the survivor", want)
+		}
+	}
+}
+
+// One app deployed as several realms is still one app.
+//
+// GnoSwap is the worked example: a router, a token, positions, a staker, an NFT
+// and a governance staker, all busy, all current, all one DEX, and discovery
+// ranked six of them as peers under names taken from their paths.
+func TestFoldCoveredMakesOneCardOfOneApp(t *testing.T) {
+	api, _ := newTestAPI(t)
+	head := &AppCard{Path: "gno.land/r/swap/router", Name: "Swap", Covers: []string{"gno.land/r/swap/*"}}
+	part := &AppCard{Path: "gno.land/r/swap/staker", Name: "swap/staker"}
+	deep := &AppCard{Path: "gno.land/r/swap/gov/staker", Name: "gov/staker"}
+	other := &AppCard{Path: "gno.land/r/swapper/thing", Name: "not it"}
+
+	got := api.foldCovered([]*AppCard{head, part, deep, other}, "", "")
+
+	if len(got) != 2 {
+		t.Fatalf("got %d cards, want the parts folded: %+v", len(got), got)
+	}
+	if got[0] != head {
+		t.Fatalf("the covering card is gone: %+v", got)
+	}
+	if len(head.Parts) != 2 {
+		t.Fatalf("head carries %d parts, want both realms under the prefix", len(head.Parts))
+	}
+	// A prefix must not eat a path that merely starts with the same letters:
+	// gno.land/r/swapper is a different namespace and a different project.
+	for _, c := range got {
+		if c.Name == "not it" {
+			return
+		}
+	}
+	t.Error("a realm in a neighbouring namespace was folded in by a prefix match")
+}
+
+// A card that covers is never itself a part, or two apps claiming each other
+// would fold the page flat.
+func TestFoldCoveredNeverFoldsACoveringCard(t *testing.T) {
+	api, _ := newTestAPI(t)
+	a := &AppCard{Path: "gno.land/r/x/a", Name: "A", Covers: []string{"gno.land/r/x/*"}}
+	b := &AppCard{Path: "gno.land/r/x/b", Name: "B", Covers: []string{"gno.land/r/x/*"}}
+
+	got := api.foldCovered([]*AppCard{a, b}, "", "")
+
+	if len(got) != 2 {
+		t.Fatalf("got %d cards, want both: %+v", len(got), got)
+	}
+}
+
+// The community list and this directory can spell the same app two ways, and
+// nothing joined them: awesome-gno lists `Gnoswap` with a website and no realm,
+// this repo curates `GnoSwap` at a realm path, and the hub drew the DEX twice,
+// once with its call count and once with none.
+func TestNormalizeAppName(t *testing.T) {
+	for _, tt := range []struct{ a, b string }{
+		{"GnoSwap", "Gnoswap"},
+		{"meme.land", "Meme Land"},
+		{"Gno Studio Connect", "gno-studio-connect"},
+	} {
+		if normalizeAppName(tt.a) != normalizeAppName(tt.b) {
+			t.Errorf("%q and %q do not match, so the hub would draw both", tt.a, tt.b)
+		}
+	}
+	if normalizeAppName("GnoScan") == normalizeAppName("mygnoscan") {
+		t.Error("two different explorers were merged into one card")
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/moul/mygnoscan/pkg/registry"
+	"github.com/moul/mygnoscan/pkg/store"
 )
 
 // The app hub, assembled from three layers.
@@ -89,6 +90,13 @@ type AppCard struct {
 	// carries them, so the page can offer them without ranking them.
 	Supersedes []string  `json:"supersedes,omitempty"`
 	Previous   []AppCard `json:"previous,omitempty"`
+	// Covers names the realms this app is made of, and Parts carries them.
+	//
+	// Not the same fold as Previous, and the card says so differently: a
+	// previous generation is somewhere else to go, a part is somewhere you
+	// already are.
+	Covers []string  `json:"covers,omitempty"`
+	Parts  []AppCard `json:"parts,omitempty"`
 	// CommunityURL is where awesome-gno points, when that is not the website:
 	// usually the source repository.
 	CommunityURL string `json:"community_url,omitempty"`
@@ -308,8 +316,13 @@ func (a *API) HandleAppsHub(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Layer 3: the community list enriches what is here, and supplies what is
-	// not on a chain at all.
+	// Layer 3: the community list enriches the realms it names.
+	//
+	// Only the realms, here. The off-chain half of that list is appended after
+	// curation instead, because the name it has to be matched against is
+	// usually the curated one: awesome-gno's `Gnoswap` and our `GnoSwap` are
+	// one DEX, and at this point in the pass the card is still called
+	// `gnoswap/router` after its path.
 	a.enrichFromAwesome(byPath, &order, &resp, skips)
 
 	// Layer 4: this repo's own curation wins over everything, because it is the
@@ -333,10 +346,22 @@ func (a *API) HandleAppsHub(w http.ResponseWriter, r *http.Request) {
 			c.Category = app.Category
 		}
 		c.Supersedes = app.Supersedes
+		c.Covers = app.Covers
 	}
 
-	rankApps(order)
-	resp.Apps = collapseSuperseded(order)
+	// Layer 5: the apps that are not on a chain at all.
+	//
+	// A wallet, an editor extension, an explorer: there is nothing to index and
+	// nothing to count, and a hub that could not show them would be answering
+	// "what is built on gno.land" with the subset it happens to be able to see.
+	a.appendOffChain(&order, &resp)
+
+	// Fold before ranking, not after. A folded card is ranked on what the whole
+	// app does, and GnoSwap's router alone is a fraction of that.
+	kept := collapseSuperseded(order)
+	kept = a.foldCovered(kept, network, window)
+	rankApps(kept)
+	resp.Apps = materialize(kept)
 	resp.Categories = categoriesOf(resp.Apps)
 	if aw := a.registry.Awesome; aw != nil {
 		resp.Awesome = &awesomeSummary{
@@ -347,37 +372,88 @@ func (a *API) HandleAppsHub(w http.ResponseWriter, r *http.Request) {
 	JSONResponse(w, resp)
 }
 
-// enrichFromAwesome overlays the community list and appends its off-chain apps.
+// enrichFromAwesome overlays the community list onto the realms it names.
 func (a *API) enrichFromAwesome(byPath map[string]*AppCard, order *[]*AppCard, resp *appsHubResponse, skips map[string]string) {
 	aw := a.registry.Awesome
 	if aw == nil {
 		return
 	}
 	for _, e := range aw.Apps() {
-		if e.Path != "" {
-			if _, cut := skips[e.Path]; cut {
-				continue
-			}
-			c := byPath[e.Path]
-			if c == nil {
-				// Listed by the community, on a chain, and the ranking did not
-				// reach it. Being vouched for in public is a reason to show it.
-				c = &AppCard{Path: e.Path, Name: nameFromPath(e.Path), NameFrom: fromPath, Via: viaCommunity}
-				byPath[e.Path] = c
-				*order = append(*order, c)
-				resp.OffChain++
-			}
-			applyAwesome(c, e)
+		if e.Path == "" {
 			continue
 		}
-		if e.Site == "" {
+		if _, cut := skips[e.Path]; cut {
+			continue
+		}
+		c := byPath[e.Path]
+		if c == nil {
+			// Listed by the community, on a chain, and the ranking did not
+			// reach it. Being vouched for in public is a reason to show it.
+			c = &AppCard{Path: e.Path, Name: nameFromPath(e.Path), NameFrom: fromPath, Via: viaCommunity}
+			byPath[e.Path] = c
+			*order = append(*order, c)
+			resp.OffChain++
+		}
+		applyAwesome(c, e)
+	}
+}
+
+// appendOffChain adds the community entries that are not on a chain, and merges
+// the ones that are already here under another spelling.
+//
+// The merge is the correction worth recording. awesome-gno lists `Gnoswap` with
+// a website and no realm path; this directory curates `GnoSwap` at
+// gno.land/r/gnoswap/router. Nothing joined them, so the hub drew the DEX twice,
+// once with 1,253 calls and once as an off-chain entry with none, and a reader
+// had no way to tell that the second one was the same product with a lowercase
+// s.
+//
+// Matched on the name with case and punctuation removed, which is deliberately
+// the narrowest rule that fixes it. Anything looser (a prefix, a website host,
+// an edit distance) starts merging two projects that merely sound alike, and
+// this page's whole claim is that it does not guess silently.
+func (a *API) appendOffChain(order *[]*AppCard, resp *appsHubResponse) {
+	aw := a.registry.Awesome
+	if aw == nil {
+		return
+	}
+	byName := map[string]*AppCard{}
+	for _, c := range *order {
+		if k := normalizeAppName(c.Name); k != "" {
+			if _, taken := byName[k]; !taken {
+				byName[k] = c
+			}
+		}
+	}
+	for _, e := range aw.Apps() {
+		if e.Path != "" || e.Site == "" {
+			continue
+		}
+		if c := byName[normalizeAppName(e.Name)]; c != nil {
+			// Already on the page as a realm. The community entry still has
+			// something to give: usually the website, which a realm cannot
+			// know about itself, and the source repository.
+			applyAwesome(c, e)
 			continue
 		}
 		c := &AppCard{Via: viaCommunity}
 		applyAwesome(c, e)
 		*order = append(*order, c)
+		byName[normalizeAppName(c.Name)] = c
 		resp.OffChain++
 	}
+}
+
+// normalizeAppName reduces a display name to what two spellings of the same
+// project have in common: letters and digits, lowercased.
+func normalizeAppName(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func applyAwesome(c *AppCard, e registry.AwesomeEntry) {
@@ -406,7 +482,7 @@ func applyAwesome(c *AppCard, e registry.AwesomeEntry) {
 // Folded rather than dropped. The old one is still on the chain, somebody may
 // hold a position in it, and a hub that pretended it was gone would be lying
 // about state a reader can check.
-func collapseSuperseded(order []*AppCard) []AppCard {
+func collapseSuperseded(order []*AppCard) []*AppCard {
 	replaced := map[string]*AppCard{}
 	for _, c := range order {
 		for _, old := range c.Supersedes {
@@ -421,20 +497,141 @@ func collapseSuperseded(order []*AppCard) []AppCard {
 	// will see. On mainnet that silently dropped the bubblerumble and gnomi/pad
 	// chains while Kourt v3, which happened to rank *below* its predecessor,
 	// worked. A bug that depends on sort order is one that looks fixed.
-	for _, c := range order {
-		if newer := replaced[c.Path]; newer != nil && c.Path != "" {
-			// Carried without its own Previous, so a three-generation chain
-			// does not nest: the reader wants "and the ones before", flat.
-			old := *c
-			old.Previous = nil
-			newer.Previous = append(newer.Previous, old)
+	// Follow the chain to the generation that survived, rather than to the one
+	// that merely replaced this one. bubblerumble is four deep: 4 replaces 3,
+	// 3 replaces 2 and 1, and hanging 1 and 2 off card 3 hangs them off a card
+	// that is not in the output, so two generations disappear from a page whose
+	// entire promise about the older ones is that it does not pretend they are
+	// gone.
+	survivor := func(c *AppCard) *AppCard {
+		seen := 0
+		for {
+			newer := replaced[c.Path]
+			if newer == nil || newer == c {
+				return c
+			}
+			c = newer
+			if seen++; seen > len(order) {
+				// A cycle in the data. Stop rather than spin; validation
+				// rejects the obvious form of it (an entry superseding itself)
+				// and this covers the rest.
+				return c
+			}
 		}
 	}
-	out := make([]AppCard, 0, len(order))
+	for _, c := range order {
+		if newer := replaced[c.Path]; newer != nil && c.Path != "" {
+			// Carried without its own Previous, so a four-generation chain does
+			// not nest: the reader wants "and the ones before", flat.
+			old := *c
+			old.Previous = nil
+			into := survivor(newer)
+			into.Previous = append(into.Previous, old)
+		}
+	}
+	out := make([]*AppCard, 0, len(order))
 	for _, c := range order {
 		if newer := replaced[c.Path]; newer != nil && c.Path != "" {
 			continue
 		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// foldCovered folds a realm into the card of the app it is part of.
+//
+// The other half of "one app, one card", and the half that is about the
+// present rather than the past. A chain shows an app as the several realms it
+// was deployed as: GnoSwap is a router, a token, positions, a staker, an NFT
+// and a governance staker, all busy, all current, all one DEX. Discovery ranks
+// realms, so it ranked six of them as peers, five under names taken from their
+// paths, and told a visitor there were six DEXes. The same is true of
+// governance, where r/sys/params and r/sys/users are the things GovDAO writes
+// to rather than three separate products.
+//
+// The parts are carried, not dropped, and each keeps its own link: they are
+// real realms with real state, and somebody who came looking for
+// r/gnoswap/position has to be able to reach it.
+func (a *API) foldCovered(cards []*AppCard, network, window string) []*AppCard {
+	parentOf := map[string]*AppCard{}
+	for _, parent := range cards {
+		for _, pat := range parent.Covers {
+			for _, c := range cards {
+				switch {
+				case c == parent || c.Path == "":
+				case len(c.Covers) > 0:
+					// A card that covers is never itself a part. Two apps
+					// claiming each other would otherwise fold the page flat.
+				case parentOf[c.Path] != nil:
+					// First claim wins, so two overlapping prefixes are
+					// stable rather than dependent on map order.
+				case coversPath(pat, c.Path):
+					parentOf[c.Path] = parent
+				}
+			}
+		}
+	}
+	if len(parentOf) == 0 {
+		return cards
+	}
+	out := make([]*AppCard, 0, len(cards))
+	for _, c := range cards {
+		if parent := parentOf[c.Path]; parent != nil {
+			part := *c
+			// Flat, like Previous: the reader wants "and the realms it is made
+			// of", not a tree.
+			part.Parts, part.Previous = nil, nil
+			parent.Parts = append(parent.Parts, part)
+			continue
+		}
+		out = append(out, c)
+	}
+	// The figures have to be re-read, not summed. Calls add up; callers do not,
+	// because the same people use the router and the staker. AppFamilyStat
+	// answers both exactly, and the score is recomputed from it with the same
+	// weights discovery uses, so a folded card is ranked against the others on
+	// the same scale.
+	if network == "" {
+		return out
+	}
+	for _, c := range out {
+		if len(c.Parts) == 0 {
+			continue
+		}
+		paths := make([]string, 0, len(c.Parts)+1)
+		if c.Path != "" {
+			paths = append(paths, c.Path)
+		}
+		for _, p := range c.Parts {
+			paths = append(paths, p.Path)
+		}
+		fam, err := a.db.AppFamilyStat(network, paths, usageWindowCutoff(window))
+		if err != nil {
+			continue
+		}
+		c.Calls, c.Callers = fam.Calls, fam.Callers
+		c.CallsWindow, c.CallersWindow = fam.CallsWindow, fam.CallersWindow
+		if fam.LastCall > c.LastCall {
+			c.LastCall = fam.LastCall
+		}
+		c.Score = fam.CallersWindow*store.ScoreCallerWeight + fam.CallsWindow*store.ScoreCallWeight
+	}
+	return out
+}
+
+// coversPath reports whether a `covers` pattern names this path. A trailing
+// `/*` is a prefix; anything else is exact.
+func coversPath(pattern, path string) bool {
+	if prefix, ok := strings.CutSuffix(pattern, "/*"); ok {
+		return strings.HasPrefix(path, prefix+"/")
+	}
+	return pattern == path
+}
+
+func materialize(cards []*AppCard) []AppCard {
+	out := make([]AppCard, 0, len(cards))
+	for _, c := range cards {
 		out = append(out, *c)
 	}
 	return out

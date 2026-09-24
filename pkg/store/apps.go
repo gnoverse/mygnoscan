@@ -135,6 +135,61 @@ func (d *DB) AppStats(network string, paths []string, since string) (map[string]
 	return out, callRows.Err()
 }
 
+// FamilyStat is what the chain says about several realms read as one app.
+type FamilyStat struct {
+	Calls   int `json:"calls"`
+	Callers int `json:"callers"`
+	// CallsWindow and CallersWindow are since the cutoff, and CallersWindow is
+	// the one the ranking leans on.
+	CallsWindow   int    `json:"calls_window"`
+	CallersWindow int    `json:"callers_window"`
+	LastCall      string `json:"last_call,omitempty"`
+}
+
+// AppFamilyStat reads a set of realms as one app.
+//
+// A query rather than a sum over AppStats, and that is the whole reason it
+// exists: calls add up and callers do not. GnoSwap's router, staker and gns
+// are largely the same people, so adding their caller counts would print a
+// reach the DEX does not have. COUNT(DISTINCT caller) over the whole set is
+// the exact answer, and the cost is one more query per folded card.
+//
+// `since` bounds the window columns only, and empty means all of history, for
+// the same reason as in AppStats: a card that reports "0 in the window" when
+// no window was asked for is lying about the app.
+func (d *DB) AppFamilyStat(network string, paths []string, since string) (FamilyStat, error) {
+	var out FamilyStat
+	if len(paths) == 0 {
+		return out, nil
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	// The window's placeholders sit in the SELECT list and therefore bind
+	// before the IN list in the WHERE clause. Appending them after the paths is
+	// how the same query silently matched nothing in AppStats once already.
+	windowCalls, windowCallers := "COUNT(*)", "COUNT(DISTINCT caller)"
+	args := []any{}
+	if since != "" {
+		windowCalls = "SUM(CASE WHEN block_time >= ? THEN 1 ELSE 0 END)"
+		windowCallers = "COUNT(DISTINCT CASE WHEN block_time >= ? THEN caller END)"
+		args = append(args, since, since)
+	}
+	for _, p := range paths {
+		args = append(args, p)
+	}
+	row := d.db.QueryRow(`
+		SELECT COUNT(*), COUNT(DISTINCT caller), `+windowCalls+`, `+windowCallers+`,
+		       COALESCE(MAX(block_time), '')
+		FROM calls
+		WHERE `+d.networkFilter("network", network)+` AND pkg_path IN (`+sqlPlaceholders(len(paths))+`)`,
+		args...)
+	if err := row.Scan(&out.Calls, &out.Callers, &out.CallsWindow, &out.CallersWindow, &out.LastCall); err != nil {
+		return FamilyStat{}, err
+	}
+	return out, nil
+}
+
 // AppCandidates ranks the realms nobody has written a blurb for.
 //
 // This is what makes the coverage gap actionable instead of merely true. The

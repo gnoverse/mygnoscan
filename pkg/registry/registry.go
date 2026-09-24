@@ -87,6 +87,21 @@ type App struct {
 	// sends people to last year's version. Kourt is the worked example: v1 and
 	// v3 are both live, both busy, and only one is the one to open.
 	Supersedes []string `json:"supersedes,omitempty"`
+	// Covers names the realms that are parts of this same app rather than apps
+	// of their own, as an exact path or a `/*` prefix.
+	//
+	// The difference from Supersedes is what a reader is being told. A
+	// superseded realm is the same app at an earlier date and the answer is
+	// "open the new one"; a covered realm is a live, load-bearing piece of the
+	// app on this card and the answer is "this is already what you are looking
+	// at". GnoSwap is the worked example: router, gns, position, staker, gnft
+	// and gov/staker are all busy, all current, and all one DEX, and a hub that
+	// ranks them as peers tells a visitor there are six of it.
+	//
+	// A prefix is allowed because the alternative is a list that goes stale the
+	// next time somebody deploys, silently and in the direction of showing more
+	// cards. `gno.land/r/gnoswap/*` covers a realm nobody has written yet.
+	Covers []string `json:"covers,omitempty"`
 }
 
 // Registry is the parsed whole.
@@ -298,6 +313,15 @@ func validateApps(apps []App) error {
 			}
 			if old == a.Path {
 				return fmt.Errorf("apps.json: %s supersedes itself", a.Path)
+			}
+		}
+		for _, part := range a.Covers {
+			bare := strings.TrimSuffix(part, "/*")
+			switch {
+			case !realmPath.MatchString(bare):
+				return fmt.Errorf("apps.json: %s covers %q, which is not a gno.land path or prefix", a.Path, part)
+			case part == a.Path:
+				return fmt.Errorf("apps.json: %s covers itself", a.Path)
 			}
 		}
 		seen[a.Path] = true
