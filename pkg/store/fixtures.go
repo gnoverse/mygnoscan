@@ -99,6 +99,15 @@ func SeedNetwork(t TB, db *DB, network string, height int) {
 	}); err != nil {
 		t.Fatalf("insert coin transfer: %v", err)
 	}
+	// One row per network-scoped table is the contract this fixture holds up:
+	// the reset tests count rows against len(NetworkScopedTables), so a table
+	// added to that list and not seeded here reads as a reset that failed to
+	// delete something.
+	if err := db.AddRealmViews(map[ViewKey]int{
+		{Network: network, Path: "gno.land/r/demo/foo", Day: "2026-01-01"}: 1,
+	}); err != nil {
+		t.Fatalf("add realm views: %v", err)
+	}
 }
 
 // SQL exposes the underlying handle.
