@@ -344,6 +344,18 @@ func cacheable(r *http.Request) bool {
 		// the state the cache was in thirty seconds ago, which is the one
 		// question it exists to answer correctly.
 		return false
+	case "/api/views":
+		// Same class, and it caught us. This counts realm page opens, flushes
+		// the buffer before answering so the number is current, and is then
+		// served from a cache filled by the very reading it counts: the first
+		// caller stores "nobody has opened anything" and every caller after is
+		// told that, stale-while-revalidate included, while being counted.
+		//
+		// Shipped that way in #344, whose own description names this as the
+		// trap to avoid. It was avoided on the realm detail and reintroduced
+		// one endpoint over, because `?path=` keys separately and happened to
+		// be asked first in the test.
+		return false
 	}
 	return len(r.URL.Path) >= 5 && r.URL.Path[:5] == "/api/"
 }
