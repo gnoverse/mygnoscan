@@ -99,12 +99,111 @@ Realm source and realm state are written by whoever deployed them, and a realm
 named `ignore previous instructions` is not hypothetical on a chain where
 anyone can deploy.
 
+## Host and Origin
+
+The specification makes validating `Host` or `Origin` a MUST, against DNS
+rebinding: a page on `evil.com` whose DNS answers `127.0.0.1` gets the reader's
+browser to POST at an MCP server running on their own machine.
+
+**A browser cannot forge either header.** It sets both itself, truthfully, so
+comparing them is a real same-origin test and not a tautology. That is the
+default behaviour: no `Origin` is allowed (only browsers send it, and every MCP
+client here is a process on somebody's machine), a matching pair is allowed,
+loopback is allowed, and anything else is `403`.
+
+`-mcp-public-origin https://<host>` turns that into a check against a known
+answer rather than against a header the caller supplies, which is what also
+stops a client writing its own. **Worth setting on anything bound to loopback**,
+which is what the advisory is about. Unset by default, because guessing it
+wrong behind a reverse proxy that rewrites `Host` would refuse every real
+request.
+
+`-mcp-allowed-origins` adds origins beyond those, comma separated, `*` for any.
+
+The exposure without any of this is small, and saying so is more useful than
+implying otherwise: the server is read-only over a public blockchain, it sends
+no CORS headers so a browser cannot read what comes back, and a POST with a
+JSON content type is preflighted and refused before it arrives. It is
+implemented because it is a MUST and it is a few lines, not because something
+was leaking.
+
+## Conformance
+
+`.github/workflows/mcp.yml` runs the official
+[MCP conformance suite](https://www.npmjs.com/package/@modelcontextprotocol/conformance)
+against a locally started binary on every pull request. `/mcp` is hand-rolled
+over `encoding/json`, so nothing else keeps us honest about the wire format.
+It earned its place immediately: the first run found the missing Host and
+Origin validation above.
+
+```sh
+go build -o /tmp/mygnoscan .
+/tmp/mygnoscan -listen 127.0.0.1:8901 -db /tmp/c.db -network conformance   -indexer http://127.0.0.1:1/graphql/query -sync=false -block-history-days -1   -mcp-rate 0 -mcp-concurrency 0 -mcp-public-origin http://127.0.0.1:8901 &
+npx @modelcontextprotocol/conformance server --url http://127.0.0.1:8901/mcp   --expected-failures mcp/conformance-baseline.yaml
+```
+
+Three things about that command are not incidental:
+
+- **Both rate limits off.** With the defaults the suite trips them partway
+  through and later scenarios fail with 429s that look like protocol bugs.
+  Measured 2026-09-25: `dns-rebinding-protection` and `prompts-list` each pass
+  alone and both failed in a full run at 60/min.
+- **`-mcp-public-origin` set**, or the DNS-rebinding scenario cannot pass: it
+  forges `Host` and `Origin` together, which only the strict check catches.
+- **No reachable indexer.** Every scenario is about the wire format, so the run
+  must not depend on somebody else's testnet being up.
+
+Deliberate failures live in [`mcp/conformance-baseline.yaml`](../mcp/conformance-baseline.yaml)
+with a reason each: capabilities this server does not declare and answers
+`-32601` to, fixture tools the suite expects a reference server to implement
+and which have no business in a production explorer, and the session-id warning
+that follows from being stateless. The suite exits non-zero on an unexpected
+failure **and** on a baseline entry that has started passing, so the file
+cannot rot into a mute button.
+
+## Do the descriptions actually work
+
+Conformance checks the wire format. A Go test checks that a tool returns what it
+should once it is called. Neither touches the part a model actually consumes:
+seven descriptions, and the choice it makes from them. That choice is the whole
+interface. A tool nobody picks does not exist, and one picked for the wrong
+question is worse, because the answer looks authoritative.
+
+[`cmd/mcp-eval`](../cmd/mcp-eval) measures it. Sixteen questions a developer
+actually arrives with, in [`mcp/tool-selection.json`](../mcp/tool-selection.json),
+each with the set of tools that count as correct and the one the descriptions
+are written to steer toward. The tool list is fetched from a running endpoint,
+not read out of the source, so what is scored is exactly what a client is handed.
+
+```sh
+go run ./cmd/mcp-eval -url http://127.0.0.1:8888/mcp -verbose
+```
+
+Measured 2026-09-25 against the seven live tools: **16/16 acceptable, 15/16
+preferred.** The one divergence is *"has anyone already written a merkle tree"*
+going to `search_symbols` rather than `search_code`, which is a defensible read
+of the question and is why that question accepts both. *"Sign and broadcast a
+transaction for me"* correctly returns `none`, which is the result that matters
+most: there is no write tool, and a model that invented one would be the worst
+failure this endpoint could have.
+
+**Not a CI job**, deliberately. It needs a model and therefore credentials, it
+costs tokens, and its result is a percentage that moves. Wiring a flaky number
+into a build teaches people to rerun it. Run it when the tool list or a
+description changes, and read the misses rather than the score.
+
+Several questions have more than one honest answer, and `accept` lists them.
+Pretending otherwise would make the score a measure of my opinion rather than of
+the descriptions.
+
 ## Limits
 
 | | default | flag |
 |---|---|---|
 | requests per minute, per address | 60 | `-mcp-rate` |
 | requests in flight, per address | 4 | `-mcp-concurrency` |
+| browser origins beyond own host and loopback | none | `-mcp-allowed-origins` |
+| strict Host and Origin checks | off | `-mcp-public-origin` |
 | request body | 1 MiB | |
 | one tool call | 25s | |
 

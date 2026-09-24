@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -102,6 +103,20 @@ type MCPServer struct {
 	// in production, the bare mux in tests, never nil after New.
 	dispatch http.Handler
 
+	// allowedOrigins are extra browser origins an operator has chosen to
+	// accept, beyond this server's own host and loopback. Empty is the
+	// default and is what a public deployment wants.
+	allowedOrigins []string
+
+	// publicOrigin is the name this server is reached by, when the operator
+	// has said so. Setting it turns the Host header from something we compare
+	// against itself into something we compare against a known answer, which
+	// is the difference between deflecting a browser and deflecting an
+	// attacker who writes his own headers. Empty is the default, because
+	// guessing it wrong behind a reverse proxy would refuse every real
+	// request.
+	publicOrigin string
+
 	freshMu   sync.Mutex
 	freshAt   time.Time
 	freshSnap []MCPNetworkFreshness
@@ -124,6 +139,121 @@ func (a *API) NewMCPServer(limiter *IPLimiter, version string) *MCPServer {
 // would quietly skip the cache, which for a twelve-second realm-state read is
 // the difference between a warm answer and a cold one.
 func (s *MCPServer) SetDispatcher(h http.Handler) { s.dispatch = h }
+
+// SetAllowedOrigins widens the browser origins the endpoint accepts. "*"
+// accepts any, which is a deliberate choice an operator makes and not a
+// default.
+func (s *MCPServer) SetAllowedOrigins(origins []string) { s.allowedOrigins = origins }
+
+// SetPublicOrigin names the origin this server is reached by, e.g.
+// "https://mygnoscan.example". See rejectOrigin.
+func (s *MCPServer) SetPublicOrigin(origin string) { s.publicOrigin = strings.TrimRight(origin, "/") }
+
+// --- Origin -----------------------------------------------------------------
+
+// rejectOrigin returns why a request must be refused, or "" to let it through.
+//
+// The specification makes validating Host or Origin a MUST, against DNS
+// rebinding: a page on evil.com whose DNS answers 127.0.0.1 gets the browser
+// to POST at an MCP server running on the reader's own machine, and without
+// this check the server serves it.
+//
+// **A browser cannot forge either header.** It sets Host and Origin itself,
+// truthfully, which is why comparing the two is a real same-origin test rather
+// than a tautology. A curl-like client can set both to anything, and that
+// proves nothing: it could simply omit Origin, and it can reach the endpoint
+// directly anyway. So the pair check below is the browser defence, and the
+// optional publicOrigin check below that is the one aimed at an attacker who
+// controls headers.
+//
+// The exposure here is genuinely small and saying so is more useful than
+// implying otherwise. This server is read-only over a public blockchain, it
+// sends no CORS headers so a browser cannot read what comes back, and a POST
+// with a JSON content type is preflighted and refused before it arrives. The
+// reason to do it anyway is that it is a MUST, it is a few lines, and the next
+// person to add a tool should not have to re-derive why it was safe to skip.
+func (s *MCPServer) rejectOrigin(r *http.Request) string {
+	origin := r.Header.Get("Origin")
+
+	// When the operator has told us our own name, it is the authority, and
+	// both headers are checked against it rather than against each other.
+	// This is the form that survives an attacker who sets every header, and
+	// it is what a localhost deployment should run with.
+	if s.publicOrigin != "" {
+		if !hostAllowed(r.Host, s.publicOrigin) {
+			return "this endpoint does not serve the host " + r.Host
+		}
+		if origin != "" && !s.originListed(origin) && !originMatches(origin, s.publicOrigin) && !loopbackOrigin(origin) {
+			return "this endpoint does not accept browser requests from " + origin
+		}
+		return ""
+	}
+
+	// Otherwise: a browser's own pairing of the two headers.
+	if origin == "" {
+		// Only browsers send it, and every MCP client that matters here is a
+		// process on somebody's machine. Refusing a request for lacking a
+		// header no CLI sends would close the endpoint to its actual audience
+		// while stopping nothing.
+		return ""
+	}
+	if originMatches(origin, "//"+r.Host) || loopbackOrigin(origin) || s.originListed(origin) {
+		return ""
+	}
+	return "this endpoint does not accept browser requests from " + origin
+}
+
+func (s *MCPServer) originListed(origin string) bool {
+	for _, allowed := range s.allowedOrigins {
+		if allowed == "*" || strings.EqualFold(allowed, origin) {
+			return true
+		}
+	}
+	return false
+}
+
+// originMatches compares an Origin against a reference, on host alone. The
+// scheme is deliberately ignored: the same page served over http locally and
+// https in production is the same page.
+func originMatches(origin, reference string) bool {
+	a, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	b, err := url.Parse(reference)
+	if err != nil {
+		return false
+	}
+	return a.Host != "" && strings.EqualFold(a.Host, b.Host)
+}
+
+func hostAllowed(host, publicOrigin string) bool {
+	if isLoopbackHost(host) {
+		return true
+	}
+	u, err := url.Parse(publicOrigin)
+	return err == nil && strings.EqualFold(host, u.Host)
+}
+
+func loopbackOrigin(origin string) bool {
+	u, err := url.Parse(origin)
+	return err == nil && isLoopbackHost(u.Host)
+}
+
+// isLoopbackHost covers localhost, 127.0.0.1 and [::1], with or without a
+// port, which are the values the specification names.
+func isLoopbackHost(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
 
 // --- JSON-RPC ---------------------------------------------------------------
 
@@ -179,6 +309,13 @@ func (s *MCPServer) Handle(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Allow", "POST")
 		jsonError(w, "mygnoscan's MCP endpoint speaks streamable HTTP over POST only; "+
 			"point an MCP client at this URL rather than a browser", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if why := s.rejectOrigin(r); why != "" {
+		// Before the rate limit, so a page hammering us does not also spend
+		// the real client's budget on that address.
+		jsonError(w, why, http.StatusForbidden)
 		return
 	}
 
