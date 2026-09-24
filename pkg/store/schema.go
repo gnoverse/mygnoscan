@@ -957,6 +957,52 @@ func initSchema(db *sql.DB) error {
 		-- every load.
 		CREATE INDEX IF NOT EXISTS idx_users_address ON users(network, address);
 
+		-- Session grants, replayed from the auth/* messages.
+		--
+		-- A session is a delegated signing key: it signs for a master account
+		-- and the master stays the caller of every message it sends. That is
+		-- what makes this table necessary rather than convenient. Nothing else
+		-- here can answer it:
+		--
+		--   - The chain answers auth/accounts/<master>/sessions, but only for
+		--     live grants and only if you already know the master.
+		--     auth/accounts/<session_addr> returns null, because a session is
+		--     not a plain account, so there is no reverse lookup on chain.
+		--   - The calls and bank_sends tables record the MASTER as caller, so a
+		--     session leaves no trace in them under its own address.
+		--
+		-- Only the grant transaction ties the two together, and only this table
+		-- keeps it after the grant expires or is revoked.
+		--
+		-- granted_height is in the key because a pubkey can be granted, revoked
+		-- and granted again; each grant is its own row with its own scope.
+		CREATE TABLE IF NOT EXISTS session_grants (
+			network        TEXT NOT NULL,
+			session_addr   TEXT NOT NULL,
+			master         TEXT NOT NULL,
+			-- Newline-separated AllowPaths entries, stored as written so the
+			-- route prefix ("vm/exec:") survives: it is what distinguishes a
+			-- realm grant from a bank/send one.
+			allow_paths    TEXT NOT NULL DEFAULT '',
+			spend_limit    TEXT NOT NULL DEFAULT '',
+			spend_period   INTEGER NOT NULL DEFAULT 0,
+			expires_at     INTEGER NOT NULL DEFAULT 0,
+			granted_height INTEGER NOT NULL,
+			granted_time   TEXT NOT NULL DEFAULT '',
+			granted_tx     TEXT NOT NULL DEFAULT '',
+			-- Null until a revoke_session or revoke_all_sessions names it. A
+			-- revoked grant is kept, not deleted: "this key could act and no
+			-- longer can" is the fact the page exists to show.
+			revoked_height INTEGER,
+			revoked_time   TEXT,
+			revoked_tx     TEXT,
+			PRIMARY KEY (network, session_addr, granted_height)
+		) WITHOUT ROWID;
+
+		CREATE INDEX IF NOT EXISTS idx_session_grants_master ON session_grants(network, master, granted_height DESC);
+		CREATE INDEX IF NOT EXISTS idx_session_grants_height ON session_grants(network, granted_height DESC);
+		CREATE INDEX IF NOT EXISTS idx_session_grants_addr ON session_grants(network, session_addr);
+
 		CREATE INDEX IF NOT EXISTS idx_token_transfers_token ON token_transfers(network, token, block_height DESC);
 		CREATE INDEX IF NOT EXISTS idx_token_transfers_from ON token_transfers(network, token, from_addr);
 		CREATE INDEX IF NOT EXISTS idx_token_transfers_to ON token_transfers(network, token, to_addr);

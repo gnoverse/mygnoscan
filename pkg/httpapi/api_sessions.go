@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"time"
 )
 
 // Account sessions: delegated signing keys, one account per grant.
@@ -174,4 +175,108 @@ func fetchSessions(ctx context.Context, addr, rpcURL string) ([]Session, bool) {
 func atoi64(s string) int64 {
 	n, _ := strconv.ParseInt(s, 10, 64)
 	return n
+}
+
+// Chain-wide sessions, from the index rather than from RPC.
+//
+// The per-account read above asks the chain and gets live state for one master.
+// Neither half can do the other's job: RPC cannot enumerate every account, and
+// the index cannot know a spend counter that moves without a transaction. So
+// the pages use both, and each says which it is showing.
+
+const (
+	sessionsPageDefault = 100
+	sessionsPageMax     = 500
+	sessionRealmsTop    = 25
+)
+
+// HandleSessions serves the chain-wide picture: the counts, the realms
+// delegated to, and the grant log.
+func (a *API) HandleSessions(w http.ResponseWriter, r *http.Request) {
+	network := a.networkParam(r)
+
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 || limit > sessionsPageMax {
+		limit = sessionsPageDefault
+	}
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	if offset < 0 {
+		offset = 0
+	}
+
+	// Stated by the caller so the three counts partition the same instant.
+	// Computing now() per row inside SQLite would let a grant expire between
+	// two CASE arms and be counted twice or not at all.
+	now := time.Now().Unix()
+
+	stats, err := a.db.SessionStats(network, now)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	grants, total, err := a.db.SessionGrants(network, limit, offset)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	realms, err := a.db.SessionRealms(network, sessionRealmsTop)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	stats.Realms = len(realms)
+
+	// How much of the chain this has actually looked at. A sessions page that
+	// is really showing the last week of a two-year chain must say so: the
+	// index fills forward from whenever the feature shipped and sweeps
+	// backwards on a cursor, so "3 grants" can mean "3 so far".
+	done, at, stop := a.db.SessionBackfillProgress(network)
+
+	JSONResponse(w, map[string]any{
+		"stats":   stats,
+		"grants":  grants,
+		"realms":  realms,
+		"total":   total,
+		"limit":   limit,
+		"offset":  offset,
+		"scanned": map[string]any{"complete": done, "at": at, "stop": stop},
+	})
+}
+
+// HandleSessionIdentity answers "whose session is this address".
+//
+// The chain cannot: auth/accounts/<session_addr> returns null, because a
+// session is not a plain account. Storage cannot either, directly, because a
+// session-signed transaction records the master as its caller and the session
+// address appears in no message. Only the grant transaction ties the two
+// together, which is what session_grants keeps.
+//
+// Served separately from HandleAddressSessions because the two answer opposite
+// questions about the same address, and an address can be both: a master that
+// has granted keys, and itself a key granted by someone else.
+func (a *API) HandleSessionIdentity(w http.ResponseWriter, r *http.Request) {
+	addr := r.PathValue("addr")
+	grants, err := a.db.SessionGrantsByAddress(a.networkParam(r), addr)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	// Also the grants this address has *made*, from the index rather than RPC,
+	// so the history (revoked, expired) is there alongside the live read.
+	granted, err := a.db.SessionGrantsByMaster(a.networkParam(r), addr)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	done, _, _ := a.db.SessionBackfillProgress(a.networkParam(r))
+	JSONResponse(w, map[string]any{
+		"address": addr,
+		// is_session is the headline: this address signs for somebody else.
+		"is_session": len(grants) > 0,
+		"grants":     grants,
+		"granted":    granted,
+		// Without this a reader cannot tell "not a session" from "not indexed
+		// yet", and the sweep can take a while on a long chain.
+		"scan_complete": done,
+	})
 }
