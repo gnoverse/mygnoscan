@@ -28,38 +28,38 @@ import (
 // brand new proposal still looks live.
 const creationsCacheTTL = 60 * time.Second
 
-var creationsCache = struct {
-	mu      sync.Mutex
-	byNet   map[string][]indexer.Transaction
-	fetched map[string]time.Time
-}{byNet: map[string][]indexer.Transaction{}, fetched: map[string]time.Time{}}
+// creationsFailureTTL bounds retries when the indexer cannot answer. Matches
+// govDAOFailureTTL: same kind of upstream, same reason.
+const creationsFailureTTL = 5 * time.Second
+
+var creationsCache = newMemo[[]indexer.Transaction](creationsCacheTTL, creationsFailureTTL)
 
 // proposalCreations returns every ProposalCreated transaction on the network,
 // cached, newest first. A failed refresh keeps serving the last good list
 // rather than blanking every proposal's provenance over one bad round trip,
 // the same policy as the render caches in govdao.go.
+// This is the hottest cache on the govdao list page and the one that most
+// wanted single-flight: AuditGovDAOProposal calls it, and the overview runs one
+// AuditGovDAOProposal per proposal concurrently. Cold, that used to be one full
+// indexer query plus one block-time stamping pass *per proposal*, all at once,
+// against the same indexer.
+//
+// The old version also held the cache mutex across stampBlockTimes, which is a
+// network call, so the concurrent callers queued behind it even when they were
+// about to be served the same answer. memo runs the fetch outside the lock.
 func (a *API) proposalCreations(ctx context.Context, network string) []indexer.Transaction {
-	creationsCache.mu.Lock()
-	if txs, ok := creationsCache.byNet[network]; ok && time.Since(creationsCache.fetched[network]) < creationsCacheTTL {
-		creationsCache.mu.Unlock()
-		return txs
-	}
-	creationsCache.mu.Unlock()
-
 	client := a.clientFor(network)
 	if client == nil {
 		return nil
 	}
-	txs, err := client.GetGovDAOProposalCreations(ctx)
-	creationsCache.mu.Lock()
-	defer creationsCache.mu.Unlock()
-	if err != nil {
-		return creationsCache.byNet[network]
-	}
-	a.stampBlockTimes(ctx, network, client, txs)
-	creationsCache.byNet[network] = txs
-	creationsCache.fetched[network] = time.Now()
-	return txs
+	return creationsCache.get(ctx, network, func(ctx context.Context) ([]indexer.Transaction, bool) {
+		txs, err := client.GetGovDAOProposalCreations(ctx)
+		if err != nil {
+			return nil, false
+		}
+		a.stampBlockTimes(ctx, network, client, txs)
+		return txs, true
+	})
 }
 
 // proposalIDOf returns the proposal ID a ProposalCreated transaction

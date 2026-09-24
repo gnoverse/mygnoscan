@@ -107,13 +107,15 @@ func FetchGnockpitValidators(ctx context.Context) []GnockpitValidator {
 	return fetchGnockpitStatus(ctx)
 }
 
+// gnockpitClient talks to one external dashboard, over the shared pool.
+var gnockpitClient = sharedClient(5 * time.Second)
+
 func fetchGnockpitValidators(ctx context.Context) []GnockpitValidator {
-	client := &http.Client{Timeout: 5 * time.Second}
 	req, err := http.NewRequestWithContext(ctx, "GET", gnockpitURL, nil)
 	if err != nil {
 		return nil
 	}
-	resp, err := client.Do(req)
+	resp, err := gnockpitClient.Do(req)
 	if err != nil {
 		return nil
 	}
