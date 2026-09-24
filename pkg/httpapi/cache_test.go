@@ -538,3 +538,29 @@ func TestEndpointTTLOverridesTheDefault(t *testing.T) {
 		t.Errorf("default TTL = %v, want %v", got, CacheTTL)
 	}
 }
+
+// The endpoints that report this server's own live counters must not be served
+// from a cache those counters describe.
+//
+// /api/views is the one that caught us: it counts realm page opens and flushes
+// before answering, and was then cached like everything else, so the first
+// caller stored "nobody has opened anything" and every caller after was told
+// that while being counted. The realm detail avoided this; one endpoint over
+// reintroduced it, because ?path= keys separately and happened to be asked
+// first in the test that was supposed to prove it.
+func TestLiveCountersAreNotCacheable(t *testing.T) {
+	for _, path := range []string{"/api/cache/stats", "/api/views", "/api/live", "/api/version"} {
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		if cacheable(r) {
+			t.Errorf("%s is cacheable, so it would report a stale version of the state it exists to report", path)
+		}
+	}
+	// And the ordinary ones still are, or this guard has quietly disabled the
+	// cache.
+	for _, path := range []string{"/api/realms", "/api/apps", "/api/realm/r/x/a"} {
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		if !cacheable(r) {
+			t.Errorf("%s stopped being cacheable", path)
+		}
+	}
+}
