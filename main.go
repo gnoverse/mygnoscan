@@ -9,6 +9,7 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -84,6 +85,20 @@ func run() error {
 
 		mcpConcurrent = flag.Int("mcp-concurrency", httpapi.MCPDefaultConcurrent,
 			"MCP requests in flight per client address (0 = unlimited)")
+		// Browser origins beyond this server's own host and loopback, which
+		// are always accepted. Empty is right for a public deployment; a page
+		// somewhere else embedding the endpoint is the case this exists for.
+		mcpOrigins = flag.String("mcp-allowed-origins", "",
+			`comma-separated browser origins the MCP endpoint accepts, e.g. "https://example.com" ("*" = any)`)
+		// The name readers reach this instance by. Unset, the endpoint can
+		// only compare a browser's Host and Origin against each other, which
+		// deflects a page but not a client that writes its own headers. Set,
+		// both are checked against a known answer. Worth setting on anything
+		// bound to loopback, which is what the DNS-rebinding advisory is
+		// about; guessing it here instead of asking would refuse every real
+		// request behind a reverse proxy that rewrites Host.
+		mcpPublicOrigin = flag.String("mcp-public-origin", "",
+			`the origin this instance is reached by, e.g. "https://mygnoscan.example"; enables strict Host and Origin checks on /mcp`)
 	)
 	flag.Parse()
 
@@ -349,6 +364,18 @@ func run() error {
 	// into, which is what keeps a tool's answer identical to the REST
 	// endpoint's; the dispatcher is set below, once the cache exists.
 	mcp := api.NewMCPServer(httpapi.NewIPLimiter(*mcpPerMinute, *mcpConcurrent), gitHash)
+	if *mcpPublicOrigin != "" {
+		mcp.SetPublicOrigin(*mcpPublicOrigin)
+		log.Printf("mcp: strict host and origin checks against %s", *mcpPublicOrigin)
+	}
+	if *mcpOrigins != "" {
+		origins := strings.Split(*mcpOrigins, ",")
+		for i := range origins {
+			origins[i] = strings.TrimSpace(origins[i])
+		}
+		mcp.SetAllowedOrigins(origins)
+		log.Printf("mcp: also accepting browser origins %v", origins)
+	}
 	// Both methods named rather than one method-less pattern. A pattern with
 	// no method conflicts with the SPA's "GET /" and Go's mux panics at
 	// registration: "matches fewer methods than /mcp, but has a more general
