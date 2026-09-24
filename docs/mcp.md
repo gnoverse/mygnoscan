@@ -161,6 +161,41 @@ that follows from being stateless. The suite exits non-zero on an unexpected
 failure **and** on a baseline entry that has started passing, so the file
 cannot rot into a mute button.
 
+## Do the descriptions actually work
+
+Conformance checks the wire format. A Go test checks that a tool returns what it
+should once it is called. Neither touches the part a model actually consumes:
+seven descriptions, and the choice it makes from them. That choice is the whole
+interface. A tool nobody picks does not exist, and one picked for the wrong
+question is worse, because the answer looks authoritative.
+
+[`cmd/mcp-eval`](../cmd/mcp-eval) measures it. Sixteen questions a developer
+actually arrives with, in [`mcp/tool-selection.json`](../mcp/tool-selection.json),
+each with the set of tools that count as correct and the one the descriptions
+are written to steer toward. The tool list is fetched from a running endpoint,
+not read out of the source, so what is scored is exactly what a client is handed.
+
+```sh
+go run ./cmd/mcp-eval -url http://127.0.0.1:8888/mcp -verbose
+```
+
+Measured 2026-09-25 against the seven live tools: **16/16 acceptable, 15/16
+preferred.** The one divergence is *"has anyone already written a merkle tree"*
+going to `search_symbols` rather than `search_code`, which is a defensible read
+of the question and is why that question accepts both. *"Sign and broadcast a
+transaction for me"* correctly returns `none`, which is the result that matters
+most: there is no write tool, and a model that invented one would be the worst
+failure this endpoint could have.
+
+**Not a CI job**, deliberately. It needs a model and therefore credentials, it
+costs tokens, and its result is a percentage that moves. Wiring a flaky number
+into a build teaches people to rerun it. Run it when the tool list or a
+description changes, and read the misses rather than the score.
+
+Several questions have more than one honest answer, and `accept` lists them.
+Pretending otherwise would make the score a measure of my opinion rather than of
+the descriptions.
+
 ## Limits
 
 | | default | flag |
