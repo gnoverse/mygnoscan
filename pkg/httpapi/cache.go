@@ -83,10 +83,30 @@ func (e cacheEntry) age() time.Duration { return time.Since(e.storedAt) }
 // These are ceilings on staleness, not promises of it: the warmer refreshes on
 // its own schedule, so a longer TTL here buys fewer redundant recomputes rather
 // than older data.
+//
+// The rule for adding one: **measure the cold cost, and give it a TTL of at
+// least ten times that**, or the process spends more than a tenth of its life
+// recomputing a single endpoint for nobody. Measure with a cache-busting query
+// parameter against a running instance:
+//
+//	curl -s -o /dev/null -w '%{time_total}\n' "$HOST/api/<path>?_p=$RANDOM"
+//
+// Every warm target was measured that way against production on 2026-09-24, and
+// the result is why this map is short: /api/accounts came back in 0.82s,
+// /api/analytics in 1.09s, /api/contracts/map in 0.48s, and thirteen others
+// under 0.35s. An earlier measurement of the same endpoints had /api/accounts at
+// 7.8s and /api/analytics at 8.5s; the balance cache and the rollups fixed those
+// since, so the numbers to act on are the ones you just took, not the ones in an
+// old issue.
 var endpointTTL = map[string]time.Duration{
+	// 24.8s to 51.1s cold, four runs. The list page runs the full detail-page
+	// audit per row, and the audit re-walks every proposal creation.
 	"/api/govdao":          2 * time.Minute,
 	"/api/govdao/overview": 2 * time.Minute,
 	"/api/govdao/voters":   2 * time.Minute,
+	// 8.0s cold, and the only endpoint outside govdao that is not already
+	// comfortably inside the default TTL.
+	"/api/allevents": 2 * time.Minute,
 }
 
 // cacheTTLFor returns the freshness window for one path.
