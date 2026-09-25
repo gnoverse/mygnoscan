@@ -99,12 +99,37 @@ func TestIndexIsCompressedAndRevalidatable(t *testing.T) {
 	})
 
 	// A deep link is not a 404: the SPA routes on the URL, so every path that
-	// is not an embedded file has to arrive at the same HTML.
-	t.Run("deep links get the app", func(t *testing.T) {
+	// is not an embedded file has to arrive at the app.
+	//
+	// Byte-identical for every route but a realm's. A realm gets the same app
+	// with a link-preview block spliced into its head, because a crawler does
+	// not run the SPA and that block is the only thing it can read.
+	t.Run("a non-realm deep link is the precomputed document, unchanged", func(t *testing.T) {
+		for _, path := range []string{"/txs", "/blocks", "/address/g1abc", "/realmish/r/x/y"} {
+			rec := httptest.NewRecorder()
+			h(rec, httptest.NewRequest("GET", path, nil))
+			if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), index) {
+				t.Errorf("%s got %d and %d bytes, want the untouched document", path, rec.Code, rec.Body.Len())
+			}
+		}
+	})
+
+	t.Run("a realm deep link gets the app plus its preview", func(t *testing.T) {
 		rec := httptest.NewRecorder()
 		h(rec, httptest.NewRequest("GET", "/realm/gno.land/r/demo/boards", nil))
-		if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), index) {
-			t.Errorf("deep link got %d and %d bytes", rec.Code, rec.Body.Len())
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d", rec.Code)
+		}
+		body := rec.Body.Bytes()
+		// Still the whole app: a preview must not cost the reader the page.
+		if !bytes.Contains(body, []byte("<title>mygnoscan</title>")) {
+			t.Error("the realm document is not the app")
+		}
+		if len(body) <= len(index) {
+			t.Errorf("realm document is %d bytes against the base %d, so nothing was injected", len(body), len(index))
+		}
+		if !bytes.Contains(body, []byte(`property="og:title"`)) {
+			t.Error("no og:title")
 		}
 	})
 }
