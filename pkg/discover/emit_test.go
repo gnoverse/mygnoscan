@@ -201,3 +201,70 @@ func lower(s string) string {
 	}
 	return string(b)
 }
+
+// The five kinds whose layer 3 is drafted rather than approved. They get the
+// same treatment as the four that are: the gate runs on them, and on the shapes
+// most likely to break a template rather than only the happy one.
+func TestDraftedEmittersPassTheGroundingGate(t *testing.T) {
+	type emitted struct {
+		kind   string
+		facts  Facts
+		layers Layers
+	}
+	var all []emitted
+	add := func(kind string, f Facts, l Layers) { all = append(all, emitted{kind, f, l}) }
+
+	f, l := PackageFirstCall{Path: "gno.land/r/gnoswap/router", Ref: "r/gnoswap/router",
+		Caller: "g1abc", Height: 173108, External: true}.Emit()
+	add("package.first_call (external)", f, l)
+
+	f, l = PackageFirstCall{Path: "gno.land/r/moul/home", Ref: "r/moul/home",
+		Caller: "g1manfred", Height: 5, External: false}.Emit()
+	add("package.first_call (by its author)", f, l)
+
+	f, l = PackageSpike{Ref: "r/gov/dao", Day: "2026-09-18", Calls: 48, Callers: 12,
+		BaselineMedian: 12, Ratio: 4.0}.Emit()
+	add("package.spike", f, l)
+
+	f, l = NamespaceRegistered{Name: "nym-polux007",
+		Address: "g1l0tdzdyxsayestm8lu95xehgtc0s825pxu583g", Height: 173108}.Emit()
+	add("namespace.registered", f, l)
+
+	f, l = ValidatorRegistered{Moniker: "HazenNetworkSolutions", Address: "g1val", Height: 9}.Emit()
+	add("validator.registered", f, l)
+
+	f, l = PackageRejected{Path: "gno.land/r/x/y", Ref: "r/x/y", Actor: "g1approver", Height: 7}.Emit()
+	add("package.rejected", f, l)
+
+	for _, e := range all {
+		if v := Ground(e.facts, e.layers, nil); len(v) > 0 {
+			for _, one := range v {
+				t.Errorf("%s: %s", e.kind, one.Error())
+			}
+		}
+	}
+}
+
+// Layer 2 is the card's headline row and the budget is what keeps it one
+// sentence. Asserting it here means a template that grows a clause fails in this
+// package rather than by being truncated in somebody's feed reader.
+func TestEveryEmittedHeadlineFitsTheCard(t *testing.T) {
+	f1, l1 := PackageFirstCall{Path: "gno.land/r/gnoswap/router", Ref: "r/gnoswap/router",
+		Caller: "g1abc", Height: 1, External: true}.Emit()
+	f2, l2 := PackageSpike{Ref: "r/gov/dao", Day: "2026-09-18", Calls: 48, Callers: 12,
+		BaselineMedian: 12, Ratio: 4.0}.Emit()
+	f3, l3 := NamespaceRegistered{Name: "nym-polux007", Address: "g1l0", Height: 1}.Emit()
+	f4, l4 := ValidatorRegistered{Moniker: "HazenNetworkSolutions", Address: "g1v", Height: 1}.Emit()
+	f5, l5 := PackageRejected{Path: "gno.land/r/x/y", Ref: "r/x/y", Actor: "g1a", Height: 1}.Emit()
+
+	for i, l := range []Layers{l1, l2, l3, l4, l5} {
+		if n := len(l.Means.Text); n > MaxMeans {
+			t.Errorf("case %d: layer 2 is %d characters, over the %d the card allows: %q",
+				i, n, MaxMeans, l.Means.Text)
+		}
+		if l.Headline() != l.Means.Text {
+			t.Errorf("case %d: headline is not layer 2", i)
+		}
+	}
+	_ = []Facts{f1, f2, f3, f4, f5}
+}
