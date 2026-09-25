@@ -275,8 +275,23 @@ func (c *Client) SupportsTransferEvents(ctx context.Context) bool {
 	return c.supportsType(ctx, transferProbeType)
 }
 
-// supportsType reports whether this chain's indexer defines a GraphQL type,
-// asking it once per type and remembering the answer.
+// typeSupportKey names one endpoint's answer about one type. The NUL separator
+// cannot occur in either half, so no pair of (url, type) can collide with
+// another by concatenation.
+func typeSupportKey(url, typeName string) string { return url + "\x00" + typeName }
+
+// supportsType reports whether the CURRENTLY SELECTED endpoint defines a
+// GraphQL type, asking it once per (endpoint, type) and remembering the answer.
+//
+// Per endpoint, not per client, because a pool's members do not have to run the
+// same schema and mainnet's two do not: indexer.gno.land does not define
+// MsgCreateSession and indexer.onbloc.xyz does. Caching one answer for the pool
+// means the field set can be trimmed for one member and sent to the other,
+// which fails in the worst possible way. It does not error: the message comes
+// back with its real __typename and NO fields, because the fragment that would
+// have selected them was stripped and the UnexpectedMessage fragment no longer
+// matches. Measured on mainnet 2026-09-25, where it silently dropped ten
+// session grants (gnoverse/mygnoscan#353 follow-up).
 //
 // Asked rather than inferred from an error, so the first query of a sync pass
 // does not have to fail to find out. A probe that cannot reach the indexer
@@ -284,8 +299,16 @@ func (c *Client) SupportsTransferEvents(ctx context.Context) bool {
 // existed, and the query that follows will fail for the real reason rather than
 // being silently trimmed because a health check blipped.
 func (c *Client) supportsType(ctx context.Context, typeName string) bool {
+	// Read the endpoint and the cache under ONE acquisition. activeURL takes
+	// the same mutex and sync.Mutex is not reentrant, so calling it from inside
+	// the critical section deadlocks.
 	c.mu.Lock()
-	known, seen := c.typeSupport[typeName]
+	url := ""
+	if len(c.urls) > 0 {
+		url = c.urls[c.active]
+	}
+	key := typeSupportKey(url, typeName)
+	known, seen := c.typeSupport[key]
 	c.mu.Unlock()
 	if seen {
 		return known
@@ -304,7 +327,7 @@ func (c *Client) supportsType(ctx context.Context, typeName string) bool {
 			Name string `json:"name"`
 		} `json:"__type"`
 	}
-	err := c.doQuery(ctx, c.activeURL(), `{ __type(name: "`+typeName+`") { name } }`, nil, &result)
+	err := c.doQuery(ctx, url, `{ __type(name: "`+typeName+`") { name } }`, nil, &result)
 	supported := err != nil || result.Type != nil
 
 	c.mu.Lock()
@@ -312,7 +335,7 @@ func (c *Client) supportsType(ctx context.Context, typeName string) bool {
 		if c.typeSupport == nil {
 			c.typeSupport = map[string]bool{}
 		}
-		c.typeSupport[typeName] = supported
+		c.typeSupport[key] = supported
 	}
 	c.mu.Unlock()
 	return supported

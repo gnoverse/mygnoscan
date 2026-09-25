@@ -338,11 +338,14 @@ func sessionBackfillCursorKey(network string) string {
 //	      opposite of what the new code reads it as.
 //	v2    the decoder was wrong for one of the two indexer shapes, so every
 //	      block swept before it was fixed was read and silently discarded.
+//	v3    the schema probe was cached per pool rather than per endpoint, so the
+//	      typed fragments were stripped for one indexer and the query sent to
+//	      the other, which answered with no fields to decode.
 //
 // Bump it whenever the sweep's direction or its decoder changes. A stale cursor
 // is not a cosmetic problem: it is a claim that blocks were examined, and that
 // claim is what stops them ever being examined again.
-const sessionSweepVersion = "v2"
+const sessionSweepVersion = "v3"
 
 func sessionBackfillStopKey(network string) string { return "session_backfill_stop:" + network }
 
