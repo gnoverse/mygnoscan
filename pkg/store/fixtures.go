@@ -108,6 +108,15 @@ func SeedNetwork(t TB, db *DB, network string, height int) {
 	}); err != nil {
 		t.Fatalf("add realm views: %v", err)
 	}
+	// Written directly rather than through RefreshFirstSeen: the seeded call
+	// above carries no block_time, and the refresh deliberately skips a subject
+	// whose earliest row is untimed, so it would produce no row here.
+	if _, err := db.SQL().Exec(
+		`INSERT INTO first_seen (network, kind, subject, at, height) VALUES (?, ?, ?, ?, ?)`,
+		network, FirstSeenAddress, "g1caller", "2026-01-01T00:00:00Z", height,
+	); err != nil {
+		t.Fatalf("seed first_seen: %v", err)
+	}
 }
 
 // SQL exposes the underlying handle.
