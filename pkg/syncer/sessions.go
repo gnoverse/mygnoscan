@@ -3,11 +3,10 @@ package syncer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"strconv"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/moul/mygnoscan/pkg/indexer"
 	"github.com/moul/mygnoscan/pkg/store"
@@ -26,16 +25,6 @@ import (
 // so calls and bank_sends record the master and the session address appears
 // nowhere. The chain will not close the loop either: auth/accounts/<session>
 // returns null. Only the grant transaction ties key to account.
-
-// How hard this sweep leans on the indexer.
-//
-// Gentler than the shared backfillConcurrency: this runs on top of normal sync
-// catch-up, which is already the traffic the indexer rate-limits, and a 403
-// here costs a whole pass rather than one row.
-const (
-	sessionBackfillConcurrency = 4
-	sessionBackfillRetryPause  = 3 * time.Second
-)
 
 // sessionRawGrant is the JSON inside UnexpectedMessage.raw for
 // auth/create_session. Field names are the struct tags in
@@ -180,6 +169,46 @@ func decodeSessionRaw(msg indexer.TxMessage, g *sessionRawGrant) bool {
 // Unlike backfillTokenTransfers it walks NEWEST FIRST. Sessions landed on
 // mainnet around height 270,000 of 306,000, so sweeping up from genesis spends
 // about a day on blocks that cannot hold a grant. See SessionBackfillRange.
+// fetchSessionRange reads [from, to) and reports the lowest height it can
+// honestly claim to have covered.
+//
+// Returns `covered == to` when it covered nothing, which the caller reads as
+// "leave the cursor alone and retry". Anything lower is a real floor: every
+// block from there up to `to` has been seen.
+//
+// Splits on ErrQueryTooLarge rather than accepting the partial page. The
+// resolver caps its row count and hands back what it had alongside the error,
+// so trusting it would silently skip whatever fell past the cap. For this
+// caller that means losing grants with nothing to show anything went wrong,
+// which is the failure mode worth spending an extra request to avoid.
+func (s *Syncer) fetchSessionRange(ctx context.Context, from, to int) ([]indexer.Transaction, int) {
+	txs, err := s.client.GetTransactionsInRange(ctx, from, to)
+	if err == nil {
+		return txs, from
+	}
+
+	if errors.Is(err, indexer.ErrQueryTooLarge) && to-from > 1 {
+		// Halve and take both sides. The upper half is attempted first so a
+		// failure in the lower half still yields a usable floor: the sweep
+		// walks downward, so covering the top of the range is progress even
+		// when the bottom has to wait for the next pass.
+		mid := from + (to-from)/2
+		upper, upperFloor := s.fetchSessionRange(ctx, mid, to)
+		if upperFloor > mid {
+			return upper, upperFloor // the upper half itself did not complete
+		}
+		lower, lowerFloor := s.fetchSessionRange(ctx, from, mid)
+		return append(upper, lower...), lowerFloor
+	}
+
+	// A single block that will not answer, or a refusal this pass cannot get
+	// past. One retry already happened inside the client-facing path below;
+	// beyond that the cursor stays put and the next pass tries again, which is
+	// what keeps a bad height from becoming a hole.
+	log.Printf("[%s] session backfill %d..%d: %v", s.networkID, from, to-1, err)
+	return nil, to
+}
+
 func (s *Syncer) backfillSessions(ctx context.Context) {
 	// Pin the boundary before the first batch, so the sweep has a fixed finish
 	// line rather than chasing the tip forever. The store reads the tip itself;
@@ -197,64 +226,14 @@ func (s *Syncer) backfillSessions(ctx context.Context) {
 		return
 	}
 
-	type blockTxs struct {
-		txs []indexer.Transaction
-		err error
-	}
-	heights := make([]int, 0, to-from)
-	for h := from; h < to; h++ {
-		heights = append(heights, h)
-	}
-	results := make([]blockTxs, len(heights))
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, sessionBackfillConcurrency)
-	for i, h := range heights {
-		wg.Add(1)
-		go func(i, h int) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			txs, err := s.client.GetTransactionsByBlock(ctx, h)
-			if err != nil {
-				// One retry, after a pause. A rate-limited indexer answers 403
-				// and this sweep is exactly the traffic that earns one: it adds
-				// a burst of block queries on top of normal sync catch-up.
-				//
-				// Worth retrying rather than leaving to the next pass because
-				// the batch is scanned from the top down and stops at the first
-				// failure, so a single refused height at the top costs the
-				// whole pass. Observed on mainnet 2026-09-25, where height
-				// 306501 got a 403 and the cursor did not move at all.
-				select {
-				case <-ctx.Done():
-					results[i] = blockTxs{err: ctx.Err()}
-					return
-				case <-time.After(sessionBackfillRetryPause):
-				}
-				txs, err = s.client.GetTransactionsByBlock(ctx, h)
-			}
-			results[i] = blockTxs{txs: txs, err: err}
-		}(i, h)
-	}
-	wg.Wait()
+	// One range query for the whole batch, not one per height. The per-height
+	// version spent most passes being rate-limited: 100 requests per batch on
+	// top of sync catch-up is exactly what earns a 403, and a refusal at the
+	// top of the batch moved the cursor not at all. Measured on mainnet
+	// 2026-09-25 at 303 blocks swept of 306,501 in fifteen minutes.
+	answered, covered := s.fetchSessionRange(ctx, from, to)
+	done := covered
 
-	// The cursor only advances over heights that answered, so an unhealthy
-	// indexer costs a retry rather than a permanent hole nothing comes back for.
-	// Walking newest first, so the cursor records the LOWEST height that
-	// answered and the scan runs down from the top of the batch. A gap stops
-	// the cursor above it, so the missing heights are retried rather than
-	// skipped past.
-	var answered []indexer.Transaction
-	done := to
-	for i := len(results) - 1; i >= 0; i-- {
-		r := results[i]
-		if r.err != nil {
-			log.Printf("[%s] session backfill at %d: %v", s.networkID, heights[i], r.err)
-			break
-		}
-		answered = append(answered, r.txs...)
-		done = heights[i]
-	}
 	stored := 0
 	if len(answered) > 0 {
 		// Block times are resolved in one pass: GetTransactionsByBlock does not
@@ -265,7 +244,7 @@ func (s *Syncer) backfillSessions(ctx context.Context) {
 			stored += s.recordSessions(tx, times[tx.BlockHeight])
 		}
 	}
-	if done == to {
+	if done >= to {
 		return // nothing answered; leave the cursor alone and retry next pass
 	}
 	if err := s.db.SetSessionBackfillCursor(s.networkID, done); err != nil {
