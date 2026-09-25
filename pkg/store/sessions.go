@@ -318,8 +318,16 @@ func (d *DB) SessionRealms(network string, limit int) ([]SessionRealm, error) {
 // The cursor holds the lowest height swept so far, because this sweep runs
 // NEWEST FIRST. See SessionBackfillRange for why that direction and not the
 // other one.
-func sessionBackfillCursorKey(network string) string { return "session_backfill_cursor:" + network }
-func sessionBackfillStopKey(network string) string   { return "session_backfill_stop:" + network }
+// The key is versioned because the cursor's MEANING changed, not its format.
+// It used to hold the highest height swept walking up; it now holds the lowest
+// swept walking down. Any instance that ran the upward sweep has a low number
+// under the old key, and reading that as a downward cursor would declare almost
+// the whole chain already swept and skip the exact region where grants live.
+// A new key makes such an instance start cleanly from the boundary instead.
+func sessionBackfillCursorKey(network string) string {
+	return "session_backfill_cursor_desc:" + network
+}
+func sessionBackfillStopKey(network string) string { return "session_backfill_stop:" + network }
 
 // SessionBackfillRange returns the next batch of heights never walked for
 // session messages, and whether any work is left.

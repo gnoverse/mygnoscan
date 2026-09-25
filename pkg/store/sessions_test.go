@@ -456,3 +456,35 @@ func TestSessionStatsOnAnEmptyIndex(t *testing.T) {
 		t.Errorf("got %d realms, want 0", len(realms))
 	}
 }
+
+// An instance that ran the upward sweep holds a low cursor under the old key.
+// Read as a downward cursor that would mean "almost everything is swept", and
+// the sweep would skip the newest blocks, which is the only region session
+// grants exist in. The key is versioned so such an instance starts clean.
+func TestAnUpwardCursorIsNotMistakenForADownwardOne(t *testing.T) {
+	db := NewTestDB(t)
+	for _, h := range []int{1, 1000} {
+		if err := db.UpsertBlock("mainnet", h, "2026-09-20T00:00:00Z", 0, 0); err != nil {
+			t.Fatalf("seed block: %v", err)
+		}
+	}
+	// What the previous build left behind: swept up to 50.
+	if err := db.SetSyncState("session_backfill_cursor:mainnet", "50"); err != nil {
+		t.Fatalf("seed stale cursor: %v", err)
+	}
+	if err := db.PinSessionBackfillStop("mainnet"); err != nil {
+		t.Fatalf("pin: %v", err)
+	}
+
+	_, to, more, err := db.SessionBackfillRange("mainnet", 100)
+	if err != nil || !more {
+		t.Fatalf("batch: more=%v err=%v", more, err)
+	}
+	if to != 1001 {
+		t.Errorf("first batch ends at %d, want 1001: a stale upward cursor must not be read as downward progress", to)
+	}
+	done, at, _ := db.SessionBackfillProgress("mainnet")
+	if done || at != 0 {
+		t.Errorf("progress = %v at=%d, want false 0: nothing has been swept downward yet", done, at)
+	}
+}
