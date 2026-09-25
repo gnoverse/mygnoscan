@@ -325,8 +325,25 @@ func (d *DB) SessionRealms(network string, limit int) ([]SessionRealm, error) {
 // the whole chain already swept and skip the exact region where grants live.
 // A new key makes such an instance start cleanly from the boundary instead.
 func sessionBackfillCursorKey(network string) string {
-	return "session_backfill_cursor_desc:" + network
+	return "session_backfill_cursor_" + sessionSweepVersion + ":" + network
 }
+
+// sessionSweepVersion invalidates the cursor whenever a change means blocks
+// already swept would now yield a different answer.
+//
+// Bumped twice so far, and for two different reasons, which is why it is a
+// version rather than a one-off rename:
+//
+//	desc  the sweep reversed direction, so an old cursor's number meant the
+//	      opposite of what the new code reads it as.
+//	v2    the decoder was wrong for one of the two indexer shapes, so every
+//	      block swept before it was fixed was read and silently discarded.
+//
+// Bump it whenever the sweep's direction or its decoder changes. A stale cursor
+// is not a cosmetic problem: it is a claim that blocks were examined, and that
+// claim is what stops them ever being examined again.
+const sessionSweepVersion = "v2"
+
 func sessionBackfillStopKey(network string) string { return "session_backfill_stop:" + network }
 
 // SessionBackfillRange returns the next batch of heights never walked for

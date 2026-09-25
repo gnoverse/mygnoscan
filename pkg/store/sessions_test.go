@@ -457,7 +457,10 @@ func TestSessionStatsOnAnEmptyIndex(t *testing.T) {
 	}
 }
 
-// An instance that ran the upward sweep holds a low cursor under the old key.
+// An instance that ran a previous sweep holds a cursor under an older key. It
+// must be ignored rather than read as progress: under the upward key the number
+// meant the opposite direction, and under the desc key it claims blocks were
+// examined that the fixed decoder never actually read.
 // Read as a downward cursor that would mean "almost everything is swept", and
 // the sweep would skip the newest blocks, which is the only region session
 // grants exist in. The key is versioned so such an instance starts clean.
@@ -469,7 +472,7 @@ func TestAnUpwardCursorIsNotMistakenForADownwardOne(t *testing.T) {
 		}
 	}
 	// What the previous build left behind: swept up to 50.
-	if err := db.SetSyncState("session_backfill_cursor:mainnet", "50"); err != nil {
+	if err := db.SetSyncState("session_backfill_cursor_desc:mainnet", "50"); err != nil {
 		t.Fatalf("seed stale cursor: %v", err)
 	}
 	if err := db.PinSessionBackfillStop("mainnet"); err != nil {

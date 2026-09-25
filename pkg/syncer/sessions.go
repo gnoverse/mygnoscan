@@ -84,28 +84,32 @@ func (s *Syncer) recordSessions(tx indexer.Transaction, blockTime string) int {
 		if msg.Route != "auth" {
 			continue
 		}
+		g, ok := decodeSessionMsg(msg)
+		if !ok {
+			// Logged, never skipped quietly. A silent continue here is exactly
+			// how the typed-indexer case stayed invisible: the sweep looked
+			// healthy and the index stayed empty.
+			if msg.TypeURL == "create_session" || msg.TypeURL == "revoke_session" ||
+				msg.TypeURL == "revoke_all_sessions" {
+				log.Printf("[%s] session %s at %d: could not decode (raw=%dB typename=%q)",
+					s.networkID, msg.TypeURL, tx.BlockHeight, len(msg.Value.Raw), msg.Value.Typename)
+			}
+			continue
+		}
+
 		switch msg.TypeURL {
 		case "create_session":
-			var g sessionRawGrant
-			if !decodeSessionRaw(msg, &g) {
-				continue
-			}
-			addr := indexer.AddressFromPubKey(g.SessionKey)
-			if addr == "" || g.Creator == "" {
-				// A key we cannot derive an address for is a row keyed on
-				// nothing. Logged rather than stored, because a silent skip
-				// here is how a grant goes missing from a page that claims to
-				// list every one.
-				log.Printf("[%s] session grant at %d: undecodable session_key (%d bytes)",
-					s.networkID, tx.BlockHeight, len(g.SessionKey))
+			if g.SessionAddr == "" || g.Creator == "" {
+				log.Printf("[%s] session grant at %d: no session address or creator",
+					s.networkID, tx.BlockHeight)
 				continue
 			}
 			if err := s.db.UpsertSessionGrant(store.SessionGrant{
 				Network:       s.networkID,
-				SessionAddr:   addr,
+				SessionAddr:   g.SessionAddr,
 				Master:        g.Creator,
 				AllowPaths:    g.AllowPaths,
-				SpendLimit:    g.limitString(),
+				SpendLimit:    g.SpendLimit,
 				SpendPeriod:   g.SpendPeriod,
 				ExpiresAt:     g.ExpiresAt,
 				GrantedHeight: tx.BlockHeight,
@@ -118,23 +122,17 @@ func (s *Syncer) recordSessions(tx indexer.Transaction, blockTime string) int {
 			stored++
 
 		case "revoke_session":
-			var g sessionRawGrant
-			if !decodeSessionRaw(msg, &g) {
+			if g.SessionAddr == "" {
 				continue
 			}
-			addr := indexer.AddressFromPubKey(g.SessionKey)
-			if addr == "" {
-				continue
-			}
-			if err := s.db.RevokeSessionGrant(s.networkID, addr, tx.BlockHeight, blockTime, tx.Hash); err != nil {
+			if err := s.db.RevokeSessionGrant(s.networkID, g.SessionAddr, tx.BlockHeight, blockTime, tx.Hash); err != nil {
 				log.Printf("[%s] session revoke at %d: %v", s.networkID, tx.BlockHeight, err)
 				continue
 			}
 			stored++
 
 		case "revoke_all_sessions":
-			var g sessionRawGrant
-			if !decodeSessionRaw(msg, &g) || g.Creator == "" {
+			if g.Creator == "" {
 				continue
 			}
 			if err := s.db.RevokeAllSessionGrants(s.networkID, g.Creator, tx.BlockHeight, blockTime, tx.Hash); err != nil {
@@ -147,29 +145,70 @@ func (s *Syncer) recordSessions(tx indexer.Transaction, blockTime string) int {
 	return stored
 }
 
-// decodeSessionRaw reads the grant out of a message, from whichever of the two
-// shapes this indexer gave us.
+// sessionGrantMsg is a grant with everything already resolved, whichever of the
+// two shapes the indexer gave us.
+type sessionGrantMsg struct {
+	Creator     string
+	SessionAddr string
+	ExpiresAt   int64
+	AllowPaths  []string
+	SpendLimit  string
+	SpendPeriod int64
+}
+
+// decodeSessionMsg reads a grant out of a message, from either shape.
 //
-// The typed fields are preferred when present, because an indexer that models
-// the type has already parsed it. Today none does, so in practice this always
-// takes the raw path; the typed branch is what stops this silently going blank
-// on the day one ships support.
-func decodeSessionRaw(msg indexer.TxMessage, g *sessionRawGrant) bool {
-	if msg.Value.Raw != "" {
-		return json.Unmarshal([]byte(msg.Value.Raw), g) == nil
+// Both are live simultaneously and a single instance sees both, which is the
+// thing that makes this subtle. mygnoscan's mainnet is configured with two
+// interchangeable indexers and rotates to the second whenever the first rate
+// limits it:
+//
+//   - indexer.gno.land does NOT model MsgCreateSession, so the message arrives
+//     as UnexpectedMessage and the grant is JSON in `raw`, with session_key a
+//     raw public key that has to be hashed into an address.
+//   - indexer.onbloc.xyz DOES model it, so the message arrives typed, with
+//     session_key already a g1 address and spend_limit already "5000000ugnot".
+//
+// Handling only the first is how every grant went missing on 2026-09-25: the
+// sweep covered the blocks, the typed branch fell through to a bare `return
+// false`, and recordSessions skipped each one without a word. The page reported
+// a healthy sweep and an empty chain.
+func decodeSessionMsg(msg indexer.TxMessage) (sessionGrantMsg, bool) {
+	if raw := msg.Value.Raw; raw != "" {
+		var g sessionRawGrant
+		if err := json.Unmarshal([]byte(raw), &g); err != nil {
+			return sessionGrantMsg{}, false
+		}
+		// session_key here is the raw key, not an address: crypto.PubKey
+		// amino-JSON-encodes as its bytes.
+		addr := indexer.AddressFromPubKey(g.SessionKey)
+		if addr == "" {
+			return sessionGrantMsg{}, false
+		}
+		return sessionGrantMsg{
+			Creator:     g.Creator,
+			SessionAddr: addr,
+			ExpiresAt:   g.ExpiresAt,
+			AllowPaths:  g.AllowPaths,
+			SpendLimit:  g.limitString(),
+			SpendPeriod: g.SpendPeriod,
+		}, true
 	}
-	if msg.Value.Creator == "" && msg.Value.SessionKey == "" {
-		return false
+
+	// Typed. Nothing to derive and nothing to normalise: an indexer that models
+	// the type has already done both.
+	v := msg.Value
+	if v.Creator == "" && v.SessionKey == "" {
+		return sessionGrantMsg{}, false
 	}
-	// A modelled MsgCreateSession gives session_key as an address string, so
-	// there is nothing to derive and nothing for AddressFromPubKey to do. The
-	// caller handles that by checking Creator, so flag it here rather than
-	// returning a half-filled struct.
-	g.Creator = msg.Value.Creator
-	g.ExpiresAt = msg.Value.ExpiresAt
-	g.AllowPaths = msg.Value.AllowPaths
-	g.SpendPeriod = int64(msg.Value.SpendPeriod)
-	return false
+	return sessionGrantMsg{
+		Creator:     v.Creator,
+		SessionAddr: v.SessionKey,
+		ExpiresAt:   v.ExpiresAt,
+		AllowPaths:  v.AllowPaths,
+		SpendLimit:  v.SpendLimit,
+		SpendPeriod: int64(v.SpendPeriod),
+	}, true
 }
 
 // backfillSessions sweeps the history the forward fill never saw.
