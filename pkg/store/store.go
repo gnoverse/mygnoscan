@@ -160,7 +160,9 @@ func (d *DB) Search(network, q string) ([]PackageInfo, error) {
 	// The counts are selected, not left to the scan: this used to read eight
 	// columns into eleven destinations, so every search returned
 	// "expected 8 destination arguments in Scan, not 11" and the site's search
-	// box was dead for any query.
+	// box was dead for any query. Keep the SELECT list, the inner aliases and
+	// the Scan destinations in step; unique_users was the one that got left
+	// behind after that fix and answered 0 on every row for months.
 	//
 	// Windowed by is_realm so the two kinds are capped independently, and
 	// ordered realms first: a realm is a thing a reader can open and use, a
@@ -168,13 +170,19 @@ func (d *DB) Search(network, q string) ([]PackageInfo, error) {
 	// wanted is the former. Within a kind the order is still recency.
 	qStr := `
 		SELECT network, path, name, creator, block_height, tx_hash, is_realm, num_files,
-		       calls, importers, imports
+		       calls, importers, imports, unique_users
 		  FROM (
 			SELECT p.network, p.path, p.name, p.creator, p.block_height, p.tx_hash,
 			       p.is_realm, p.num_files,
 			       (SELECT COUNT(*) FROM calls c WHERE c.network = p.network AND c.pkg_path = p.path) AS calls,
 			       (SELECT COUNT(*) FROM dependencies d WHERE d.network = p.network AND d.import_path = p.path) AS importers,
 			       (SELECT COUNT(*) FROM dependencies d WHERE d.network = p.network AND d.package_path = p.path) AS imports,
+			       -- COUNT(DISTINCT caller), the same definition ListPackages uses.
+			       -- Selected here because PackageInfo carries the field and a
+			       -- column left unselected does not read as absent: it reads as
+			       -- a confident zero, and a search row claiming a busy realm has
+			       -- no users is worse than one that says nothing.
+			       (SELECT COUNT(DISTINCT c.caller) FROM calls c WHERE c.network = p.network AND c.pkg_path = p.path) AS unique_users,
 			       ROW_NUMBER() OVER (PARTITION BY p.is_realm ORDER BY p.block_height DESC) AS rn
 			  FROM packages p
 			 WHERE (p.path LIKE ? OR p.name LIKE ? OR p.creator LIKE ?)`
@@ -196,7 +204,7 @@ func (d *DB) Search(network, q string) ([]PackageInfo, error) {
 	for rows.Next() {
 		var p PackageInfo
 		if err := rows.Scan(&p.Network, &p.Path, &p.Name, &p.Creator, &p.BlockHeight, &p.TxHash,
-			&p.IsRealm, &p.NumFiles, &p.Calls, &p.Importers, &p.Imports); err != nil {
+			&p.IsRealm, &p.NumFiles, &p.Calls, &p.Importers, &p.Imports, &p.UniqueUsers); err != nil {
 			return nil, err
 		}
 		pkgs = append(pkgs, p)
