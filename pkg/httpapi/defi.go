@@ -78,10 +78,15 @@ type realmDefiResponse struct {
 	StorageDepositAddress string `json:"storage_deposit_address,omitempty"`
 
 	// Balance and StorageBalance are live RPC reads, verbatim coin strings.
-	// Empty means the read failed, which is not the same as a zero balance and
-	// must not be rendered as one.
-	Balance        string `json:"balance"`
-	StorageBalance string `json:"storage_balance"`
+	// Empty is ambiguous on its own: it is both "the read failed" and "the
+	// account holds nothing", and the second is the common case for a realm
+	// whose money is all in GRC20. BalanceKnown and StorageBalanceKnown are
+	// what separate them, so the frontend can render zero as zero and reserve
+	// "unknown" for a read that genuinely did not happen.
+	Balance             string `json:"balance"`
+	BalanceKnown        bool   `json:"balance_known"`
+	StorageBalance      string `json:"storage_balance"`
+	StorageBalanceKnown bool   `json:"storage_balance_known"`
 
 	// DerivedUgnot is the reconstruction: every transfer leg, summed. LiveUgnot
 	// is what the chain says. Both are reported rather than one being chosen,
@@ -152,10 +157,12 @@ func (a *API) HandleRealmDefi(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rpcURL := a.rpcURLFor(network)
-	resp.Balance = fetchBalance(r.Context(), addr, rpcURL)
-	resp.LiveUgnot = store.ParseUgnot(resp.Balance)
+	bal, balErr := fetchBalanceErr(r.Context(), addr, rpcURL)
+	resp.Balance, resp.BalanceKnown = bal, balErr == nil
+	resp.LiveUgnot = store.ParseUgnot(bal)
 	if depositAddr != "" {
-		resp.StorageBalance = fetchBalance(r.Context(), depositAddr, rpcURL)
+		sbal, sErr := fetchBalanceErr(r.Context(), depositAddr, rpcURL)
+		resp.StorageBalance, resp.StorageBalanceKnown = sbal, sErr == nil
 	}
 
 	// Read from the local ledger, not walked from the indexer.

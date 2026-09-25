@@ -729,46 +729,72 @@ var (
 	rpcStatusClient = sharedClient(10 * time.Second)
 )
 
+// fetchBalance is the string-only form, for callers that have nowhere to put a
+// failure and treat every unreadable account as empty.
 func fetchBalance(ctx context.Context, addr, rpcURL string) string {
+	bal, _ := fetchBalanceErr(ctx, addr, rpcURL)
+	return bal
+}
+
+// fetchBalanceErr returns the account's coin string, and an error only when the
+// chain could not be asked.
+//
+// An empty string with a nil error is a successful read of an account that
+// holds nothing, and it is the common case for a realm whose money is all in
+// GRC20, which is most of gnoswap. The two used to collapse into the same empty
+// string, so the defi tab announced "the chain could not be read for a live
+// balance" for every such realm while the chain had answered perfectly well.
+//
+// The node's own error is what separates them, and it has to be read: a query
+// that fails also comes back with empty Data, so treating empty Data alone as
+// zero would invert the bug and print "0 GNOT" for a read that never happened.
+// ResponseBase.Error is an interface in tm2 and IsOK() is `Error == nil`, so it
+// is null in JSON exactly when the read succeeded.
+func fetchBalanceErr(ctx context.Context, addr, rpcURL string) (string, error) {
 	if rpcURL == "" {
-		return ""
+		return "", fmt.Errorf("no rpc endpoint configured")
 	}
 	url := fmt.Sprintf("%s/abci_query?path=%%22bank/balances/%s%%22&data=0x", rpcURL, addr)
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		return ""
+		return "", err
 	}
 	resp, err := balanceClient.Do(req)
 	if err != nil {
-		return ""
+		return "", err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return ""
+		return "", err
 	}
 	var result struct {
 		Result struct {
 			Response struct {
 				ResponseBase struct {
-					Data string `json:"Data"`
+					Error json.RawMessage `json:"Error"`
+					Data  string          `json:"Data"`
 				} `json:"ResponseBase"`
 			} `json:"response"`
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return ""
+		return "", err
 	}
-	data := result.Result.Response.ResponseBase.Data
-	if data == "" {
-		return ""
+	rb := result.Result.Response.ResponseBase
+	if e := strings.TrimSpace(string(rb.Error)); e != "" && e != "null" {
+		return "", fmt.Errorf("abci query failed: %s", e)
 	}
-	decoded, err := base64.StdEncoding.DecodeString(data)
+	if rb.Data == "" {
+		// The node answered and the account holds nothing.
+		return "", nil
+	}
+	decoded, err := base64.StdEncoding.DecodeString(rb.Data)
 	if err != nil {
-		return ""
+		return "", err
 	}
 	// Strip quotes: "754954090ugnot" -> 754954090ugnot
-	return strings.Trim(string(decoded), "\"")
+	return strings.Trim(string(decoded), "\""), nil
 }
 
 // allWindowDays bounds the "all" window. gno.land's genesis is comfortably
