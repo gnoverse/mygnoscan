@@ -2,6 +2,7 @@ package discover
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -267,4 +268,84 @@ func TestEveryEmittedHeadlineFitsTheCard(t *testing.T) {
 		}
 	}
 	_ = []Facts{f1, f2, f3, f4, f5}
+}
+
+// The last three v1 kinds, including the two whose layer 2 has to survive a
+// long title and the one whose threshold decides what a reader is shown.
+func TestFinalThreeEmittersPassTheGroundingGate(t *testing.T) {
+	type emitted struct {
+		kind   string
+		facts  Facts
+		layers Layers
+	}
+	var all []emitted
+	add := func(k string, f Facts, l Layers) { all = append(all, emitted{k, f, l}) }
+
+	// The real mainnet proposals, measured 2026-09-25: titles of 20 and 53.
+	f, l := ProposalOpened{ID: 7, Title: "Set node halt height",
+		ActorLabel: "@aeddi", Actor: "g1aeddi", Height: 173108}.Emit()
+	add("proposal.opened (short title)", f, l)
+
+	f, l = ProposalOpened{ID: 6, Title: "Add human package approvers alongside the gpao oracle",
+		ActorLabel: "@aeddi", Actor: "g1aeddi", Height: 1}.Emit()
+	add("proposal.opened (longest real title)", f, l)
+
+	f, l = ProposalOpened{ID: 6, Title: "Add human package approvers alongside the gpao oracle",
+		ActorLabel: "@nym-thegnomic001", Actor: "g1n", Height: 1}.Emit()
+	add("proposal.opened (long title and long handle)", f, l)
+
+	f, l = ProposalClosed{ID: 7, Title: "Set node halt height", Outcome: "passed",
+		YesPct: 67, Executed: true, Height: 1}.Emit()
+	add("proposal.closed (executed)", f, l)
+
+	f, l = ProposalClosed{ID: 4, Title: "Proposal to unlock the transfer of ugnot.",
+		Outcome: "rejected", YesPct: 12, Executed: false, Height: 1}.Emit()
+	add("proposal.closed (rejected)", f, l)
+
+	f, l = TransferLarge{GNOT: 681635, From: "g1a", To: "g1b", Height: 1}.Emit()
+	add("transfer.large", f, l)
+
+	for _, e := range all {
+		if v := Ground(e.facts, e.layers, nil); len(v) > 0 {
+			for _, one := range v {
+				t.Errorf("%s: %s", e.kind, one.Error())
+			}
+		}
+	}
+}
+
+// Layer 2 drops the title rather than truncating it when the budget will not
+// hold both. A truncated title is a title that says something else, and the
+// full one survives in layers 1 and 3 either way.
+func TestProposalHeadlineDropsTheTitleRatherThanTruncateIt(t *testing.T) {
+	long := "Add human package approvers alongside the gpao oracle and then some more words"
+	_, l := ProposalOpened{ID: 6, Title: long, ActorLabel: "@nym-thegnomic001",
+		Actor: "g1n", Height: 1}.Emit()
+
+	if n := len(l.Means.Text); n > MaxMeans {
+		t.Fatalf("layer 2 is %d characters, over %d: %q", n, MaxMeans, l.Means.Text)
+	}
+	if strings.Contains(l.Means.Text, long[:20]) {
+		t.Errorf("layer 2 kept part of a title it could not fit: %q", l.Means.Text)
+	}
+	if !strings.Contains(l.Matters.Text, long) {
+		t.Errorf("the title was dropped from layer 2 and not carried in layer 3: %q", l.Matters.Text)
+	}
+
+	// And the ordinary case still carries it, or the rule would be "never show
+	// the title", which is not what the spec asks for.
+	_, short := ProposalOpened{ID: 7, Title: "Set node halt height",
+		ActorLabel: "@aeddi", Actor: "g1a", Height: 1}.Emit()
+	if !strings.Contains(short.Means.Text, "Set node halt height") {
+		t.Errorf("a title that fits was dropped anyway: %q", short.Means.Text)
+	}
+}
+
+// The threshold is the spec's, not a guess, and it decides what a reader is
+// shown. Pinning it means changing it is a visible decision.
+func TestTransferThresholdIsTheSampledOne(t *testing.T) {
+	if TransferLargeThresholdGNOT != 100_000 {
+		t.Errorf("threshold = %d, want 100000: design section 5.3 sampled 1,005 sends and chose the 0.7%% band",
+			TransferLargeThresholdGNOT)
+	}
 }
