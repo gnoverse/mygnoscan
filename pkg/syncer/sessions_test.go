@@ -21,38 +21,76 @@ const realGrantRaw = `{"creator":"g1manfred47kzduec920z88wfr64ylksmdcedlf5","ses
 // matches no account on the chain.
 const realGrantAddr = "g1rrtqvv2kcffw0nezkecxmxyqa6u9wy06e03fck"
 
-func TestDecodeSessionRaw(t *testing.T) {
-	var g sessionRawGrant
-	msg := indexer.TxMessage{
-		Route: "auth", TypeURL: "create_session",
-		Value: indexer.MessageValue{Typename: "UnexpectedMessage", Raw: realGrantRaw},
+// The two shapes a live instance actually sees, from the two interchangeable
+// indexers mainnet is configured with. Handling only the first is how every
+// grant went missing on 2026-09-25.
+func TestDecodeSessionMsgHandlesBothIndexerShapes(t *testing.T) {
+	const master = "g1manfred47kzduec920z88wfr64ylksmdcedlf5"
+
+	tests := []struct {
+		name string
+		msg  indexer.TxMessage
+	}{
+		{
+			// indexer.gno.land: does not model the type, so it arrives as
+			// UnexpectedMessage with the grant as JSON and the key as bytes.
+			name: "raw, from an indexer that does not model the type",
+			msg: indexer.TxMessage{
+				Route: "auth", TypeURL: "create_session",
+				Value: indexer.MessageValue{Typename: "UnexpectedMessage", Raw: realGrantRaw},
+			},
+		},
+		{
+			// indexer.onbloc.xyz: models it, so session_key is already an
+			// address and spend_limit already a coin string. Captured from it
+			// on 2026-09-25 for the same transaction.
+			name: "typed, from an indexer that models it",
+			msg: indexer.TxMessage{
+				Route: "auth", TypeURL: "create_session",
+				Value: indexer.MessageValue{
+					Typename:    "MsgCreateSession",
+					Creator:     master,
+					SessionKey:  realGrantAddr,
+					ExpiresAt:   1792772718,
+					AllowPaths:  []string{"vm/exec:gno.land/r/moul/x/reaper"},
+					SpendLimit:  "5000000ugnot",
+					SpendPeriod: 0,
+				},
+			},
+		},
 	}
-	if !decodeSessionRaw(msg, &g) {
-		t.Fatal("decodeSessionRaw returned false on a real mainnet grant")
-	}
-	if got := indexer.AddressFromPubKey(g.SessionKey); got != realGrantAddr {
-		t.Errorf("derived address = %q, want %q (the address the chain reports)", got, realGrantAddr)
-	}
-	if g.Creator != "g1manfred47kzduec920z88wfr64ylksmdcedlf5" {
-		t.Errorf("creator = %q", g.Creator)
-	}
-	if g.ExpiresAt != 1792772718 {
-		t.Errorf("expires_at = %d", g.ExpiresAt)
-	}
-	if len(g.AllowPaths) != 1 || g.AllowPaths[0] != "vm/exec:gno.land/r/moul/x/reaper" {
-		t.Errorf("allow_paths = %v", g.AllowPaths)
-	}
-	// Normalised to the spelling the chain's own account read uses, so the two
-	// sources of the same fact agree and the frontend has one shape.
-	if got := g.limitString(); got != "5000000ugnot" {
-		t.Errorf("limitString = %q, want %q", got, "5000000ugnot")
-	}
-	if g.SpendPeriod != 0 {
-		t.Errorf("spend_period = %d, want 0 for a lifetime cap", g.SpendPeriod)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g, ok := decodeSessionMsg(tt.msg)
+			if !ok {
+				t.Fatal("decodeSessionMsg returned false on a real grant")
+			}
+			// Both shapes must resolve to the SAME grant: same session address,
+			// same master, same scope, same limit spelling.
+			if g.SessionAddr != realGrantAddr {
+				t.Errorf("session address = %q, want %q", g.SessionAddr, realGrantAddr)
+			}
+			if g.Creator != master {
+				t.Errorf("creator = %q", g.Creator)
+			}
+			if g.SpendLimit != "5000000ugnot" {
+				t.Errorf("spend_limit = %q, want the coin-string form", g.SpendLimit)
+			}
+			if g.ExpiresAt != 1792772718 {
+				t.Errorf("expires_at = %d", g.ExpiresAt)
+			}
+			if len(g.AllowPaths) != 1 || g.AllowPaths[0] != "vm/exec:gno.land/r/moul/x/reaper" {
+				t.Errorf("allow_paths = %v", g.AllowPaths)
+			}
+			if g.SpendPeriod != 0 {
+				t.Errorf("spend_period = %d, want 0 for a lifetime cap", g.SpendPeriod)
+			}
+		})
 	}
 }
 
-func TestDecodeSessionRawRejects(t *testing.T) {
+func TestDecodeSessionMsgRejects(t *testing.T) {
 	tests := []struct {
 		name string
 		msg  indexer.TxMessage
@@ -66,20 +104,21 @@ func TestDecodeSessionRawRejects(t *testing.T) {
 			msg: indexer.TxMessage{Route: "auth", TypeURL: "create_session",
 				Value: indexer.MessageValue{Raw: "Tx{deadbeef}"}},
 		},
+		{
+			name: "raw with a key of no recognised length",
+			msg: indexer.TxMessage{Route: "auth", TypeURL: "create_session",
+				Value: indexer.MessageValue{Raw: `{"creator":"g1x","session_key":[1,2,3]}`}},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var g sessionRawGrant
-			if decodeSessionRaw(tt.msg, &g) {
-				t.Error("decoded something from a message that carries no grant")
+			if _, ok := decodeSessionMsg(tt.msg); ok {
+				t.Error("decoded something from a message that carries no usable grant")
 			}
 		})
 	}
 }
 
-// A key too short to be a compressed secp256k1 point must derive nothing rather
-// than a plausible address. A wrong-length key that still produced a g1 string
-// would key a row onto an account that does not exist.
 func TestAddressFromShortKeyIsEmpty(t *testing.T) {
 	if got := indexer.AddressFromPubKey([]byte{2, 147, 52}); got != "" {
 		t.Errorf("AddressFromPubKey(3 bytes) = %q, want empty", got)
