@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -66,6 +68,37 @@ func run() error {
 		// sooner than a production chain does.
 		symbolIndexEvery = flag.Duration("symbol-index-interval", symbolIndexInterval,
 			"how often to re-index package symbols; the staleness check is one query, so this is cheap")
+		// The MCP endpoint carries no authentication, because the data is a
+		// public chain and an API key would make it useless to the agents it
+		// exists for. Per-IP limits are what make that safe, so they are
+		// tunable but never absent by default. Zero disables a limit, which is
+		// for a single-user local run and not for anything reachable.
+		mcpPerMinute = flag.Int("mcp-rate", httpapi.MCPDefaultPerMinute,
+			"MCP requests per minute per client address (0 = unlimited)")
+		pprofAddr = flag.String("pprof", "",
+			"serve net/http/pprof on this address; bind to localhost, the profiles are not public data")
+
+		warmEvery = flag.Duration("warm-interval", httpapi.WarmInterval,
+			"how long the cache warmer waits between passes; 0 disables it")
+		warmNetworks = flag.String("warm-networks", "",
+			"also warm these networks' govdao endpoints: a comma-separated list, or \"all\"")
+
+		mcpConcurrent = flag.Int("mcp-concurrency", httpapi.MCPDefaultConcurrent,
+			"MCP requests in flight per client address (0 = unlimited)")
+		// Browser origins beyond this server's own host and loopback, which
+		// are always accepted. Empty is right for a public deployment; a page
+		// somewhere else embedding the endpoint is the case this exists for.
+		mcpOrigins = flag.String("mcp-allowed-origins", "",
+			`comma-separated browser origins the MCP endpoint accepts, e.g. "https://example.com" ("*" = any)`)
+		// The name readers reach this instance by. Unset, the endpoint can
+		// only compare a browser's Host and Origin against each other, which
+		// deflects a page but not a client that writes its own headers. Set,
+		// both are checked against a known answer. Worth setting on anything
+		// bound to loopback, which is what the DNS-rebinding advisory is
+		// about; guessing it here instead of asking would refuse every real
+		// request behind a reverse proxy that rewrites Host.
+		mcpPublicOrigin = flag.String("mcp-public-origin", "",
+			`the origin this instance is reached by, e.g. "https://mygnoscan.example"; enables strict Host and Origin checks on /mcp`)
 	)
 	flag.Parse()
 
@@ -327,6 +360,33 @@ func run() error {
 	httpapi.InitLiveFeeds(cfg.Networks, clients)
 	mux.HandleFunc("GET /api/live", httpapi.LiveFeedHandler())
 
+	// The MCP endpoint, for agents. Registered on the same mux it dispatches
+	// into, which is what keeps a tool's answer identical to the REST
+	// endpoint's; the dispatcher is set below, once the cache exists.
+	mcp := api.NewMCPServer(httpapi.NewIPLimiter(*mcpPerMinute, *mcpConcurrent), gitHash)
+	if *mcpPublicOrigin != "" {
+		mcp.SetPublicOrigin(*mcpPublicOrigin)
+		log.Printf("mcp: strict host and origin checks against %s", *mcpPublicOrigin)
+	}
+	if *mcpOrigins != "" {
+		origins := strings.Split(*mcpOrigins, ",")
+		for i := range origins {
+			origins[i] = strings.TrimSpace(origins[i])
+		}
+		mcp.SetAllowedOrigins(origins)
+		log.Printf("mcp: also accepting browser origins %v", origins)
+	}
+	// Both methods named rather than one method-less pattern. A pattern with
+	// no method conflicts with the SPA's "GET /" and Go's mux panics at
+	// registration: "matches fewer methods than /mcp, but has a more general
+	// path pattern". GET is registered only so the handler can answer it with
+	// a 405 and an Allow header, which is what a client opening the URL
+	// looking for an SSE stream needs to be told.
+	mux.HandleFunc("POST "+httpapi.MCPPath, mcp.Handle)
+	mux.HandleFunc("GET "+httpapi.MCPPath, mcp.Handle)
+	log.Printf("mcp: %s serves %d read-only tools, %d req/min and %d concurrent per address",
+		httpapi.MCPPath, httpapi.MCPToolCount(), *mcpPerMinute, *mcpConcurrent)
+
 	// Frontend: SPA handler serves index.html for all non-API routes
 	frontend, err := web.Handler(web.Options{AnalyticsScript: *analyticsScript, Shots: api.ShotsEnabled()})
 	if err != nil {
@@ -342,10 +402,64 @@ func run() error {
 	// compressed and a hit does not re-gzip 3.5 MB of JSON per reader. The
 	// cache key carries the negotiated encoding to keep those two facts
 	// consistent (see cacheKey).
+	// WithServerTiming sits inside the cache on purpose: the number it reports
+	// is the cost of computing an answer, so its presence on a response means
+	// somebody paid for that answer and its absence means they did not.
 	cache := httpapi.NewResponseCache(httpapi.CacheTTL)
-	handler := httpapi.WithResponseCache(cache,
-		httpapi.RejectUnknownNetwork(cfg.Networks,
-			httpapi.WithCompression(mux)))
+	// The read counter is outside the cache, and that is not a preference: a
+	// cached answer never reaches the handler, so counting deeper would count
+	// the first reader of a realm and miss everyone who followed. The more a
+	// realm was read, the less it would appear to be read.
+	views := httpapi.NewViewCounter(db)
+	handler := httpapi.WithRealmViews(views,
+		httpapi.WithResponseCache(cache,
+			httpapi.RejectUnknownNetwork(cfg.Networks,
+				httpapi.WithServerTiming(
+					httpapi.WithCompression(mux)))))
+	go views.Run(ctx)
+
+	// A tool call goes through the cache, not straight at the mux: the reads
+	// behind get_realm_state and the analytics endpoints are the expensive
+	// ones, and an agent asking the same question twice should pay for it
+	// once. Compression is skipped on the way in, since an internal request
+	// sends no Accept-Encoding, so nothing is gzipped only to be gunzipped.
+	mcp.SetDispatcher(httpapi.WithResponseCache(cache, mux))
+
+	// The warmer drives `handler`, the same stack a browser hits, so the
+	// entries it fills are keyed exactly as a reader's request would key them.
+	// Pointing it at `mux` instead would compute everything and cache nothing.
+	//
+	// Started after the background DB work settles, because a warmer racing a
+	// cold sync would cache the answers of a half-populated database for a
+	// whole TTL. See pkg/httpapi/warmer.go for why this exists at all.
+	var warmer *httpapi.Warmer
+	if *warmEvery > 0 {
+		warmer = httpapi.NewWarmer(handler, httpapi.ParseWarmNetworks(*warmNetworks, cfg.IDs()), *warmEvery)
+		api.SetWarmer(warmer)
+		go func() {
+			db.WaitBackground()
+			warmer.WaitReady(ctx, syncHealth, httpapi.WarmReadyGrace)
+			warmer.Run(ctx)
+		}()
+	} else {
+		log.Printf("warmer: disabled (-warm-interval=0); readers pay the cold cost")
+	}
+	api.SetResponseCache(cache)
+	api.SetViewCounter(views)
+
+	// pprof on its own listener rather than on the public mux: a profile says
+	// more about this process than any page does, and the difference between
+	// "diagnosable" and "exposed" should be which interface it binds to, not a
+	// path nobody guesses.
+	if *pprofAddr != "" {
+		go func() {
+			log.Printf("pprof: listening on %s", *pprofAddr)
+			pprofSrv := &http.Server{Addr: *pprofAddr, Handler: http.DefaultServeMux}
+			if err := pprofSrv.ListenAndServe(); err != http.ErrServerClosed {
+				log.Printf("pprof: %v", err)
+			}
+		}()
+	}
 
 	srv := &http.Server{
 		Addr:         *listenAddr,

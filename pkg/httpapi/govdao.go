@@ -10,7 +10,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/moul/mygnoscan/pkg/store"
@@ -22,12 +21,23 @@ import (
 // enough that a page load never waits on more than one live RPC round trip.
 const govDAOCacheTTL = 30 * time.Second
 
+// govDAOFailureTTL bounds how often a failed read is retried. Short, because a
+// governance page that stays blank after the node recovered is worse than a few
+// extra round trips, and non-zero because "retry on every request" is what
+// turns one unreachable node into a retry storm against it.
+const govDAOFailureTTL = 5 * time.Second
+
 // govDAOListAuditLimit caps how many proposals the overview page audits in
 // full. gov/dao has eight proposals on mainnet, so this is not a limit
 // anyone hits today; it exists so a chain that accumulates hundreds does not
 // turn one list page into hundreds of ABCI round trips. The newest IDs win,
 // since those are the ones with a vote still open.
 const govDAOListAuditLimit = 25
+
+// abciClient bounds one ABCI round trip. Eight seconds is generous for a
+// vm/qrender against a healthy node and short enough that a wedged one does
+// not hold a page open; the pool it draws from is sharedTransport.
+var abciClient = sharedClient(8 * time.Second)
 
 // fetchGovDAORender runs a vm/qrender ABCI query and returns the realm's
 // rendered markdown for the given query string (e.g. "gno.land/r/gov/dao:4").
@@ -61,13 +71,12 @@ func fetchABCIQuery(ctx context.Context, rpcURL, queryPath, data string) (string
 	if err != nil {
 		return "", err
 	}
-	client := &http.Client{Timeout: 8 * time.Second}
 	req, err := http.NewRequestWithContext(ctx, "POST", rpcURL, strings.NewReader(string(reqBody)))
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
+	resp, err := abciClient.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -443,60 +452,40 @@ func unescapeMarkdown(s string) string {
 // govDAOOverviewCache and govDAOProposalCache hold last-good renders,
 // mirroring gnockpit.go's pattern: a failed refresh keeps serving the last
 // good value rather than blanking a page over one bad RPC round trip.
-var govDAOOverviewCache = struct {
-	mu      sync.Mutex
-	byNet   map[string]GovDAOOverview
-	fetched map[string]time.Time
-}{byNet: map[string]GovDAOOverview{}, fetched: map[string]time.Time{}}
+// govDAOOverviewCache holds last-good renders, mirroring gnockpit.go's
+// pattern: a failed refresh keeps serving the last good value rather than
+// blanking a page over one bad RPC round trip. See memo for what it adds on top
+// of that, namely single-flight and a bounded retry after a failure.
+var govDAOOverviewCache = newMemo[GovDAOOverview](govDAOCacheTTL, govDAOFailureTTL)
 
 // FetchGovDAOOverview returns the proposal list, members and tier stats for
 // a network, best-effort and cached.
 func FetchGovDAOOverview(ctx context.Context, network, rpcURL string) GovDAOOverview {
-	govDAOOverviewCache.mu.Lock()
-	if cached, ok := govDAOOverviewCache.byNet[network]; ok && time.Since(govDAOOverviewCache.fetched[network]) < govDAOCacheTTL {
-		govDAOOverviewCache.mu.Unlock()
-		return cached
-	}
-	govDAOOverviewCache.mu.Unlock()
-
-	var out GovDAOOverview
-	if listMD, err := fetchGovDAORender(ctx, rpcURL, store.GovDAOPathPrefix+":"); err != nil {
-		out.Errors = append(out.Errors, "proposals: "+err.Error())
-	} else {
-		out.Proposals = parseGovDAOProposalList(listMD)
-	}
-	if membersMD, err := fetchGovDAORender(ctx, rpcURL, store.GovDAOPathPrefix+"/memberstore/v0:members"); err != nil {
-		out.Errors = append(out.Errors, "members: "+err.Error())
-	} else {
-		out.Members = parseGovDAOMembers(membersMD)
-	}
-	if tierMD, err := fetchGovDAORender(ctx, rpcURL, store.GovDAOPathPrefix+"/memberstore/v0:"); err != nil {
-		out.Errors = append(out.Errors, "tier stats: "+err.Error())
-	} else {
-		out.TierStats = parseGovDAOTierStats(tierMD)
-	}
-
-	govDAOOverviewCache.mu.Lock()
-	defer govDAOOverviewCache.mu.Unlock()
-	// Only replace the cache on at least partial success — an all-error
-	// result means the RPC is down, and the previous good overview (if any)
-	// is more useful to serve than an empty one.
-	if len(out.Proposals) > 0 || len(out.Members) > 0 || len(out.TierStats) > 0 {
-		govDAOOverviewCache.byNet[network] = out
-		govDAOOverviewCache.fetched[network] = time.Now()
-		return out
-	}
-	if cached, ok := govDAOOverviewCache.byNet[network]; ok {
-		return cached
-	}
-	return out
+	return govDAOOverviewCache.get(ctx, network, func(ctx context.Context) (GovDAOOverview, bool) {
+		var out GovDAOOverview
+		if listMD, err := fetchGovDAORender(ctx, rpcURL, store.GovDAOPathPrefix+":"); err != nil {
+			out.Errors = append(out.Errors, "proposals: "+err.Error())
+		} else {
+			out.Proposals = parseGovDAOProposalList(listMD)
+		}
+		if membersMD, err := fetchGovDAORender(ctx, rpcURL, store.GovDAOPathPrefix+"/memberstore/v0:members"); err != nil {
+			out.Errors = append(out.Errors, "members: "+err.Error())
+		} else {
+			out.Members = parseGovDAOMembers(membersMD)
+		}
+		if tierMD, err := fetchGovDAORender(ctx, rpcURL, store.GovDAOPathPrefix+"/memberstore/v0:"); err != nil {
+			out.Errors = append(out.Errors, "tier stats: "+err.Error())
+		} else {
+			out.TierStats = parseGovDAOTierStats(tierMD)
+		}
+		// Storable on at least partial success: an all-error result means the
+		// RPC is down, and the previous good overview (if any) is more useful
+		// to serve than an empty one.
+		return out, len(out.Proposals) > 0 || len(out.Members) > 0 || len(out.TierStats) > 0
+	})
 }
 
-var govDAOProposalCache = struct {
-	mu      sync.Mutex
-	byKey   map[string]GovDAOProposalDetail
-	fetched map[string]time.Time
-}{byKey: map[string]GovDAOProposalDetail{}, fetched: map[string]time.Time{}}
+var govDAOProposalCache = newMemo[GovDAOProposalDetail](govDAOCacheTTL, govDAOFailureTTL)
 
 // FetchGovDAOProposal returns one proposal's detail + votes, best-effort and
 // cached. Related on-chain activity (calls, msg runs) is looked up by the
@@ -504,49 +493,37 @@ var govDAOProposalCache = struct {
 // does not.
 func FetchGovDAOProposal(ctx context.Context, network, rpcURL string, id int) GovDAOProposalDetail {
 	key := network + ":" + strconv.Itoa(id)
-	govDAOProposalCache.mu.Lock()
-	if cached, ok := govDAOProposalCache.byKey[key]; ok && time.Since(govDAOProposalCache.fetched[key]) < govDAOCacheTTL {
-		govDAOProposalCache.mu.Unlock()
-		return cached
-	}
-	govDAOProposalCache.mu.Unlock()
-
-	query := fmt.Sprintf("%s:%d", store.GovDAOPathPrefix, id)
-	detail := GovDAOProposalDetail{ID: id}
-	if detailMD, err := fetchGovDAORender(ctx, rpcURL, query); err != nil {
-		detail.Errors = append(detail.Errors, "detail: "+err.Error())
-	} else if detailMD == "" {
-		detail.Errors = append(detail.Errors, "no such proposal")
-	} else {
-		detail = parseGovDAOProposalDetail(id, detailMD)
-		if detail.Title == "" {
-			// gov/dao answers an out-of-range ID with its own "# Proposal
-			// not found" page rather than an empty response or an ABCI
-			// error, so nothing above catches it — the parse just finds no
-			// title line to match. Checking the parse's own postcondition
-			// (no title) is more durable than matching gov/dao's wording.
+	return govDAOProposalCache.get(ctx, key, func(ctx context.Context) (GovDAOProposalDetail, bool) {
+		query := fmt.Sprintf("%s:%d", store.GovDAOPathPrefix, id)
+		detail := GovDAOProposalDetail{ID: id}
+		if detailMD, err := fetchGovDAORender(ctx, rpcURL, query); err != nil {
+			detail.Errors = append(detail.Errors, "detail: "+err.Error())
+		} else if detailMD == "" {
 			detail.Errors = append(detail.Errors, "no such proposal")
+		} else {
+			detail = parseGovDAOProposalDetail(id, detailMD)
+			if detail.Title == "" {
+				// gov/dao answers an out-of-range ID with its own "# Proposal
+				// not found" page rather than an empty response or an ABCI
+				// error, so nothing above catches it: the parse just finds no
+				// title line to match. Checking the parse's own postcondition
+				// (no title) is more durable than matching gov/dao's wording.
+				detail.Errors = append(detail.Errors, "no such proposal")
+			}
 		}
-	}
-	if votesMD, err := fetchGovDAORender(ctx, rpcURL, query+"/votes"); err != nil {
-		detail.Errors = append(detail.Errors, "votes: "+err.Error())
-	} else {
-		detail.Votes = parseGovDAOVotes(votesMD)
-	}
-
-	if len(detail.Errors) == 0 || detail.Title != "" {
-		govDAOProposalCache.mu.Lock()
-		govDAOProposalCache.byKey[key] = detail
-		govDAOProposalCache.fetched[key] = time.Now()
-		govDAOProposalCache.mu.Unlock()
-		return detail
-	}
-	govDAOProposalCache.mu.Lock()
-	defer govDAOProposalCache.mu.Unlock()
-	if cached, ok := govDAOProposalCache.byKey[key]; ok {
-		return cached
-	}
-	return detail
+		if votesMD, err := fetchGovDAORender(ctx, rpcURL, query+"/votes"); err != nil {
+			detail.Errors = append(detail.Errors, "votes: "+err.Error())
+		} else {
+			detail.Votes = parseGovDAOVotes(votesMD)
+		}
+		// A proposal that does not exist is a real answer, not a failure to
+		// get one, and it is storable: an agent walking IDs past the end of
+		// the list should not re-ask the node for each of them on every
+		// request. It is stored under the failure TTL rather than the success
+		// one, because the next ID up becomes real as soon as somebody files
+		// a proposal.
+		return detail, len(detail.Errors) == 0 || detail.Title != ""
+	})
 }
 
 // gnoAddressRe pulls a bech32 address out of Gno's own debug-repr text (see
@@ -595,11 +572,14 @@ func resolveGnoUsername(ctx context.Context, rpcURL, username string) (string, e
 // often as gov/dao's own render.
 const usernameCacheTTL = 10 * time.Minute
 
-var usernameCache = struct {
-	mu      sync.Mutex
-	byName  map[string]string
-	fetched map[string]time.Time
-}{byName: map[string]string{}, fetched: map[string]time.Time{}}
+// usernameFailureTTL is longer than govDAOFailureTTL because the dominant
+// failure here is not a sick node, it is a name that is simply not registered.
+// That answer does not change in five seconds, and re-asking for it was the
+// single most repeated round trip on the govdao list page: one per unregistered
+// author, per proposal, per request.
+const usernameFailureTTL = 2 * time.Minute
+
+var usernameCache = newMemo[string](usernameCacheTTL, usernameFailureTTL)
 
 // resolveGnoUsernameCached is the best-effort, cached front for
 // resolveGnoUsername: an empty string on failure (unregistered name, RPC
@@ -612,21 +592,11 @@ func resolveGnoUsernameCached(ctx context.Context, rpcURL, username string) stri
 	if username == "" {
 		return ""
 	}
-	usernameCache.mu.Lock()
-	if addr, ok := usernameCache.byName[username]; ok && time.Since(usernameCache.fetched[username]) < usernameCacheTTL {
-		usernameCache.mu.Unlock()
-		return addr
-	}
-	usernameCache.mu.Unlock()
-
-	addr, err := resolveGnoUsername(ctx, rpcURL, username)
-
-	usernameCache.mu.Lock()
-	defer usernameCache.mu.Unlock()
-	if err == nil && addr != "" {
-		usernameCache.byName[username] = addr
-		usernameCache.fetched[username] = time.Now()
-		return addr
-	}
-	return usernameCache.byName[username]
+	// Keyed on the endpoint as well as the name: r/sys/users is per-chain, so
+	// a name registered on a testnet is not the same name on mainnet, and one
+	// keyed on the bare username would serve whichever chain asked first.
+	return usernameCache.get(ctx, rpcURL+"\x00"+username, func(ctx context.Context) (string, bool) {
+		addr, err := resolveGnoUsername(ctx, rpcURL, username)
+		return addr, err == nil && addr != ""
+	})
 }

@@ -15,8 +15,14 @@ on:
 # Deny by default; each job opts in to what it needs.
 permissions: {}
 
+# One group per commit on main, per branch on a pull request. See e2e.yml for
+# why: a shared per-ref group means a queued run on main is superseded by the
+# next merge and cancelled before it starts. This workflow is fast enough that
+# it usually wins the race, which makes it the more dangerous of the two to
+# leave: it fails this way only on the busiest days, which are the days the
+# answer matters.
 concurrency:
-  group: docker-${{ github.ref }}
+  group: docker-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

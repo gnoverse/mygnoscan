@@ -127,8 +127,12 @@ bounded at 3650 days instead.
 | `GET /api/networks` | configured network IDs — the fastest way to confirm which chains an instance is actually serving |
 | `GET /api/watch` | activity digest for a watchlist, plus a `transactions` timeline: the 50 most recent rows across every watched realm and address, merged and deduplicated. Repeated `realm=` and `address=` parameters, each optionally `id@height` — that height is the baseline `new_since` counts against (the timeline itself is not filtered by it). Answered from stored rows only, so a watchlist costs no indexer round-trips. Capped at 100 items |
 | `GET /api/labels` | display names for addresses: `{address: {label, kind, why}}`, the curated registry merged with what the chain proves |
+| `GET /api/apps` | the app hub, assembled: the chain's ranked realms, the community's off-chain apps, this repo's overrides, and the skip list, merged into one array of cards. Each card says where each of its fields came from. One app is one card: an older generation is folded into `previous` and the other realms of the same app into `parts`. A folded card's figures cover every realm it folded, both kinds, and are re-read over that set rather than summed, because calls add up and distinct callers do not; `folded_realms` says how many the figures cover |
 | `GET /api/registry/apps` | the curated app directory: `categories`, `apps`, a count of known tokens and an `awesome` summary of the community list. With a single `network`, also `stats` (per path: `deployed`, `calls`, `callers`, `calls_window`), `candidates` (the busiest realms with no entry, over `window`, default 30d) and `realms` (how many exist). Those are per-chain and absent without one, because the same path is a different deployment on each chain |
-| `GET /api/registry/awesome` | the vendored [awesome-gno](https://github.com/gnoverse/awesome-gno) snapshot: `sections`, `entries`, the `commit` it was read at and the day it was `synced`, plus the cross-check against the directory in both directions (`missing_from_awesome`, `missing_from_directory`, `in_directory`, `directory_by_name`). With a single `network`, `stats` for every realm either list names |
+| `GET /api/registry/awesome` | the vendored [awesome-gno](https://github.com/gnoverse/awesome-gno) snapshot: `apps` (the entries with a page you can open), `others` (what is on the list and has nothing to photograph, counted by section), `entries`, the `commit` it was read at and the day it was `synced`, plus the cross-check against the directory in both directions (`missing_from_awesome`, `missing_from_directory`, `in_directory`, `directory_by_name`). With a single `network`, `stats` for every realm either list names |
+| `GET /api/shot/site` | a screenshot of one listed off-chain app. `url` must appear verbatim in the vendored snapshot; anything else is a 400 |
+| `GET /api/views` | **the one number here the chain did not provide**: how many times each realm was opened on this explorer, per `window` (24h/7d/30d/90d, default 30d). Carries `kind: "inferred"` and a `why` saying so in the payload, because it is this server's own measurement and not a chain fact: gno.land records no reads, and this sees nothing served by gnoweb, Gnoscan or a wallet. Robots and this server's own cache warmer are excluded; nothing about a reader is stored, only a count per realm per day |
+| `GET /api/glossary` | plain-language definitions for the words this explorer uses: `{version, count, order, terms: {term: {gloss, also}}}`. `order` is the document's own ordering; `also` lists the other headwords a gloss leans on, so a renderer can gloss them on first use and a feed can inline them as parentheticals. Parsed from [`docs/glossary.md`](./glossary.md), which is the single source and wins over any other wording in the product. No `network`: the words mean the same thing on every chain |
 
 **Address labels are global, not per network.** An address is the same key on
 every chain, so a name earned on one applies everywhere.
@@ -167,6 +171,66 @@ Nothing is derived from a namespace with more than one deployer. Seven exist on
 the live chains, and naming one of their deployers would present a guess as a
 fact.
 
+### The app hub: three layers, and which one wins
+
+`/apps` used to be a curated list of ten entries against two hundred and ten
+realms, whose only contribution workflow was to stare at a JSON file. It now
+assembles itself from three layers.
+
+**The chain proposes.** `DiscoverApps` ranks every realm people actually call.
+The ranking is two constants in `pkg/store/discover.go` and nothing else:
+
+```
+score = callers_in_window * 10 + calls_in_window * 1
+```
+
+Distinct callers outrank raw calls by an order of magnitude because they answer
+different questions. Calls measure activity, and activity is trivially
+manufactured: one script in a loop is thousands of calls and one caller. Callers
+measure reach, and buying that costs a funded address per unit. Both are
+windowed, so a realm that was busy last year does not outrank one that is busy
+today. Realms only: a `p/` package has no page to open and belongs in
+`/packages`.
+
+**Every default is somebody's own word.** The description is the realm's own
+package doc comment, first sentence, stored in `symbol_index.package_doc`; and
+where there is none, the opening line of its own README, which on mainnet is the
+difference between a described grid and a mostly blank one (most realms carry no
+package comment, and several of the busiest ship a README that opens with
+exactly the sentence a card wants). The picture is a capture of the realm or of
+its website. Neither is this repo inventing a sentence about somebody else's
+code, which is what made auto-listing acceptable at all.
+
+**Curation corrects, with three small levers and no large one.**
+
+| lever | file | does |
+|---|---|---|
+| list | `apps.json`, awesome-gno | include something the ranking cannot see, and override its name, sentence, website or category |
+| relate only | `apps.json`, `supersedes` alone | assert "v3 replaces v2" without inventing a description for somebody else's realm |
+| relate | `apps.json` `supersedes` | fold an older generation into the one that replaces it |
+| skip | `moderation.toml` | remove something that should not be here, with a reason |
+
+Being listed means *included*, not *first*: a listed entry is floored at
+`scoreVouched` rather than promoted, so a realm people genuinely use still
+outranks it. Ranking listed entries to the top put Boards2, which nobody had
+called, above the busiest realm on the chain.
+
+**Every field says where it came from**, and the card shows it as one quiet
+mark: `curated` (this repo's registry), `community` (awesome-gno), `chain` (the
+realm's own doc comment), `readme` (its own README), `path` (nobody has said
+anything yet). A reader who cannot
+tell a vouched-for sentence from a generated one has to trust both equally or
+neither.
+
+**The skip list is served, not merely applied.** A page that quietly dropped an
+entry would be indistinguishable from one that lost it, and an unexplained
+removal is indistinguishable from censorship, so `moderation` comes back in the
+response with each entry's reason and the page prints them.
+
+**The website leads and the realm is second.** Somebody sent here wants the
+thing itself; the realm page is what they want next, and only if they are the
+kind of person who wants it.
+
 ### The community list, and the gap
 
 `gnoverse/awesome-gno` is the other curated answer to "what is being built on
@@ -184,6 +248,40 @@ why the response carries `commit`, `synced` and `age_days` and the page prints
 all three. `make awesome-check` says whether the committed copy is behind
 without writing. Neither runs in CI: a red build because somebody else edited
 their README is a build nobody here can fix.
+
+**Most of the list is not a realm, and the page shows the part that is an app.**
+Measured 2026-09-23: of 71 entries, **14 resolve to a page you can open** and the
+other 57 are repositories, SDKs, editor plugins, docs and talks. `/apps?view=ecosystem`
+draws a card with a screenshot per app and prints a count per section for the
+rest, because a grid of pictures with grey holes where the SDKs are reads as a
+broken page rather than as a list of libraries.
+
+The address behind an app comes from one of two places and the response says
+which, because they are not the same claim:
+
+| `site_from` | means |
+|---|---|
+| `listed` | the community list points straight at the app |
+| `repo-homepage` | the list points at a repository, and that repository declares this homepage |
+
+Every candidate is fetched at generation time and dropped unless it answers 200
+with HTML. gnockpit is the worked example: its repository still declares a
+homepage on a testnet that was retired, and without the check the grid would
+carry a confident picture of a dead host. Two guards sit beside it: a link into
+a *subdirectory* of a repository never inherits that repository's homepage (the
+gnolang/gno monorepo declares gno.land, which would have given gnodev, gnobro
+and gnoclient a picture of the chain's website and of each other), and gno.land
+itself is never a site, because a realm is photographed through gnoweb.
+
+**Screenshots of off-chain apps go through `/api/shot/site`, and the gate is the
+design.** An unbounded `?url=` in front of a capture service is an open proxy
+and a way to spend a box's CPU on headless Chrome. A URL is accepted only if it
+appears verbatim in the vendored snapshot: not a host match, the exact string a
+human merged, so another page on a listed app's own domain is refused too.
+gnoshot has its own host allowlist (`-allow-site`) behind that, which is the
+second gate and the one that survives a bug in the first. `make awesome` prints
+the host list gnoshot needs, because it is configuration on another box and the
+failure mode is a card with no picture and nothing in any log here.
 
 **The two lists barely overlap, and that gap is the useful part.** Measured
 2026-09-23: 71 entries on the community list, 10 in the directory, and 2 in
@@ -286,11 +384,12 @@ same reason: 3 of 4 is a library being picked up, 3 of 300 is noise.
 | `GET /api/realms` | list realms. `limit`, `offset` |
 | `GET /api/packages/facets` | counts per kind and per namespace, for the current filter |
 | `GET /api/symbols/search` | find a declaration by name. `q`, `network`, `limit` |
+| `GET /api/users/search` | find a registered user by name or address prefix. `q`, `network`, `limit`. See Search below |
 | `GET /api/symbols/status` | what the symbol index covers |
 | `GET /api/packages` | list all packages, realms and pure packages. `limit`, `offset` |
-| `GET /api/realm/{path...}` | detail for one package: metadata, source files, imports, dependents, callers, MsgRun references. `recent_calls` and `msgrun_refs` are the 50 most recent of each, and carry `block_time` where the syncer knew it (omitted otherwise, so a consumer plotting them on a time axis can say how many it left out). `address` and `storage_deposit_address` are the two accounts the package owns, derived from its path (see below) |
+| `GET /api/realm/{path...}` | detail for one package: metadata, source files, imports, dependents, callers, MsgRun references. `recent_calls` and `msgrun_refs` are the 50 most recent of each, and carry `block_time` where the syncer knew it (omitted otherwise, so a consumer plotting them on a time axis can say how many it left out). `address` and `storage_deposit_address` are the two accounts the package owns, derived from its path (see below). `views` is how many times the realm was opened on this explorer over `views_window` (30d), absent when nobody has: see `/api/views` for what that number is and is not |
 | `GET /api/realm/usage/{path...}` | who calls one realm, aggregated over its whole history, plus one page of the message feed. See below |
-| `GET /api/deps/{path...}` | dependency graph as `{path: [imports]}`. `dir=dependents` reverses direction |
+| `GET /api/deps/{path...}` | dependency graph as `{path: [imports]}`. `dir=dependents` reverses direction, and defaults to one hop; `depth=N` caps the reverse walk, `depth=0` is unbounded |
 | `GET /api/realm/cousage/{path...}` | co-usage: what else the addresses that called this realm also called. `{path, network, window, callers, partners[], truncated}`, each partner `{path, shared, calls, callers}` ordered by `shared` descending. `window` = `all` (default), `90d`, `30d`, `7d`, `24h`, unknown values are a 400. `limit` defaults to 100, capped at 1000. **Resolves a single network** the same way the contracts map does |
 | `GET /api/storage/{path...}` | storage events for a package. **Requires `network`**: the figures are denominated amounts and blending chains would be meaningless |
 | `GET /api/realm/defi/{path...}` | what a package holds: its two accounts' live balances, every native transfer through them, and its GRC20 positions. **Requires `network`**. The `flows[]` table pages with `flows_limit` (default 500, capped at 5000, `0` for a totals-only read) and `flows_offset`, counting back from the newest leg; `flows_total` is the whole history and every balance figure is summed over all of it, never over the page. `counterparties[]` is the same legs collapsed by who was at the other end (`sent`, `received`, `net` from *that account's* side, `legs`), always over every leg and never over the page, ranked by gross and capped at 50 with `counterparties_total` beside it. See below |
@@ -349,28 +448,84 @@ collection and the storage deposit both go through `SendCoinsUnrestricted`, whic
 emits nothing, so the same sum for a user account is short by its gas spend.
 Neither touches a realm's banker, which is why the realm case is exact.
 
-### The flow history is derived per request, and it is the expensive one
+### The flow history reads the local ledger
 
-Every other realm tab answers from SQLite in milliseconds. This one has no local
-table: it walks the tx-indexer for the package's entire transfer history on every
-cold read, which measured 2.0s and 2.6s against production on a realm with 3,104
-legs (2026-09-22). The response cache hides that from everyone but the first
-reader after an entry expires, and `flows_offset` does **not** make the next page
-cheaper: each page re-derives the whole history and then cuts a different slice
-out of it.
+`/api/realm/defi` used to walk the tx-indexer for a package's entire transfer
+history on every cold read, which measured 2.0s and 2.6s on a realm with 3,104
+legs and, more tellingly, **2.1 to 2.4 seconds on three realms with none at
+all**: the cost was the round trip plus resolving a chain-wide event filter, not
+the payload, so no response cache could reach it (ADR 0043). It now reads
+`coin_transfers` below.
 
-The walk itself is paginated over the block-height cursor, so `ElementCap` is no
-longer a ceiling on how far back a realm's history can reach. `truncated` now
-means only that the realm went past `coinFlowMaxTransactions` (50,000
-transactions), not that the indexer refused.
+Every figure but the table itself is a SQL aggregate over the whole set:
+`derived_ugnot`, `flows_total`, and the `counterparties` collapse. Only
+`flows[]` is paged, on `flows_limit` (default 500, capped at 5000, `0` for a
+totals-only read) and `flows_offset`, and the offset comes back clamped.
 
-The fix for the cost is a local `coin_transfers` table written by the syncer,
-the way `token_transfers` already is for GRC20. Until that exists, treat a large
-realm's defi tab as the one page on this site that leaves the box.
+`truncated` kept its name and changed meaning with the source. It used to mean
+the indexer capped the query; it now means this chain's coin-ledger backfill has
+not finished, which answers the same reader question: may the reconstruction be
+short of what the chain reports?
+
+⚠️ **A package with no storage-deposit account must not have `''` spliced into
+the account predicate.** `from_addr` and `to_addr` default to `''` for the
+chain's own end of a leg, so `IN (addr, '')` matches every mint and genesis
+allocation on the chain and attributes them to that package.
+`TestRealmCoinIgnoresAnEmptyDepositAddress` holds the line.
+
+### The native coin ledger
+
+`coin_transfers` is one row per `TransferEvent` leg: `(network, tx_hash,
+event_idx)` keyed, `coins` kept verbatim and `ugnot` kept parsed beside it, and
+indexed on both `from_addr` and `to_addr` with height descending.
+
+It is filled from two directions, which is what makes it complete rather than
+merely current:
+
+- **Forward**, by the same `syncCalls` walk that already writes `calls`,
+  `bank_sends`, `storage_events` and `token_transfers`. The legs are in the
+  payload being iterated, so this costs no extra query.
+- **Backward**, by `backfillCoinTransfers`, a cursor-driven pass that walks the
+  history the forward cursor starts above. Without it the ledger would begin at
+  whatever height the database was at when this shipped, which is exactly how
+  the GRC20 ledger ended up reporting a truncated supply as exact.
+
+The backfill filters on `TransferEvent: {}` with no address inside it, which the
+indexer accepts as "carries one of these". That is what makes it cheap: mainnet's
+entire transfer history is about two 10,000-row pages rather than a re-walk of
+every transaction ever. It does one page per sync pass on purpose, because four
+back-to-back 10,000-row pages against the public indexer is what got the first
+live run answering `403`.
+
+Its state is two `sync_state` keys, `coin_backfill_cursor:<network>` and
+`coin_backfill_done:<network>`. Both are cleared by a chain reset along with the
+rows, and clearing them by hand is how you force a re-walk.
+
+⚠️ **The selection set has to ask for `success`, not merely filter on it.** A set
+that omits the field gets `success: false` on every row and a consumer that
+checks it then stores nothing, with no error anywhere. The first live backfill
+run walked 10,000 real transactions and wrote 0 legs for exactly that reason;
+`TestTransferQueriesSelectSuccessAndNotOnlyFilterOnIt` is the guard.
+
+⚠️ **`TransferEvent` is gated on a schema probe**, like the inert-lifecycle and
+session message types. `indexer.pearl.testnets.gno.land` answers `__type: null`
+for it (2026-09-23), and because this fragment rides the *shared* selection set,
+an ungated version would 422 every transaction query on that chain and take its
+whole sync down. The same gap is why `/api/realm/defi?network=pearl` answered a
+raw GraphQL validation error before this change; it now reports that the chain
+cannot be asked.
 
 GRC20 positions come from the local transfer ledger, which only ever saw what the
 syncer walked: `token_ledger_from` is the oldest row on that chain, and a
 position is a floor rather than a figure whenever it postdates the deploy.
+
+The GRC20 transfer table pages on its own pair of names, `token_flows_limit`
+(default 500, capped at 5000, `0` for a totals-only read) and
+`token_flows_offset`, reported back as `token_flows_shown` / `token_flows_total`
+/ `token_flows_offset`. The total is a `COUNT(*)` over the whole set rather than
+a figure derived from the positions' own counts: a page exactly as long as the
+limit says nothing without it, and `r/gnoswap/pool` and `r/gnoswap/router` both
+sat on the old bare cap of 500 with nothing on the page able to say so.
 
 ### Realm usage
 
@@ -684,6 +839,9 @@ labels this figure "recent" for the same reason.
 | endpoint | description |
 |---|---|
 | `GET /api/address/{addr}` | activity for an address, **from local storage**: calls, deploys, runs, sends (both directions), with `total` covering its whole history and `limit`/`offset` paging the rows. `balance` comes from RPC and is present only when a single network is selected **and** that RPC has been confirmed to serve the same chain as the network's indexer — an unverified or mismatched RPC yields an empty balance rather than one from another chain. The indexer cannot serve this at chain scale — five address predicates over unindexed fields means a scan |
+| `GET /api/address/{addr}/sessions` | the delegated signing keys this account has granted, read live from RPC (`auth/accounts/{addr}/sessions`). There is no indexed alternative: the tx-indexer defines no `MsgCreateSession` on any chain served here, so no grant has ever reached storage. `supported` separates "this account delegates nothing" from "this chain has never heard of sessions", which are otherwise the same empty payload; it is `false` for a chain that answers `std.UnknownRequestError`, for an unreachable RPC, and in all-networks mode, since a grant is per chain. Sorted by soonest expiry, with a never-expiring grant last. Answers only "what has this account delegated", never "whose session is this address": `auth/accounts/{session_addr}` returns null, because a session is not a plain account |
+| `GET /api/address/{addr}/session` | the opposite question: **whose** session is this address. Answers what neither the chain nor the rest of this index can: `auth/accounts/{session_addr}` returns null because a session is not a plain account, and a session-signed transaction records the **master** as its caller, so the session address appears in no call, send or deploy. Replayed from the `auth/create_session` transaction instead. Also returns `granted`, the grants this address has made, with the revoked and expired ones the live RPC read drops. `scan_complete` distinguishes "not a session" from "not swept this far yet" |
+| `GET /api/sessions` | delegation chain-wide: `stats` (grants, and the live/expired/revoked partition, counted against one instant so they always sum), `realms` ranked by distinct delegating accounts rather than grant count, and the grant log, newest first. `scanned` reports how far the historical sweep has got, so a partial index says so instead of presenting itself as the whole chain |
 | `GET /api/accounts` | most active accounts. `limit` (default 100, max 500), `offset`, and `sort` = `calls`, `deploys`, `runs`, `sends` or total activity. One row per `(address, network)`: the same key on two chains is two different actors, and each row carries its `network` |
 
 ## Validators
@@ -989,10 +1147,75 @@ Searches **package paths, names and creators only**. It does not search
 transaction hashes, block heights, or addresses — an address matches only when it
 happens to be a package creator.
 
+Realms come first and each kind is capped separately (ten apiece), rather than
+twenty rows ordered by deploy height. The search box draws realms and packages
+as two groups, and a flat limit let one namespace's realms fill it and leave the
+package group empty — which reads as "this namespace has no packages" rather
+than "you are looking at twenty realms".
+
 The UI covers the rest without asking the server: an address, a transaction hash
 or a block height is recognised by shape and offered as a direct destination
 above the package matches. A bare number is offered only when a network is
 selected, since a height identifies a different block on every chain.
+
+### User search
+
+```
+GET /api/users/search?q=<query>&network=<id>&limit=<n>
+```
+
+The chain's own name registry, `gno.land/r/sys/users`. Matches a name or an
+address prefix, ranked exact → prefix → substring, and a current name always
+outranks a previous one.
+
+A fourth endpoint rather than a group inside `/api/search`, for the same reason
+assets and symbols are their own: that response is an array of packages and
+every caller reads it as one. A user is not a package — 67 of mainnet's 78
+registrations on 2026-09-23 have never deployed anything, so folding them in
+would mean inventing a package row for each.
+
+Distinct from `/api/namespaces`, which answers a narrower question by a
+different method: that one resolves the handful of names that *do* own packages,
+one `vm/qeval` per name against the live chain, for the ownership labels the
+frontend paints on a path. This is the registry itself, replayed from events
+into a table.
+
+```json
+{
+  "network": "gnoland1",
+  "users": [
+    {
+      "network": "gnoland1", "name": "moul",
+      "address": "g1manfred47kzduec920z88wfr64ylksmdcedlf5",
+      "tx_hash": "...", "block_height": 0, "block_time": "...",
+      "packages": 41, "label": "@moul"
+    }
+  ]
+}
+```
+
+`alias: true` marks a previous name of the address; `deleted: true` a
+tombstone. Both stay in the answer on purpose. `r/sys/users` never frees a
+name — an old name from a rename stays resolvable, and a deleted user's name
+stays taken — so dropping either row would let the search imply the name is
+available. `packages` is how many packages the address has deployed on the same
+chain, and `label` the curated gloss from `pkg/registry/data/addresses.json`
+when there is one.
+
+**Where the rows come from.** `r/sys/users` emits `Registered {name, address}`,
+`Updated {alias, address}` and `Deleted {address}`, and the syncer replays all
+three. It is a pass of its own rather than a hook on the call walk for two
+reasons: a third of mainnet's registry was written at genesis, at height 0,
+which a cursor-driven walk above the last stored height never revisits; and the
+filtered query is 63 transactions against the walk's hundreds of thousands.
+Measured 2026-09-23, those 63 carry 78 `Registered` events and no `Updated` or
+`Deleted`, which is exactly the count the realm prints for itself.
+
+The registry also feeds `/api/labels`, where it overwrites the deploy-dominance
+guess for the same address. Both are `derived` so precedence cannot settle it,
+and it is not a tie: one is what the chain records, the other is this repo
+noticing that an address deployed most of one namespace. Four of twelve mainnet
+namespaces resolve to a different account than their deploys suggest.
 
 ### Faceting the directory
 
@@ -1056,7 +1279,15 @@ a path, a name or a creator never finds it.
 
 A second endpoint rather than a third group inside `/api/search`, for the same
 reason `/api/assets/search` is its own: that response is an array of packages
-and every caller treats it as one. The frontend asks for all three in parallel.
+and every caller treats it as one. The frontend asks for all four in parallel
+and draws them as **users, assets, realms, symbols, packages**.
+
+Symbols sit **above packages** and below the rest. The argument is only ever
+about that one pair: somebody typing a CamelCase identifier wants the
+declaration, not the paths whose text happens to contain it, and a package match
+for a symbol query is the weaker answer of the two. It does not reach past
+realms or assets, which answer "what can I open" rather than "what can I
+import". `e2e/tests/search.spec.js` pins the pair.
 
 ```json
 {
@@ -1155,3 +1386,12 @@ navigation.
 
 Everything else is unchanged: the same routes, the same query parameters, the
 same data. `?network=` composes with it as usual.
+
+## MCP
+
+`POST /mcp` serves the same index over the Model Context Protocol, for agents
+rather than browsers: seven read-only tools, no authentication, rate limited
+per address. Each tool resolves to one internal request against the route table
+documented above, so a tool's answer is an endpoint's answer.
+
+See [docs/mcp.md](mcp.md).

@@ -85,10 +85,26 @@ func appendChecked(why, checked string) string {
 }
 
 func (a *API) HandleLabels(w http.ResponseWriter, r *http.Request) {
-	derived, err := a.db.DerivedAddressLabels(a.networkParam(r))
+	network := a.networkParam(r)
+	derived, err := a.db.DerivedAddressLabels(network)
 	if err != nil {
 		jsonError(w, err.Error(), 500)
 		return
+	}
+	// The registry overwrites the deploy-dominance guess for the same address,
+	// and both are "derived" so precedence could not settle it. It is not a
+	// tie: one is what r/sys/users records, the other is this repo noticing
+	// that an address deployed most of one namespace. Where they disagree the
+	// registry is right by construction, and they do disagree -- four of
+	// twelve mainnet namespaces resolve to a different account than their
+	// deploys suggest (see pkg/httpapi/namespaces.go).
+	registered, err := a.db.RegisteredAddressLabels(network)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	for addr, l := range registered {
+		derived[addr] = l
 	}
 	JSONResponse(w, mergeLabels(derived, a.registry.Addresses))
 }
@@ -155,7 +171,16 @@ func (a *API) HandleApps(w http.ResponseWriter, r *http.Request) {
 	seen := map[string]bool{}
 	cats := []string{}
 	paths := make([]string, 0, len(a.registry.Apps))
+	described := make([]registry.App, 0, len(a.registry.Apps))
 	for _, app := range a.registry.Apps {
+		// A relation-only entry ("v3 replaces v2") is a fact about two deploys,
+		// not a directory entry: it has no name and describes nothing. /apps
+		// uses it to fold one card into another; this endpoint is the curated
+		// *directory*, so it has nothing to say about it.
+		if app.Description == "" {
+			continue
+		}
+		described = append(described, app)
 		if !seen[app.Category] {
 			seen[app.Category] = true
 			cats = append(cats, app.Category)
@@ -163,7 +188,7 @@ func (a *API) HandleApps(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, app.Path)
 	}
 	sort.Strings(cats)
-	resp := appsResponse{Categories: cats, Apps: a.registry.Apps, Tokens: len(a.registry.Tokens)}
+	resp := appsResponse{Categories: cats, Apps: described, Tokens: len(a.registry.Tokens)}
 	if aw := a.registry.Awesome; aw != nil {
 		resp.Awesome = &awesomeSummary{
 			Entries:              aw.Count(),
@@ -231,9 +256,15 @@ type awesomeResponse struct {
 	Synced       string `json:"synced"`
 	// AgeDays is computed rather than left to the browser, so the page says the
 	// same thing to a reader whose clock is wrong.
-	AgeDays  int                       `json:"age_days"`
-	Sections []registry.AwesomeSection `json:"sections"`
-	Entries  int                       `json:"entries"`
+	AgeDays int `json:"age_days"`
+	Entries int `json:"entries"`
+
+	// Apps is what the page draws: the entries with a page you can open, which
+	// is the only kind there is anything to photograph. Everything else on the
+	// list is real and is counted in Others rather than rendered, because a
+	// grid of pictures with grey holes where the SDKs are reads as broken.
+	Apps   []registry.AwesomeEntry `json:"apps"`
+	Others []registry.AwesomeGroup `json:"others"`
 
 	// The cross-check, in both directions. Neither is a promotion: one is the
 	// list of realms we describe that the community has not named, the other
@@ -269,8 +300,9 @@ func (a *API) HandleAwesome(w http.ResponseWriter, r *http.Request) {
 		Commit:               aw.Commit,
 		Synced:               aw.Synced,
 		AgeDays:              aw.SyncedAge(time.Now()),
-		Sections:             aw.Sections,
 		Entries:              aw.Count(),
+		Apps:                 aw.Apps(),
+		Others:               aw.Others(),
 		MissingFromAwesome:   a.registry.MissingFromAwesome(),
 		MissingFromDirectory: a.registry.MissingFromDirectory(),
 		InDirectory:          a.registry.AwesomeInDirectory(),
@@ -301,8 +333,8 @@ func (a *API) HandleAwesome(w http.ResponseWriter, r *http.Request) {
 			paths = append(paths, p)
 		}
 	}
-	for _, p := range aw.Paths() {
-		add(p)
+	for _, e := range aw.Apps() {
+		add(e.Path)
 	}
 	for _, app := range resp.MissingFromAwesome {
 		add(app.Path)

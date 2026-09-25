@@ -160,6 +160,16 @@ func NewDB(path string) (*DB, error) {
 	}
 
 	// After initSchema, which is what creates the column on a fresh database.
+	if err := migrateAddPackageDoc(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate package_doc: %w", err)
+	}
+
+	if err := migrateAddDocPass(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate doc_pass: %w", err)
+	}
+
 	if err := migrateBankSendUgnot(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate bank send ugnot: %w", err)
@@ -234,6 +244,49 @@ func migrateAddBlockTime(db *sql.DB) error {
 		if _, err := db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN block_time TEXT`, table)); err != nil {
 			return fmt.Errorf("add block_time to %s: %w", table, err)
 		}
+	}
+	return nil
+}
+
+// migrateAddPackageDoc adds package_doc to a symbol_index written before it
+// existed.
+//
+// Nothing backfills it, and nothing needs to. The column is filled by the next
+// symbol-index pass, which re-reads any package whose source key has moved and
+// which the syncer runs anyway; until then a realm falls back to having no
+// default description, which is what it had before this column existed. A
+// backfill would mean re-parsing every package on every chain at startup to
+// recover a sentence.
+func migrateAddPackageDoc(db *sql.DB) error {
+	exists, err := tableExists(db, "symbol_index")
+	if err != nil || !exists {
+		return err
+	}
+	has, err := columnExists(db, "symbol_index", "package_doc")
+	if err != nil || has {
+		return err
+	}
+	if _, err := db.Exec(`ALTER TABLE symbol_index ADD COLUMN package_doc TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add package_doc to symbol_index: %w", err)
+	}
+	return nil
+}
+
+// migrateAddDocPass adds the extraction-version column beside package_doc.
+//
+// Separate from the column itself because the first deploy shipped without it,
+// and the two are now both in the CREATE TABLE for a fresh database.
+func migrateAddDocPass(db *sql.DB) error {
+	exists, err := tableExists(db, "symbol_index")
+	if err != nil || !exists {
+		return err
+	}
+	has, err := columnExists(db, "symbol_index", "doc_pass")
+	if err != nil || has {
+		return err
+	}
+	if _, err := db.Exec(`ALTER TABLE symbol_index ADD COLUMN doc_pass INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return fmt.Errorf("add doc_pass to symbol_index: %w", err)
 	}
 	return nil
 }
@@ -752,6 +805,23 @@ func initSchema(db *sql.DB) error {
 			source_key   TEXT NOT NULL,
 			symbol_count INTEGER NOT NULL DEFAULT 0,
 			indexed_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+			-- The doc comment on the package clause. Already extracted for
+			-- the docs tab and previously thrown away; kept because it is the
+			-- realm's own one-line answer to "what is this", written by the
+			-- person who wrote the realm. That makes it the right default for
+			-- a directory entry, and far better than the alternatives: a path
+			-- segment says nothing, and a sentence this repo invents is a
+			-- stranger's guess presented as fact.
+			package_doc  TEXT NOT NULL DEFAULT '',
+			-- Which version of the extraction wrote this row.
+			--
+			-- package_doc alone cannot answer "has this been looked at", because
+			-- an empty doc is a real answer: most realms have no package comment.
+			-- Re-indexing on emptiness would re-read every one of them on every
+			-- pass, forever. So the row records the recipe that filled it, the
+			-- same way gnoshot versions its capture recipe, and bumping
+			-- DocPassVersion re-extracts everything exactly once.
+			doc_pass     INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY (network, package_path)
 		);
 
@@ -848,6 +918,91 @@ func initSchema(db *sql.DB) error {
 			PRIMARY KEY (network, tx_hash, event_idx)
 		) WITHOUT ROWID;
 
+		-- The user registry, replayed from what gno.land/r/sys/users emits.
+		--
+		-- The registry is the chain's own answer to "who is this name", and it is
+		-- not derivable from anything else this index holds. Namespaces read off
+		-- package paths cover 11 of mainnet's 78 registrations, because a name
+		-- does not have to deploy anything; the curated label file is a human's
+		-- notes, not a registry; and r/sys/namereg/v0 renders only the names it
+		-- issued itself, missing every genesis and GovDAO-allocated one, moul
+		-- and onbloc among them.
+		--
+		-- The events are Registered {name, address}, Updated {alias, address}
+		-- and Deleted {address}. Measured against indexer.gno.land on
+		-- 2026-09-23: 63 transactions, 78 Registered, no Updated or Deleted, which
+		-- is exactly the count r/sys/users prints for itself.
+		--
+		-- Keyed on the name rather than the address, because one address can hold
+		-- several: Updated adds an alias and the old name stays resolvable
+		-- (r/sys/users keeps it deliberately, as anti-rename-squat policy). alias
+		-- marks the rows that are not the address's current name, so a search can
+		-- rank them below it without losing them.
+		--
+		-- deleted is a tombstone, not a DELETE: r/sys/users never frees a name,
+		-- and a row that vanished would let the search claim the name is free.
+		CREATE TABLE IF NOT EXISTS users (
+			network      TEXT NOT NULL,
+			name         TEXT NOT NULL,
+			address      TEXT NOT NULL,
+			tx_hash      TEXT NOT NULL DEFAULT '',
+			block_height INTEGER NOT NULL DEFAULT 0,
+			block_time   TEXT NOT NULL DEFAULT '',
+			alias        BOOLEAN NOT NULL DEFAULT 0,
+			deleted      BOOLEAN NOT NULL DEFAULT 0,
+			PRIMARY KEY (network, name)
+		) WITHOUT ROWID;
+
+		-- "Who is g1..." is the other direction, and the address page asks it on
+		-- every load.
+		CREATE INDEX IF NOT EXISTS idx_users_address ON users(network, address);
+
+		-- Session grants, replayed from the auth/* messages.
+		--
+		-- A session is a delegated signing key: it signs for a master account
+		-- and the master stays the caller of every message it sends. That is
+		-- what makes this table necessary rather than convenient. Nothing else
+		-- here can answer it:
+		--
+		--   - The chain answers auth/accounts/<master>/sessions, but only for
+		--     live grants and only if you already know the master.
+		--     auth/accounts/<session_addr> returns null, because a session is
+		--     not a plain account, so there is no reverse lookup on chain.
+		--   - The calls and bank_sends tables record the MASTER as caller, so a
+		--     session leaves no trace in them under its own address.
+		--
+		-- Only the grant transaction ties the two together, and only this table
+		-- keeps it after the grant expires or is revoked.
+		--
+		-- granted_height is in the key because a pubkey can be granted, revoked
+		-- and granted again; each grant is its own row with its own scope.
+		CREATE TABLE IF NOT EXISTS session_grants (
+			network        TEXT NOT NULL,
+			session_addr   TEXT NOT NULL,
+			master         TEXT NOT NULL,
+			-- Newline-separated AllowPaths entries, stored as written so the
+			-- route prefix ("vm/exec:") survives: it is what distinguishes a
+			-- realm grant from a bank/send one.
+			allow_paths    TEXT NOT NULL DEFAULT '',
+			spend_limit    TEXT NOT NULL DEFAULT '',
+			spend_period   INTEGER NOT NULL DEFAULT 0,
+			expires_at     INTEGER NOT NULL DEFAULT 0,
+			granted_height INTEGER NOT NULL,
+			granted_time   TEXT NOT NULL DEFAULT '',
+			granted_tx     TEXT NOT NULL DEFAULT '',
+			-- Null until a revoke_session or revoke_all_sessions names it. A
+			-- revoked grant is kept, not deleted: "this key could act and no
+			-- longer can" is the fact the page exists to show.
+			revoked_height INTEGER,
+			revoked_time   TEXT,
+			revoked_tx     TEXT,
+			PRIMARY KEY (network, session_addr, granted_height)
+		) WITHOUT ROWID;
+
+		CREATE INDEX IF NOT EXISTS idx_session_grants_master ON session_grants(network, master, granted_height DESC);
+		CREATE INDEX IF NOT EXISTS idx_session_grants_height ON session_grants(network, granted_height DESC);
+		CREATE INDEX IF NOT EXISTS idx_session_grants_addr ON session_grants(network, session_addr);
+
 		CREATE INDEX IF NOT EXISTS idx_token_transfers_token ON token_transfers(network, token, block_height DESC);
 		CREATE INDEX IF NOT EXISTS idx_token_transfers_from ON token_transfers(network, token, from_addr);
 		CREATE INDEX IF NOT EXISTS idx_token_transfers_to ON token_transfers(network, token, to_addr);
@@ -866,6 +1021,71 @@ func initSchema(db *sql.DB) error {
 		-- ledger. Height is in the key already; block_time is what the queries
 		-- actually bind, because a window is a wall-clock question.
 		CREATE INDEX IF NOT EXISTS idx_token_transfers_time ON token_transfers(network, block_time);
+
+		-- Native coin movement, one row per TransferEvent leg.
+		--
+		-- The same shape as token_transfers above, and for the same reason: the
+		-- chain emits TransferEvent on every sendCoins including a realm's own
+		-- banker moves, so summing the legs touching a realm's address
+		-- reproduces bank/balances exactly (ADR 0034). Without this table the
+		-- only way to ask that question was to re-walk the whole history from
+		-- the tx-indexer per request, which cost ~2.1s even for a realm holding
+		-- nothing, because the latency is resolving a chain-wide event filter
+		-- and not the payload.
+		--
+		-- coins is the chain's own string, verbatim, and ugnot is it parsed.
+		-- Both, for the reason bank_sends keeps both: a coin string is a *list*
+		-- ("5foo,100ugnot") and SQL cannot sum one without inventing a number
+		-- (ADR 0041). Anything denominated in something other than ugnot is
+		-- readable in coins and contributes 0 to ugnot, which is the honest
+		-- answer rather than a coerced one.
+		--
+		-- ⚠️ Not a substitute for a *signer's* balance. Gas collection and the
+		-- storage deposit go through SendCoinsUnrestricted, which emits nothing,
+		-- so this sum is short by exactly an account's gas spend. Neither
+		-- touches a realm's banker, which is why the realm case is exact and the
+		-- account case is not.
+		CREATE TABLE IF NOT EXISTS coin_transfers (
+			network      TEXT NOT NULL,
+			tx_hash      TEXT NOT NULL,
+			event_idx    INTEGER NOT NULL,
+			from_addr    TEXT NOT NULL DEFAULT '',
+			to_addr      TEXT NOT NULL DEFAULT '',
+			coins        TEXT NOT NULL DEFAULT '',
+			ugnot        INTEGER NOT NULL DEFAULT 0,
+			block_height INTEGER NOT NULL,
+			block_time   TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY (network, tx_hash, event_idx)
+		) WITHOUT ROWID;
+
+		-- How many times a realm was opened on this explorer, per day.
+		--
+		-- The one table here that is not a fact about the chain. gno.land records
+		-- no reads: vm/qrender and vm/qeval leave nothing behind, so a realm that
+		-- thousands of people read and nobody writes to is indistinguishable from
+		-- a dead one in every other table in this file. This is the only read
+		-- signal anything here can honestly produce, and it is bounded to exactly
+		-- what it says: somebody opened this page, here.
+		--
+		-- Deliberately not a log. No address, no IP, no user agent, no session:
+		-- a count per realm per day, which answers "did anyone look" and cannot
+		-- be made to answer "who looked".
+		CREATE TABLE IF NOT EXISTS realm_views (
+			network TEXT NOT NULL,
+			path    TEXT NOT NULL,
+			day     TEXT NOT NULL,
+			views   INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (network, path, day)
+		) WITHOUT ROWID;
+
+		-- The ranking query: one network, a day range, summed per path.
+		CREATE INDEX IF NOT EXISTS idx_realm_views_day ON realm_views(network, day);
+
+		-- Both directions, because a leg is read from whichever end asked. Height
+		-- descending is in the index rather than left to a sort: the page reads
+		-- newest-first and the table is the largest one a busy realm has.
+		CREATE INDEX IF NOT EXISTS idx_coin_transfers_from ON coin_transfers(network, from_addr, block_height DESC);
+		CREATE INDEX IF NOT EXISTS idx_coin_transfers_to   ON coin_transfers(network, to_addr, block_height DESC);
 
 		-- The rich list's only query: the top balances on one chain.
 		CREATE INDEX IF NOT EXISTS idx_balances_rank ON balances(network, ugnot DESC);
@@ -1076,4 +1296,34 @@ func migrateStorageUnlockSign(db *sql.DB) error {
 		log.Printf("migration: corrected the sign of %d storage unlock rows", n)
 	}
 	return nil
+}
+
+// networkParams is networkFilter with bound parameters instead of quoted
+// literals, for the query paths that take reader-supplied input beside the
+// network.
+//
+// networkFilter concatenates, which AGENTS.md flags as something not to add
+// more of. Code search is the first caller that needs the "every configured
+// network" case in a statement whose other argument is a raw FTS5 query, so
+// it gets the bound version rather than a third hand-escaped one.
+//
+// Returns a bare condition and its arguments, so callers supply their own
+// WHERE or AND. The condition is `1=1` with no arguments when nothing is
+// configured, which keeps every call site a plain string append.
+func (d *DB) networkParams(column, network string) (string, []any) {
+	if network != "" {
+		return column + " = ?", []any{network}
+	}
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if len(d.configured) == 0 {
+		return "1=1", nil
+	}
+	args := make([]any, 0, len(d.configured))
+	marks := make([]string, 0, len(d.configured))
+	for _, n := range d.configured {
+		args = append(args, n)
+		marks = append(marks, "?")
+	}
+	return column + " IN (" + strings.Join(marks, ",") + ")", args
 }

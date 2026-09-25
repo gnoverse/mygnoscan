@@ -82,23 +82,35 @@ func (d *DB) TokenPositions(network, addr string) ([]TokenPosition, error) {
 	return out, rows.Err()
 }
 
-// HolderTransfers returns one address's most recent GRC20 transfers, in either
-// direction, across every token.
-func (d *DB) HolderTransfers(network, addr string, limit int) ([]TokenTransfer, error) {
+// HolderTransfers returns one page of an address's GRC20 transfers, newest
+// first, in either direction and across every token.
+//
+// Paged rather than merely capped. It used to take a bare limit of 500 applied
+// across every token a realm holds, with no offset and no count beside it, so a
+// realm sitting exactly on the cap was indistinguishable from one whose history
+// happens to be 500 long: r/gnoswap/pool and r/gnoswap/router both do
+// (2026-09-23). The native half of the same page already reports
+// shown/total/offset, and a reader has no way to know the two halves mean
+// different things by a full table.
+func (d *DB) HolderTransfers(network, addr string, limit, offset int) ([]TokenTransfer, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
+	out := []TokenTransfer{}
+	if addr == "" || limit <= 0 {
+		return out, nil
+	}
 	rows, err := d.db.Query(`
 		SELECT token, pkg_path, from_addr, to_addr, value, tx_hash, block_height, block_time
 		  FROM token_transfers
 		 WHERE network = ?2 AND (from_addr = ?1 OR to_addr = ?1)
-		 ORDER BY block_height DESC LIMIT ?3`, addr, network, limit)
+		 ORDER BY block_height DESC, tx_hash DESC, event_idx DESC
+		 LIMIT ?3 OFFSET ?4`, addr, network, limit, offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	out := []TokenTransfer{}
 	for rows.Next() {
 		var t TokenTransfer
 		if err := rows.Scan(&t.Token, &t.PkgPath, &t.From, &t.To, &t.Value,
@@ -109,6 +121,25 @@ func (d *DB) HolderTransfers(network, addr string, limit int) ([]TokenTransfer, 
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// HolderTransferCount is how many rows HolderTransfers is paging through.
+//
+// Counted in SQL over the whole set, never inferred from a short page: a page
+// shorter than the limit does mean the end, but a *full* one says nothing, and
+// "500 of 500" is exactly the case this exists to disambiguate.
+func (d *DB) HolderTransferCount(network, addr string) (int, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	if addr == "" {
+		return 0, nil
+	}
+	var n int
+	err := d.db.QueryRow(`
+		SELECT COUNT(*) FROM token_transfers
+		 WHERE network = ?2 AND (from_addr = ?1 OR to_addr = ?1)`, addr, network).Scan(&n)
+	return n, err
 }
 
 // EarliestTokenTransfer is the oldest GRC20 transfer stored for a chain, or ""

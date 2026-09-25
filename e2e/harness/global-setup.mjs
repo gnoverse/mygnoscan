@@ -80,6 +80,18 @@ export default async function globalSetup() {
     // runs at startup finds an empty corpus. Production waits ten minutes for
     // the next one; the suite cannot.
     '-symbol-index-interval', '1s',
+    // No cache warmer, for the same reason one line up, and it is the reason
+    // rather than a convenience: the warmer re-requests the landing endpoints
+    // and stores what it gets, and here it would run before seed() has written
+    // a row. /api/accounts is first in its sorted plan, so it cached the empty
+    // answer, CacheStaleGrace kept serving it for the next fifteen minutes,
+    // and the activity tab had no rows to rank.
+    //
+    // A database written behind the binary's back is exactly the case no
+    // readiness check inside the binary can see, so the harness says so out
+    // loud instead. The warmer's own behaviour is covered by the Go tests in
+    // pkg/httpapi/warmer_test.go.
+    '-warm-interval', '0',
   ], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] });
 
   const log = [];

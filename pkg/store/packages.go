@@ -338,10 +338,46 @@ func (d *DB) ListPackages(network string, f PackageFilter, limit, offset int, so
 
 	where, args := f.where("p")
 
-	// Usage counts come from correlated subqueries rather than joins: a join on
-	// path alone would mix networks together, and grouping four tables in one
-	// query multiplies rows against each other.
-	q := `SELECT p.network, p.path, p.name, p.creator, p.block_height, p.block_time, p.tx_hash, p.is_realm, p.num_files,
+	q := `SELECT ` + packageInfoColumns + `
+		FROM packages p WHERE ` + where + ` AND ` + d.networkFilter("p.network", network)
+	q += ` ORDER BY ` + packageSortClause(sortBy)
+	if limit > 0 {
+		q += fmt.Sprintf(` LIMIT %d OFFSET %d`, limit, offset)
+	}
+
+	rows, err := d.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var pkgs []PackageInfo
+	for rows.Next() {
+		p, err := scanPackageInfo(rows)
+		if err != nil {
+			return nil, err
+		}
+		pkgs = append(pkgs, p)
+	}
+	return pkgs, rows.Err()
+}
+
+// packageInfoColumns is every column a PackageInfo is made of, as one string
+// two callers share.
+//
+// Shared rather than written twice, and that is the fix rather than a tidy-up.
+// The listing computed these and the detail endpoint did not, while both
+// serialized the same struct: GET /api/realm/{path} answered `calls: 0`,
+// `unique_users: 0` and `importers: 0` for every realm on the chain, including
+// r/gnoswap/router at 8,285 calls, because GetPackageDetail filled the first
+// nine fields of an embedded PackageInfo and left the rest at their zero value.
+// A zero reads as an answer, not as an absence, and it cost a wrong conclusion
+// about which realms had ever been called (2026-09-24).
+//
+// Usage counts are correlated subqueries rather than joins: a join on path
+// alone would mix networks together, and grouping four tables in one query
+// multiplies rows against each other.
+const packageInfoColumns = `p.network, p.path, p.name, p.creator, p.block_height, p.block_time, p.tx_hash, p.is_realm, p.num_files,
 		(SELECT COUNT(*) FROM calls c
 		   WHERE c.network = p.network AND c.pkg_path = p.path) AS calls,
 		(SELECT COUNT(*) FROM dependencies d
@@ -372,41 +408,31 @@ func (d *DB) ListPackages(network string, f PackageFilter, limit, offset int, so
 		-- above do. Zero means "not indexed yet" as well as "declares nothing",
 		-- and the two are told apart by /api/symbols/status rather than here.
 		(SELECT COALESCE(si.symbol_count, 0) FROM symbol_index si
-		   WHERE si.network = p.network AND si.package_path = p.path) AS symbols
-		FROM packages p WHERE ` + where + ` AND ` + d.networkFilter("p.network", network)
-	q += ` ORDER BY ` + packageSortClause(sortBy)
-	if limit > 0 {
-		q += fmt.Sprintf(` LIMIT %d OFFSET %d`, limit, offset)
-	}
+		   WHERE si.network = p.network AND si.package_path = p.path) AS symbols`
 
-	rows, err := d.db.Query(q, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
+// rowScanner is what sql.Row and sql.Rows have in common, so one scan serves
+// the listing and the single-path read.
+type rowScanner interface{ Scan(dest ...any) error }
 
-	var pkgs []PackageInfo
-	for rows.Next() {
-		var blockTime sql.NullString
-		var lastCallHeight sql.NullInt64
-		var lastCallTime sql.NullString
-		var gasUsed, storageDeposit, storageBytes, symbols sql.NullInt64
-		var p PackageInfo
-		if err := rows.Scan(&p.Network, &p.Path, &p.Name, &p.Creator, &p.BlockHeight, &blockTime, &p.TxHash,
-			&p.IsRealm, &p.NumFiles, &p.Calls, &p.Importers, &p.Imports, &p.UniqueUsers,
-			&lastCallHeight, &lastCallTime, &gasUsed, &storageDeposit, &storageBytes, &symbols); err != nil {
-			return nil, err
-		}
-		p.Symbols = int(symbols.Int64)
-		p.GasUsed = int(gasUsed.Int64)
-		p.StorageDeposit = int(storageDeposit.Int64)
-		p.StorageBytes = int(storageBytes.Int64)
-		p.BlockTime = blockTime.String
-		p.LastCallHeight = int(lastCallHeight.Int64)
-		p.LastCallTime = lastCallTime.String
-		pkgs = append(pkgs, p)
+func scanPackageInfo(sc rowScanner) (PackageInfo, error) {
+	var blockTime sql.NullString
+	var lastCallHeight sql.NullInt64
+	var lastCallTime sql.NullString
+	var gasUsed, storageDeposit, storageBytes, symbols sql.NullInt64
+	var p PackageInfo
+	if err := sc.Scan(&p.Network, &p.Path, &p.Name, &p.Creator, &p.BlockHeight, &blockTime, &p.TxHash,
+		&p.IsRealm, &p.NumFiles, &p.Calls, &p.Importers, &p.Imports, &p.UniqueUsers,
+		&lastCallHeight, &lastCallTime, &gasUsed, &storageDeposit, &storageBytes, &symbols); err != nil {
+		return PackageInfo{}, err
 	}
-	return pkgs, rows.Err()
+	p.Symbols = int(symbols.Int64)
+	p.GasUsed = int(gasUsed.Int64)
+	p.StorageDeposit = int(storageDeposit.Int64)
+	p.StorageBytes = int(storageBytes.Int64)
+	p.BlockTime = blockTime.String
+	p.LastCallHeight = int(lastCallHeight.Int64)
+	p.LastCallTime = lastCallTime.String
+	return p, nil
 }
 
 // GetPackageDetail returns full details for a package.
@@ -415,17 +441,17 @@ func (d *DB) GetPackageDetail(network, path string) (*PackageDetail, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
-	q := `SELECT network, path, name, creator, block_height, block_time, tx_hash, is_realm, num_files
-	      FROM packages WHERE path = ? AND ` + d.networkFilter("network", network)
-	args := []any{path}
+	// The same columns the listing reads, so the two endpoints cannot disagree
+	// about one realm. They used to: this read nine columns into a struct that
+	// serializes nineteen, and the ten it skipped went out as zeros.
+	q := `SELECT ` + packageInfoColumns + `
+	      FROM packages p WHERE p.path = ? AND ` + d.networkFilter("p.network", network)
 
-	var p PackageDetail
-	var blockTime sql.NullString
-	err := d.db.QueryRow(q, args...).Scan(&p.Network, &p.Path, &p.Name, &p.Creator, &p.BlockHeight, &blockTime, &p.TxHash, &p.IsRealm, &p.NumFiles)
-	p.BlockTime = blockTime.String
+	info, err := scanPackageInfo(d.db.QueryRow(q, path))
 	if err != nil {
 		return nil, err
 	}
+	p := PackageDetail{PackageInfo: info}
 
 	// Files
 	filesQ := `SELECT file_name, body FROM package_files WHERE package_path = ? AND network = ?`
@@ -595,53 +621,88 @@ func (d *DB) GetDependencyGraph(network, path string) (map[string][]string, erro
 	return graph, nil
 }
 
-// GetReverseGraph returns all packages that depend on path (recursive).
-
-func (d *DB) GetReverseGraph(network, path string) (map[string][]string, error) {
+// GetReverseGraph returns the packages that depend on path, out to maxDepth
+// hops. maxDepth 0 means unbounded, which is what this function always did.
+//
+// The cap exists because the unbounded answer is mostly not about the package
+// that was asked for. On mainnet 2026-09-23 `p/nt/ufmt/v0` has 131 direct
+// dependents and the unbounded walk returns 160 nodes and 446 edges: the extra
+// 29 packages and 315 edges are facts about ufmt's dependents' dependents, and
+// a graph drawn from them says "ufmt is connected to all this" when the edges
+// it added are somebody else's. One hop is the honest depth of "who uses me",
+// so it is what the deps tab asks for; the unbounded walk stays reachable for
+// a caller that genuinely wants the closure.
+//
+// Unlike the forward walk this one follows every edge, not just `gno.land/`
+// ones: a dependency row's package_path is always a deployed package, so there
+// is no stdlib import to skip on this side.
+func (d *DB) GetReverseGraph(network, path string, maxDepth int) (map[string][]string, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
 	graph := make(map[string][]string)
-	visited := make(map[string]bool)
+	visited := map[string]bool{}
 
-	var walk func(p string) error
-	walk = func(p string) error {
-		if visited[p] {
-			return nil
-		}
-		visited[p] = true
-
-		var rows *sql.Rows
-		var err error
-		rows, err = d.db.Query(`SELECT package_path FROM dependencies WHERE import_path = ? AND `+
-			d.networkFilter("network", network), p)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-
-		var deps []string
-		for rows.Next() {
-			var dep string
-			if err := rows.Scan(&dep); err != nil {
-				return err
+	// Breadth-first, and not the recursive closure this used to be. The old
+	// walk held a *sql.Rows open for every frame on the stack, because its
+	// `defer rows.Close()` could only fire once the whole traversal below it
+	// had finished: 160 concurrently open result sets on the ufmt query above.
+	// A queue closes each one before asking the next question, and it also
+	// makes "depth" a thing that exists rather than something to thread through
+	// recursion.
+	frontier := []string{path}
+	for depth := 0; len(frontier) > 0; depth++ {
+		var next []string
+		for _, p := range frontier {
+			if visited[p] {
+				continue
 			}
-			deps = append(deps, dep)
-		}
-		graph[p] = deps
+			visited[p] = true
 
-		for _, dep := range deps {
-			if err := walk(dep); err != nil {
-				return err
+			deps, err := d.reverseDeps(network, p)
+			if err != nil {
+				return nil, err
 			}
+			graph[p] = deps
+			next = append(next, deps...)
 		}
-		return nil
-	}
-
-	if err := walk(path); err != nil {
-		return nil, err
+		if maxDepth > 0 && depth+1 >= maxDepth {
+			// The frontier is recorded as reached but not expanded. Each node
+			// at the cap still gets its own (empty) entry below, so a reader
+			// can tell "this package has no dependents" from "we stopped
+			// looking here" only by the depth they asked for, which is the
+			// same contract the forward walk has always had at its leaves.
+			for _, p := range next {
+				if !visited[p] {
+					visited[p] = true
+					graph[p] = nil
+				}
+			}
+			break
+		}
+		frontier = next
 	}
 	return graph, nil
+}
+
+// reverseDeps is one hop: every deployed package that imports p.
+func (d *DB) reverseDeps(network, p string) ([]string, error) {
+	rows, err := d.db.Query(`SELECT package_path FROM dependencies WHERE import_path = ? AND `+
+		d.networkFilter("network", network), p)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var deps []string
+	for rows.Next() {
+		var dep string
+		if err := rows.Scan(&dep); err != nil {
+			return nil, err
+		}
+		deps = append(deps, dep)
+	}
+	return deps, rows.Err()
 }
 
 func (d *DB) GetTokenPackages(network string) ([]TokenInfo, error) {

@@ -5,6 +5,7 @@
 // outcome of a sync. The schema is never restated here — the binary owns it, and
 // duplicating it in JavaScript would let the two drift silently.
 import { DatabaseSync } from 'node:sqlite';
+import { TAB_TRANSFERS } from './fake-indexer.mjs';
 
 export const NETWORKS = ['alpha', 'beta'];
 
@@ -214,9 +215,66 @@ export const FRESH_REALM_ADDRESS = 'g165ajlk4c06fxcp54fms89668s9h0dtjuz889zq';
 // The largest ugnot move in the tail, paid out of the realm's own account.
 export const FRESH_PAYOUT_UGNOT = 42000000000;
 
+// The user registry, as r/sys/users records it. Named so the search-box test can
+// assert the group without restating the strings.
+//
+// `hub` is deliberately the namespace of HUB and LIBRARY, so one query returns a
+// user, a realm and a package at once -- which is the ordering the search box is
+// asserted on. `hubbot` is the namesake that has deployed nothing, and `hubgone`
+// is a tombstone: r/sys/users never frees a name.
+export const USER_NAME = 'hub';
+export const USER_BOT = 'hubbot';
+export const USER_GONE = 'hubgone';
+
+// How long seed() waits for the binary to finish building the schema.
+// Generous on purpose: it is a bound on a broken run, not a budget for a
+// healthy one, which clears it in well under a second.
+const SCHEMA_TIMEOUT_MS = 30_000;
+
+// Every table seed() writes. Waited on as a set rather than on one of them,
+// because the binary creates its schema in stages: waiting on `packages`
+// alone moved the failure two hundred lines down to `package_submissions`.
+const SEEDED_TABLES = [
+  'bank_sends', 'calls', 'dependencies', 'msg_runs', 'package_files',
+  'packages', 'package_submissions', 'storage_events', 'token_transfers',
+  'transactions', 'users', 'coin_transfers',
+];
+
+// waitForSchema blocks until the binary has created the tables seed() writes.
+//
+// The readiness probe in global-setup is /api/networks, which answers from the
+// parsed config and says nothing about the database. The binary creates its
+// schema, runs its migrations and takes the write lock for ANALYZE and the
+// first rollup build after that, so on a loaded machine seeding wins the race
+// and the whole suite dies at setup with "no such table: packages" or
+// "database is locked". Both read as a broken test run rather than as
+// contention, which is the expensive part: the suite looks red for a reason
+// that has nothing to do with the change under test.
+function waitForSchema(db) {
+  const deadline = Date.now() + SCHEMA_TIMEOUT_MS;
+  const marks = SEEDED_TABLES.map(() => '?').join(',');
+  const query = db.prepare(
+    `SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name IN (${marks})`);
+  for (;;) {
+    const row = query.get(...SEEDED_TABLES);
+    if (row && row.n === SEEDED_TABLES.length) return;
+    if (Date.now() > deadline) {
+      throw new Error(`the binary created ${row ? row.n : 0} of ${SEEDED_TABLES.length} ` +
+        `tables within ${SCHEMA_TIMEOUT_MS}ms`);
+    }
+    // Synchronous, because seed() is: a busy wait of a few milliseconds beats
+    // making every caller of this module async.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+  }
+}
+
 export function seed(dbPath) {
-  const db = new DatabaseSync(dbPath);
+  // The binary is already running against this file and holds the write lock
+  // through its startup work. node:sqlite defaults to failing immediately on a
+  // busy database; the Go side already waits 5s for the same reason.
+  const db = new DatabaseSync(dbPath, { timeout: SCHEMA_TIMEOUT_MS });
   try {
+    waitForSchema(db);
     db.exec('BEGIN');
 
     const pkg = db.prepare(`INSERT OR REPLACE INTO packages
@@ -249,6 +307,9 @@ export function seed(dbPath) {
     const tx = db.prepare(`INSERT OR REPLACE INTO transactions
       (network, tx_hash, block_height, block_time, gas_used, gas_wanted, gas_fee, success)
       VALUES (?, ?, ?, ?, ?, ?, ?, 1)`);
+    const user = db.prepare(`INSERT OR REPLACE INTO users
+      (network, name, address, tx_hash, block_height, block_time, alias, deleted)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
 
     const addPackage = (network, path, creator, height, isRealm, txHash, body) => {
       const name = path.split('/').pop();
@@ -262,6 +323,13 @@ export function seed(dbPath) {
 
     let height = 100;
     addPackage('alpha', HUB, HUB_CREATOR, height++, true);
+
+    // The registry. Height 0 for the first, because that is where a third of
+    // mainnet's registrations live and a genesis row is the one a
+    // cursor-driven sync would miss.
+    user.run('alpha', USER_NAME, HUB_CREATOR, 'tx-alpha-users', 0, blockTime(1), 0, 0);
+    user.run('alpha', USER_BOT, 'g1hubbot0000000000000000000000000000', 'tx-alpha-users', 1, blockTime(1), 0, 0);
+    user.run('alpha', USER_GONE, 'g1hubgone000000000000000000000000000', 'tx-alpha-users', 2, blockTime(2), 0, 1);
 
     // A package big enough to need navigating.
     //
@@ -435,6 +503,27 @@ export function seed(dbPath) {
     grc20('grc20-in-2', 0, GRC20_TOKEN, GRC20_FUNDER, HUB_ADDRESS, 250000, 4102);
     grc20('grc20-out', 0, GRC20_TOKEN, HUB_ADDRESS, GRC20_FUNDER, 150000, 4103);
     grc20('grc20-mint-hub', 0, GRC20_TOKEN, '', HUB_ADDRESS, 100000, 4104);
+
+    // The native coin ledger, seeded from the same legs the fake indexer
+    // serves.
+    //
+    // ⚠️ These two have to agree. /api/realm/defi used to derive its whole
+    // answer from a live indexer walk and now reads coin_transfers, so the
+    // indexer fixture alone leaves the native half of the tab permanently empty
+    // while every assertion about it still runs. One source, written twice,
+    // deliberately: TAB_TRANSFERS is the indexer's copy and this is the
+    // syncer's, and in production the syncer builds the second from the first.
+    const coin = db.prepare(`INSERT OR REPLACE INTO coin_transfers
+      (network, tx_hash, event_idx, from_addr, to_addr, coins, ugnot, block_height, block_time)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    TAB_TRANSFERS.forEach((t, i) => {
+      coin.run('alpha', `transfer-${i}`, 0, t.from, t.to,
+        `${t.amount}ugnot`, t.amount, t.height, blockTime(t.height));
+    });
+    // The backfill marker, so the response does not report a complete history
+    // as possibly-short. Its absence is what `truncated` means now.
+    db.prepare(`INSERT OR REPLACE INTO sync_state (key, value) VALUES (?, ?)`)
+      .run('coin_backfill_done:alpha', '1');
 
     // --- the recent tail, stamped against the wall clock ---------------------
     //

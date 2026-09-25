@@ -351,7 +351,216 @@ func TestResponseCacheIsBounded(t *testing.T) {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest("GET", fmt.Sprintf("/api/txs?offset=%d", i), nil))
 	}
-	if _, _, size := c.stats(); size > cacheMaxEntries {
+	if size := c.stats().Entries; size > cacheMaxEntries {
 		t.Errorf("cache holds %d entries, want at most %d", size, cacheMaxEntries)
+	}
+}
+
+// An escaped path and an unescaped one are different requests, and the cache
+// must not merge them.
+//
+// A third of gno transaction hashes are base64 containing a slash.
+// `/api/tx/a%2Fb` routes to the transaction handler and answers JSON;
+// `/api/tx/a/b` matches no API route and falls through to the SPA, which
+// answers 200 with HTML. Keyed on the decoded path the two collide, and
+// whichever arrived first was served to the other for the whole TTL.
+func TestResponseCacheKeysOnTheEscapedPath(t *testing.T) {
+	var calls atomic.Int32
+	h := WithResponseCache(NewResponseCache(CacheTTL), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		// What the real chain does: one path matches a route, the other does
+		// not and is answered by the single-page app.
+		if r.URL.EscapedPath() == "/api/tx/a%2Fb" {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"hash":"a/b"}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, "<!DOCTYPE html>")
+	}))
+
+	get := func(path string) string {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		return rec.Body.String()
+	}
+
+	// The unescaped one first, which is what poisoned the entry.
+	if got := get("/api/tx/a/b"); got != "<!DOCTYPE html>" {
+		t.Fatalf("got %q", got)
+	}
+	if got := get("/api/tx/a%2Fb"); got != `{"hash":"a/b"}` {
+		t.Errorf("got %q, want the transaction; the two paths shared a cache entry", got)
+	}
+	if calls.Load() != 2 {
+		t.Errorf("handler ran %d times, want 2 distinct keys", calls.Load())
+	}
+}
+
+// Concurrent readers of one cold key produce one computation, not one each.
+//
+// Measured against production on 2026-09-24, four concurrent requests on a cold
+// /api/govdao/overview key all answered X-Cache: MISS, each having recomputed
+// the whole thing, and the latency grew with the concurrency (2.39s, 2.79s,
+// 3.03s, 3.13s) because they were competing for the same upstream node. The
+// stale path was already single-flighted; this is the path that was not.
+func TestResponseCacheCoalescesConcurrentMisses(t *testing.T) {
+	var calls atomic.Int32
+	release := make(chan struct{})
+	h := WithResponseCache(NewResponseCache(time.Hour), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ok":true}`))
+	}))
+
+	const readers = 6
+	states := make([]string, readers)
+	bodies := make([]string, readers)
+	var wg sync.WaitGroup
+	for i := 0; i < readers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/govdao/overview", nil))
+			states[i] = rec.Header().Get("X-Cache")
+			bodies[i] = rec.Body.String()
+		}(i)
+	}
+	// Let every reader reach the cache before the leader may finish.
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	if n := calls.Load(); n != 1 {
+		t.Errorf("handler ran %d times for %d concurrent readers, want 1", n, readers)
+	}
+	misses, waits := 0, 0
+	for i, s := range states {
+		switch s {
+		case "MISS":
+			misses++
+		case "WAIT":
+			waits++
+		default:
+			t.Errorf("reader %d got X-Cache %q", i, s)
+		}
+		if bodies[i] != `{"ok":true}` {
+			t.Errorf("reader %d got body %q", i, bodies[i])
+		}
+	}
+	if misses != 1 {
+		t.Errorf("%d readers computed, want exactly 1", misses)
+	}
+	if waits != readers-1 {
+		t.Errorf("%d readers waited, want %d", waits, readers-1)
+	}
+}
+
+// A waiter whose client goes away stops waiting, and does not wedge the key.
+func TestResponseCacheWaiterHonoursItsContext(t *testing.T) {
+	release := make(chan struct{})
+	started := make(chan struct{})
+	var once sync.Once
+	h := WithResponseCache(NewResponseCache(time.Hour), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		once.Do(func() { close(started) })
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ok":true}`))
+	}))
+
+	go h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/api/accounts", nil))
+	<-started
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/accounts", nil).WithContext(ctx))
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a waiter with a cancelled context never returned")
+	}
+	close(release)
+}
+
+// Two spellings of one request share one entry, so the reader who arrived from
+// a shared link does not pay the cold price for a page that is already cached.
+func TestCanonicalQuery(t *testing.T) {
+	for _, tt := range []struct{ name, in, want string }{
+		{"empty", "", ""},
+		{"network=all is the same as no network", "network=all", ""},
+		{"a real network is kept", "network=mainnet", "network=mainnet"},
+		{"parameters are sorted", "network=mainnet&limit=10", "limit=10&network=mainnet"},
+		{"utm is dropped", "utm_source=twitter&network=mainnet", "network=mainnet"},
+		{"click ids are dropped", "fbclid=abc&gclid=def", ""},
+		{"an empty value is kept", "q=", "q="},
+		{"an unknown parameter is kept", "days=30", "days=30"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := canonicalQuery(tt.in); got != tt.want {
+				t.Errorf("canonicalQuery(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// ?network=all and no network reach the same entry end to end.
+func TestResponseCacheSharesNetworkAllWithNoNetwork(t *testing.T) {
+	var calls atomic.Int32
+	h := WithResponseCache(NewResponseCache(time.Hour), countingHandler(&calls, 200, `{"ok":true}`))
+	for _, u := range []string{"/api/analytics?network=all", "/api/analytics", "/api/analytics?utm_source=x"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", u, nil))
+		if rec.Body.String() != `{"ok":true}` {
+			t.Errorf("%s: body = %q", u, rec.Body.String())
+		}
+	}
+	if n := calls.Load(); n != 1 {
+		t.Errorf("handler ran %d times for three spellings of one request, want 1", n)
+	}
+}
+
+// An endpoint whose recompute costs more than the default TTL gets its own,
+// or it never settles: measured on 2026-09-24, /api/govdao/overview answered
+// 56 STALE against 28 HIT over three minutes and was refreshing continuously.
+func TestEndpointTTLOverridesTheDefault(t *testing.T) {
+	c := NewResponseCache(CacheTTL)
+	if got := c.cacheTTLFor("/api/govdao/overview"); got != endpointTTL["/api/govdao/overview"] {
+		t.Errorf("govdao TTL = %v, want its override", got)
+	}
+	if got := c.cacheTTLFor("/api/txs"); got != CacheTTL {
+		t.Errorf("default TTL = %v, want %v", got, CacheTTL)
+	}
+}
+
+// The endpoints that report this server's own live counters must not be served
+// from a cache those counters describe.
+//
+// /api/views is the one that caught us: it counts realm page opens and flushes
+// before answering, and was then cached like everything else, so the first
+// caller stored "nobody has opened anything" and every caller after was told
+// that while being counted. The realm detail avoided this; one endpoint over
+// reintroduced it, because ?path= keys separately and happened to be asked
+// first in the test that was supposed to prove it.
+func TestLiveCountersAreNotCacheable(t *testing.T) {
+	for _, path := range []string{"/api/cache/stats", "/api/views", "/api/live", "/api/version"} {
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		if cacheable(r) {
+			t.Errorf("%s is cacheable, so it would report a stale version of the state it exists to report", path)
+		}
+	}
+	// And the ordinary ones still are, or this guard has quietly disabled the
+	// cache.
+	for _, path := range []string{"/api/realms", "/api/apps", "/api/realm/r/x/a"} {
+		r := httptest.NewRequest(http.MethodGet, path, nil)
+		if !cacheable(r) {
+			t.Errorf("%s stopped being cacheable", path)
+		}
 	}
 }

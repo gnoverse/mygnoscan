@@ -206,6 +206,11 @@ var paramCatalog = []paramGroupSpec{
 // budget is per key rather than per page.
 const paramFetchTimeout = 8 * time.Second
 
+// paramsClient serves the /status and /consensus_params reads, over the shared
+// pool. Several of these run concurrently per request, which is exactly the
+// case a per-call client handled worst.
+var paramsClient = sharedClient(paramFetchTimeout)
+
 // maxParamConcurrency bounds the fan-out at one node. The catalogue is small
 // and the node answers params from local state, but a page load should still
 // not open a dozen sockets at once against a public RPC.
@@ -313,7 +318,7 @@ func fetchRPCJSON(ctx context.Context, rpcURL, path string, out any) error {
 	if err != nil {
 		return err
 	}
-	resp, err := (&http.Client{Timeout: paramFetchTimeout}).Do(req)
+	resp, err := paramsClient.Do(req)
 	if err != nil {
 		return err
 	}

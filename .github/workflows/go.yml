@@ -6,8 +6,14 @@ on:
       - main
   pull_request:
 
+# One group per commit on main, per branch on a pull request. See e2e.yml for
+# why: a shared per-ref group means a queued run on main is superseded by the
+# next merge and cancelled before it starts. This workflow is fast enough that
+# it usually wins the race, which makes it the more dangerous of the two to
+# leave: it fails this way only on the busiest days, which are the days the
+# answer matters.
 concurrency:
-  group: go-${{ github.ref }}
+  group: go-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -58,6 +64,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check the tree
+        run: ./scripts/check-tree.sh
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0

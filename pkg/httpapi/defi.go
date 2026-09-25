@@ -2,11 +2,9 @@ package httpapi
 
 import (
 	"net/http"
-	"sort"
 	"strings"
 
 	"github.com/moul/mygnoscan/pkg/gnoaddr"
-	"github.com/moul/mygnoscan/pkg/indexer"
 	"github.com/moul/mygnoscan/pkg/store"
 )
 
@@ -49,8 +47,14 @@ const coinFlowLimit = 500
 // page with ?flows_offset.
 const coinFlowMaxLimit = 5000
 
-// tokenFlowLimit is the same bound for the GRC20 side.
-const tokenFlowLimit = 500
+// tokenFlowLimit is the default page of GRC20 transfers, and tokenFlowMaxLimit
+// the largest ?token_flows_limit may ask for. The same pair as the native side,
+// and the same reasoning: the default is what the endpoint always returned, the
+// ceiling keeps a whale from handing a browser an unbounded document.
+const (
+	tokenFlowLimit    = 500
+	tokenFlowMaxLimit = 5000
+)
 
 // counterpartyLimit bounds the collapsed view of the same legs.
 //
@@ -59,54 +63,6 @@ const tokenFlowLimit = 500
 // full count reported beside it so a reader knows a tail was left out rather
 // than guessing from the picture.
 const counterpartyLimit = 50
-
-// counterparty is one other end of the realm's money, with the two directions
-// kept apart.
-//
-// The same legs as Flows, collapsed. It exists because the table answers "what
-// happened" and cannot answer "who", which on anything defi-shaped is the
-// question: r/.../bubblerumble3 has 3,095 legs and twelve counterparties, and
-// only the second number is a thing a person can hold in their head.
-//
-// Computed over every leg the walk returned, never over the page, for the same
-// reason DerivedUgnot is: a per-counterparty total summed over 500 of 3,095
-// legs is wrong for exactly the heaviest counterparties, which are the ones a
-// reader is looking at.
-type counterparty struct {
-	// Address is the other end. Empty means the chain itself (a fee collector,
-	// a genesis allocation), not a missing value.
-	Address string `json:"address"`
-	// Sent is what this account put into the realm; Received is what the realm
-	// paid it. Kept apart rather than netted, because an account that moved
-	// 400 GNOT each way is not the same actor as one that never moved any, and
-	// a single net figure cannot tell them apart.
-	Sent     int64 `json:"sent"`
-	Received int64 `json:"received"`
-	// Net is Received minus Sent: this account's own profit and loss, not the
-	// realm's. The sign is the opposite of coinFlow.Amount's, which is written
-	// from the realm's point of view, and getting the two confused turns a
-	// player who is up into one who is down.
-	Net       int64  `json:"net"`
-	Legs      int    `json:"legs"`
-	FirstSeen string `json:"first_seen,omitempty"`
-	LastSeen  string `json:"last_seen,omitempty"`
-}
-
-type coinFlow struct {
-	TxHash      string `json:"tx_hash"`
-	BlockHeight int    `json:"block_height"`
-	BlockTime   string `json:"block_time,omitempty"`
-	// Account names which of the package's two accounts this leg touched.
-	Account string `json:"account"`
-	// Counterparty is the other end. Empty is possible and means the chain
-	// itself (a fee collector, genesis), not a missing value.
-	Counterparty string `json:"counterparty"`
-	// Amount is signed ugnot: positive is received. Coins is the chain's own
-	// string, kept because a transfer can carry a denom that is not ugnot and
-	// Amount cannot represent it.
-	Amount int64  `json:"amount"`
-	Coins  string `json:"coins"`
-}
 
 type tokenPositionRow struct {
 	store.TokenPosition
@@ -122,10 +78,15 @@ type realmDefiResponse struct {
 	StorageDepositAddress string `json:"storage_deposit_address,omitempty"`
 
 	// Balance and StorageBalance are live RPC reads, verbatim coin strings.
-	// Empty means the read failed, which is not the same as a zero balance and
-	// must not be rendered as one.
-	Balance        string `json:"balance"`
-	StorageBalance string `json:"storage_balance"`
+	// Empty is ambiguous on its own: it is both "the read failed" and "the
+	// account holds nothing", and the second is the common case for a realm
+	// whose money is all in GRC20. BalanceKnown and StorageBalanceKnown are
+	// what separate them, so the frontend can render zero as zero and reserve
+	// "unknown" for a read that genuinely did not happen.
+	Balance             string `json:"balance"`
+	BalanceKnown        bool   `json:"balance_known"`
+	StorageBalance      string `json:"storage_balance"`
+	StorageBalanceKnown bool   `json:"storage_balance_known"`
 
 	// DerivedUgnot is the reconstruction: every transfer leg, summed. LiveUgnot
 	// is what the chain says. Both are reported rather than one being chosen,
@@ -140,19 +101,26 @@ type realmDefiResponse struct {
 	// FlowsShown and FlowsTotal say whether the page is the whole story.
 	// FlowsOffset is where the page starts, counting back from the newest leg,
 	// so a caller can walk the rest without re-deriving the window.
-	FlowsShown  int        `json:"flows_shown"`
-	FlowsTotal  int        `json:"flows_total"`
-	FlowsOffset int        `json:"flows_offset"`
-	Flows       []coinFlow `json:"flows"`
+	FlowsShown  int                   `json:"flows_shown"`
+	FlowsTotal  int                   `json:"flows_total"`
+	FlowsOffset int                   `json:"flows_offset"`
+	Flows       []store.RealmCoinFlow `json:"flows"`
 
 	// Counterparties is the same history collapsed by who was at the other
 	// end, newest-heaviest first, and CounterpartiesTotal is how many there
 	// were before the cut. Always over every leg, never over the page above.
-	Counterparties      []counterparty `json:"counterparties"`
-	CounterpartiesTotal int            `json:"counterparties_total"`
+	Counterparties      []store.RealmCoinParty `json:"counterparties"`
+	CounterpartiesTotal int                    `json:"counterparties_total"`
 
 	Tokens     []tokenPositionRow    `json:"tokens"`
 	TokenFlows []store.TokenTransfer `json:"token_flows"`
+	// The same three the native side reports, and for the same reason: a page
+	// that is exactly as long as the limit is indistinguishable from a complete
+	// history without a total beside it. r/gnoswap/pool and r/gnoswap/router
+	// both sat on 500 with nothing saying so.
+	TokenFlowsShown  int `json:"token_flows_shown"`
+	TokenFlowsTotal  int `json:"token_flows_total"`
+	TokenFlowsOffset int `json:"token_flows_offset"`
 	// TokenLedgerFrom is the oldest transfer in the local GRC20 ledger on this
 	// chain. Anything a package received before it is invisible here, so a
 	// position is a floor rather than a figure whenever this is later than the
@@ -183,46 +151,68 @@ func (a *API) HandleRealmDefi(w http.ResponseWriter, r *http.Request) {
 		Path:                  path,
 		Address:               addr,
 		StorageDepositAddress: depositAddr,
-		Flows:                 []coinFlow{},
+		Flows:                 []store.RealmCoinFlow{},
 		Tokens:                []tokenPositionRow{},
 		TokenFlows:            []store.TokenTransfer{},
 	}
 
 	rpcURL := a.rpcURLFor(network)
-	resp.Balance = fetchBalance(r.Context(), addr, rpcURL)
-	resp.LiveUgnot = store.ParseUgnot(resp.Balance)
+	bal, balErr := fetchBalanceErr(r.Context(), addr, rpcURL)
+	resp.Balance, resp.BalanceKnown = bal, balErr == nil
+	resp.LiveUgnot = store.ParseUgnot(bal)
 	if depositAddr != "" {
-		resp.StorageBalance = fetchBalance(r.Context(), depositAddr, rpcURL)
+		sbal, sErr := fetchBalanceErr(r.Context(), depositAddr, rpcURL)
+		resp.StorageBalance, resp.StorageBalanceKnown = sbal, sErr == nil
 	}
 
-	if client := a.clientFor(network); client != nil {
-		txs, truncated, err := client.CoinFlows(r.Context(), []string{addr, depositAddr})
-		if err != nil {
-			jsonError(w, err.Error(), 500)
-			return
-		}
-		resp.Truncated = truncated
-		a.stampBlockTimes(r.Context(), network, client, txs)
-		flows, derived := coinFlowsFor(txs, addr, depositAddr)
-		resp.DerivedUgnot = derived
-		resp.FlowsTotal = len(flows)
-
-		// The page is cut here and nowhere else: DerivedUgnot above is the sum
-		// over every leg, because it is the figure compared against the chain's
-		// own balance and a paged sum would report a gap that is an artefact of
-		// the page size.
-		q := r.URL.Query()
-		page, offset := pageFlows(flows,
-			intParam(q, "flows_offset", 0, 0),
-			intParam(q, "flows_limit", coinFlowLimit, coinFlowMaxLimit))
-		resp.FlowsOffset = offset
-		resp.FlowsShown = len(page)
-		resp.Flows = page
-
-		parties, total := counterpartiesFor(flows)
-		resp.Counterparties = parties
-		resp.CounterpartiesTotal = total
+	// Read from the local ledger, not walked from the indexer.
+	//
+	// This used to fetch every transaction carrying a TransferEvent that touched
+	// either account, on every cold request, and do the arithmetic in Go. It cost
+	// 2.0s and 2.6s on a realm with 3,104 legs and, more tellingly, **2.1 to 2.4
+	// seconds on three realms with none at all**: the latency was the round trip
+	// plus resolving a chain-wide event filter, so no response cache could reach
+	// it (ADR 0043). coin_transfers now holds the same legs, filled forward by
+	// the sync walk and backward by a one-off backfill.
+	stats, err := a.db.RealmCoinStatsFor(network, addr, depositAddr)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
 	}
+	resp.DerivedUgnot = stats.DerivedUgnot
+	resp.FlowsTotal = stats.Legs
+	// Truncated changed meaning with the source and kept its name, because it
+	// answers the same reader question: may the reconstruction below be short?
+	// It used to mean "the indexer capped the query"; it now means the ledger's
+	// historical backfill has not finished on this chain.
+	resp.Truncated = !a.db.CoinBackfillDone(network)
+
+	// The page is cut here and nowhere else. DerivedUgnot above is a SUM over
+	// every row, because it is the figure compared against the chain's own
+	// balance and a paged sum would report a gap that is an artefact of the
+	// page size.
+	q := r.URL.Query()
+	flowOffset := intParam(q, "flows_offset", 0, 0)
+	if flowOffset > stats.Legs {
+		flowOffset = stats.Legs
+	}
+	page, err := a.db.RealmCoinFlowsFor(network, addr, depositAddr,
+		intParam(q, "flows_limit", coinFlowLimit, coinFlowMaxLimit), flowOffset)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	resp.FlowsOffset = flowOffset
+	resp.FlowsShown = len(page)
+	resp.Flows = page
+
+	parties, partyTotal, err := a.db.RealmCoinPartiesFor(network, addr, depositAddr, counterpartyLimit)
+	if err != nil {
+		jsonError(w, err.Error(), 500)
+		return
+	}
+	resp.Counterparties = parties
+	resp.CounterpartiesTotal = partyTotal
 
 	positions, err := a.db.TokenPositions(network, addr)
 	if err != nil {
@@ -239,161 +229,32 @@ func (a *API) HandleRealmDefi(w http.ResponseWriter, r *http.Request) {
 		resp.Tokens = append(resp.Tokens, row)
 	}
 	if len(resp.Tokens) > 0 {
-		flows, err := a.db.HolderTransfers(network, addr, tokenFlowLimit)
+		q := r.URL.Query()
+		limit := intParam(q, "token_flows_limit", tokenFlowLimit, tokenFlowMaxLimit)
+		offset := intParam(q, "token_flows_offset", 0, 0)
+
+		total, err := a.db.HolderTransferCount(network, addr)
+		if err != nil {
+			jsonError(w, err.Error(), 500)
+			return
+		}
+		// Clamped before the query and reported back, so a caller paging by
+		// adding what it holds to what it was given terminates instead of
+		// walking forever asking for nothing.
+		if offset > total {
+			offset = total
+		}
+		flows, err := a.db.HolderTransfers(network, addr, limit, offset)
 		if err != nil {
 			jsonError(w, err.Error(), 500)
 			return
 		}
 		resp.TokenFlows = flows
+		resp.TokenFlowsTotal = total
+		resp.TokenFlowsOffset = offset
+		resp.TokenFlowsShown = len(flows)
 		resp.TokenLedgerFrom = a.db.EarliestTokenTransfer(network)
 	}
 
 	JSONResponse(w, resp)
-}
-
-// pageFlows cuts one page out of the newest-first flows, and reports where it
-// actually started.
-//
-// Returns the clamped offset rather than the requested one, because the reader
-// pages by adding the rows they hold to the offset they were given: handing back
-// an offset past the end would have them walk forever asking for nothing. The
-// slice is never nil, so the field marshals as [] rather than null.
-func pageFlows(flows []coinFlow, offset, limit int) ([]coinFlow, int) {
-	if offset > len(flows) {
-		offset = len(flows)
-	}
-	page := flows[offset:]
-	if len(page) > limit {
-		page = page[:limit]
-	}
-	if page == nil {
-		page = []coinFlow{}
-	}
-	return page, offset
-}
-
-// coinFlowsFor turns the transactions into one signed row per transfer leg,
-// newest first, and returns the net ugnot across every leg.
-//
-// The net is computed over every leg the query returned, not over the rows that
-// survive the display limit: it is the figure compared against the chain's own
-// balance, and comparing a truncated sum would report a gap that is an artefact
-// of the page size.
-//
-// Only the banker's legs count toward the net. The storage deposit account's
-// legs are carried for the table (they are how a deposit was funded) but summing
-// both into one figure would compare the sum of two accounts against the balance
-// of one. In practice the deposit account has no legs at all: the charge and the
-// refund go through SendCoinsUnrestricted, which emits nothing.
-func coinFlowsFor(txs []indexer.Transaction, addr, depositAddr string) ([]coinFlow, int64) {
-	flows := []coinFlow{}
-	var net int64
-	for _, tx := range txs {
-		if tx.Response == nil {
-			continue
-		}
-		for _, ev := range tx.Response.Events {
-			if ev.Typename != "TransferEvent" {
-				continue
-			}
-			var account, counterparty string
-			var sign int64
-			switch {
-			case ev.To == addr:
-				account, counterparty, sign = "banker", ev.From, 1
-			case ev.From == addr:
-				account, counterparty, sign = "banker", ev.To, -1
-			case depositAddr != "" && ev.To == depositAddr:
-				account, counterparty, sign = "storage deposit", ev.From, 1
-			case depositAddr != "" && ev.From == depositAddr:
-				account, counterparty, sign = "storage deposit", ev.To, -1
-			default:
-				// A leg of a transaction that touched this realm somewhere else.
-				// One transaction can carry many transfers and only some of them
-				// are ours.
-				continue
-			}
-			amount := sign * store.ParseUgnot(ev.Coins)
-			if account == "banker" {
-				net += amount
-			}
-			flows = append(flows, coinFlow{
-				TxHash:       tx.Hash,
-				BlockHeight:  tx.BlockHeight,
-				BlockTime:    tx.BlockTime,
-				Account:      account,
-				Counterparty: counterparty,
-				Amount:       amount,
-				Coins:        ev.Coins,
-			})
-		}
-	}
-	// The query already orders by height descending, and the legs within one
-	// transaction arrive in execution order. A stable sort keeps both: it only
-	// fixes the case where the indexer returned something else.
-	sort.SliceStable(flows, func(i, j int) bool {
-		return flows[i].BlockHeight > flows[j].BlockHeight
-	})
-	return flows, net
-}
-
-// counterpartiesFor collapses the legs by who was at the other end.
-//
-// Banker legs only, which is the same rule DerivedUgnot follows. The storage
-// deposit account is a different account with a different story (the storage
-// tab draws it), and folding its legs in here would attribute a deposit to the
-// realm's treasury. In practice it contributes nothing at all: the charge and
-// the refund both go through SendCoinsUnrestricted, which emits no event.
-//
-// Returns the top counterpartyLimit by gross volume, and the total count before
-// the cut.
-func counterpartiesFor(flows []coinFlow) ([]counterparty, int) {
-	byAddr := map[string]*counterparty{}
-	for _, f := range flows {
-		if f.Account != "banker" {
-			continue
-		}
-		c := byAddr[f.Counterparty]
-		if c == nil {
-			c = &counterparty{Address: f.Counterparty}
-			byAddr[f.Counterparty] = c
-		}
-		// Amount is signed from the realm's point of view: positive is the
-		// realm receiving, which is this account sending.
-		if f.Amount >= 0 {
-			c.Sent += f.Amount
-		} else {
-			c.Received += -f.Amount
-		}
-		c.Legs++
-		// The flows are newest first, so the first time an address is seen is
-		// its last activity and the last time is its first.
-		if c.LastSeen == "" {
-			c.LastSeen = f.BlockTime
-		}
-		if f.BlockTime != "" {
-			c.FirstSeen = f.BlockTime
-		}
-	}
-
-	out := make([]counterparty, 0, len(byAddr))
-	for _, c := range byAddr {
-		c.Net = c.Received - c.Sent
-		out = append(out, *c)
-	}
-	// Gross, not net: an account that moved a lot in both directions is a major
-	// counterparty even when it comes out level, and ranking by net would bury
-	// it under someone who moved a thousandth as much one way.
-	gross := func(c counterparty) int64 { return c.Sent + c.Received }
-	sort.SliceStable(out, func(i, j int) bool {
-		if gross(out[i]) != gross(out[j]) {
-			return gross(out[i]) > gross(out[j])
-		}
-		return out[i].Address < out[j].Address
-	})
-	total := len(out)
-	if len(out) > counterpartyLimit {
-		out = out[:counterpartyLimit]
-	}
-	return out, total
 }

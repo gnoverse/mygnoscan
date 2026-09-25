@@ -55,14 +55,45 @@ func SignerAddress(contentRaw string) string {
 	}
 	pub := rest[j+1 : j+1+compressedPubKeyLen]
 
-	// ripemd160(sha256(pubkey)), the classic Bitcoin-style derivation gno
-	// inherits — *not* the truncated sha256 some other Tendermint key types
-	// use. Getting this wrong yields a valid-looking bech32 address that
-	// matches nothing, which reads as "every transaction is session-signed".
-	sum := sha256.Sum256(pub)
-	h := ripemd160.New()
-	h.Write(sum[:])
-	return bech32Address(h.Sum(nil))
+	return AddressFromPubKey(pub)
+}
+
+// ed25519PubKeyLen is an ed25519 point. gno supports both key types, and the
+// two derive their addresses differently.
+const ed25519PubKeyLen = 32
+
+// AddressFromPubKey derives a g1 address from a raw public key, secp256k1 or
+// ed25519, told apart by length.
+//
+// The two schemes genuinely differ and using the wrong one still produces a
+// valid-looking bech32 address, just one that matches no account on the chain:
+//
+//   - secp256k1 (33 bytes, compressed): ripemd160(sha256(pubkey)), the classic
+//     Bitcoin-style derivation gno inherits.
+//   - ed25519 (32 bytes): sha256(pubkey) truncated to 20 bytes, which is
+//     tmhash.SumTruncated (tm2/pkg/crypto/ed25519.PubKeyEd25519.Address).
+//
+// ed25519 was missing until 2026-09-25 and the omission was silent: a session
+// grant carrying one was logged as undecodable and dropped, so pearl's
+// ed25519-keyed sessions were absent from the index entirely while every
+// secp256k1 one was present.
+//
+// Exported because the session grant in an auth/create_session carries its key
+// as raw bytes and not as an address, so the syncer has to do this same
+// derivation to know which account a grant is even about.
+func AddressFromPubKey(pub []byte) string {
+	switch len(pub) {
+	case compressedPubKeyLen:
+		sum := sha256.Sum256(pub)
+		h := ripemd160.New()
+		h.Write(sum[:])
+		return bech32Address(h.Sum(nil))
+	case ed25519PubKeyLen:
+		sum := sha256.Sum256(pub)
+		return bech32Address(sum[:20])
+	default:
+		return ""
+	}
 }
 
 const bech32Charset = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"

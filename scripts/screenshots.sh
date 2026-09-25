@@ -8,6 +8,20 @@
 #   DB=/path/to/mygnoscan.db ./scripts/screenshots.sh
 #
 # Requires Chrome (headless). Everything else is the project's own binary.
+#
+# The images committed under docs/images/ on 2026-09-25 were NOT made this way.
+# They were captured headless against the live mainnet instance, because the
+# only database with enough history to look like something is the 1.6 GB one on
+# the server. Before that they were pearl-era captures of a top-nav UI that no
+# longer exists, on the retired topaz network, which is what made the README's
+# first impression a page nobody could load:
+#
+#   chrome --headless --hide-scrollbars --window-size=1400,900 \
+#     --virtual-time-budget=15000 --screenshot=docs/images/<name>.png \
+#     'https://mygnoscan.moul.p2p.team/<path>?network=mainnet'
+#
+# home.png is 1400x1600 rather than 900, because the hot realms and hot assets
+# panels are the point of that page and both have to be in frame.
 set -e
 
 DB="${DB:-mygnoscan.db}"

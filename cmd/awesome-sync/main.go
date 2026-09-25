@@ -12,12 +12,16 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/moul/mygnoscan/pkg/registry"
@@ -60,6 +64,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// The list links repositories; the page wants apps. This is the step that
+	// turns one into the other, and it is the slow half of the run because it
+	// talks to every project's own server.
+	resolveSites(context.Background(), sections)
 
 	snap := registry.Awesome{
 		Source:   fmt.Sprintf("https://github.com/%s/%s", owner, repo),
@@ -92,8 +100,48 @@ func run() error {
 	if err := os.WriteFile(*out, body, 0o644); err != nil {
 		return err
 	}
-	fmt.Printf("awesome-sync: wrote %s: %d sections, %d entries, %d realms, from %s\n",
-		*out, len(snap.Sections), snap.Count(), len(snap.Paths()), sha[:12])
+	apps := snap.Apps()
+	fmt.Printf("awesome-sync: wrote %s: %d sections, %d entries, %d apps (%d realms, %d sites), from %s\n",
+		*out, len(snap.Sections), snap.Count(), len(apps), len(snap.Paths()), len(snap.SiteHosts()), sha[:12])
+
+	// Printed rather than left to be worked out, because it is configuration on
+	// another box: gnoshot refuses a host it was not told about, and the failure
+	// is a card with no picture and nothing in any log here.
+	//
+	// Both sources, not just the community list. apps.json names a website too,
+	// and this line used to print the snapshot's hosts with a comment asking the
+	// reader to check the other file by hand. Nobody did: kourt.xyz has been
+	// curated since 2026-09-21 and its card has been photographing nothing ever
+	// since, answering 400 with `host "kourt.xyz" not on the allowlist`, and
+	// bubblerumble.net joined it the day it was added. A manual step that fails
+	// silently on somebody else's box is a step that does not exist.
+	//
+	// The snapshot's half comes from `snap`, which is what was just written,
+	// rather than from the embedded copy this binary was compiled against:
+	// those differ by exactly the change being made, and printing the old one
+	// after a sync is how this line would go stale in the one case it is for.
+	hosts := map[string]bool{}
+	for _, h := range snap.SiteHosts() {
+		hosts[h] = true
+	}
+	reg, err := registry.Load()
+	if err != nil {
+		return fmt.Errorf("reading apps.json back for the host list: %w", err)
+	}
+	for _, a := range reg.Apps {
+		u, err := url.Parse(a.URL)
+		if err != nil || u.Hostname() == "" {
+			continue
+		}
+		hosts[strings.ToLower(u.Hostname())] = true
+	}
+	all := make([]string, 0, len(hosts))
+	for h := range hosts {
+		all = append(all, h)
+	}
+	sort.Strings(all)
+	fmt.Printf("\ngnoshot needs these hosts on its -allow-site flag:\n\n  -allow-site '%s'\n",
+		strings.Join(all, ","))
 	return nil
 }
 

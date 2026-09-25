@@ -44,13 +44,9 @@ const PAGES = [
   // regression a shot of the default view would never catch.
   ['contracts-active', '/contracts?view=bundled&edges=imports&metric=importers&flow=0&active=1&deps=1'],
   // The hub in all three of its shapes: no chain picked (descriptions only,
-  // no numbers), a chain picked (cards with usage, and the candidates queue
-  // under them), the dense table, and the community list with the cross-check
-  // under it.
+  // no numbers, off-chain apps only) and a chain picked (the ranked grid).
   ['apps', '/apps'],
   ['apps-network', '/apps?network=alpha'],
-  ['apps-table', '/apps?network=alpha&view=table'],
-  ['apps-ecosystem', '/apps?network=alpha&view=ecosystem'],
   ['transactions', '/txs'],
   ['blocks', '/blocks'],
   ['accounts', '/accounts'],
@@ -79,7 +75,11 @@ const PAGES = [
   ['storage', '/storage?network=alpha&group=namespace'],
   ['storage-payer', '/storage?network=alpha&group=payer&order=size'],
   ['realm-detail', `/realm/${HUB_ROUTE}`],
+  // The funnel, plain and sized. The second is the one worth reviewing: a
+  // dependency graph's rows are only readable if the node pitch tracks the
+  // node size, and that only goes wrong once something is scaled by a metric.
   ['realm-deps', `/realm/${HUB_ROUTE}?tab=deps`],
+  ['realm-deps-sized', `/realm/${HUB_ROUTE}?network=alpha&tab=deps&gsize=importers&gscale=log`],
   ['realm-source', `/realm/${HUB_ROUTE}?tab=source`],
   // The two-column layout: a package with enough declarations to need a symbol
   // outline beside them. `realm-docs` above is the one-column case.

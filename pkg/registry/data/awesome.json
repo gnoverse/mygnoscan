@@ -2,8 +2,8 @@
   "source": "https://github.com/gnoverse/awesome-gno",
   "readme": "https://github.com/gnoverse/awesome-gno/blob/main/README.md",
   "contributing": "https://github.com/gnoverse/awesome-gno/blob/main/CONTRIBUTING.md",
-  "commit": "1fdfe66f85d395e70db583be0d89b6b6e63872ff",
-  "synced": "2026-09-23",
+  "commit": "85d5dd1db8fd5929087097a03e4c18979537e633",
+  "synced": "2026-09-24",
   "sections": [
     {
       "title": "Official Links",
@@ -77,32 +77,30 @@
         {
           "name": "Gno Playground",
           "url": "https://play.gno.land/",
-          "description": "An online Gno editor that allows for quick testing, deploying, and sharing of Gno code, modeled after the Go Playground."
-        },
-        {
-          "name": "Gno Studio Connect",
-          "url": "https://gno.studio/connect",
-          "description": "A tool that makes interaction with Gno applications simple."
+          "description": "An online Gno editor that allows for quick testing, deploying, and sharing of Gno code, modeled after the Go Playground.",
+          "site": "https://play.gno.land/",
+          "site_from": "listed"
         },
         {
           "name": "GnoChess",
           "url": "https://github.com/gnoverse/gnochess",
-          "description": "A chess server implementation in Gno, complete with a frontend, faucet \u0026 tutorial to develop your own."
-        },
-        {
-          "name": "meme.land",
-          "url": "https://github.com/gnoverse/memeland",
-          "description": "An image sharing application built using Gno, React and Vue."
+          "description": "A chess server implementation in Gno, complete with a frontend, faucet \u0026 tutorial to develop your own.",
+          "site": "https://gnochess.com",
+          "site_from": "repo-homepage"
         },
         {
           "name": "Gno Faucet Hub",
           "url": "https://faucet.gno.land",
-          "description": "A central place for all gno.land faucets."
+          "description": "A central place for all gno.land faucets.",
+          "site": "https://faucet.gno.land",
+          "site_from": "listed"
         },
         {
           "name": "Is gno.land down?",
           "url": "https://status.gnoteam.com",
-          "description": "A dashboard showing the status of gno.land services \u0026 networks."
+          "description": "A dashboard showing the status of gno.land services \u0026 networks.",
+          "site": "https://status.gnoteam.com",
+          "site_from": "listed"
         },
         {
           "name": "OpenOcean",
@@ -119,27 +117,37 @@
         {
           "name": "Gnoswap",
           "url": "https://github.com/gnoswap-labs/gnoswap",
-          "description": "The first DEX built on gno.land (currently in beta)."
+          "description": "The first DEX built on gno.land (currently in beta).",
+          "site": "https://gnoswap.io/",
+          "site_from": "repo-homepage"
         },
         {
           "name": "Adena Wallet",
           "url": "https://adena.app/",
-          "description": "Friendly wallet that simplifies sending \u0026 receiving tokens, staking, NFT storage, and dapp connections."
+          "description": "Friendly wallet that simplifies sending \u0026 receiving tokens, staking, NFT storage, and dapp connections.",
+          "site": "https://www.adena.app/",
+          "site_from": "listed"
         },
         {
           "name": "Gnolove",
           "url": "https://gnolove.world",
-          "description": "Community leaderboard and contributions analytics for builders of the Gnoland ecosystem."
+          "description": "Community leaderboard and contributions analytics for builders of the Gnoland ecosystem.",
+          "site": "https://memba.samourai.app/gnolove",
+          "site_from": "listed"
         },
         {
           "name": "Zenao",
           "url": "https://zenao.io",
-          "description": "Organize events in seconds then build your resilient community \u0026 social organizations."
+          "description": "Organize events in seconds then build your resilient community \u0026 social organizations.",
+          "site": "https://zenao.io",
+          "site_from": "listed"
         },
         {
           "name": "Gnomputer",
           "url": "https://github.com/moul/gnomputer",
-          "description": "A windowed web workstation for browsing realms, source, and live chain activity."
+          "description": "A windowed web workstation for browsing realms, source, and live chain activity.",
+          "site": "https://moul.github.io/gnomputer/",
+          "site_from": "repo-homepage"
         },
         {
           "name": "dSocial",
@@ -182,7 +190,9 @@
         {
           "name": "GnoScan",
           "url": "https://gnoscan.io/",
-          "description": "A gno.land block explorer, making on-chain data legible and intuitive for everyone."
+          "description": "A gno.land block explorer, making on-chain data legible and intuitive for everyone.",
+          "site": "https://gnoscan.io/",
+          "site_from": "listed"
         },
         {
           "name": "tx-indexer",
@@ -227,7 +237,9 @@
         {
           "name": "gno-mcp",
           "url": "https://github.com/gnoverse/gno-mcp",
-          "description": "An MCP server and agent skill connecting realms to AI coding assistants like Claude, Cursor, and Gemini CLI."
+          "description": "An MCP server and agent skill connecting realms to AI coding assistants like Claude, Cursor, and Gemini CLI.",
+          "site": "https://mcp.gno.dev",
+          "site_from": "repo-homepage"
         },
         {
           "name": "gnobro",
@@ -243,6 +255,13 @@
           "name": "gnockpit",
           "url": "https://github.com/gnoverse/gnockpit",
           "description": "A real-time web dashboard for monitoring validator node health."
+        },
+        {
+          "name": "mygnoscan",
+          "url": "https://github.com/gnoverse/mygnoscan",
+          "description": "A fast, minimal block explorer with realm dependency graphs and usage tracking.",
+          "site": "https://mygnoscan.moul.p2p.team/",
+          "site_from": "repo-homepage"
         }
       ]
     },
@@ -403,6 +422,16 @@
           "name": "Keplr Integration",
           "url": "https://github.com/gnolang/gno/pull/154",
           "description": "WIP Integration with the Keplr browser extension."
+        },
+        {
+          "name": "Gno Studio Connect",
+          "url": "https://gno.studio/connect",
+          "description": "A tool that makes interaction with Gno applications simple. Its network selector only offers retired testnets, so it cannot reach mainnet."
+        },
+        {
+          "name": "meme.land",
+          "url": "https://github.com/gnoverse/memeland",
+          "description": "An image sharing application built using Gno, React and Vue. The hosted front end no longer reaches a chain."
         },
         {
           "name": "Gno to Discord",

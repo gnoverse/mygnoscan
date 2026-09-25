@@ -41,6 +41,20 @@ type API struct {
 	// a build problem rather than a runtime one.
 	registry *registry.Registry
 
+	// responseCache and warmer are the two pieces of the serving stack that
+	// decide whether a reader waits, reported by /api/cache/stats. Both are
+	// built after this struct (the cache wraps it, the warmer drives the cache)
+	// and set back in via SetResponseCache/SetWarmer, and both are nil in the
+	// tools and tests that run neither.
+	responseCache *responseCache
+	warmer        *Warmer
+
+	// views counts realm page opens. Built outside this struct for the same
+	// reason the cache is: the middleware that feeds it wraps the cache, which
+	// wraps this. Nil in the tools and tests that run no counter, and every use
+	// of it is nil-safe.
+	views *ViewCounter
+
 	// syncHealth is how the sanity page answers "are our sync passes
 	// succeeding", which chain liveness cannot: a chain can be producing
 	// blocks perfectly while every query we send about it fails. Nil in the
@@ -656,6 +670,20 @@ func (a *API) govDAORelatedCalls(ctx context.Context, network string, id int) []
 // client but genuinely no gov/dao activity should not look identical to one
 // this instance cannot reach.
 
+// HandleDeps answers "what does this import" (the default) and "what imports
+// this" (?dir=dependents), as an adjacency map keyed by package path.
+//
+// ?depth=N caps how many hops out from the subject the answer walks, and the
+// two directions default differently on purpose:
+//
+//   - imports defaults to unbounded, because an import closure is what the
+//     package actually is. Every one of those packages runs when this one
+//     runs, however deep it sits.
+//   - dependents defaults to 1, because the second hop is not about this
+//     package at all. "Who uses me" is one question; "who uses the people who
+//     use me" is a question about them, and mixing the two put 315 edges on
+//     p/nt/ufmt/v0's graph that belonged to somebody else (see
+//     GetReverseGraph). ?depth=0 asks for the old unbounded walk.
 func (a *API) HandleDeps(w http.ResponseWriter, r *http.Request) {
 	network := a.networkParam(r)
 	path := "gno.land/" + r.PathValue("path")
@@ -667,7 +695,16 @@ func (a *API) HandleDeps(w http.ResponseWriter, r *http.Request) {
 
 	switch direction {
 	case "dependents":
-		graph, err = a.db.GetReverseGraph(network, path)
+		depth := defaultReverseDepth
+		if raw := r.URL.Query().Get("depth"); raw != "" {
+			n, convErr := strconv.Atoi(raw)
+			if convErr != nil || n < 0 {
+				jsonError(w, "depth must be a non-negative integer (0 means unbounded)", 400)
+				return
+			}
+			depth = n
+		}
+		graph, err = a.db.GetReverseGraph(network, path, depth)
 	default:
 		graph, err = a.db.GetDependencyGraph(network, path)
 	}
@@ -679,47 +716,85 @@ func (a *API) HandleDeps(w http.ResponseWriter, r *http.Request) {
 	JSONResponse(w, graph)
 }
 
+// defaultReverseDepth is one hop, and the funnel on the deps tab is drawn at
+// exactly this depth. Changing it changes what every existing ?dir=dependents
+// link means, so it is named rather than written as a literal in the handler.
+const defaultReverseDepth = 1
+
+// balanceClient and rpcStatusClient share sharedTransport's connection pool;
+// only their deadlines differ. A balance is one cheap ABCI read, a /status is
+// the call every network probe makes at once on a recheck.
+var (
+	balanceClient   = sharedClient(5 * time.Second)
+	rpcStatusClient = sharedClient(10 * time.Second)
+)
+
+// fetchBalance is the string-only form, for callers that have nowhere to put a
+// failure and treat every unreadable account as empty.
 func fetchBalance(ctx context.Context, addr, rpcURL string) string {
+	bal, _ := fetchBalanceErr(ctx, addr, rpcURL)
+	return bal
+}
+
+// fetchBalanceErr returns the account's coin string, and an error only when the
+// chain could not be asked.
+//
+// An empty string with a nil error is a successful read of an account that
+// holds nothing, and it is the common case for a realm whose money is all in
+// GRC20, which is most of gnoswap. The two used to collapse into the same empty
+// string, so the defi tab announced "the chain could not be read for a live
+// balance" for every such realm while the chain had answered perfectly well.
+//
+// The node's own error is what separates them, and it has to be read: a query
+// that fails also comes back with empty Data, so treating empty Data alone as
+// zero would invert the bug and print "0 GNOT" for a read that never happened.
+// ResponseBase.Error is an interface in tm2 and IsOK() is `Error == nil`, so it
+// is null in JSON exactly when the read succeeded.
+func fetchBalanceErr(ctx context.Context, addr, rpcURL string) (string, error) {
 	if rpcURL == "" {
-		return ""
+		return "", fmt.Errorf("no rpc endpoint configured")
 	}
 	url := fmt.Sprintf("%s/abci_query?path=%%22bank/balances/%s%%22&data=0x", rpcURL, addr)
-	client := &http.Client{Timeout: 5 * time.Second}
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		return ""
+		return "", err
 	}
-	resp, err := client.Do(req)
+	resp, err := balanceClient.Do(req)
 	if err != nil {
-		return ""
+		return "", err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return ""
+		return "", err
 	}
 	var result struct {
 		Result struct {
 			Response struct {
 				ResponseBase struct {
-					Data string `json:"Data"`
+					Error json.RawMessage `json:"Error"`
+					Data  string          `json:"Data"`
 				} `json:"ResponseBase"`
 			} `json:"response"`
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		return ""
+		return "", err
 	}
-	data := result.Result.Response.ResponseBase.Data
-	if data == "" {
-		return ""
+	rb := result.Result.Response.ResponseBase
+	if e := strings.TrimSpace(string(rb.Error)); e != "" && e != "null" {
+		return "", fmt.Errorf("abci query failed: %s", e)
 	}
-	decoded, err := base64.StdEncoding.DecodeString(data)
+	if rb.Data == "" {
+		// The node answered and the account holds nothing.
+		return "", nil
+	}
+	decoded, err := base64.StdEncoding.DecodeString(rb.Data)
 	if err != nil {
-		return ""
+		return "", err
 	}
 	// Strip quotes: "754954090ugnot" -> 754954090ugnot
-	return strings.Trim(string(decoded), "\"")
+	return strings.Trim(string(decoded), "\""), nil
 }
 
 // allWindowDays bounds the "all" window. gno.land's genesis is comfortably
@@ -862,14 +937,19 @@ func (a *API) RegisterRoutes(serveMux *http.ServeMux) {
 	mux.HandleFunc("GET /api/realm/defi/{path...}", a.HandleRealmDefi)
 	mux.HandleFunc("GET /api/realm/usage/{path...}", a.HandleRealmUsage)
 	mux.HandleFunc("GET /api/realm/{path...}", a.HandleRealm)
+	mux.HandleFunc("GET /api/views", a.HandleViews)
 	mux.HandleFunc("GET /api/packages", a.HandlePackages)
 	mux.HandleFunc("GET /api/packages/facets", a.HandlePackageFacets)
 	mux.HandleFunc("GET /api/tx/{hash}", a.HandleTx)
 	mux.HandleFunc("GET /api/txs", a.HandleTxs)
 	mux.HandleFunc("GET /api/address/{addr}", a.HandleAddress)
+	mux.HandleFunc("GET /api/address/{addr}/sessions", a.HandleAddressSessions)
+	mux.HandleFunc("GET /api/address/{addr}/session", a.HandleSessionIdentity)
+	mux.HandleFunc("GET /api/sessions", a.HandleSessions)
 	mux.HandleFunc("GET /api/search", a.HandleSearch)
 	mux.HandleFunc("GET /api/code/search", a.HandleCodeSearch)
 	mux.HandleFunc("GET /api/symbols/search", a.HandleSymbolSearch)
+	mux.HandleFunc("GET /api/users/search", a.HandleUserSearch)
 	mux.HandleFunc("GET /api/symbols/status", a.HandleSymbolIndexStatus)
 	mux.HandleFunc("GET /api/deps/{path...}", a.HandleDeps)
 	mux.HandleFunc("GET /api/analytics", a.HandleAnalytics)
@@ -926,7 +1006,9 @@ func (a *API) RegisterRoutes(serveMux *http.ServeMux) {
 	mux.HandleFunc("GET /api/params", a.HandleParameters)
 	mux.HandleFunc("GET /api/health/heartbeat", a.HandleHeartbeat)
 	mux.HandleFunc("GET /api/registry/apps", a.HandleApps)
+	mux.HandleFunc("GET /api/apps", a.HandleAppsHub)
 	mux.HandleFunc("GET /api/registry/awesome", a.HandleAwesome)
+	mux.HandleFunc("GET /api/glossary", a.HandleGlossary)
 	mux.HandleFunc("GET /api/accounts/rich", a.HandleRichList)
 	mux.HandleFunc("GET /api/accounts/population", a.HandleAccountPopulation)
 	mux.HandleFunc("GET /api/assets", a.HandleAssets)
@@ -937,6 +1019,8 @@ func (a *API) RegisterRoutes(serveMux *http.ServeMux) {
 	mux.HandleFunc("GET /api/contracts/edges", a.HandleContractsEdges)
 	mux.HandleFunc("GET /api/shot", a.HandleShot)
 	mux.HandleFunc("GET /api/shot/meta", a.HandleShotMeta)
+	mux.HandleFunc("GET /api/shot/site", a.HandleShotSite)
+	mux.HandleFunc("GET /api/cache/stats", a.HandleCacheStats)
 	mux.HandleFunc("GET /api/inert/queue", a.HandleInertQueue)
 	mux.HandleFunc("GET /api/inert/history", a.HandleInertHistory)
 	mux.HandleFunc("GET /api/inert/package/{path...}", a.HandleInertPackage)
@@ -966,7 +1050,7 @@ func rpcStatus(ctx context.Context, rpcURL string) (string, int, error) {
 	if err != nil {
 		return "", 0, err
 	}
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	resp, err := rpcStatusClient.Do(req)
 	if err != nil {
 		return "", 0, err
 	}

@@ -26,7 +26,11 @@
       "name": "Kourt v3",
       "category": "content",
       "description": "The second live generation of the same design, founded two way: a tenth of each payment burns and the rest is held as that court's reserve, which Redeem pays out against pro rata. Court coin is transferable here, and wrappable for a DEX. Deployed 2026-09-19; kourt.xyz still serves the v1 realm above.",
-      "checked": "2026-09-21"
+      "checked": "2026-09-21",
+      "supersedes": [
+        "gno.land/r/g1ecsuj0q572jr0dhu29q9njtnmw03hyu7tyyvv6/kourt"
+      ],
+      "url": "https://kourt.xyz"
     },
     {
       "path": "gno.land/r/gnoland/wugnot",
@@ -38,14 +42,22 @@
       "path": "gno.land/r/gnoswap/router",
       "name": "GnoSwap",
       "category": "defi",
-      "description": "Concentrated-liquidity AMM. The router is the entry point; positions, staker and gns are the rest of it.",
-      "url": "https://gnoswap.io"
+      "description": "Concentrated-liquidity AMM. The router is the entry point, and the pool, position, staker, gns, gnft and governance realms under gno.land/r/gnoswap are the rest of the same DEX.",
+      "url": "https://gnoswap.io",
+      "covers": [
+        "gno.land/r/gnoswap/*"
+      ],
+      "checked": "2026-09-24"
     },
     {
       "path": "gno.land/r/gov/dao",
       "name": "GovDAO",
       "category": "governance",
-      "description": "Chain governance: proposals, votes and the executors that change parameters under r/sys/params."
+      "description": "Chain governance: proposals, votes and the executors that change parameters under r/sys/params. The r/sys realms below are what it writes to, not separate apps.",
+      "covers": [
+        "gno.land/r/sys/*"
+      ],
+      "checked": "2026-09-24"
     },
     {
       "path": "gno.land/r/sys/params",
@@ -64,6 +76,43 @@
       "name": "Users",
       "category": "infrastructure",
       "description": "The on-chain username registry. It is what resolves a @handle to an address across the explorer."
+    },
+    {
+      "path": "gno.land/r/g1leu8d2vsplhehcfkjg50mwgdpxdkt8tztu95wr/bubblerumble3",
+      "supersedes": [
+        "gno.land/r/g1leu8d2vsplhehcfkjg50mwgdpxdkt8tztu95wr/bubblerumble",
+        "gno.land/r/g1leu8d2vsplhehcfkjg50mwgdpxdkt8tztu95wr/bubblerumble2"
+      ]
+    },
+    {
+      "path": "gno.land/r/g1n4pl5uc4yt5r96m9w6fmdznx3x0jyg8l6arhmt/gnomi/padv3",
+      "supersedes": [
+        "gno.land/r/g1n4pl5uc4yt5r96m9w6fmdznx3x0jyg8l6arhmt/gnomi/padv2"
+      ]
+    },
+    {
+      "path": "gno.land/r/g1leu8d2vsplhehcfkjg50mwgdpxdkt8tztu95wr/bubblerumble4",
+      "name": "Bubble Rumble",
+      "category": "games",
+      "description": "Last bidder wins. A bid pushes the pool's clock out and splits itself: 55% into the pot, 30% credited at once to the bidders before you, 10% to whoever invited you, 5% to the pool's creator, settled by a flag war on the pool's last day. v4 adds the shot, extra money on a bid that can pop the bubble and take the pot on a commit-reveal draw.",
+      "url": "https://bubblerumble.net",
+      "checked": "2026-09-24",
+      "supersedes": [
+        "gno.land/r/g1leu8d2vsplhehcfkjg50mwgdpxdkt8tztu95wr/bubblerumble3"
+      ]
+    },
+    {
+      "path": "gno.land/r/moul/blog",
+      "name": "moul's blog",
+      "category": "content",
+      "description": "A personal blog that is a realm: one author, and posts that live in chain storage rather than in the code. Writing one is a single Set transaction, so publishing never redeploys and never costs a deploy."
+    },
+    {
+      "path": "gno.land/r/moul/home",
+      "name": "moul's home",
+      "category": "content",
+      "description": "A profile page that is a realm. gnoweb builds /u/moul by calling Render on the realm at exactly r/<username>/home and embedding the result, so the page is whatever this realm decides to print.",
+      "url": "https://gno.land/u/moul"
     }
   ]
 }

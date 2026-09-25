@@ -60,6 +60,36 @@ that makes it worth using.
 One entry per pull request where you can. A name is a small change with a large
 blast radius: it appears on every page the address does.
 
+## One app is one card: `supersedes` and `covers`
+
+A chain shows an app as the several realms it was deployed as, and `/apps` ranks
+realms. Left alone it draws GnoSwap six times, once per realm, five of them
+named after their paths. Two fields fix that, and they are not the same claim:
+
+| field | means | the card says |
+|---|---|---|
+| `supersedes` | the same app, at an earlier date | `replaces …` |
+| `covers` | a live part of the app on this card | `includes …` |
+
+`covers` takes an exact path or a `/*` prefix (`gno.land/r/gnoswap/*`), and a
+prefix is the better default because a list of paths goes stale the next time
+somebody deploys, silently and in the direction of showing more cards. A card
+that covers is never itself covered, and the first claim on a path wins, so two
+overlapping prefixes are stable rather than dependent on map order.
+
+Both fold rather than drop: the parts and the older generations are carried on
+the card, each with its own link. They are real realms with real state, and
+somebody came here looking for one of them.
+
+A folded card's figures cover every realm it folded, **both kinds**, and are
+re-read over that set rather than summed. Calls add up; distinct callers do not,
+because the same people use the router and the staker and they follow a game
+from one generation to the next, so adding those counts would print a reach the
+app does not have. An older generation counts for the same reason a part does:
+it is the same app, at an earlier date. bubblerumble4 shipped with 348 calls
+beside the 4,160 on the pools it replaced, and a card showing only the new realm
+said the game was three days old and barely played.
+
 ## Files
 
 | file | keyed by | used by |
@@ -67,10 +97,34 @@ blast radius: it appears on every page the address does.
 | `addresses.json` | bech32 address | every address link in the explorer |
 | `tokens.json` | `<realm path>.<name>.<id>`, the GRC20 event key | the token views |
 | `apps.json` | realm path | `/apps` |
-| `awesome.json` | **generated, never hand-edited** | `/apps?view=ecosystem` |
+| `awesome.json` | **generated, never hand-edited** | `/apps` |
+| `moderation.toml` | realm path | `/apps`, as a removal |
 
 Every file's `checked` is validated the same way and none may be dated in the
 future; `TestShippedDatesAreNotInTheFuture` covers all three.
+
+## The directory discovers itself, so these files only correct it
+
+`/apps` no longer reads `apps.json` as its list. It ranks every realm people
+actually call, describes each one with its own package doc comment, and
+photographs it. These files are the three levers over that:
+
+- **List**: an entry in `apps.json` is included whatever the chain says, and its
+  name, sentence, website and category override the derived ones. Being listed
+  is the vouch; there is no separate flag for it.
+- **Relate**: `supersedes` folds an older generation into the one that replaces
+  it, because two live deployments of the same idea is the normal state of a
+  chain nobody can delete from, and ranking them as peers sends people to last
+  year's version. An entry may carry **only** a path and `supersedes`: that is a
+  fact about two deploys, and requiring a description alongside it would force
+  you to invent one about somebody else's realm.
+- **Skip**: `moderation.toml` removes, and every entry must say why. Usage is
+  evidence of activity, not of worth.
+
+A `description` here is still the best one available and still wins over the
+realm's own doc comment and its README, so writing one is worth doing. It is shown as one line;
+`checked` now travels in the card's provenance tooltip rather than in the dense
+table that used to print it.
 
 ## `awesome.json` is somebody else's list, and it is generated
 
@@ -88,6 +142,13 @@ the community maintains that list in their repo.** The right move when something
 is missing is a pull request there, and `/apps?view=ecosystem` exists partly to
 make that ask specific: it ranks this directory's entries that the list does not
 name, with the bullet line ready to paste.
+
+`make awesome` does more than copy the list. For every entry in an app section
+it resolves the page you would actually open, following a repository's declared
+homepage when the list links a repository, and it **drops anything that does not
+answer 200 with HTML**. That check is what keeps a confident screenshot of a
+dead host out of the grid. It also prints the host list gnoshot needs on its
+`-allow-site` flag, because that is configuration on another box.
 
 A snapshot rather than a live fetch, for the same reason everything else here is
 embedded: a page that read GitHub on every load would be down when GitHub is and

@@ -219,3 +219,45 @@ func TestAppsAreSortedOnLoad(t *testing.T) {
 		}
 	}
 }
+
+// An entry that only asserts a relation is complete without a name, a category
+// or a sentence.
+//
+// "v3 replaces v2" is a fact about two deploys, checkable from the chain.
+// Requiring a description alongside it would force a contributor to invent one
+// about somebody else's realm in order to state it, and this package's rule is
+// that a default must be the project's own words.
+func TestAppsAcceptARelationWithoutADescription(t *testing.T) {
+	err := validateApps([]App{{
+		Path:       "gno.land/r/x/thing3",
+		Supersedes: []string{"gno.land/r/x/thing2"},
+	}})
+	if err != nil {
+		t.Fatalf("a relation-only entry was refused: %v", err)
+	}
+}
+
+// But an entry that names something still has to say what it is: a directory
+// of names is a link list, which the realm list already is.
+func TestAppsStillRequireADescriptionWhenTheyDescribe(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		app  App
+		want string
+	}{
+		{"named with no sentence", App{Path: "gno.land/r/x/y", Name: "Y", Category: "content"}, "no description"},
+		{"named with no category", App{Path: "gno.land/r/x/y", Name: "Y", Description: "A thing."}, "no category"},
+		{"a relation to itself", App{Path: "gno.land/r/x/y", Supersedes: []string{"gno.land/r/x/y"}}, "supersedes itself"},
+		{"a relation to a non-path", App{Path: "gno.land/r/x/y", Supersedes: []string{"nonsense"}}, "not a gno.land path"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateApps([]App{tt.app})
+			if err == nil {
+				t.Fatal("accepted")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("error is %q, want it to mention %q", err, tt.want)
+			}
+		})
+	}
+}

@@ -80,6 +80,28 @@ type App struct {
 	// a poster, or which generation a front-end currently serves. Those go
 	// stale silently, because nothing about the page says how old they are.
 	Checked string `json:"checked,omitempty"`
+	// Supersedes names an older generation this entry replaces.
+	//
+	// Two live deployments of the same idea is the normal state of a chain
+	// nobody can delete from, and showing both as peers is how a directory
+	// sends people to last year's version. Kourt is the worked example: v1 and
+	// v3 are both live, both busy, and only one is the one to open.
+	Supersedes []string `json:"supersedes,omitempty"`
+	// Covers names the realms that are parts of this same app rather than apps
+	// of their own, as an exact path or a `/*` prefix.
+	//
+	// The difference from Supersedes is what a reader is being told. A
+	// superseded realm is the same app at an earlier date and the answer is
+	// "open the new one"; a covered realm is a live, load-bearing piece of the
+	// app on this card and the answer is "this is already what you are looking
+	// at". GnoSwap is the worked example: router, gns, position, staker, gnft
+	// and gov/staker are all busy, all current, and all one DEX, and a hub that
+	// ranks them as peers tells a visitor there are six of it.
+	//
+	// A prefix is allowed because the alternative is a list that goes stale the
+	// next time somebody deploys, silently and in the direction of showing more
+	// cards. `gno.land/r/gnoswap/*` covers a realm nobody has written yet.
+	Covers []string `json:"covers,omitempty"`
 }
 
 // Registry is the parsed whole.
@@ -92,6 +114,9 @@ type Registry struct {
 	// somebody else's list, and the whole point is that the community edits it
 	// there rather than here. See awesome.go.
 	Awesome *Awesome `json:"awesome"`
+	// Moderation is the skip list: the one lever here that removes rather than
+	// adds. See moderation.go.
+	Moderation *Moderation `json:"moderation"`
 }
 
 var (
@@ -121,6 +146,9 @@ func Load() (*Registry, error) {
 		return nil, err
 	}
 	if reg.Awesome, err = loadAwesome(); err != nil {
+		return nil, err
+	}
+	if reg.Moderation, err = loadModeration(); err != nil {
 		return nil, err
 	}
 	return &reg, nil
@@ -246,11 +274,27 @@ func loadApps() ([]App, error) {
 func validateApps(apps []App) error {
 	seen := map[string]bool{}
 	for _, a := range apps {
+		// An entry that only asserts a relation is complete without a name, a
+		// category or a sentence.
+		//
+		// "v3 replaces v2" is a fact about two deploys, checkable from the
+		// chain. Requiring a description alongside it would force a contributor
+		// to invent one about somebody else's realm in order to state it, and
+		// this package's whole rule is that a default must be the project's own
+		// words. Three bubblerumble generations ranked as peers on mainnet is
+		// the case that found this.
+		relationOnly := len(a.Supersedes) > 0 &&
+			strings.TrimSpace(a.Name) == "" &&
+			strings.TrimSpace(a.Category) == "" &&
+			strings.TrimSpace(a.Description) == ""
+
 		switch {
 		case !realmPath.MatchString(a.Path):
 			return fmt.Errorf("apps.json: %q is not a gno.land path", a.Path)
 		case seen[a.Path]:
 			return fmt.Errorf("apps.json: %s is listed twice", a.Path)
+		case relationOnly:
+			// Nothing further to check; the supersedes paths are validated below.
 		case strings.TrimSpace(a.Name) == "":
 			return fmt.Errorf("apps.json: %s has no name", a.Path)
 		case strings.TrimSpace(a.Category) == "":
@@ -262,6 +306,23 @@ func validateApps(apps []App) error {
 		}
 		if err := validateChecked("apps.json", a.Path, a.Checked); err != nil {
 			return err
+		}
+		for _, old := range a.Supersedes {
+			if !realmPath.MatchString(old) {
+				return fmt.Errorf("apps.json: %s supersedes %q, which is not a gno.land path", a.Path, old)
+			}
+			if old == a.Path {
+				return fmt.Errorf("apps.json: %s supersedes itself", a.Path)
+			}
+		}
+		for _, part := range a.Covers {
+			bare := strings.TrimSuffix(part, "/*")
+			switch {
+			case !realmPath.MatchString(bare):
+				return fmt.Errorf("apps.json: %s covers %q, which is not a gno.land path or prefix", a.Path, part)
+			case part == a.Path:
+				return fmt.Errorf("apps.json: %s covers itself", a.Path)
+			}
 		}
 		seen[a.Path] = true
 	}

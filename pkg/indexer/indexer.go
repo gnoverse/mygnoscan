@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -136,8 +137,31 @@ func newIndexerClient(urls []string, timeout time.Duration) *Client {
 	}
 	return &Client{
 		urls:   normalized,
-		client: &http.Client{Timeout: timeout},
+		client: &http.Client{Timeout: timeout, Transport: indexerTransport},
 	}
+}
+
+// indexerTransport is the connection pool every indexer client shares.
+//
+// Leaving Transport nil falls back to http.DefaultTransport, whose
+// MaxIdleConnsPerHost is 2. GetBlocksByHeights fans out ten concurrent
+// requests at one endpoint, so eight of every ten were opening a fresh TCP
+// and TLS connection to a host the process had just finished talking to.
+// The pool is shared across the serve and sync clients on purpose: they hold
+// separate timeouts and separate circuit breakers, which is what has to stay
+// separate, but they talk to the same hosts.
+var indexerTransport = &http.Transport{
+	Proxy: http.ProxyFromEnvironment,
+	DialContext: (&net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}).DialContext,
+	MaxIdleConns:          100,
+	MaxIdleConnsPerHost:   16,
+	IdleConnTimeout:       90 * time.Second,
+	TLSHandshakeTimeout:   10 * time.Second,
+	ExpectContinueTimeout: 1 * time.Second,
+	ForceAttemptHTTP2:     true,
 }
 
 // activeURL is the endpoint currently in use, or "" when none was configured.
@@ -216,15 +240,58 @@ const sessionFragments = `
 				creator
 			}`
 
+// transferFragments is the native-coin movement group.
+//
+// Gated like the other two, and the gate is not theoretical: probed
+// 2026-09-23, `indexer.gno.land` defines TransferEvent and
+// `indexer.pearl.testnets.gno.land` answers `__type: null` for it. Selecting it
+// unconditionally would therefore 422 **every** transaction query on pearl and
+// take that chain's whole sync down, not just the one view that wants coins.
+// The same gap already shows on the deployed site: `/api/realm/defi?network=pearl`
+// answers a raw `Field "TransferEvent" is not defined by type "NestedFilterEvent"`,
+// because CoinFlows filters on it with no probe in front.
+const transferFragments = `
+			... on TransferEvent {
+				from
+				to
+				coins
+			}`
+
 // The type each fragment group is gated on: one representative per group, and
 // the rest of the group shipped to the indexer in the same release as it.
 const (
-	inertProbeType   = "MsgEnablePackage"
-	sessionProbeType = "MsgCreateSession"
+	inertProbeType    = "MsgEnablePackage"
+	sessionProbeType  = "MsgCreateSession"
+	transferProbeType = "TransferEvent"
 )
 
-// supportsType reports whether this chain's indexer defines a GraphQL type,
-// asking it once per type and remembering the answer.
+// SupportsTransferEvents reports whether this chain's indexer can answer
+// anything about native coin movement at all.
+//
+// Exported because the difference between "this realm never moved a coin" and
+// "this chain cannot be asked" is a fact a reader needs, and the handler cannot
+// tell them apart from an empty result.
+func (c *Client) SupportsTransferEvents(ctx context.Context) bool {
+	return c.supportsType(ctx, transferProbeType)
+}
+
+// typeSupportKey names one endpoint's answer about one type. The NUL separator
+// cannot occur in either half, so no pair of (url, type) can collide with
+// another by concatenation.
+func typeSupportKey(url, typeName string) string { return url + "\x00" + typeName }
+
+// supportsType reports whether the CURRENTLY SELECTED endpoint defines a
+// GraphQL type, asking it once per (endpoint, type) and remembering the answer.
+//
+// Per endpoint, not per client, because a pool's members do not have to run the
+// same schema and mainnet's two do not: indexer.gno.land does not define
+// MsgCreateSession and indexer.onbloc.xyz does. Caching one answer for the pool
+// means the field set can be trimmed for one member and sent to the other,
+// which fails in the worst possible way. It does not error: the message comes
+// back with its real __typename and NO fields, because the fragment that would
+// have selected them was stripped and the UnexpectedMessage fragment no longer
+// matches. Measured on mainnet 2026-09-25, where it silently dropped ten
+// session grants (gnoverse/mygnoscan#353 follow-up).
 //
 // Asked rather than inferred from an error, so the first query of a sync pass
 // does not have to fail to find out. A probe that cannot reach the indexer
@@ -232,8 +299,16 @@ const (
 // existed, and the query that follows will fail for the real reason rather than
 // being silently trimmed because a health check blipped.
 func (c *Client) supportsType(ctx context.Context, typeName string) bool {
+	// Read the endpoint and the cache under ONE acquisition. activeURL takes
+	// the same mutex and sync.Mutex is not reentrant, so calling it from inside
+	// the critical section deadlocks.
 	c.mu.Lock()
-	known, seen := c.typeSupport[typeName]
+	url := ""
+	if len(c.urls) > 0 {
+		url = c.urls[c.active]
+	}
+	key := typeSupportKey(url, typeName)
+	known, seen := c.typeSupport[key]
 	c.mu.Unlock()
 	if seen {
 		return known
@@ -252,7 +327,7 @@ func (c *Client) supportsType(ctx context.Context, typeName string) bool {
 			Name string `json:"name"`
 		} `json:"__type"`
 	}
-	err := c.doQuery(ctx, c.activeURL(), `{ __type(name: "`+typeName+`") { name } }`, nil, &result)
+	err := c.doQuery(ctx, url, `{ __type(name: "`+typeName+`") { name } }`, nil, &result)
 	supported := err != nil || result.Type != nil
 
 	c.mu.Lock()
@@ -260,7 +335,7 @@ func (c *Client) supportsType(ctx context.Context, typeName string) bool {
 		if c.typeSupport == nil {
 			c.typeSupport = map[string]bool{}
 		}
-		c.typeSupport[typeName] = supported
+		c.typeSupport[key] = supported
 	}
 	c.mu.Unlock()
 	return supported
@@ -294,6 +369,9 @@ func (c *Client) trimFields(ctx context.Context, fields string) string {
 	}
 	if !c.supportsType(ctx, sessionProbeType) {
 		fields = strings.ReplaceAll(fields, sessionFragments, "")
+	}
+	if !c.supportsType(ctx, transferProbeType) {
+		fields = strings.ReplaceAll(fields, transferFragments, "")
 	}
 	return fields
 }
@@ -668,6 +746,17 @@ type MessageValue struct {
 	SpendLimit  string   `json:"spend_limit,omitempty"`
 	SpendPeriod int      `json:"spend_period,omitempty"`
 
+	// Raw is UnexpectedMessage's only field: the message's own JSON, for a type
+	// this indexer does not model.
+	//
+	// It is how the session messages arrive on every chain served today. The
+	// typed fragments above are selected only when the indexer defines them,
+	// and none does (probed on mainnet and pearl, 2026-09-23, both __type
+	// null), so without this an auth/create_session is a __typename and
+	// nothing else. UnexpectedMessage itself is the indexer's fallback type
+	// and needs no probe: both chains answer for it.
+	Raw string `json:"raw,omitempty"`
+
 	// Common
 	Send       string `json:"send,omitempty"`
 	MaxDeposit string `json:"max_deposit,omitempty"`
@@ -703,8 +792,10 @@ type TxEvent struct {
 
 	// TransferEvent. The chain emits one on every bank transfer, a realm's own
 	// banker moves included, which is what makes a balance derivable at all.
-	// Only CoinFlows selects them; the shared field templates do not, so these
-	// are zero on every other fetch.
+	// The shared templates carry the fragment now, gated on transferProbeType,
+	// so these are populated on every fetch from a chain whose indexer defines
+	// the type and zero on one that does not. The syncer writes them to
+	// coin_transfers from the pass it already runs.
 	From  string `json:"from,omitempty"`
 	To    string `json:"to,omitempty"`
 	Coins string `json:"coins,omitempty"`
@@ -780,6 +871,9 @@ const txFieldsTemplate = `
 			... on MsgRevokeAllSessions {
 				creator
 			}
+			... on UnexpectedMessage {
+				raw
+			}
 		}
 	}
 	response {
@@ -805,6 +899,11 @@ const txFieldsTemplate = `
 				bytes_delta
 				fee_refund { amount denom }
 				pkg_path
+			}
+			... on TransferEvent {
+				from
+				to
+				coins
 			}
 		}
 	}
@@ -1306,6 +1405,35 @@ func (c *Client) GetBlock(ctx context.Context, height int) (*Block, error) {
 // GetTransactionsByRealm fetches calls to a specific realm function.
 
 // GetTransactionsByBlock fetches transactions in a specific block.
+// GetTransactionsInRange fetches every transaction in [from, to) in ONE query.
+//
+// The alternative, a GetTransactionsByBlock per height, is what the session
+// sweep did first and it does not scale: 100 requests per 100-block batch, on
+// top of normal sync catch-up, is exactly the traffic an indexer rate-limits.
+// Measured on mainnet 2026-09-25, the sweep managed 303 blocks of 306,501 in a
+// quarter of an hour because most passes ended in a 403.
+//
+// The caller MUST handle ErrQueryTooLarge by splitting the range. The resolver
+// caps how many rows it will return and reports the cap as an error alongside
+// the partial page, so treating that as success would silently skip whichever
+// blocks fell past the cap, which for this caller means losing grants with no
+// sign anything went wrong.
+func (c *Client) GetTransactionsInRange(ctx context.Context, from, to int) ([]Transaction, error) {
+	var result struct {
+		GetTransactions []Transaction `json:"getTransactions"`
+	}
+	// gt/lt, not gte/lte: FilterInt defines only the exclusive pair, so the
+	// bounds are widened by one either side to express a half-open range.
+	q := fmt.Sprintf(`{
+		getTransactions(
+			where: { block_height: { gt: %d, lt: %d } }
+			order: { heightAndIndex: ASC }
+		) { %s }
+	}`, from-1, to, c.lightFields(ctx))
+	err := c.query(ctx, q, nil, &result)
+	return result.GetTransactions, err
+}
+
 func (c *Client) GetTransactionsByBlock(ctx context.Context, height int) ([]Transaction, error) {
 	var result struct {
 		GetTransactions []Transaction `json:"getTransactions"`

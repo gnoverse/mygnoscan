@@ -26,6 +26,18 @@ import (
 // than nested under their type the way the docs tab renders them. A search hits
 // a name, and a name is flat; the nesting is a presentation choice that the API
 // layer can rebuild from these rows and that a WHERE clause cannot see through.
+// DocPassVersion is the version of the package-doc extraction.
+//
+// A row written by an older version is re-indexed once, whatever its source key
+// says. This is the lever that backfills: package_doc shipped as a column with
+// no way to fill it for packages already indexed, because the staleness check
+// is the source key and a package whose source has not moved is never re-read.
+// The first deploy therefore had an empty column on every existing realm and no
+// path to a full one.
+//
+// Bump it whenever what is extracted changes.
+const docPassVersion = "1"
+
 type SymbolRow struct {
 	Kind      string
 	Recv      string
@@ -106,6 +118,7 @@ func (d *DB) SymbolIndexCandidates() ([]SymbolIndexCandidate, error) {
 		LEFT JOIN packages p ON p.network = f.network AND p.path = f.package_path
 		LEFT JOIN symbol_index si ON si.network = f.network AND si.package_path = f.package_path
 		WHERE si.source_key IS NULL OR si.source_key <> (` + sourceKeyExpr + `)
+		   OR si.doc_pass < ` + docPassVersion + `
 		ORDER BY f.network, f.package_path`)
 	if err != nil {
 		return nil, err
@@ -180,7 +193,7 @@ func (d *DB) PackageSourceKey(network, pkgPath string) (string, error) {
 // declaration that was removed from the source has to disappear from the index,
 // and an upsert leaves it there forever. That is the failure mode where search
 // keeps offering a function nobody can call any more.
-func (d *DB) ReplaceSymbols(network, pkgPath, sourceKey string, rows []SymbolRow) error {
+func (d *DB) ReplaceSymbols(network, pkgPath, sourceKey, packageDoc string, rows []SymbolRow) error {
 	// writeMu, not mu. mu guards the configured-network list and is explicitly
 	// no longer a general database lock: taking it exclusively here would queue
 	// every reader behind an index pass, which is the stall #143 removed.
@@ -213,13 +226,15 @@ func (d *DB) ReplaceSymbols(network, pkgPath, sourceKey string, rows []SymbolRow
 		}
 	}
 	if _, err := tx.Exec(`INSERT INTO symbol_index
-		(network, package_path, source_key, symbol_count, indexed_at)
-		VALUES (?,?,?,?,CURRENT_TIMESTAMP)
+		(network, package_path, source_key, symbol_count, indexed_at, package_doc, doc_pass)
+		VALUES (?,?,?,?,CURRENT_TIMESTAMP,?,`+docPassVersion+`)
 		ON CONFLICT(network, package_path) DO UPDATE SET
 		  source_key = excluded.source_key,
 		  symbol_count = excluded.symbol_count,
-		  indexed_at = excluded.indexed_at`,
-		network, pkgPath, sourceKey, len(rows)); err != nil {
+		  indexed_at = excluded.indexed_at,
+		  package_doc = excluded.package_doc,
+		  doc_pass = excluded.doc_pass`,
+		network, pkgPath, sourceKey, len(rows), packageDoc); err != nil {
 		return fmt.Errorf("record source key: %w", err)
 	}
 	return tx.Commit()

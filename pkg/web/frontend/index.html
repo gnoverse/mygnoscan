@@ -77,9 +77,21 @@ header .container { display: flex; align-items: center; gap: 16px; flex-wrap: wr
 body { padding-left: var(--rail-w); }
 .rail { position: fixed; left: 0; top: 0; bottom: 0; width: var(--rail-w); z-index: 110;
   background: var(--bg2); border-right: 1px solid var(--border);
-  display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden; }
-.rail::-webkit-scrollbar { width: 6px; }
-.rail::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  display: flex; flex-direction: column; overflow: hidden; }
+/* The nav scrolls, not the whole rail.
+   With overflow on the rail, the brand and the collapse button scrolled away
+   with the links, and worse: the rail became a scroll container the moment its
+   content passed the viewport, so a wheel anywhere over the left 172px scrolled
+   the nav by a few pixels instead of scrolling the page. Measured at a 1000px
+   viewport on 2026-09-23, the rail's content was exactly 1000px, so the next
+   entry anyone added tipped it over; adding `glossary` is what found it.
+   Confining the scroll to nav means the chrome stays pinned, the wheel only
+   goes to the nav when the cursor is actually on it, and the rail has room to
+   grow again. min-height:0 is required: a flex item will not shrink below its
+   content without it, and the overflow would never engage. */
+.rail nav { overflow-y: auto; overflow-x: hidden; min-height: 0; }
+.rail nav::-webkit-scrollbar { width: 6px; }
+.rail nav::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 .rail-top { display: flex; align-items: center; gap: 8px; padding: 12px 14px 10px; }
 .rail-top .logo { font-size: 15px; white-space: nowrap; overflow: hidden; }
 .rail nav { display: flex; flex-direction: column; gap: 1px; padding: 0 6px 8px; }
@@ -546,27 +558,26 @@ html:not(.has-shots) .shot-cell { display: none; }
 .app-launch { white-space: nowrap; }
 .dim { color: var(--fg2); }
 @media (max-width: 720px) { .app-grid { grid-template-columns: 1fr; } }
-/* The community list. Denser than an app card and with no picture, because
-   most of these are not realms and there is nothing to screenshot: a VS Code
-   extension has no rendered page. */
-.eco-sec { margin-top: 22px; }
-.eco-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); margin-top: 6px; }
-.eco-item { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px;
-            padding: 9px 11px; display: flex; flex-direction: column; gap: 4px; }
-.eco-item:hover { border-color: var(--fg2); }
-.eco-name { font-size: 12.5px; font-weight: bold; }
-.eco-desc { color: var(--fg2); font-size: 11.5px; line-height: 1.45; white-space: normal; word-break: normal; }
-.eco-meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; margin-top: auto; padding-top: 2px; }
-/* Retired entries stay legible but never compete with a live one for a
-   scanning reader's eye. */
-.eco-off { opacity: 0.6; }
-.eco-off:hover { opacity: 1; }
-.eco-bullet { font-size: 10.5px; color: var(--fg2); white-space: normal; word-break: break-word; display: block; max-width: 520px; }
-.contrib { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); margin: 10px 0 4px; }
-.contrib-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 11px 13px; }
-.contrib-card h4 { margin: 0 0 5px; font-size: 12.5px; }
-.contrib-card p { margin: 0 0 7px; color: var(--fg2); font-size: 11.5px; line-height: 1.5; }
-@media (max-width: 720px) { .eco-grid, .contrib { grid-template-columns: 1fr; } }
+/* The stand-in when there is no picture: the project's initial on a colour
+   derived from its name. Same box as the screenshot it replaces, so one missing
+   capture never reflows the grid around it. */
+.app-initial { display: flex; align-items: center; justify-content: center; }
+.app-initial span { font-size: 34px; font-weight: bold; color: rgba(255,255,255,.72);
+                    letter-spacing: .02em; }
+/* Where a sentence came from, as one quiet character. Honesty that must not
+   cost the page its looks, so it sits after the text at half opacity and says
+   the rest on hover. */
+.app-prov { margin-left: 5px; opacity: .45; font-size: 9px; vertical-align: 1px; cursor: help; }
+.app-prev { font-size: 10.5px; color: var(--fg2); }
+/* The footer: how the list is made, and how to change it. Deliberately small,
+   and at the bottom: asking a visitor for a pull request before they have seen
+   anything is asking a favour of someone who does not yet know what this is. */
+.app-foot { margin-top: 28px; padding-top: 12px; border-top: 1px solid var(--border);
+            display: flex; flex-direction: column; gap: 5px; }
+.app-foot-line { font-size: 11px; color: var(--fg2); }
+.app-foot-line summary { cursor: pointer; }
+.app-skips { margin: 6px 0 0; padding-left: 18px; }
+.app-skips li { margin: 2px 0; }
 .skeleton-line { height: 16px; margin-bottom: 12px; }
 .skeleton-line:nth-child(1) { width: 80%; }
 .skeleton-line:nth-child(2) { width: 60%; }
@@ -824,6 +835,10 @@ html.embed .rail { display: none !important; }
 html.embed body { padding-left: 0; }
 html.embed body { background: transparent; }
 html.embed .container { padding-top: 0; padding-bottom: 0; max-width: none; }
+/* A reference from one gloss to another headword. Marked, not linked: the row
+   it points at is on the same screen, and the hover highlight is what connects
+   them. */
+.gloss-ref { color: var(--accent); border-bottom: 1px dotted var(--accent); cursor: help; }
 /* Highlight on hover (addresses, tx hashes, event types, etc) */
 [data-hl].hl-active { outline: 2px solid #4ecdc4; outline-offset: 1px; background: rgba(78, 205, 196, 0.15); border-radius: 2px; }
 /* The same highlight on a map bubble. outline and background are no-ops on an
@@ -902,6 +917,7 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
         <div class="nav-kids">
           <a onclick="navigate('/developer/search')" id="nav-devsearch" title="full-text search over every file the chain stores"><span class="rail-label">code search</span></a>
           <a onclick="navigate('/developer/api')" id="nav-devapi" title="the HTTP API this explorer serves"><span class="rail-label">api</span></a>
+          <a onclick="navigate('/developer/mcp')" id="nav-devmcp" title="the MCP endpoint an agent connects to"><span class="rail-label">mcp</span></a>
         </div>
       </div>
       <div class="nav-group">
@@ -917,6 +933,7 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
         <a onclick="navigate('/defi')" id="nav-defi" title="the money side: accounts, coins, grc20"><svg aria-hidden="true"><use href="#i-coin"/></svg><span class="rail-label">defi</span></a>
         <div class="nav-kids">
           <a onclick="navigate('/accounts')" id="nav-accounts" title="accounts, balances and the rich list"><span class="rail-label">accounts</span></a>
+          <a onclick="navigate('/sessions')" id="nav-sessions" title="delegated signing keys: who lets what sign for them"><span class="rail-label">sessions</span></a>
           <a onclick="navigate('/coins')" id="nav-coins" title="native ugnot: transfers, volume, who moves it"><span class="rail-label">coins</span></a>
           <a onclick="navigate('/grc20')" id="nav-grc20" title="grc20 assets, supply and holders"><span class="rail-label">grc20</span></a>
         </div>
@@ -939,6 +956,7 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
           <a onclick="navigate('/govdao/params')" id="nav-params" title="chain parameters"><span class="rail-label">params</span></a>
         </div>
       </div>
+      <a onclick="navigate('/glossary')" id="nav-glossary" title="what the words on this site mean"><svg aria-hidden="true"><use href="#i-info"/></svg><span class="rail-label">glossary</span></a>
       <a onclick="navigate('/watch')" id="nav-watch" title="watch"><svg aria-hidden="true"><use href="#i-eye"/></svg><span class="rail-label">watch</span></a>
   </nav>
   <div class="rail-foot">
@@ -1105,11 +1123,14 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
   <div class="view" id="view-govdao-detail"><main><div id="govdao-detail-content"></div></main></div>
   <div class="view" id="view-analytics"><main><div id="analytics-content"></div></main></div>
   <div class="view" id="view-params"><main><div id="params-content"></div></main></div>
+  <div class="view" id="view-sessions"><main><div id="sessions-content"></div></main></div>
+  <div class="view" id="view-glossary"><main><div id="glossary-content"></div></main></div>
   <div class="view" id="view-sanity"><main><div id="sanity-content"></div></main></div>
   <div class="view" id="view-contracts"><main><div id="contracts-content"></div></main></div>
   <div class="view" id="view-apps"><main><div id="apps-content"></div></main></div>
   <div class="view" id="view-developer"><main><div id="developer-content"></div></main></div>
   <div class="view" id="view-devapi"><main><div id="devapi-content"></div></main></div>
+  <div class="view" id="view-devmcp"><main><div id="devmcp-content"></div></main></div>
   <div class="view" id="view-gas"><main><div id="gas-content"></div></main></div>
   <div class="view" id="view-gas-realms"><main><div id="gas-realms-content"></div></main></div>
   <div class="view" id="view-gas-users"><main><div id="gas-users-content"></div></main></div>
@@ -1798,6 +1819,66 @@ function fmtExpiry(unix) {
   return d.getTime() < Date.now() ? iso + ' (expired)' : iso;
 }
 
+// allowPathEl renders one AllowPaths entry, the grant a session actually got.
+//
+// The entry is "<route>/<type>[:<path>]" and only vm/exec carries a path, so
+// the realm is linked and everything else stays literal. "*" is the one entry
+// that grants everything, and it must not render as a realm name nobody can
+// click: it is the most consequential value the field takes.
+//
+// The chain prefix-matches these, so an entry naming a realm also authorises
+// every sub-realm under it. That is said once, in the section note, rather than
+// on every row.
+function allowPathEl(entry) {
+  const span = el('span');
+  if (entry === '*') {
+    span.appendChild(badge('reject', 'anything'));
+    return span;
+  }
+  const m = String(entry).match(/^vm\/exec:(.+)$/);
+  if (!m) {
+    // bank/send, vm/run and friends: no path to link, and the route is the
+    // whole grant.
+    return el('span', {}, entry);
+  }
+  span.appendChild(el('span', { className: 'block-ctx' }, 'call '));
+  span.appendChild(realmPathEl(m[1]));
+  return span;
+}
+
+// fmtGnot renders a session spend figure without rounding it away.
+//
+// Not fmtBalanceStr, which floors to two decimal places of GNOT: a session's
+// spend runs from a few thousand ugnot upwards, so it renders "9350ugnot" as
+// "0 GNOT" and reports a key that has been spending as one that never has.
+// Three significant figures keep the small end readable and leave a whole
+// number of GNOT written as a whole number.
+function fmtGnot(coin) {
+  const m = String(coin || '').match(/^(\d+)ugnot$/);
+  if (!m) return fmtCoins(coin);
+  const gnot = Number(m[1]) / 1000000;
+  return (Number.isInteger(gnot) ? fmtNum(gnot) : Number(gnot.toPrecision(3))) + ' GNOT';
+}
+
+// fmtSpend says how much of a session's cap is gone, and over what window.
+//
+// The window is the half that gets dropped, and dropping it inverts the
+// meaning: spend_period 0 is a cap for the session's entire lifetime, which is
+// stricter than a rolling one, so rendering both as a bare "x of y" makes the
+// tighter grant look like the looser one.
+function fmtSpend(s) {
+  // An empty spend_limit is the MOST restrictive value, not the least: the
+  // chain rejects any non-zero amount from a session that has none
+  // (tm2/pkg/sdk/auth/spend.go, "no spend limit set, no spending allowed"), so
+  // such a key can only make calls that move nothing and cost it no gas.
+  // Rendering it "unlimited" said the exact opposite about the most locked-down
+  // grant there is.
+  if (!s.spend_limit) return 'cannot spend';
+  const used = s.spend_used ? fmtGnot(s.spend_used) : '0 GNOT';
+  const period = s.spend_period ? 'per ' + fmtDuration(s.spend_period) : 'lifetime';
+  return used + ' of ' + fmtGnot(s.spend_limit) + ' (' + period + ')';
+}
+
 // Which field names the signer, per message type.
 //
 // Every type spells it differently, and the list is not stable: the inert
@@ -2289,10 +2370,7 @@ function onNetworkChange() {
   // network switch resets it.
   const transferGraph = DASHBOARDS.flatMap(s => s.charts).find(c => c.id === 'transfer-graph');
   if (transferGraph && transferGraph.state) transferGraph.state.ego = null;
-  const params = new URLSearchParams(window.location.search);
-  if (n && n !== 'all') { params.set('network', n); } else { params.delete('network'); }
-  const newUrl = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
-  history.replaceState(null, '', newUrl);
+  urlSetParam('network', n === 'all' ? '' : n);
   renderFooterIndexer();
   renderNetworkSwatch();
   refreshHealthChip();
@@ -3220,6 +3298,7 @@ const NAV = [
   { id: 'developer', label: 'developer', path: '/developer', own: 'overview', children: [
     { id: 'devsearch', label: 'code search', path: '/developer/search' },
     { id: 'devapi', label: 'api', path: '/developer/api' },
+    { id: 'devmcp', label: 'mcp', path: '/developer/mcp' },
   ] },
   { id: 'blocks', label: 'blocks', path: '/blocks', own: 'blocks', children: [
     { id: 'txs', label: 'txs', path: '/txs' },
@@ -3229,6 +3308,7 @@ const NAV = [
   ] },
   { id: 'defi', label: 'defi', path: '/defi', own: 'overview', children: [
     { id: 'accounts', label: 'accounts', path: '/accounts' },
+    { id: 'sessions', label: 'sessions', path: '/sessions' },
     { id: 'coins', label: 'coins', path: '/coins' },
     { id: 'grc20', label: 'grc20', path: '/grc20' },
   ] },
@@ -3244,6 +3324,7 @@ const NAV = [
     { id: 'govdao-options', label: 'options', path: '/govdao/options' },
     { id: 'params', label: 'params', path: '/govdao/params' },
   ] },
+  { id: 'glossary', label: 'glossary', path: '/glossary' },
   { id: 'watch', label: 'watch', path: '/watch' },
 ];
 
@@ -3368,9 +3449,11 @@ function route() {
   else if (path === '/apps') { view = 'apps'; }
   else if (path === '/developer' || path === '/developer/search') { view = 'developer'; }
   else if (path === '/developer/api') { view = 'devapi'; }
+  else if (path === '/developer/mcp') { view = 'devmcp'; }
   else if (path === '/txs') { view = 'txs'; }
   else if (path === '/blocks') { view = 'blocks'; }
   else if (path === '/accounts') { view = 'accounts'; }
+  else if (path === '/sessions') { view = 'sessions'; }
   else if (path === '/defi') { view = 'defi'; }
   else if (path === '/coins') { view = 'coins'; }
   // /tokens was this page's URL when it was one page carrying both the bank
@@ -3403,6 +3486,7 @@ function route() {
   // redirects: a redirect would rewrite a reader's URL under them for no
   // gain, and an old bookmark is not a mistake to correct.
   else if (path === '/params' || path === '/govdao/params') { view = 'params'; }
+  else if (path === '/glossary') { view = 'glossary'; }
   else if (path === '/sanity') { view = 'sanity'; }
   else if (path === '/watch') { view = 'watch'; }
   else if (path.startsWith('/block/')) { view = 'block-detail'; data = parseInt(path.slice(7)); }
@@ -3449,6 +3533,7 @@ function route() {
     case 'apps': loadApps(); break;
     case 'developer': loadDeveloper(); break;
     case 'devapi': loadDevApi(); break;
+    case 'devmcp': loadDevMcp(); break;
     case 'txs': enterTxs(); break;
     case 'blocks': loadBlocks(); break;
     case 'accounts': enterAccounts(urlAv); break;
@@ -3472,6 +3557,8 @@ function route() {
     case 'analytics': loadAnalytics(); break;
     case 'dashboards': loadDashboards(); break;
     case 'params': loadParams(); break;
+    case 'sessions': loadSessions(); break;
+    case 'glossary': loadGlossary(); break;
     case 'sanity': loadSanity(); break;
     case 'block-detail': loadBlockDetail(data); break;
     case 'realm-detail': loadRealmDetail(data, urlTab); break;
@@ -7561,25 +7648,277 @@ async function loadParams() {
   }
 }
 
+// --- Glossary: what the words on this site mean ------------------------------
+//
+// Nineteen words appear all over this explorer with no explanation anywhere,
+// which is the whole of the complaint that produced this page. The definitions
+// live in docs/glossary.md and are served parsed at /api/glossary, so this page
+// is a rendering of that file and not a second opinion about it.
+
+// glossaryGlossEl turns one gloss into DOM.
+//
+// The glosses carry two bits of markup and no more: `code` and **a reference to
+// another headword**. Parsed here into nodes rather than assigned as HTML, per
+// the standing rule that this frontend builds DOM and never HTML strings. That
+// rule earns its keep on exactly this kind of text, which arrives from a file
+// and gets rendered verbatim.
+function glossaryGlossEl(gloss) {
+  const span = el('span');
+  // One expression for both markers so a `code` span inside a **reference**, or
+  // the reverse, cannot be split across two passes and left half-marked.
+  const re = /\*\*([^*]+)\*\*|`([^`]+)`/g;
+  let last = 0, m;
+  while ((m = re.exec(gloss)) !== null) {
+    if (m.index > last) span.append(gloss.slice(last, m.index));
+    if (m[1] !== undefined) {
+      const ref = el('span', { className: 'gloss-ref' }, m[1]);
+      ref.setAttribute('data-hl', 'gloss:' + m[1]);
+      ref.title = 'defined below';
+      span.appendChild(ref);
+    } else {
+      span.appendChild(el('code', {}, m[2]));
+    }
+    last = re.lastIndex;
+  }
+  if (last < gloss.length) span.append(gloss.slice(last));
+  return span;
+}
+
+function renderGlossary(container, data) {
+  container.textContent = '';
+  container.appendChild(el('div', { className: 'section-title' }, 'the words on this site'));
+  container.appendChild(el('div', { className: 'section-sub' },
+    'plain-language definitions for the jargon this explorer cannot avoid. one source: ' +
+    'docs/glossary.md in the repo, embedded in this binary and served at /api/glossary, ' +
+    'so a tooltip here and the document there can never drift apart.'));
+
+  const table = el('table');
+  table.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'term'), el('th', {}, 'means'))));
+  const body = el('tbody');
+  for (const term of data.order || []) {
+    const entry = (data.terms || {})[term];
+    if (!entry) continue;
+    const row = el('tr');
+    const head = el('td', { style: { whiteSpace: 'nowrap', verticalAlign: 'top' } });
+    const name = el('strong', {}, term);
+    // Shares the page's existing highlight group, so hovering a reference
+    // inside one gloss lights the row that defines it. A definition you have to
+    // go and find is a definition you skip.
+    name.setAttribute('data-hl', 'gloss:' + term);
+    head.appendChild(name);
+    row.appendChild(head);
+    row.appendChild(el('td', {}, glossaryGlossEl(entry.gloss || '')));
+    body.appendChild(row);
+  }
+  table.appendChild(body);
+  container.appendChild(table);
+
+  container.appendChild(el('div', { className: 'section-sub', style: { marginTop: '10px' } },
+    fmtNum((data.order || []).length) + ' terms \u00b7 version ' + (data.version || 'unknown') +
+    '. adding one is a change to that file and a CI run, never a code change.'));
+}
+
+// --- Sessions: delegation, chain-wide ---------------------------------------
+//
+// The account page answers "what has THIS account delegated", live from RPC.
+// This answers the question RPC cannot be asked at all: who on this chain
+// delegates, to what, and what has been handed back.
+//
+// It reads the index rather than the chain, because there is no enumerate-all
+// endpoint: auth/accounts/<addr>/sessions needs an address you already have.
+// The index is replayed from the auth/* transactions, which is also the only
+// place a revoked or expired grant still exists, since the chain forgets both.
+
+// sessionState classifies a grant the way the page counts it.
+//
+// Revocation beats expiry when both apply. A key that was revoked and would
+// also have lapsed by now was stopped by somebody, and calling that "expired"
+// hides the act. The server's SessionStats partitions the same way, so the
+// badges and the counters cannot disagree.
+function sessionState(g) {
+  if (g.revoked_height != null) return 'revoked';
+  if (g.expires_at && g.expires_at * 1000 <= Date.now()) return 'expired';
+  return 'live';
+}
+
+const SESSION_STATE_BADGE = { live: 'ok', expired: 'session', revoked: 'reject' };
+
+function sessionStateEl(g) {
+  const st = sessionState(g);
+  return badge(SESSION_STATE_BADGE[st], st);
+}
+
+function renderSessionsPage(container, data) {
+  const stats = data.stats || {};
+  const grants = data.grants || [];
+  const realms = data.realms || [];
+
+  container.appendChild(el('h2', { style: { margin: '16px 0 4px' } }, 'Sessions'));
+  container.appendChild(el('div', { className: 'section-sub' },
+    'a session is a delegated signing key. it signs for a master account, and the master stays the caller of ' +
+    'every message it sends, so none of these appear as senders anywhere else in this explorer.'));
+
+  const bar = el('div', { className: 'stats-bar' });
+  const stat = (label, value, title) => {
+    const d = el('div', { className: 'stat' },
+      el('span', { className: 'label' }, label), el('span', { className: 'value' }, fmtNum(value)));
+    if (title) d.title = title;
+    return d;
+  };
+  bar.appendChild(stat('grants', stats.total || 0, 'every grant ever made, including the ones that have ended'));
+  bar.appendChild(stat('live', stats.live || 0, 'not revoked, not expired'));
+  bar.appendChild(stat('expired', stats.expired || 0, 'lapsed on their own'));
+  bar.appendChild(stat('revoked', stats.revoked || 0, 'handed back before they lapsed'));
+  bar.appendChild(stat('accounts', stats.masters || 0, 'distinct accounts that have delegated at least once'));
+  container.appendChild(bar);
+
+  // How much of the chain this has actually seen. The index fills forward from
+  // whenever the feature shipped and sweeps backwards on a cursor, so a small
+  // number can mean "few grants" or "not looked yet", and those are different.
+  const scanned = data.scanned || {};
+  if (!scanned.complete) {
+    const note = el('div', { className: 'section-sub', style: { color: 'var(--yellow, var(--fg2))' } });
+    note.append('still reading back through the chain' +
+      (scanned.stop ? ' (' + fmtNum(scanned.at || 0) + ' of ' + fmtNum(scanned.stop) + ' blocks swept)' : '') +
+      '. counts below are what has been found so far, not the whole chain.');
+    container.appendChild(note);
+  }
+
+  if (!grants.length) {
+    container.appendChild(el('div', { style: { color: 'var(--fg2)', padding: '16px 0' } },
+      scanned.complete
+        ? 'no account on this chain has delegated a signing key.'
+        : 'no grants found yet. the sweep is still running.'));
+    return;
+  }
+
+  // What people delegate TO, which is the question the grant log cannot answer
+  // at a glance.
+  if (realms.length) {
+    container.appendChild(el('div', { className: 'section-title', style: { marginTop: '20px' } },
+      'delegated to'));
+    container.appendChild(el('div', { className: 'section-sub' },
+      'ranked by how many distinct accounts granted a key to each, not by how many grants: one account ' +
+      'delegating the same realm five times is one adopter, not five.'));
+    const rt = el('table');
+    rt.appendChild(el('thead', {}, el('tr', {},
+      el('th', {}, 'realm'), el('th', {}, 'accounts'), el('th', {}, 'grants'))));
+    const rb = el('tbody');
+    for (const r of realms) {
+      const td = el('td');
+      // "*" and bank/send name no realm, so they stay literal rather than
+      // becoming a link to a package that does not exist.
+      if (r.path.startsWith('gno.land/')) td.appendChild(realmPathEl(r.path));
+      else td.appendChild(el('span', {}, r.path === '*' ? 'anything' : r.path));
+      rb.appendChild(el('tr', {}, td, el('td', {}, fmtNum(r.masters)), el('td', {}, fmtNum(r.grants))));
+    }
+    rt.appendChild(rb);
+    container.appendChild(rt);
+  }
+
+  container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } },
+    data.total > grants.length
+      ? 'every grant (' + fmtNum(grants.length) + ' of ' + fmtNum(data.total) + ' most recent)'
+      : 'every grant (' + fmtNum(grants.length) + ')'));
+
+  const tbl = el('table');
+  tbl.appendChild(el('thead', {}, el('tr', {},
+    el('th', {}, 'key'),
+    el('th', {}, 'signs for'),
+    el('th', {}, 'may call'),
+    el('th', {}, 'limit'),
+    el('th', {}, 'state'),
+    el('th', {}, 'granted'))));
+  const tb = el('tbody');
+  for (const g of grants) {
+    const scopeTd = el('td');
+    const paths = g.allow_paths || [];
+    if (!paths.length) scopeTd.appendChild(el('span', { style: { color: 'var(--fg2)' } }, 'not stated'));
+    else for (const entry of paths) scopeTd.appendChild(el('div', {}, allowPathEl(entry)));
+
+    const stateTd = el('td', {}, sessionStateEl(g));
+    // When it ended, beside how it ended: "revoked" alone leaves the reader
+    // asking the obvious next question.
+    if (g.revoked_height != null) {
+      stateTd.appendChild(el('div', { className: 'block-ctx' }, 'at ' + fmtNum(g.revoked_height)));
+    } else if (g.expires_at) {
+      stateTd.appendChild(el('div', { className: 'block-ctx' }, fmtExpiry(g.expires_at)));
+    } else {
+      stateTd.appendChild(el('div', { className: 'block-ctx' }, 'never expires'));
+    }
+
+    const grantedTd = el('td');
+    grantedTd.appendChild(blockWithAge(g.granted_height, g.granted_time, g.network));
+    if (g.granted_tx) {
+      grantedTd.appendChild(el('div', {}, txLink(g.granted_tx, g.granted_height, g.network)));
+    }
+
+    tb.appendChild(el('tr', {},
+      el('td', {}, addrLinkFull(g.session_addr, g.network)),
+      el('td', {}, addrLinkFull(g.master, g.network)),
+      scopeTd,
+      el('td', {}, fmtSpend(g)),
+      stateTd,
+      grantedTd));
+  }
+  tbl.appendChild(tb);
+  container.appendChild(tbl);
+
+  container.appendChild(el('div', { className: 'section-sub', style: { marginTop: '12px' } },
+    'replayed from the auth/create_session, auth/revoke_session and auth/revoke_all_sessions transactions. ' +
+    'spend figures here are the cap the grant set; what a key has actually spent moves without a ' +
+    'transaction and is only on its master\'s page, read live from the chain.'));
+}
+
+async function loadSessions() {
+  const container = clear('sessions-content');
+  skeletonBlock(container);
+  try {
+    await apiSWR('sessions', (data) => {
+      container.textContent = '';
+      renderSessionsPage(container, data);
+    });
+  } catch (err) {
+    failBlock(container, err, loadSessions);
+  }
+}
+
+async function loadGlossary() {
+  const container = clear('glossary-content');
+  skeletonBlock(container);
+  try {
+    await apiSWR('glossary', (data) => renderGlossary(container, data));
+  } catch (err) {
+    failBlock(container, err, loadGlossary);
+  }
+}
+
 // --- Apps: the app hub -------------------------------------------------------
 //
-// What the realm list cannot be. /realms ranks every deployed package by
-// traffic, which answers "what is busy" and never "what is this for". This is
-// the sentences a human wrote, from pkg/registry/data/apps.json.
+// What is built on gno.land, as something you look at rather than read.
 //
-// It is a grid of pictures rather than a table because of who asks for it: the
-// question that produced this page was "is there a page where we can see the
-// dapps being built on Gno.land", from someone who wanted to look at them. A
-// three-column monospace table answers a different, narrower question, so it is
-// still here behind the view toggle rather than gone.
+// The chain proposes and curation corrects. Every realm people actually use is
+// ranked and drawn with a screenshot and its own doc comment; a human then pins
+// what the ranking missed, fixes what it got wrong, and skips what should not
+// be here. awesome-gno is a second source of corrections and the only source
+// for the apps that are not on a chain at all: a wallet, an explorer, a
+// playground. A hub that could not show those would be answering "what is built
+// on gno.land" with the subset it happens to be able to index.
 //
-// The numbers on a card are the half a curated directory cannot have on its
-// own, and the half nobody else's app hub has at all: this one sits on an
-// indexer. They are per-chain and therefore absent until a chain is picked,
-// while the descriptions, which are true everywhere, are not.
+// The website leads and the realm is the second link. Somebody sent here wants
+// the thing itself; the realm page is what they want next, and only if they are
+// the kind of person who wants it.
 const APP_WINDOWS = ['24h', '7d', '30d', '90d'];
 const APP_WINDOW_DEFAULT = '30d';
+const AWESOME_REPO = 'https://github.com/gnoverse/awesome-gno';
+const AWESOME_EDIT_URL = AWESOME_REPO + '/edit/main/README.md';
 const APPS_JSON_URL = 'https://github.com/gnoverse/mygnoscan/blob/main/pkg/registry/data/apps.json';
+const MODERATION_URL = 'https://github.com/gnoverse/mygnoscan/blob/main/pkg/registry/data/moderation.toml';
+
+function appsWindow() {
+  const w = urlParam('window');
+  return APP_WINDOWS.includes(w) ? w : APP_WINDOW_DEFAULT;
+}
 
 // The chain to offer when none is picked. mainnet when it is configured,
 // because that is the one a visitor almost always means; otherwise the first
@@ -7599,11 +7938,6 @@ function switchNetwork(name) {
   if (!sel) return;
   sel.value = name;
   onNetworkChange();
-}
-
-function appsWindow() {
-  const w = urlParam('window');
-  return APP_WINDOWS.includes(w) ? w : APP_WINDOW_DEFAULT;
 }
 
 // The developer section.
@@ -7793,26 +8127,127 @@ async function loadDevApi() {
   box.appendChild(tbl);
 }
 
+// The MCP page: how an agent connects, and what it gets.
+//
+// A page rather than a paragraph in the API list, because connecting an MCP
+// client is a config file somebody has to paste, and a tool list is the thing
+// they will want to read before deciding to. The tool table is fetched from
+// the endpoint itself rather than written here, so it cannot describe a tool
+// the server does not serve.
+async function loadDevMcp() {
+  const container = clear('devmcp-content');
+  container.appendChild(el('h1', {}, 'mcp'));
+  container.appendChild(el('div', { style: { color: 'var(--fg2)', marginBottom: '12px' } },
+    'a read-only MCP endpoint, so an agent can ask this explorer the things a gno.land node cannot answer: ' +
+    'search every source file on chain, look up a declaration, read a realm\'s decoded state, decode a transaction.'));
+
+  const url = window.location.origin + '/mcp';
+
+  const conn = el('div', { className: 'card', style: { marginBottom: '16px' } });
+  conn.appendChild(el('div', { className: 'section-title' }, 'connect'));
+  const urlRow = el('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '10px' } },
+    el('code', {}, url), copyButton(url, 'copy the endpoint URL'));
+  conn.appendChild(urlRow);
+  conn.appendChild(el('div', { style: { color: 'var(--fg2)', fontSize: '12px', marginBottom: '10px' } },
+    'streamable HTTP, no authentication, no API key. Opening it in a browser answers 405: it speaks JSON-RPC over POST.'));
+
+  conn.appendChild(snippetBlock('claude mcp add --transport http mygnoscan ' + url, 'claude code'));
+  conn.appendChild(snippetBlock(JSON.stringify({
+    mcpServers: { mygnoscan: { type: 'http', url: url } },
+  }, null, 2), 'any client that takes a JSON config'));
+  container.appendChild(conn);
+
+  const tools = el('div', { className: 'card', style: { marginBottom: '16px' } });
+  tools.appendChild(el('div', { className: 'section-title' }, 'tools'));
+  container.appendChild(tools);
+  const body = el('div', {});
+  tools.appendChild(body);
+  skeletonBlock(body);
+  renderMcpTools(body);
+
+  const limits = el('div', { className: 'card' });
+  limits.appendChild(el('div', { className: 'section-title' }, 'limits, and what they mean'));
+  const ul = el('ul', { style: { margin: '0', paddingLeft: '18px', lineHeight: '1.7' } });
+  [
+    'rate limited per address, by requests per minute and by requests in flight. Over either, the answer is 429 with a Retry-After.',
+    'every tool result carries the index height for each chain and how far behind the chain it is. An agent should quote that height rather than call an indexed number current.',
+    'realm source and realm state are written by whoever deployed them. Results arrive nested under a data key, framed as data and never as instructions.',
+    'no tool writes. Nothing here signs, sends or prepares a transaction, by design.',
+  ].forEach(t => ul.appendChild(el('li', {}, t)));
+  limits.appendChild(ul);
+  container.appendChild(limits);
+}
+
+// snippetBlock is a labelled, copyable snippet. Not codeBlock, which is the
+// gno source renderer and syntax-highlights what it is given: a JSON config is
+// not gno, and a second top-level codeBlock would silently replace it.
+function snippetBlock(text, label) {
+  const wrap = el('div', { style: { marginBottom: '10px' } });
+  const head = el('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '3px' } },
+    el('span', { style: { color: 'var(--fg2)', fontSize: '12px' } }, label),
+    copyButton(text, 'copy'));
+  wrap.appendChild(head);
+  wrap.appendChild(el('pre', {
+    style: {
+      margin: '0', padding: '8px 10px', overflowX: 'auto',
+      background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: '4px',
+      fontFamily: 'var(--mono, monospace)', fontSize: '12px',
+    },
+  }, text));
+  return wrap;
+}
+
+// The tool list comes from the endpoint, over the same protocol a client uses.
+// Writing it out here instead would leave a page describing a server that has
+// moved on, which is the whole reason /api/endpoints is generated too.
+async function renderMcpTools(into) {
+  let tools;
+  try {
+    const r = await fetch('/mcp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+    });
+    if (!r.ok) throw new Error('the endpoint answered ' + r.status);
+    const d = await r.json();
+    if (d.error) throw new Error(d.error.message);
+    tools = (d.result && d.result.tools) || [];
+  } catch (err) {
+    into.textContent = '';
+    into.appendChild(el('div', { style: { color: 'var(--red)' } }, String(err.message || err)));
+    return;
+  }
+  into.textContent = '';
+  into.appendChild(el('div', { style: { color: 'var(--fg2)', fontSize: '12px', marginBottom: '8px' } },
+    fmtNum(tools.length) + ' tools, all read-only'));
+  tools.forEach(t => {
+    const row = el('div', { style: { marginBottom: '10px' } });
+    row.appendChild(el('div', {}, el('code', {}, t.name)));
+    row.appendChild(el('div', { style: { color: 'var(--fg2)', fontSize: '12px' } }, t.description || ''));
+    const props = (t.inputSchema && t.inputSchema.properties) || {};
+    const req = (t.inputSchema && t.inputSchema.required) || [];
+    const names = Object.keys(props).map(k => (req.indexOf(k) >= 0 ? k + '*' : k));
+    if (names.length) {
+      row.appendChild(el('div', { style: { color: 'var(--fg2)', fontSize: '12px' } },
+        'arguments: ' + names.join(', ')));
+    }
+    into.appendChild(row);
+  });
+}
+
 async function loadApps() {
   const container = clear('apps-content');
   skeletonBlock(container);
   const q = new URLSearchParams({ window: appsWindow() });
   const net = getNetwork();
   if (net && net !== 'all') q.set('network', net);
-  // Two endpoints behind one page. The ecosystem view is the community's list
-  // rather than ours, so it is a different payload; cards and table are two
-  // drawings of the same one and never refetch.
-  const eco = appsView() === 'ecosystem';
-  const path = 'registry/' + (eco ? 'awesome' : 'apps') + '?' + q.toString();
   try {
-    await apiSWR(path, (data) => (eco ? renderEcosystem : renderApps)(container, data));
+    await apiSWR('apps?' + q.toString(), (data) => renderApps(container, data));
   } catch (err) {
     failBlock(container, err, loadApps);
   }
 }
 
-// A chip strip. Reads its selection from the URL and writes it back, so every
-// view of this page is a link someone can paste.
 function appsChips(values, current, onPick, labelOf) {
   const seg = el('div', { className: 'dash-seg' });
   values.forEach(v => {
@@ -7824,443 +8259,277 @@ function appsChips(values, current, onPick, labelOf) {
   return seg;
 }
 
-// One card. The picture is the point; everything else is one line.
-function appCard(app, stat, network) {
-  // An app the selected chain has never seen is still worth showing (the
-  // description is true everywhere), and is not worth the same attention as
-  // one that is live here. Dimmed rather than hidden or badged: a filter that
-  // silently dropped entries would make the directory look smaller than it is.
-  const absent = network && (!stat || !stat.deployed);
-  const card = el('div', { className: 'app-card' + (absent ? ' app-card-off' : '') });
+// siteShotEl is shotEl's counterpart for a page that is not on a chain: same
+// shape, different endpoint, and a gate that accepts only the URLs a human
+// merged into the vendored list.
+function siteShotURL(site, size, dpr) {
+  return '/api/shot/site?' + new URLSearchParams({ url: site, size: size, dpr: String(dpr) }).toString();
+}
 
-  const shot = shotEl(app.path, { size: 'thumb', cls: 'app-shot', network: network });
-  if (shot) card.appendChild(shot);
+// The thumbnail. Every card gets one, and which one is the same decision the
+// links make: the website is the app, the realm is where it lives.
+function appShot(card, network) {
+  const cls = 'app-shot';
+  if (card.website && window.FEATURES && window.FEATURES.shots) {
+    const box = el('div', { className: 'shot ' + cls + ' loading' });
+    const img = el('img', {
+      src: siteShotURL(card.website, 'thumb', 1),
+      srcset: siteShotURL(card.website, 'thumb', 1) + ' 1x, ' + siteShotURL(card.website, 'thumb', 2) + ' 2x',
+      sizes: '(max-width: 720px) 100vw, 320px',
+      width: '320', height: '180', loading: 'lazy', decoding: 'async',
+      alt: 'what ' + card.name + ' looks like',
+    });
+    img.addEventListener('load', () => box.classList.remove('loading'));
+    // Falling back to the realm rather than to a blank: an app with both is
+    // still photographable when its website is not on the capture allowlist.
+    img.addEventListener('error', () => {
+      box.replaceWith((card.path && shotEl(card.path, { size: 'thumb', cls: cls, network: network }))
+        || appInitial(card.name, cls));
+    });
+    box.appendChild(img);
+    return box;
+  }
+  if (card.path) {
+    return shotEl(card.path, { size: 'thumb', cls: cls, network: network }) || appInitial(card.name, cls);
+  }
+  return appInitial(card.name, cls);
+}
+
+// The stand-in when there is no picture: the initial on a colour derived from
+// the name. Deterministic, so a project is always the same colour, and a mark
+// rather than a logo because we do not have their logo and inventing one is
+// worse than not having it.
+function appInitial(name, cls) {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  const box = el('div', { className: 'shot ' + cls + ' app-initial' },
+    el('span', {}, (name.trim()[0] || '?').toUpperCase()));
+  box.style.background = 'linear-gradient(135deg, hsl(' + (h % 360) + ' 42% 26%), hsl('
+    + ((h >> 3) % 360) + ' 38% 16%))';
+  return box;
+}
+
+// Where a sentence came from, in one character.
+//
+// A name a human wrote, a name the community wrote and a name the realm's own
+// source carries are three different claims, and a reader who cannot tell which
+// is which has to trust all of them equally or none. Shown as a quiet mark with
+// the full story in the tooltip, because this is the kind of honesty that must
+// not cost the page its looks.
+const PROVENANCE = {
+  curated: ['●', 'described in this explorer’s own registry, by a merged pull request'],
+  community: ['○', 'described by the community, in awesome-gno'],
+  chain: ['◈', 'the realm’s own package doc comment, written by whoever wrote the realm'],
+  readme: ['\u25c7', 'the opening line of the realm\u2019s own README'],
+  path: ['·', 'nobody has described this yet; the name is its path'],
+  // Not a description: a measurement, and ours. Kept in the same table because
+  // the question a reader has is identical — who is telling me this.
+  inferred: ['◐', 'this explorer’s own measurement, not a chain fact'],
+};
+
+function provenanceMark(from, checked) {
+  const p = PROVENANCE[from];
+  if (!p) return null;
+  // The date the registry requires on a blurb naming a volatile fact. It used
+  // to sit in a dense table that no longer exists, so it lives here: a rule
+  // that makes contributors write a date is only worth anything while a reader
+  // can still find the answer.
+  const title = checked ? p[1] + ' (last confirmed ' + checked + ')' : p[1];
+  return el('span', { className: 'app-prov', title: title }, p[0]);
+}
+
+function appCard(card, network) {
+  const box = el('div', { className: 'app-card' });
+  box.appendChild(appShot(card, network));
 
   const body = el('div', { className: 'app-card-body' });
   const head = el('div', { className: 'app-card-head' });
-  head.appendChild(el('span', { className: 'app-name' }, app.name));
-  head.appendChild(el('span', { className: 'app-cat' }, app.category));
+  head.appendChild(el('span', { className: 'app-name' }, card.name));
+  if (card.category) head.appendChild(el('span', { className: 'app-cat' }, card.category));
   body.appendChild(head);
 
-  body.appendChild(el('div', { className: 'app-desc' }, app.description || ''));
-  // A blurb is mostly durable, but the one volatile fact inside it is what a
-  // reader acts on, so the card carries the date the same way the table does.
-  // Dropping it here because a card is small would be keeping the claim and
-  // losing the thing that lets someone weigh it.
-  if (app.checked) {
-    body.appendChild(el('div', {
-      className: 'app-checked dim',
-      title: 'the volatile part of this description was last confirmed on this date',
-    }, 'checked ' + app.checked));
+  const desc = el('div', { className: 'app-desc' });
+  if (card.description) {
+    desc.append(card.description);
+    const mark = provenanceMark(card.description_from, card.checked);
+    if (mark) desc.appendChild(mark);
+  } else {
+    // Said plainly rather than left blank, because this is the one thing on the
+    // page a reader can fix in five minutes.
+    desc.appendChild(el('span', { className: 'dim' }, 'no description yet'));
   }
+  body.appendChild(desc);
 
-  // The stats line says one of three different things, and conflating them is
-  // the way this page would start lying: picked and the app is not there,
-  // picked and nobody has called it, picked and here is how busy.
-  //
-  // With no chain picked there is no fourth thing to say here. The reason is
-  // the same for all ten cards, so it is said once in the intro instead of
-  // stamped on every card, where it was ten repetitions of a sentence that is
-  // about the page rather than about any app on it.
-  // Built either way, appended only when there is a chain to describe: an
-  // empty stats row still takes its margin and leaves a gap under every card
-  // that reads as a rendering bug.
   const stats = el('div', { className: 'app-stats' });
-  if (network && (!stat || !stat.deployed)) {
-    stats.appendChild(el('span', { className: 'dim' }, 'not deployed on ' + network));
-  } else if (network && !stat.calls) {
-    stats.appendChild(el('span', { className: 'dim' }, 'deployed, never called'));
-  } else if (network) {
-    stats.appendChild(el('b', {}, fmtNum(stat.calls_window)));
-    stats.append(' calls · ');
-    stats.appendChild(el('b', {}, fmtNum(stat.callers)));
-    stats.append(' people');
-    const quiet = stat.calls_window === 0;
-    stats.appendChild(el('span', {
-      className: 'dim',
-      title: quiet
-        ? 'no calls in this window; ' + fmtNum(stat.calls) + ' all time'
-        : fmtNum(stat.calls) + ' calls all time, ' + fmtNum(stat.callers) + ' distinct callers',
-    }, quiet ? ' · quiet this ' + appsWindow() : ' · ' + appsWindow()));
+  if (card.path && network) {
+    if (card.callers_window || card.calls_window) {
+      stats.appendChild(el('b', {}, fmtNum(card.callers_window || 0)));
+      stats.append(' people · ');
+      stats.appendChild(el('b', {}, fmtNum(card.calls_window || 0)));
+      stats.append(' calls');
+      // What the figures cover. A folded card counts every realm it folded,
+      // the generations it replaced included, because they are one app and one
+      // app is one card: bubblerumble4 shipped with 348 calls beside the 4,160
+      // on the pools it replaced, and reporting only the new one said the game
+      // was three days old and barely played. Distinct callers are re-read
+      // rather than added, so the tooltip can say "people" and mean it.
+      const over = card.folded_realms
+        ? ' across ' + fmtNum(card.folded_realms) + ' realms: this one and the ones it '
+          + ((card.parts || []).length && (card.previous || []).length ? 'includes and replaces'
+            : (card.parts || []).length ? 'includes' : 'replaces')
+        : '';
+      stats.appendChild(el('span', {
+        className: 'dim',
+        title: fmtNum(card.calls) + ' calls all time, ' + fmtNum(card.callers)
+          + ' distinct callers' + over,
+      }, ' · ' + appsWindow()));
+    } else {
+      stats.appendChild(el('span', { className: 'dim' }, 'quiet this ' + appsWindow()));
+    }
+  } else if (!card.path) {
+    stats.appendChild(el('span', { className: 'dim', title: 'not a realm; nothing on a chain to count' },
+      'off chain'));
   }
-  if (network) body.appendChild(stats);
+  body.appendChild(stats);
 
   const actions = el('div', { className: 'app-actions' });
-  actions.appendChild(link('details',
-    () => navigate('/realm/' + app.path.replace('gno.land/', '') + netSuffix())));
-  // The external destination: the app's own front end when it has one, and the
-  // realm on gno.land when it does not. Both are the thing a visitor came to
-  // open, which is what "launch" means on every other app hub.
-  const launch = app.url || ('https://gno.land/' + app.path.replace(/^gno\.land\//, ''));
-  actions.appendChild(el('a', {
-    href: launch, target: '_blank', rel: 'noopener noreferrer', className: 'app-launch',
-  }, app.url ? 'launch ↗' : 'open on gno.land ↗'));
+  // Website first. This is the ordering the whole page is arranged around.
+  if (card.website) {
+    actions.appendChild(el('a', {
+      href: card.website, target: '_blank', rel: 'noopener noreferrer', className: 'app-launch',
+    }, 'open ↗'));
+  }
+  if (card.path) {
+    actions.appendChild(link(card.website ? 'realm' : 'open realm',
+      () => navigate('/realm/' + card.path.replace('gno.land/', '') + netSuffix())));
+    if (!card.website) {
+      actions.appendChild(el('a', {
+        href: 'https://gno.land/' + card.path.replace(/^gno\.land\//, ''),
+        target: '_blank', rel: 'noopener noreferrer',
+      }, 'gno.land ↗'));
+    }
+  }
+  if (card.community_url) {
+    actions.appendChild(el('a', {
+      href: card.community_url, target: '_blank', rel: 'noopener noreferrer',
+    }, 'source ↗'));
+  }
   body.appendChild(actions);
 
-  card.appendChild(body);
-  return card;
+  // An older generation is folded in rather than ranked beside this one: two
+  // live deployments of the same idea is the normal state of a chain nobody can
+  // delete from, and listing both as peers sends people to last year's version
+  // with a call count that makes it look current.
+  if ((card.previous || []).length) {
+    const prev = el('div', { className: 'app-prev' });
+    prev.append('replaces ');
+    card.previous.forEach((p, i) => {
+      if (i) prev.append(', ');
+      prev.appendChild(link(nameOrPath(p),
+        () => navigate('/realm/' + p.path.replace('gno.land/', '') + netSuffix())));
+    });
+    body.appendChild(prev);
+  }
+
+  // The realms this app is made of, folded in for the opposite reason: not
+  // "here is where it used to be" but "you are already looking at it". A DEX
+  // deployed as six realms is one product, and six cards told a visitor there
+  // were six of it. Each part keeps its own link, because they are real realms
+  // with real state and somebody came here looking for one of them.
+  if ((card.parts || []).length) {
+    const parts = el('div', { className: 'app-prev' });
+    parts.append('includes ');
+    card.parts.forEach((p, i) => {
+      if (i) parts.append(', ');
+      parts.appendChild(link(nameOrPath(p),
+        () => navigate('/realm/' + p.path.replace('gno.land/', '') + netSuffix())));
+    });
+    body.appendChild(parts);
+  }
+
+  box.appendChild(body);
+  return box;
+}
+
+function nameOrPath(card) {
+  return card.name || String(card.path || '').replace(/^gno\.land\//, '');
+}
+
+// The facets, beyond the category.
+//
+// A category answers "what kind of thing is this" and there are four of them,
+// so it is the only filter this page had and it could not answer the questions
+// people actually arrive with. These are three different axes, and each is a
+// real question somebody asked out loud:
+//
+//	where it came from   is this a realm the chain proposed, or something a
+//	                     human vouched for, here or on the community list
+//	what it is           a realm, a website, or both
+//
+// Each is a URL parameter, so any combination of them is a link somebody can
+// send. `all` is not a value; it is the parameter being absent.
+const APP_FACETS = [
+  {
+    param: 'src', label: 'source',
+    // Ordered by how much a human had to do with it, least first, because that
+    // is the axis a reader is actually asking about.
+    options: [
+      { v: 'discovered', label: 'auto-discovered', why: 'the chain ranked it here by what people do with it; nobody wrote an entry',
+        match: (a) => a.via === 'discovered' && a.name_from !== 'curated' },
+      { v: 'curated', label: 'described here', why: 'somebody wrote this entry in mygnoscan’s own apps.json: a better name, a real sentence, the website',
+        match: (a) => a.name_from === 'curated' || a.description_from === 'curated' },
+      { v: 'community', label: 'on awesome-gno', why: 'named by the community list, which is the only source for the apps that are not realms',
+        match: (a) => a.via === 'community' || a.name_from === 'community' || a.description_from === 'community' },
+    ],
+  },
+  {
+    param: 'has', label: 'has',
+    options: [
+      { v: 'realm', label: 'a realm', why: 'deployed on a chain, so this explorer can show its source, its state and who calls it',
+        match: (a) => !!a.path },
+      { v: 'site', label: 'a website', why: 'a front end of its own, outside the chain',
+        match: (a) => !!a.website },
+      { v: 'both', label: 'both', why: 'a realm and a front end built on it',
+        match: (a) => !!a.path && !!a.website },
+    ],
+  },
+];
+
+// appsFacetFilter reads the URL and returns a predicate over cards.
+function appsFacetFilter() {
+  const picked = [];
+  APP_FACETS.forEach(f => {
+    const v = urlParam(f.param);
+    const opt = f.options.find(o => o.v === v);
+    if (opt) picked.push(opt.match);
+  });
+  return (a) => picked.every(m => m(a));
 }
 
 function renderApps(container, data) {
   container.textContent = '';
   const apps = data.apps || [];
-  const stats = data.stats || {};
   const network = data.network || '';
   const category = urlParam('cat') || '';
-  const view = appsView();
 
   const intro = el('div', { className: 'section-sub' });
-  intro.append('a curated directory: what these realms are for, which no amount of on-chain '
-    + 'data says. entries are a pull request against ');
-  intro.appendChild(el('a', { href: APPS_JSON_URL, target: '_blank', rel: 'noopener noreferrer' },
-    'pkg/registry/data/apps.json'));
-  intro.append('.');
-  if (data.realms) {
-    // Said out loud, because a directory is always behind the chain and a page
-    // that hides that reads as "this is all there is".
-    intro.append(' ' + apps.length + ' listed, ' + fmtNum(data.realms)
-      + ' realms deployed on ' + network + '.');
-  }
-  // Said on the page a visitor lands on rather than only behind the tab,
-  // because the most common reason this directory looks thin is that the thing
-  // being looked for is not a realm and never will be: a wallet, an editor
-  // extension, a language server. Those live on the community's list, and a
-  // reader who is not told that concludes the ecosystem is ten apps wide.
-  if (data.awesome && data.awesome.entries) {
-    intro.append(' anything that is not a realm (wallets, editors, SDKs, talks) lives on the '
-      + 'community’s own list: ');
-    const jump = link(fmtNum(data.awesome.entries) + ' projects on awesome-gno',
-      () => { urlSetParam('view', 'ecosystem'); loadApps(); });
-    jump.title = 'open the ecosystem view, where the two lists are cross-checked';
-    intro.appendChild(jump);
-    intro.append('.');
-  }
-  container.appendChild(intro);
-
-  // No chain picked, so there is nothing honest to say about usage: the same
-  // path is a different deployment on each chain. Offered as one click rather
-  // than as an instruction to go and find the selector, because this is the
-  // first thing a visitor sent to this page lands on.
-  if (!network) {
-    const hint = el('div', { className: 'section-sub' });
-    hint.append('usage is per chain, so none is shown across all of them. ');
-    const pick = defaultNetworkName();
-    if (pick) {
-      hint.appendChild(link('see which of these are live on ' + pick,
-        () => switchNetwork(pick)));
-    } else {
-      hint.append('pick one in the header to see which of these are live, and how busy.');
-    }
-    container.appendChild(hint);
-  }
-
-  if (!apps.length) {
-    container.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '12px' } }, 'no apps listed yet'));
-    return;
-  }
-
-  // Controls. Category and view are applied while rendering rather than to
-  // rows already painted, because an SWR render runs twice and anything done
-  // to the first pass's rows is thrown away by the second (AGENTS.md).
-  const cats = [''].concat(data.categories || []);
-  const bar = el('div', { className: 'dash-bar' });
-  bar.appendChild(el('span', { className: 'dash-grp' },
-    appsChips(cats, category, (v) => { urlSetParam('cat', v); renderApps(container, data); },
-      (v) => v || 'all')));
-  bar.appendChild(appsViewBar(view, () => renderApps(container, data)));
   if (network) {
-    bar.appendChild(el('span', { className: 'dash-grp' },
-      el('span', { className: 'label' }, 'window'),
-      // The window changes what the server counted, so this one refetches.
-      appsChips(APP_WINDOWS, appsWindow(), (v) => {
-        urlSetParam('window', v === APP_WINDOW_DEFAULT ? '' : v);
-        loadApps();
-      })));
-  }
-  container.appendChild(bar);
-
-  const shown = category ? apps.filter(a => a.category === category) : apps;
-  if (!shown.length) {
-    container.appendChild(el('p', { style: { color: 'var(--fg2)', fontSize: '12px' } },
-      'nothing in this category'));
-  } else if (view === 'cards') {
-    const grid = el('div', { className: 'app-grid' });
-    // Busiest first once there is a chain to be busy on, so the page opens on
-    // what people actually use. Alphabetical within a category otherwise,
-    // which is what the server already sorted.
-    //
-    // Three tiers before the call count, because a card with no numbers on it
-    // would otherwise sort level with a live-but-quiet one and the grid would
-    // open on apps that are not even on this chain. Within a tier, ties keep
-    // the server's alphabetical order: sort is stable.
-    const tier = (app) => {
-      const s = stats[app.path];
-      if (!s || !s.deployed) return 2;
-      return s.calls ? 0 : 1;
-    };
-    const ordered = network
-      ? shown.slice().sort((a, b) => tier(a) - tier(b)
-        || ((stats[b.path] || {}).calls_window || 0) - ((stats[a.path] || {}).calls_window || 0))
-      : shown;
-    ordered.forEach(app => grid.appendChild(appCard(app, stats[app.path], network)));
-    container.appendChild(grid);
+    intro.append('what people on ' + network + ' actually use, ranked by how many of them '
+      + 'do. described by the realm itself where nobody has said better, and corrected by '
+      + 'hand where somebody has.');
   } else {
-    container.appendChild(appsTable(shown, stats, network));
+    intro.append('what is built on gno.land. pick a network to rank these by what people '
+      + 'actually use; the off-chain ones are listed either way.');
   }
-
-  if ((data.candidates || []).length) container.appendChild(appsCandidates(data, category));
-  if (data.awesome) container.appendChild(contributePanel(data.awesome));
-}
-
-// The dense view. Kept because a table is better than a grid for comparing, and
-// because it is what this page was before it had pictures.
-function appsTable(apps, stats, network) {
-  const byCategory = new Map();
-  for (const app of apps) {
-    if (!byCategory.has(app.category)) byCategory.set(app.category, []);
-    byCategory.get(app.category).push(app);
-  }
-  const wrap = el('div');
-  for (const [category, entries] of byCategory) {
-    const section = el('div', { className: 'section', style: { marginTop: '24px' } });
-    section.appendChild(el('div', { className: 'section-title' }, category));
-    const tbody = el('tbody');
-    for (const app of entries) {
-      const nameCell = el('td', { style: { verticalAlign: 'top' } },
-        el('div', { style: { fontWeight: 'bold' } }, app.name));
-      // The path is the link, because it is the thing that is actually on
-      // chain: the name is ours, the path is the chain's.
-      const pathCell = el('td', { style: { verticalAlign: 'top' } },
-        link(app.path, () => navigate('/realm/' + app.path.replace('gno.land/', '') + netSuffix())));
-      const descCell = el('td', { style: { verticalAlign: 'top' } }, el('div', {
-        style: {
-          color: 'var(--fg2)', fontSize: '12px', maxWidth: '520px',
-          whiteSpace: 'normal', wordBreak: 'normal', lineHeight: '1.5',
-        },
-      }, app.description || ''));
-      if (app.url) {
-        const ext = el('a', { href: app.url, target: '_blank', rel: 'noopener noreferrer' }, app.url);
-        descCell.appendChild(el('div', { style: { marginTop: '4px', fontSize: '11px' } }, ext));
-      }
-      // A blurb is mostly durable, but the one volatile fact inside it is what
-      // a reader acts on. Showing the date lets them weigh it, the same way an
-      // inferred address label carries its measurement date.
-      if (app.checked) {
-        descCell.appendChild(el('div', {
-          style: { marginTop: '4px', fontSize: '11px', color: 'var(--fg2)' },
-          title: 'the volatile part of this description was last confirmed on this date',
-        }, 'checked ' + app.checked));
-      }
-      const stat = stats[app.path];
-      const usageCell = el('td', { style: { verticalAlign: 'top', whiteSpace: 'nowrap' } });
-      if (!network) usageCell.appendChild(el('span', { className: 'dim' }, '—'));
-      else if (!stat || !stat.deployed) usageCell.appendChild(el('span', { className: 'dim' }, 'not here'));
-      else usageCell.append(fmtNum(stat.calls_window) + ' / ' + fmtNum(stat.callers));
-      tbody.appendChild(el('tr', {}, nameCell, pathCell, descCell, usageCell));
-    }
-    section.appendChild(el('table', {},
-      el('thead', {}, el('tr', {}, el('th', {}, 'name'), el('th', {}, 'realm'),
-        el('th', {}, 'what it is'),
-        el('th', { title: 'calls in the window / distinct callers all time' }, 'calls / people'))),
-      tbody));
-    wrap.appendChild(section);
-  }
-  return wrap;
-}
-
-// The suggestion queue: the busiest realms this directory does not mention.
-//
-// It is what turns "the directory is incomplete" from a complaint into a
-// worklist in traffic order. Nothing here is promoted automatically: curated
-// means a human wrote the sentence and merged it, and a page that auto-listed
-// whatever was busy would be a listing page, which already exists.
-function appsCandidates(data, category) {
-  const section = el('div', { className: 'section', style: { marginTop: '32px' } });
-  section.appendChild(el('div', { className: 'section-title' }, 'busy, and not described yet'));
-  const sub = el('div', { className: 'section-sub' });
-  sub.append('the most-called realms on ' + data.network + ' with no entry in the directory, '
-    + 'over the last ' + (data.window || APP_WINDOW_DEFAULT) + '. a suggestion queue, not a listing: '
-    + 'adding one means writing the sentence and opening a ');
-  sub.appendChild(el('a', { href: APPS_JSON_URL, target: '_blank', rel: 'noopener noreferrer' },
-    'pull request'));
-  sub.append('.');
-  section.appendChild(sub);
-
-  const tbody = el('tbody');
-  for (const c of data.candidates) {
-    const pathCell = el('td', {},
-      link(c.path, () => navigate('/realm/' + c.path.replace('gno.land/', '') + netSuffix())));
-    const byCell = el('td', {}, c.creator ? addrLink(c.creator) : el('span', { className: 'dim' }, '—'));
-    tbody.appendChild(el('tr', {},
-      pathCell,
-      el('td', { style: { textAlign: 'right' } }, fmtNum(c.calls)),
-      el('td', { style: { textAlign: 'right' } }, fmtNum(c.callers)),
-      byCell));
-  }
-  section.appendChild(el('table', {},
-    el('thead', {}, el('tr', {},
-      el('th', {}, 'realm'),
-      el('th', { style: { textAlign: 'right' } }, 'calls'),
-      el('th', { style: { textAlign: 'right' } }, 'people'),
-      el('th', {}, 'deployed by'))),
-    tbody));
-  // The filter above is about the directory, and this section is about what is
-  // missing from it. Saying so beats leaving a reader to wonder why a category
-  // filter did nothing here.
-  if (category) {
-    section.appendChild(el('div', {
-      style: { color: 'var(--fg2)', fontSize: '11px', marginTop: '6px' },
-    }, 'not filtered by category: these have no category yet, which is the point'));
-  }
-  return section;
-}
-
-// --- Apps: the community list ------------------------------------------------
-//
-// awesome-gno (github.com/gnoverse/awesome-gno) is the other curated answer to
-// "what is being built on gno.land", and it holds the half this explorer is
-// structurally blind to. A wallet, a VS Code extension, a language server, an
-// SDK and a workshop are not realms, so no amount of indexing will ever surface
-// them: an explorer that answers the question with only the realms it can index
-// gives a confidently incomplete answer, which is the worst kind.
-//
-// So the two lists sit on one page, and the page says which is which. Ours has
-// the traffic behind each entry, theirs has everything that is not on chain,
-// and the gap between them is rendered rather than hidden, in both directions,
-// because that gap is the only part of this a reader can actually act on.
-const AWESOME_REPO = 'https://github.com/gnoverse/awesome-gno';
-const AWESOME_EDIT_URL = AWESOME_REPO + '/edit/main/README.md';
-const AWESOME_PR_URL = AWESOME_REPO + '/pulls';
-
-function appsView() {
-  const v = urlParam('view');
-  return (v === 'table' || v === 'ecosystem') ? v : 'cards';
-}
-
-// The view chips, shared by both renders. Cards and table are two drawings of
-// one payload and switch without a fetch; ecosystem is a different endpoint, so
-// crossing that boundary reloads.
-function appsViewBar(current, redraw) {
-  return el('span', { className: 'dash-grp' },
-    el('span', { className: 'label' }, 'view'),
-    appsChips(['cards', 'table', 'ecosystem'], current, (v) => {
-      if (v === current) return;
-      urlSetParam('view', v === 'cards' ? '' : v);
-      if (v === 'ecosystem' || current === 'ecosystem') loadApps();
-      else redraw();
-    }));
-}
-
-// The invitation, made specific.
-//
-// "Contribute to awesome-gno" is a sentence nobody acts on. "These eight realms
-// whose call counts you are looking at are not on the community list, here is
-// the line to paste and the button that opens the editor" is a task, and it is
-// the only part of this page that grows the ecosystem's own directory rather
-// than ours.
-function contributePanel(summary) {
-  const wrap = el('div', { className: 'section', style: { marginTop: '28px' } });
-  wrap.appendChild(el('div', { className: 'section-title' }, 'add something'));
-  const grid = el('div', { className: 'contrib' });
-
-  const theirs = el('div', { className: 'contrib-card' });
-  theirs.appendChild(el('h4', {}, 'anything built on gno.land → awesome-gno'));
-  const p1 = el('p', {});
-  p1.append('the community’s own list, and the right home for everything that is not a '
-    + 'realm: wallets, editors, language servers, SDKs, talks. it takes a pull request '
-    + 'against one markdown file, and the maintainers ask for one line: a link, a dash, '
-    + 'and a sentence saying what it is.');
-  theirs.appendChild(p1);
-  const a1 = el('div', { className: 'eco-meta' });
-  a1.appendChild(extLink('edit README.md ↗', AWESOME_EDIT_URL,
-    'opens GitHub’s editor, which forks the repo for you and opens the pull request'));
-  a1.appendChild(extLink('contributing guide ↗', AWESOME_REPO + '/blob/main/CONTRIBUTING.md'));
-  a1.appendChild(extLink('open pull requests ↗', AWESOME_PR_URL,
-    'the list keeps uncertain entries open and settles them with a thumbs up'));
-  theirs.appendChild(a1);
-  grid.appendChild(theirs);
-
-  const ours = el('div', { className: 'contrib-card' });
-  ours.appendChild(el('h4', {}, 'a realm, with the numbers → this directory'));
-  const p2 = el('p', {});
-  p2.append('an entry here is a realm path and a sentence saying what it is for, and the '
-    + 'explorer supplies the rest: a screenshot, the calls, the people, what it holds. '
-    + 'the two lists overlap barely at all, so adding to one is not a reason to skip '
-    + 'the other.');
-  ours.appendChild(p2);
-  const a2 = el('div', { className: 'eco-meta' });
-  a2.appendChild(extLink('edit apps.json ↗',
-    'https://github.com/gnoverse/mygnoscan/edit/main/pkg/registry/data/apps.json'));
-  a2.appendChild(extLink('what belongs here ↗',
-    'https://github.com/gnoverse/mygnoscan/blob/main/pkg/registry/README.md'));
-  ours.appendChild(a2);
-  grid.appendChild(ours);
-
-  wrap.appendChild(grid);
-  if (summary && summary.entries) {
-    const note = el('div', { style: { color: 'var(--fg2)', fontSize: '11px', marginTop: '8px' } });
-    note.append(fmtNum(summary.entries) + ' projects on the community list, '
-      + fmtNum(summary.missing_from_awesome) + ' of this directory’s entries are not among them');
-    if (summary.missing_from_directory) {
-      note.append(', and ' + fmtNum(summary.missing_from_directory)
-        + ' realm' + (summary.missing_from_directory === 1 ? '' : 's') + ' it names '
-        + (summary.missing_from_directory === 1 ? 'is' : 'are') + ' not described here');
-    }
-    note.append('.');
-    wrap.appendChild(note);
-  }
-  return wrap;
-}
-
-// The suggested bullet, in awesome-gno's own shape, ready to paste into the
-// editor the button beside it opens. GitHub cannot be handed prefilled file
-// content through a URL, so one click and one paste is the shortest this can
-// honestly be made.
-//
-// One sentence, not the whole blurb: this directory's descriptions run to a
-// paragraph because a card has room for one, and an awesome list line does not.
-// Trimming it here rather than letting someone paste four sentences into
-// somebody else's document is the difference between a suggestion and a chore.
-function awesomeBullet(app) {
-  const url = app.url || ('https://gno.land/' + app.path.replace(/^gno\.land\//, ''));
-  const desc = (app.description || '').trim();
-  const end = desc.search(/\.\s/);
-  const one = end > 40 ? desc.slice(0, end + 1) : desc;
-  return '- [' + app.name + '](' + url + ') - ' + one;
-}
-
-function renderEcosystem(container, data) {
-  container.textContent = '';
-  const sections = data.sections || [];
-  const stats = data.stats || {};
-  const network = data.network || '';
-
-  const intro = el('div', { className: 'section-sub' });
-  intro.append('the community’s own list of what is being built on gno.land, kept as a '
-    + 'markdown file in ');
-  intro.appendChild(extLink('gnoverse/awesome-gno', data.source || AWESOME_REPO));
-  intro.append('. it holds what a chain index cannot see: wallets, editors, a language '
-    + 'server, SDKs, workshops. none of those is a realm, so none of them can ever appear '
-    + 'in the directory beside it.');
   container.appendChild(intro);
 
-  // A snapshot pretending to be live is the one way this section could mislead.
-  // The date and the commit are printed for that reason, and the commit links
-  // to what was read.
-  const prov = el('div', { style: { color: 'var(--fg2)', fontSize: '11px', marginTop: '4px' } });
-  prov.append(fmtNum(data.entries || 0) + ' entries, read from ');
-  prov.appendChild(extLink((data.commit || '').slice(0, 7),
-    (data.source || AWESOME_REPO) + '/commit/' + (data.commit || ''), 'the commit this snapshot was taken from'));
-  prov.append(' on ' + (data.synced || '?'));
-  if (typeof data.age_days === 'number' && data.age_days >= 0) {
-    prov.append(data.age_days === 0 ? ' (today)' : ' (' + data.age_days + 'd ago)');
-  }
-  prov.append('. a snapshot, not a live read: it is refreshed by a commit here, so it is '
-    + 'behind the list by however long that has been.');
-  container.appendChild(prov);
-
   const bar = el('div', { className: 'dash-bar' });
-  bar.appendChild(appsViewBar('ecosystem', () => renderEcosystem(container, data)));
+  const cats = [''].concat(data.categories || []);
+  if (cats.length > 1) {
+    bar.appendChild(el('span', { className: 'dash-grp' },
+      appsChips(cats, category, (v) => { urlSetParam('cat', v); renderApps(container, data); },
+        (v) => v || 'all')));
+  }
   if (network) {
     bar.appendChild(el('span', { className: 'dash-grp' },
       el('span', { className: 'label' }, 'window'),
@@ -8271,171 +8540,96 @@ function renderEcosystem(container, data) {
   }
   container.appendChild(bar);
 
-  container.appendChild(contributePanel({
-    entries: data.entries,
-    missing_from_awesome: (data.missing_from_awesome || []).length,
-    missing_from_directory: (data.missing_from_directory || []).length,
-  }));
+  // The facets get their own row. Each chip carries the count it would leave,
+  // computed against the other facets as they stand, so a chip that would empty
+  // the page says so before it is clicked rather than after.
+  const facetBar = el('div', { className: 'dash-bar' });
+  APP_FACETS.forEach(f => {
+    const current = urlParam(f.param) || '';
+    const values = [''].concat(f.options.map(o => o.v));
+    const strip = appsChips(values, current, (v) => {
+      urlSetParam(f.param, v || null);
+      renderApps(container, data);
+    }, (v) => {
+      if (!v) return 'all';
+      const opt = f.options.find(o => o.v === v);
+      const others = APP_FACETS.filter(o => o !== f).map(o => {
+        const picked = o.options.find(x => x.v === urlParam(o.param));
+        return picked ? picked.match : null;
+      }).filter(Boolean);
+      const n = apps.filter(a => (!category || a.category === category)
+        && opt.match(a) && others.every(m => m(a))).length;
+      return opt.label + ' ' + n;
+    });
+    // The reason each chip exists, on hover: these are provenance questions and
+    // a two-word chip cannot carry the answer.
+    Array.from(strip.children).forEach((b, i) => {
+      if (i > 0) b.title = f.options[i - 1].why;
+    });
+    facetBar.appendChild(el('span', { className: 'dash-grp' },
+      el('span', { className: 'label' }, f.label), strip));
+  });
+  container.appendChild(facetBar);
 
-  // Archived last, whatever order the file had them in: the list itself says
-  // those entries are retired, and a reader scanning a grid has no other way to
-  // tell a live project from a testnet that stopped resolving in 2024.
-  const ordered = sections.slice().sort((a, b) => (a.archived ? 1 : 0) - (b.archived ? 1 : 0));
-  // Keyed by the list's own spelling, matched server-side: the overlap is
-  // found by normalising names, and a second normaliser written here would be
-  // a second one to keep in step with the first.
-  const described = data.directory_by_name || {};
-  for (const sec of ordered) {
-    container.appendChild(ecoSection(sec, stats, network, described));
+  const keep = appsFacetFilter();
+  const shown = apps.filter(a => (!category || a.category === category) && keep(a));
+  if (!shown.length) {
+    container.appendChild(el('p', { className: 'dim', style: { fontSize: '12px' } },
+      network ? 'nothing matches these filters' : 'nothing in this category'));
+  } else {
+    const grid = el('div', { className: 'app-grid' });
+    shown.forEach(c => grid.appendChild(appCard(c, network)));
+    container.appendChild(grid);
   }
 
-  container.appendChild(ecoGaps(data, stats, network));
+  container.appendChild(appsFooter(data));
 }
 
-function ecoSection(sec, stats, network, described) {
-  const wrap = el('div', { className: 'section eco-sec' });
-  const head = el('div', { className: 'section-title' }, sec.title);
-  if (sec.archived) {
-    head.appendChild(el('span', {
-      className: 'app-cat', style: { marginLeft: '8px' },
-      title: 'the community list has retired these; kept because a reader looking for one should find out that it is gone',
-    }, 'archived'));
-  }
-  wrap.appendChild(head);
-  if (sec.note) wrap.appendChild(el('div', { className: 'section-sub' }, sec.note));
-
-  const grid = el('div', { className: 'eco-grid' });
-  for (const e of (sec.entries || [])) {
-    grid.appendChild(ecoItem(e, stats[e.path], network, sec.archived, (described || {})[e.name]));
-  }
-  wrap.appendChild(grid);
-  return wrap;
-}
-
-function ecoItem(e, stat, network, archived, describedPath) {
-  const item = el('div', { className: 'eco-item' + (archived ? ' eco-off' : '') });
-  const head = el('div', { className: 'eco-name' });
-  head.appendChild(e.url ? extLink(e.name, e.url) : el('span', {}, e.name));
-  item.appendChild(head);
-  if (e.description) item.appendChild(el('div', { className: 'eco-desc' }, e.description));
-
-  const meta = el('div', { className: 'eco-meta' });
-  // The links the community wrote into the sentence, lifted out of it. A
-  // `[realm](...)` link on an entry whose front end lives elsewhere is how
-  // Kourt is connected to a chain at all, so dropping them would sever exactly
-  // the entries this page most wants to join up.
-  for (const l of (e.links || [])) meta.appendChild(extLink(l.text + ' ↗', l.url));
-
-  // The join: an entry that names a realm gets this explorer's page for it, and
-  // the chain's own figures beside it. This is the whole reason the list is
-  // rendered here rather than linked to.
-  if (e.path) {
-    meta.appendChild(link('on chain · ' + e.path.replace(/^gno\.land\//, ''),
-      () => navigate('/realm/' + e.path.replace('gno.land/', '') + netSuffix())));
-    if (network && stat && stat.deployed) {
-      meta.appendChild(el('span', { className: 'dim' },
-        fmtNum(stat.calls_window) + ' calls · ' + fmtNum(stat.callers) + ' people'));
-    } else if (network) {
-      meta.appendChild(el('span', { className: 'dim' }, 'not deployed on ' + network));
-    }
-  }
-  // The loop closed: this project is one of the few the two lists agree on, and
-  // saying so is what stops the page reading as two directories printed one
-  // after the other. Only drawn when it adds a destination the entry did not
-  // already have: Gnoswap links to GitHub here and to a realm next door, which
-  // is the whole point, while Kourt already names its own realm above.
-  if (describedPath && describedPath !== e.path) {
-    meta.appendChild(link('described here \u00b7 ' + describedPath.replace(/^gno\.land\//, ''),
-      () => navigate('/realm/' + describedPath.replace('gno.land/', '') + netSuffix())));
-  } else if (describedPath) {
-    meta.appendChild(el('span', {
-      className: 'dim', title: 'this directory describes the same realm',
-    }, 'in this directory'));
-  }
-
-  if (meta.childNodes.length) item.appendChild(meta);
-  return item;
-}
-
-// The gap, both ways.
+// The footer: how this list is made, and how to change it.
 //
-// Two curated lists that overlap in two entries out of eighty are not
-// duplicating each other's work; they are each holding most of what the other
-// is missing. Printing that as two ranked tables is what turns "the lists
-// disagree" into two worklists, and neither is applied automatically: curated
-// means a human wrote the sentence and merged it, on both sides.
-function ecoGaps(data, stats, network) {
-  const wrap = el('div');
-  const missing = (data.missing_from_awesome || []).slice();
-  if (missing.length) {
-    const sec = el('div', { className: 'section', style: { marginTop: '28px' } });
-    sec.appendChild(el('div', { className: 'section-title' }, 'described here, not on the community list'));
-    const sub = el('div', { className: 'section-sub' });
-    sub.append('a suggestion queue for ');
-    sub.appendChild(extLink('awesome-gno', data.source || AWESOME_REPO));
-    sub.append(', not a complaint about it: the list is maintained by hand and nobody '
-      + 'maintains both. copy the line, open the editor, keep the ones that are actually '
-      + 'worth a newcomer’s attention. an infrastructure realm usually is not.');
-    sec.appendChild(sub);
+// Small, and at the bottom, which is a correction. An earlier version led with
+// two large "contribute" panels, which is backwards: the page's job is to show
+// what is built on gno.land, and asking a visitor for a pull request before
+// they have seen anything is asking for a favour from someone who does not yet
+// know what this is.
+function appsFooter(data) {
+  const foot = el('div', { className: 'app-foot' });
 
-    if (network) {
-      missing.sort((a, b) => ((stats[b.path] || {}).calls_window || 0)
-        - ((stats[a.path] || {}).calls_window || 0));
-    }
-    const tbody = el('tbody');
-    for (const app of missing) {
-      const bullet = awesomeBullet(app);
-      const nameCell = el('td', { style: { verticalAlign: 'top' } },
-        el('div', { style: { fontWeight: 'bold' } }, app.name),
-        link(app.path.replace(/^gno\.land\//, ''),
-          () => navigate('/realm/' + app.path.replace('gno.land/', '') + netSuffix())));
-      const stat = stats[app.path];
-      const useCell = el('td', { style: { verticalAlign: 'top', whiteSpace: 'nowrap', textAlign: 'right' } });
-      if (!network) useCell.appendChild(el('span', { className: 'dim' }, '—'));
-      else if (!stat || !stat.deployed) useCell.appendChild(el('span', { className: 'dim' }, 'not here'));
-      else useCell.append(fmtNum(stat.calls_window) + ' / ' + fmtNum(stat.callers));
-      const lineCell = el('td', { style: { verticalAlign: 'top' } },
-        el('code', { className: 'eco-bullet' }, bullet));
-      const actCell = el('td', { style: { verticalAlign: 'top', whiteSpace: 'nowrap' } },
-        copyButton(bullet, 'copy the line to paste into awesome-gno'),
-        extLink(' add ↗', AWESOME_EDIT_URL, 'opens the README in GitHub’s editor'));
-      tbody.appendChild(el('tr', {}, nameCell, useCell, lineCell, actCell));
-    }
-    sec.appendChild(el('table', {},
-      el('thead', {}, el('tr', {},
-        el('th', {}, 'entry'),
-        el('th', { style: { textAlign: 'right' }, title: 'calls in the window / distinct callers all time' }, 'calls / people'),
-        el('th', {}, 'the line to add'),
-        el('th', {}, ''))),
-      tbody));
-    wrap.appendChild(sec);
-  }
+  const how = el('div', { className: 'app-foot-line' });
+  const bits = [];
+  if (data.discovered) bits.push(fmtNum(data.discovered) + ' found on chain');
+  if (data.off_chain) bits.push(fmtNum(data.off_chain) + ' from the community list');
+  if (data.pinned) bits.push(fmtNum(data.pinned) + ' pinned by hand');
+  if (data.skipped) bits.push(fmtNum(data.skipped) + ' skipped');
+  how.append(bits.join(' · '));
+  if (data.realms) how.append(' · out of ' + fmtNum(data.realms) + ' realms deployed');
+  foot.appendChild(how);
 
-  const inbound = data.missing_from_directory || [];
-  if (inbound.length) {
-    const sec = el('div', { className: 'section', style: { marginTop: '28px' } });
-    sec.appendChild(el('div', { className: 'section-title' }, 'on the community list, not described here'));
-    const sub = el('div', { className: 'section-sub' });
-    sub.append('the cheaper direction: somebody has already vouched for these in public, so '
-      + 'the only thing missing is the path and a sentence in ');
-    sub.appendChild(extLink('apps.json',
-      'https://github.com/gnoverse/mygnoscan/blob/main/pkg/registry/data/apps.json'));
-    sub.append('. entries the community list has itself archived are left out.');
-    sec.appendChild(sub);
-    const tbody = el('tbody');
-    for (const ref of inbound) {
-      tbody.appendChild(el('tr', {},
-        el('td', {}, ref.url ? extLink(ref.name, ref.url) : el('span', {}, ref.name)),
-        el('td', {}, ref.section),
-        el('td', {}, link(ref.path.replace(/^gno\.land\//, ''),
-          () => navigate('/realm/' + ref.path.replace('gno.land/', '') + netSuffix())))));
-    }
-    sec.appendChild(el('table', {},
-      el('thead', {}, el('tr', {}, el('th', {}, 'entry'), el('th', {}, 'section'), el('th', {}, 'realm'))),
-      tbody));
-    wrap.appendChild(sec);
+  const edit = el('div', { className: 'app-foot-line' });
+  edit.append('something missing, wrong, or here that should not be? ');
+  edit.appendChild(extLink('awesome-gno', AWESOME_EDIT_URL,
+    'the community list: names, descriptions and the apps that are not realms'));
+  edit.append(' · ');
+  edit.appendChild(extLink('apps.json', APPS_JSON_URL,
+    'this explorer’s own overrides: a better name, a real sentence, the website'));
+  edit.append(' · ');
+  edit.appendChild(extLink('moderation.toml', MODERATION_URL,
+    'the skip list, and why each entry is on it'));
+  foot.appendChild(edit);
+
+  // The skip list is served, not merely applied. A page that quietly dropped an
+  // entry would be indistinguishable from one that lost it.
+  const skips = data.moderation || [];
+  if (skips.length) {
+    const why = el('details', { className: 'app-foot-line' });
+    why.appendChild(el('summary', {}, fmtNum(skips.length) + ' kept off this page'));
+    const ul = el('ul', { className: 'app-skips' });
+    skips.forEach(s => ul.appendChild(el('li', {},
+      el('code', {}, s.path.replace(/^gno\.land\//, '')), ' ' + s.why)));
+    why.appendChild(ul);
+    foot.appendChild(why);
   }
-  return wrap;
+  return foot;
 }
 
 
@@ -9496,7 +9690,21 @@ function gasTxsTable(txs) {
   tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'tx'), el('th', {}, 'type'), el('th', {}, 'detail'), el('th', {}, 'gas used'), el('th', {}, 'efficiency'), el('th', {}, 'fee'), el('th', {}, 'status'))));
   const body = el('tbody');
   for (const t of (txs || [])) {
-    const pct = t.gas_wanted > 0 ? (t.gas_used / t.gas_wanted * 100).toFixed(0) + '%' : '-';
+    // A genesis transaction is not metered the way a signed one is: it carries
+    // a token gas_wanted of 1 and a token fee of 1 ugnot, and the VM records
+    // what it actually burned. The ratio is then arithmetically correct and
+    // semantically meaningless (boards2 read 991463%), and a five-digit
+    // percentage in a column where everything else is bounded by 100 reads as a
+    // bug in the explorer. It also made the column unsortable, because those
+    // rows dominate whatever the real answer is.
+    //
+    // So the row says what it is instead of computing a number about it. That
+    // one badge also explains the fee column showing 1 ugnot beside half a
+    // billion gas, which is the same cause.
+    const unmetered = !(t.gas_wanted > 1);
+    const effEl = unmetered
+      ? el('span', { class: 'badge', title: 'included at genesis: a token gas_wanted and a token fee, so used/wanted says nothing' }, 'genesis')
+      : el('span', {}, (t.gas_used / t.gas_wanted * 100).toFixed(0) + '%');
     let detailEl;
     if (t.detail) {
       detailEl = /^MsgRun by g1[a-z0-9]+$/.test(t.detail)
@@ -9510,7 +9718,7 @@ function gasTxsTable(txs) {
       el('td', {}, typeBadge(t.type)),
       el('td', {}, detailEl),
       el('td', {}, fmtNum(t.gas_used)),
-      el('td', {}, pct),
+      el('td', {}, effEl),
       el('td', {}, fmtNum(t.fee) + ' ugnot'),
       el('td', {}, statusBadge(t.success))
     ));
@@ -11350,6 +11558,41 @@ function upgradeExportedPills(usage) {
 
 // usageStat is one figure in the summary strip, with an optional second line
 // of context under the number ("of 54", "3 of 8 exported").
+// renderOpenedHere fetches and draws the read count for one realm.
+//
+// Silent when nobody has opened it: a fresh realm reading "opened here 0" says
+// less than nothing, since the person reading that line is the first open and
+// the number is already wrong as they look at it.
+//
+// Takes the generation, like every other async writer on this tab: a response
+// that arrives after the reader navigated away must not append into the page
+// that replaced theirs. Without it the stat lands in a detached container and
+// is invisible, which is how the browser test caught it.
+function renderOpenedHere(stats, path, gen) {
+  if (!path) return;
+  (async () => {
+    let d;
+    try {
+      d = await api('views?path=' + encodeURIComponent(path));
+    } catch {
+      return; // a missing read count is never worth an error on a realm page
+    }
+    if (gen !== _detailGen) return;
+    const row = (d.realms || [])[0];
+    if (!row || !row.views) return;
+    const stat = usageStat('opened here', fmtNum(row.views), 'in the last ' + (d.window || '30d'));
+    const mark = provenanceMark('inferred');
+    if (mark) {
+      mark.title = 'how many times this realm was opened on mygnoscan. this explorer’s own '
+        + 'count, not a chain fact: the chain records no reads, and this sees nothing served '
+        + 'by gnoweb, Gnoscan or a wallet.';
+      stat.appendChild(document.createTextNode(' '));
+      stat.appendChild(mark);
+    }
+    stats.appendChild(stat);
+  })();
+}
+
 function usageStat(label, value, sub) {
   const stat = el('div', { className: 'stat' },
     el('span', { className: 'label' }, label),
@@ -11672,6 +11915,19 @@ function renderRealmUsage(host, detail, usage, gen) {
   stats.appendChild(usageStat('functions used', fmtNum(s.functions || 0),
     exported ? 'of ' + exported + ' exported' : null));
   if (s.gas_used) stats.appendChild(usageStat('gas used', fmtNum(s.gas_used)));
+  // Reads, which every other figure on this page is blind to.
+  //
+  // gno.land records none: a render leaves nothing behind, so a realm thousands
+  // of people read and nobody writes to looks dead in every column beside this
+  // one. This counts opens of this page, here, and says so — it is not traffic
+  // on gno.land, and gnoweb, Gnoscan and every wallet serve the same realms
+  // without any of it being visible from this server.
+  //
+  // Its own request, not a field on the detail payload: that endpoint is
+  // cached, so a count embedded in it would be frozen at whatever it was when
+  // the entry was stored, and every reader for the rest of the TTL would be
+  // told nobody had opened the page while being counted opening it.
+  renderOpenedHere(stats, detail.path, gen);
   if (s.first_time) {
     stats.appendChild(usageStat('first', timeEl(s.first_time)));
     stats.appendChild(usageStat('last', timeEl(s.last_time)));
@@ -11966,10 +12222,19 @@ async function loadRealmDetail(path, initialTab) {
       // height. A render is a function of chain state and changes when nobody
       // redeploys anything, so keying on the deploy would pin a realm's
       // thumbnail to whatever it looked like the day it shipped.
-      header.appendChild(shotEl(detail.path, {
+      // Guarded, because shotEl returns null when no capture service is
+      // configured (FEATURES.shots off) and appendChild(null) throws. That
+      // exception escaped mid-render and took the whole realm page down: no
+      // header, no tab strip, nothing, on every realm. Invisible on a
+      // deployment that has screenshots enabled, total on one that does not.
+      //
+      // Every other shotEl caller passes the result to el(), which skips a
+      // null child; this was the only direct appendChild.
+      const hero = shotEl(detail.path, {
         size: 'hero', network: detail.network, v: latestCall,
         row: (inert && inert.meta && inert.meta.status === 'inert') ? { status: 'inert' } : null,
-      }));
+      });
+      if (hero) header.appendChild(hero);
       _watchTarget = { kind: 'realms', id: detail.path, height: latestCall };
       const tabs = clear('realm-tabs');
       // Icon per tab, so seven same-length grey words stop reading as one
@@ -12562,6 +12827,10 @@ async function loadRealmDetail(path, initialTab) {
       const depsEl = clear('tab-deps'); if (activeTab === 'deps') depsEl.classList.add('active'); else depsEl.classList.remove('active');
       skeletonBlock(depsEl);
       const depsPath = path.replace('gno.land/', '');
+      // Before the fetch, not after: a link that says "sized by gas, shared
+      // callers" needs the caller data, and restoring the controls afterwards
+      // would draw the default graph and then throw it away.
+      depGraphApplyURL(new URLSearchParams(window.location.search));
       (async () => {
         let imports, dependents;
         try {
@@ -12631,13 +12900,25 @@ function buildDepTree(title, graph, root, arrowHint) {
 
   // The arrow annotation was previously unlabelled, which left readers guessing
   // whether it meant files, call sites or aliases.
-  div.appendChild(el('div', {
-    style: { color: 'var(--fg2)', fontSize: '11px', marginBottom: '8px' }
-  }, '\u2192 ' + arrowHint));
+  //
+  // Printed only when a row actually carries a second line. The dependents
+  // side is fetched one hop deep now (the second hop is a fact about somebody
+  // else, see GetReverseGraph), so its rows have no onward list and a hint
+  // promising one would be describing a thing that is not there.
+  const anyOnward = direct.some(pkg => ((graph || {})[pkg] || []).some(d => d !== root));
+  if (anyOnward) {
+    div.appendChild(el('div', {
+      style: { color: 'var(--fg2)', fontSize: '11px', marginBottom: '8px' }
+    }, '\u2192 ' + arrowHint));
+  }
 
   for (const pkg of direct) {
     const item = el('div', { style: { marginBottom: '8px' } });
-    item.appendChild(link(pkg, () => navigate('/realm/' + pkg.replace('gno.land/', ''))));
+    // Through depGraphHref, like the graph's own nodes: these rows sit under
+    // the picture, and a reader following one of them is still walking the
+    // dependency tree. Landing on the info tab is a dead end they have to
+    // click back out of.
+    item.appendChild(link(pkg, () => navigate(depGraphHref(pkg))));
 
     // What this one reaches in turn, minus the root: an edge back to the realm
     // being viewed is the reverse relationship, not a new one.
@@ -12647,7 +12928,7 @@ function buildDepTree(title, graph, root, arrowHint) {
       sub.append('\u2192 ');
       onward.forEach((d, i) => {
         if (i > 0) sub.append(', ');
-        sub.appendChild(link(d.split('/').slice(-1)[0], () => navigate('/realm/' + d.replace('gno.land/', ''))));
+        sub.appendChild(link(d.split('/').slice(-1)[0], () => navigate(depGraphHref(d))));
       });
       item.appendChild(sub);
     }
@@ -12976,11 +13257,170 @@ async function loadTxDetail(hash) {
   } catch (err) { container.textContent = ''; container.appendChild(el('p', { style: { color: 'var(--red)', padding: '20px' } }, 'Error: ' + err.message)); }
 }
 
+// renderSessionIdentity says whose key this address is, when it is one.
+//
+// This is the page that used to be blank. A session signs for its master and
+// the master is recorded as the caller of every message, so a session address
+// has no transactions, no deploys and no balance: every list below this is
+// empty for it, and without this block the page looked like an account that
+// had never done anything.
+//
+// The chain cannot fill it either. auth/accounts/<session_addr> returns null,
+// because a session is not a plain account, and only the grant transaction
+// ties the key to the account it signs for. That transaction is what this
+// reads, out of the index.
+function renderSessionIdentity(container, identity, addr) {
+  if (!identity || !identity.is_session) return;
+  const grants = identity.grants || [];
+  if (!grants.length) return;
+
+  // Newest first from the server. A key can be granted, revoked and granted
+  // again, so the current grant leads and the rest are history.
+  const current = grants[0];
+  const box = el('div', { className: 'card', style: { margin: '12px 0' } });
+
+  const head = el('div', { style: { marginBottom: '6px' } });
+  head.appendChild(badge('session', 'session key'));
+  head.append(' this address does not act for itself. it signs on behalf of ');
+  head.appendChild(addrLinkFull(current.master));
+  head.append(', and every message it sends is recorded under that account, not this one.');
+  box.appendChild(head);
+
+  const rows = el('div', { style: { fontSize: '13px' } });
+  const row = (k, v) => {
+    const d = el('div', { className: 'pd-row' });
+    d.appendChild(el('span', { style: { color: 'var(--fg2)' } }, k + ': '));
+    if (typeof v === 'string') d.append(v); else d.appendChild(v);
+    return d;
+  };
+
+  const scope = el('span');
+  const paths = current.allow_paths || [];
+  if (!paths.length) scope.appendChild(el('span', { style: { color: 'var(--fg2)' } }, 'not stated'));
+  else for (const entry of paths) scope.appendChild(el('div', {}, allowPathEl(entry)));
+  rows.appendChild(row('may call', scope));
+  rows.appendChild(row('limit', fmtSpend(current)));
+
+  const state = el('span');
+  state.appendChild(sessionStateEl(current));
+  if (current.revoked_height != null) {
+    state.append(' ');
+    state.appendChild(blockWithAge(current.revoked_height, current.revoked_time, current.network));
+  } else if (current.expires_at) {
+    state.append(' ' + fmtExpiry(current.expires_at));
+  } else {
+    state.append(' never expires');
+  }
+  rows.appendChild(row('state', state));
+
+  const granted = el('span');
+  granted.appendChild(blockWithAge(current.granted_height, current.granted_time, current.network));
+  if (current.granted_tx) {
+    granted.append(' ');
+    granted.appendChild(txLink(current.granted_tx, current.granted_height, current.network));
+  }
+  rows.appendChild(row('granted', granted));
+
+  if (grants.length > 1) {
+    rows.appendChild(row('history', fmtNum(grants.length) + ' grants to this key; the rest have ended'));
+  }
+  box.appendChild(rows);
+
+  // Where the reader actually wants to go next. The transactions this key
+  // signed are on the master's page, because that is the account they name.
+  const link = el('div', { style: { marginTop: '8px', fontSize: '12px' } });
+  link.append('what it signed is under ');
+  link.appendChild(addrLinkFull(current.master));
+  link.append(', since that account is the caller on every one.');
+  box.appendChild(link);
+
+  container.appendChild(box);
+}
+
+// renderSessions draws the delegated signing keys an account has granted.
+//
+// The account page is the only place this fact can appear. A session signs on
+// its master's behalf and the master stays the caller of every message, so the
+// transaction list below reads identically whether this account signed for
+// itself or handed a key to an agent. Six live keys on an account is the single
+// most load-bearing thing about it, and until this section existed no page said
+// so.
+//
+// Live chain state, not history: it says which grants exist right now, never
+// when they were made or what has been revoked. The indexer cannot answer the
+// second question yet (see pkg/httpapi/api_sessions.go).
+//
+// Draws nothing at all when the chain cannot answer. `supported` is the
+// difference between "this account delegates nothing" and "this chain has never
+// heard of sessions", and printing the first about the second would be stating
+// a fact we do not have.
+function renderSessions(container, sessions) {
+  if (!sessions || !sessions.supported) return;
+  const list = sessions.sessions || [];
+  if (!list.length) return;
+
+  container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } },
+    'sessions (' + list.length + ')'));
+  container.appendChild(el('div', { style: { color: 'var(--fg2)', fontSize: '12px', marginBottom: '8px' } },
+    'delegated signing keys. each signs on this account\'s behalf, and every message it sends still names this account as the caller, ' +
+    'so none of them appear as separate senders below. a realm in "may call" also covers every realm under it.'));
+
+  const tbl = el('table');
+  tbl.appendChild(el('thead', {}, el('tr', {},
+    el('th', {}, 'key'),
+    el('th', {}, 'may call'),
+    el('th', {}, 'spent'),
+    el('th', {}, 'expires'),
+    el('th', {}, 'signed'))));
+  const tbody = el('tbody');
+  for (const sn of list) {
+    const keyTd = el('td', {}, addrLinkFull(sn.address));
+    // An expired key is still returned by the chain and can no longer sign.
+    // Saying so beside the key, not only in the expiry column, is what keeps a
+    // scan down the first column honest.
+    if (sn.expires_at && sn.expires_at * 1000 < Date.now()) {
+      keyTd.append(' ');
+      keyTd.appendChild(badge('reject', 'expired'));
+    }
+
+    const scopeTd = el('td');
+    const paths = sn.allow_paths || [];
+    if (!paths.length) {
+      // An empty grant is not "unrestricted": the chain rejects an empty
+      // -allow-paths at create time, so this can only be a read we failed to
+      // decode, and guessing either way would be worse than saying so.
+      scopeTd.appendChild(el('span', { style: { color: 'var(--fg2)' } }, 'not stated'));
+    } else {
+      // One line per entry rather than a comma list: bubblerumble's grant has
+      // five, and run together they read as one long path nobody parses.
+      for (const entry of paths) scopeTd.appendChild(el('div', {}, allowPathEl(entry)));
+    }
+
+    tbody.appendChild(el('tr', {},
+      keyTd,
+      scopeTd,
+      el('td', {}, fmtSpend(sn)),
+      el('td', { style: { fontSize: '12px' } }, sn.expires_at ? fmtExpiry(sn.expires_at) : 'never'),
+      // The sequence is how many transactions the key has actually signed, and
+      // it is the only usage figure that survives a call costing no gas.
+      el('td', {}, fmtNum(sn.sequence || 0))));
+  }
+  tbl.appendChild(tbody);
+  container.appendChild(tbl);
+}
+
 async function loadAddressDetail(addr) {
   const container = clear('address-detail-content');
   skeletonBlock(container);
   try {
-    await apiSWR(['address/' + addr, 'blocks?limit=50'], ([data, blocksData], swrMeta) => {
+    // Sessions are optional: a chain without the feature, or one whose RPC is
+    // unreachable, must cost this page nothing. The fallback is the same shape
+    // the endpoint returns, so the renderer has one case, not two.
+    const sessionsPath = { path: 'address/' + addr + '/sessions', fallback: { supported: false, sessions: [] } };
+    // Whose key this is, if it is one. Optional for the same reason: an
+    // instance whose index has not swept this far must not take the page down.
+    const identityPath = { path: 'address/' + addr + '/session', fallback: { is_session: false, grants: [] } };
+    await apiSWR(['address/' + addr, 'blocks?limit=50', sessionsPath, identityPath], ([data, blocksData, sessionsData, identityData], swrMeta) => {
       ++_detailGen;
       destroyDetailCharts();
       // Block time lookup
@@ -13022,6 +13462,10 @@ async function loadAddressDetail(addr) {
       addrRow.appendChild(watchButton('addresses', addr, lastHeight));
       container.appendChild(addrRow);
       _watchTarget = { kind: 'addresses', id: addr, height: lastHeight };
+      // Before the stats. "this address has no transactions" and "this address
+      // is a key that signs under another account" look identical otherwise,
+      // and only one of them means the page is empty for a reason.
+      renderSessionIdentity(container, identityData, addr);
       // Stats bar
       const txs = data.transactions || [];
       const pkgs = data.packages || [];
@@ -13043,6 +13487,13 @@ async function loadAddressDetail(addr) {
       }
       if (data.balance) {
         statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'balance'), el('span', { className: 'value' }, fmtBalanceStr(data.balance))));
+      }
+      // Only when there are some. A "sessions 0" tile on every one of the
+      // chain's accounts would spend a headline slot on a fact that is true of
+      // almost all of them.
+      const sessionCount = (sessionsData?.supported && (sessionsData.sessions || []).length) || 0;
+      if (sessionCount) {
+        statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'sessions'), el('span', { className: 'value' }, fmtNum(sessionCount))));
       }
       container.appendChild(statsBar);
       // Analyse the page's rows.
@@ -13103,6 +13554,10 @@ async function loadAddressDetail(addr) {
         extraStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'gas fees'), el('span', { className: 'value' }, fmtNum(Math.floor(totalGasFee / 1000000 * 100) / 100) + ' GNOT')));
       }
       if (hasExtra) container.appendChild(extraStats);
+      // Who else can sign for this account, before anything about what it did.
+      // The tables below are all activity; this is identity, and it changes how
+      // every row under it should be read.
+      renderSessions(container, sessionsData);
       // What this account does, over time, split by message kind.
       //
       // The three tables below rank *who* and *what*; none of them says when,
@@ -14212,6 +14667,7 @@ function loadRealmDefi(path, detail, gen) {
       'balances are denominated per chain — select a specific network to see them'));
     return;
   }
+  _defiTableRows = DEFI_TABLE_ROWS;
   skeletonBlock(into);
   (async () => {
     let d;
@@ -14235,9 +14691,42 @@ function loadRealmDefi(path, detail, gen) {
 // only a realm past 5,000 transfer legs ever sees the pager below.
 const DEFI_FLOWS_PAGE = 5000;
 
+// DEFI_TABLE_ROWS is how many of those legs the table *draws*.
+//
+// Separate from the fetch on purpose. Everything a reader reads off this tab
+// except the table itself is computed over every leg, server-side: the balance,
+// the reconstruction, the curve, the counterparty collapse. The table is the one
+// part nobody reads end to end and the only part that costs a DOM node per row.
+//
+// Measured 2026-09-23 on r/g1leu8.../bubblerumble3 at 4,252 legs: 589,923 DOM
+// nodes for the defi tab against 375,138 for the storage tab on the same realm,
+// and it scales linearly with a realm that grew 1,200 legs in a day. Drawing 250
+// and offering the rest costs no correctness, which is the whole reason it is
+// safe to do.
+const DEFI_TABLE_ROWS = 250;
+
+// How many rows the table is currently drawing, reset every time the tab is
+// opened for a different render. Module-level rather than threaded through,
+// because "show more" is a property of this one view rather than of the data,
+// and reopening the tab should start it short again.
+let _defiTableRows = DEFI_TABLE_ROWS;
+
 function defiPath(path, offset) {
   return 'realm/defi/' + path.replace('gno.land/', '')
-    + '?flows_limit=' + DEFI_FLOWS_PAGE + (offset ? '&flows_offset=' + offset : '');
+    + '?flows_limit=' + DEFI_FLOWS_PAGE + (offset ? '&flows_offset=' + offset : '')
+    + '&token_flows_limit=' + DEFI_FLOWS_PAGE;
+}
+
+// defiTokenFlowsPath pages the GRC20 half alone.
+//
+// flows_limit=0 is the point: one request carries both halves, and paging the
+// token table through defiPath would re-send every native leg to append a few
+// token rows. Zero is a legitimate totals-only ask on that side, so the balance
+// figures still come back and only the table nobody asked for is left out.
+function defiTokenFlowsPath(path, offset) {
+  return 'realm/defi/' + path.replace('gno.land/', '')
+    + '?flows_limit=0&token_flows_limit=' + DEFI_FLOWS_PAGE
+    + (offset ? '&token_flows_offset=' + offset : '');
 }
 
 function renderRealmDefi(into, d, path) {
@@ -14254,13 +14743,17 @@ function renderRealmDefi(into, d, path) {
     if (title) cell.title = title;
     stats.appendChild(cell);
   };
-  // An empty balance string is a failed RPC read, not a zero balance, and
-  // rendering it as "0 GNOT" would be the site asserting something it does not
-  // know.
-  stat('held', d.balance ? fmtBalanceStr(d.balance) : unknownEl(),
+  // balance_known, not emptiness. An empty coin string is how the chain says
+  // "this account holds nothing", which is the common case for a realm whose
+  // money is all in GRC20, and reading it as a failed RPC call made the page
+  // say the chain was unreadable when it had answered fine. "unknown" is now
+  // reserved for a read that did not happen, because rendering a failed read as
+  // "0 GNOT" would be the site asserting something it does not know.
+  stat('held', d.balance_known ? fmtBalanceStr(d.balance || '0ugnot') : unknownEl(),
     'the realm’s own account: ' + d.address);
   if (d.storage_deposit_address) {
-    stat('storage deposit', d.storage_balance ? fmtBalanceStr(d.storage_balance) : unknownEl(),
+    stat('storage deposit',
+      d.storage_balance_known ? fmtBalanceStr(d.storage_balance || '0ugnot') : unknownEl(),
       'locked against this package’s bytes, refunded when they are freed: ' + d.storage_deposit_address);
   }
   stat('transfers', fmtNum(d.flows_total || 0), 'bank transfers touching either account');
@@ -14274,7 +14767,7 @@ function renderRealmDefi(into, d, path) {
   // complete; the two differing is a fact worth seeing, not one to paper over.
   const note = el('div', { className: 'detail-chart-note', style: { marginBottom: '16px' } });
   const gap = live - (d.derived_ugnot || 0);
-  if (!d.balance) {
+  if (!d.balance_known) {
     note.textContent = 'the chain could not be read for a live balance, so the figures below are the reconstruction alone: '
       + fmtGnotAmount(d.derived_ugnot || 0) + ' over ' + fmtNum(d.flows_total || 0) + ' transfers.';
   } else if (gap === 0) {
@@ -14337,7 +14830,7 @@ function renderRealmDefi(into, d, path) {
   const parties = defiCounterpartiesTableEl(d);
   if (parties) into.appendChild(parties);
 
-  if (tokens.length) into.appendChild(defiTokensEl(d, tokens));
+  if (tokens.length) into.appendChild(defiTokensEl(d, tokens, path));
 
   if (flows.length) {
     into.appendChild(el('div', { className: 'section-title' }, 'native transfers'));
@@ -14346,7 +14839,8 @@ function renderRealmDefi(into, d, path) {
       el('th', {}, 'tx'), el('th', {}, 'account'), el('th', {}, 'counterparty'),
       el('th', {}, 'amount'), el('th', {}, 'block'))));
     const body = el('tbody');
-    for (const f of flows) {
+    const drawn = flows.slice(0, _defiTableRows);
+    for (const f of drawn) {
       body.appendChild(el('tr', {},
         el('td', {}, txLink(f.tx_hash, f.block_height, null, { showBlock: false })),
         el('td', {}, badge(f.account === 'banker' ? 'realm' : 'pkg', f.account)),
@@ -14359,13 +14853,38 @@ function renderRealmDefi(into, d, path) {
     }
     tbl.appendChild(body);
     into.appendChild(tbl);
-    if (d.flows_total > flows.length) {
+    if (drawn.length < flows.length) {
+      // Held in hand already, so this one is a redraw and not a fetch.
+      into.appendChild(defiShowMoreEl(into, d, path, drawn.length, flows.length));
+    } else if (d.flows_total > flows.length) {
       into.appendChild(defiFlowsPagerEl(into, d, path, flows));
     }
   } else {
     into.appendChild(el('div', { style: { color: 'var(--fg2)', padding: '12px 0' } },
       'no coin has ever moved through this realm’s account'));
   }
+}
+
+// defiShowMoreEl draws more of what is already loaded.
+//
+// The distinction from defiFlowsPagerEl below matters to a reader: that one goes
+// back to the server for legs it does not have, this one only unfolds rows the
+// page is already holding, so it is instant and cannot fail. Saying "draw" and
+// not "load" is what keeps the two from reading as the same button.
+function defiShowMoreEl(into, d, path, shown, held) {
+  const more = Math.min(held - shown, DEFI_TABLE_ROWS);
+  const wrap = el('div', { className: 'detail-chart-note' });
+  wrap.appendChild(el('span', {},
+    'drawing the ' + fmtNum(shown) + ' most recent of ' + fmtNum(d.flows_total)
+    + '. The balance, the curve and the counterparties above are computed over all of them. '));
+  const btn = el('button', { className: 'pager-btn', style: { marginLeft: '8px' } },
+    'draw ' + fmtNum(more) + ' more');
+  btn.onclick = () => {
+    _defiTableRows += DEFI_TABLE_ROWS;
+    renderRealmDefi(clear('tab-defi'), d, path);
+  };
+  wrap.appendChild(btn);
+  return wrap;
 }
 
 // defiFlowsPagerEl says how much of the history is on screen, and loads the rest.
@@ -14772,7 +15291,7 @@ function defiTokenCharts(section, d, tokens) {
 
 // defiTokensEl is the GRC20 half: what the contract holds in tokens, and the
 // caveat that makes those figures a floor rather than a count.
-function defiTokensEl(d, tokens) {
+function defiTokensEl(d, tokens, path) {
   const section = el('div');
   section.appendChild(el('div', { className: 'section-title' }, 'GRC20 positions'));
   defiTokenCharts(section, d, tokens);
@@ -14808,7 +15327,7 @@ function defiTokensEl(d, tokens) {
       + d.token_ledger_from.slice(0, 10)
       + '. Anything received before then is not in it, so these are floors rather than balances.'));
   }
-  defiTokenFlowsEl(section, d, tokens);
+  defiTokenFlowsEl(section, d, tokens, path);
   return section;
 }
 
@@ -14819,7 +15338,7 @@ function defiTokensEl(d, tokens) {
 // The positions table says what the realm holds and the charts say when it
 // moved; neither names a counterparty, which on a treasury is usually the
 // question after "is it growing".
-function defiTokenFlowsEl(section, d, tokens) {
+function defiTokenFlowsEl(section, d, tokens, path) {
   const flows = d.token_flows || [];
   if (!flows.length) return;
   // Fungibility is a property of the position, not of the leg, and it decides
@@ -14856,16 +15375,52 @@ function defiTokenFlowsEl(section, d, tokens) {
   }
   tbl.appendChild(body);
   section.appendChild(tbl);
-  // tokenFlowLimit in pkg/httpapi/defi.go caps this at one page across *every*
-  // token the realm holds, and there is no pager to walk past it. The positions
-  // above count the whole ledger, so the two disagreeing is the signal, and
-  // saying so is what stops a reader treating the newest page as the history.
-  const total = tokens.reduce((sum, t) => sum + (t.transfers || 0), 0);
+  // token_flows_total is the server's COUNT over the whole ledger, not a total
+  // derived here by summing the positions' own counts. The derived figure was
+  // close enough to look right and is not the same number: it counts what each
+  // position saw, and this counts rows, so the two part company on a leg that
+  // touches a token the positions table folded. A pager has to page against the
+  // count it is actually paging through.
+  const total = d.token_flows_total || 0;
   if (total > flows.length) {
-    section.appendChild(el('div', { className: 'detail-chart-note' },
-      'showing the ' + fmtNum(flows.length) + ' most recent of ' + fmtNum(total)
-      + ', across every token above. The positions and the curves are computed over all of them.'));
+    section.appendChild(defiTokenFlowsPagerEl(d, flows, total, path));
   }
+}
+
+// defiTokenFlowsPagerEl is the native pager's counterpart, and exists for the
+// same reason: the table used to stop at 500 with a sentence explaining that it
+// had and no way to see the rest. r/gnoswap/pool and r/gnoswap/router both sit
+// exactly on that cap, which is indistinguishable from a complete history
+// without a total beside it.
+function defiTokenFlowsPagerEl(d, flows, total, path) {
+  const remaining = total - flows.length;
+  const wrap = el('div', { className: 'detail-chart-note' });
+  wrap.appendChild(el('span', {},
+    'showing the ' + fmtNum(flows.length) + ' most recent of ' + fmtNum(total)
+    + ', across every token above. The positions and the curves are computed over all of them. '));
+  const btn = el('button', { className: 'pager-btn', style: { marginLeft: '8px' } },
+    'load ' + fmtNum(Math.min(remaining, DEFI_FLOWS_PAGE)) + ' older');
+  btn.onclick = async () => {
+    btn.disabled = true;
+    btn.textContent = 'loading\u2026';
+    let next;
+    try {
+      next = await api(defiTokenFlowsPath(path, flows.length));
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = 'could not load: ' + err.message;
+      return;
+    }
+    // Merged into the object the caller holds, so a third press continues from
+    // where the second stopped. Only the token half is replaced: the response
+    // that answered this asked for flows_limit=0, so its `flows` is empty by
+    // design and overwriting the native table with it would blank it.
+    d.token_flows = flows.concat(next.token_flows || []);
+    const into = clear('tab-defi');
+    renderRealmDefi(into, d, path);
+  };
+  wrap.appendChild(btn);
+  return wrap;
 }
 
 // signedUnitsEl is signedGnotEl for a token amount: coloured by direction, and
@@ -15066,6 +15621,13 @@ let _depGraph = {
   // mainnet on 2026-09-22, 307 of 348 contracts carry an import edge and 20
   // carry a shared-caller edge, because only 35 have ever been called at all.
   links: 'imports',
+  // layout: how the nodes are positioned. `funnel` puts the direction on the
+  // y axis (who imports this above, what it imports below, unbounded depth)
+  // and is the default because a dependency graph's direction is the thing it
+  // is about, and a force simulation cannot show it. `force` is the old view,
+  // kept because a dense graph's clusters are easier to see when the physics
+  // finds them than when they are flattened into rows.
+  layout: 'funnel',
   // period windows the shared-caller query and the metric values. Deliberately
   // not the same control as `window` above, which filters the import graph down
   // to what saw activity: one asks "over which period", the other asks "drop
@@ -15095,6 +15657,70 @@ function depGraphNetwork() { return _depGraph.network || getNetwork(); }
 function depGraphMetricsKey() { return depGraphNetwork() + '|' + _depGraph.period; }
 function depGraphPartnersKey() { return depGraphNetwork() + '|' + _depGraph.period + '|' + _depGraph.center; }
 
+// The graph's controls live in the URL.
+//
+// Three things need that, and the third is the one this was built for. A
+// reload should not throw the reader's picture away; a shared link should open
+// the picture that was shared; and above all, clicking a node should land on
+// that package's own graph drawn exactly the same way. Without it, every click
+// resets to the default view and walking the tree is impossible, which is what
+// depGraphHref below fixes.
+//
+// Namespaced with a `g` because the realm page's other tabs already own the
+// obvious names: the calls tab writes `window`, and a click-through URL
+// carries both tabs' state at once.
+//
+// Every entry resolves to '' at its default, and urlSetParams deletes those,
+// so a reader who touches nothing leaves the address bar alone.
+const DEP_GRAPH_PARAMS = {
+  glayout: { read: () => _depGraph.layout, def: 'funnel', apply: v => { if (v === 'funnel' || v === 'force') _depGraph.layout = v; } },
+  glinks: { read: () => _depGraph.links, def: 'imports', apply: v => { if (CONTRACT_EDGE_KINDS[v]) _depGraph.links = v; } },
+  gsize: { read: () => _depGraph.metric, def: '', apply: v => { if (CONTRACT_METRICS[v]) _depGraph.metric = v; } },
+  gscale: { read: () => _depGraph.scale, def: 'linear', apply: v => { if (v === 'log' || v === 'linear') _depGraph.scale = v; } },
+  gperiod: { read: () => _depGraph.period, def: 'all', apply: v => { if (CONTRACT_WINDOWS.includes(v)) _depGraph.period = v; } },
+  gwin: { read: () => _depGraph.window, def: '', apply: v => { if (ACTIVITY_WINDOWS.includes(v) && v !== 'all') _depGraph.window = v; } },
+  gdeps: { read: () => (_depGraph.deps ? '1' : ''), def: '', apply: v => { _depGraph.deps = v === '1'; } },
+};
+
+function depGraphParams() {
+  const out = {};
+  for (const [key, spec] of Object.entries(DEP_GRAPH_PARAMS)) {
+    const v = spec.read();
+    out[key] = (v == null || String(v) === spec.def) ? '' : String(v);
+  }
+  return out;
+}
+
+// Called from the control handlers and not from renderDepGraph, which also
+// runs for a reader sitting on the info tab: writing the graph's parameters
+// into the URL of a page whose graph nobody has looked at is noise in the
+// address bar and in the reader's history.
+function depGraphSyncURL() { urlSetParams(depGraphParams()); }
+
+// depGraphApplyURL restores the controls from a link before the first fetch,
+// so the tab loads the data the restored controls need rather than loading the
+// default view and then reloading it.
+function depGraphApplyURL(params) {
+  if (!params) return;
+  for (const [key, spec] of Object.entries(DEP_GRAPH_PARAMS)) {
+    const raw = params.get(key);
+    if (raw !== null && raw !== '') spec.apply(raw);
+  }
+}
+
+// depGraphHref: the same package page, on the same tab, with the same graph.
+// This is what makes the picture walkable, and it is why the parameters exist.
+function depGraphHref(path) {
+  const q = new URLSearchParams();
+  const net = getNetwork();
+  if (net && net !== 'all') q.set('network', net);
+  q.set('tab', 'deps');
+  for (const [key, value] of Object.entries(depGraphParams())) {
+    if (value) q.set(key, value);
+  }
+  return '/realm/' + String(path).replace('gno.land/', '') + '?' + q.toString();
+}
+
 function depGraphControls() {
   const bar = el('div', {
     id: 'dep-graph-controls',
@@ -15112,20 +15738,36 @@ function depGraphControls() {
     contractPill(CONTRACT_EDGE_KINDS[k].label, _depGraph.links === k, () => {
       if (_depGraph.links === k) return;
       _depGraph.links = k;
+      depGraphSyncURL();
       reloadDepGraph();
     }))));
+
+  // Layout, in import mode only. Shared callers are symmetric, so there is no
+  // up and no down to lay out and a funnel pill there would be a control that
+  // silently does nothing.
+  if (_depGraph.links === 'imports') {
+    bar.appendChild(contractControlGroup('layout', ['funnel', 'force'].map(k =>
+      contractPill(k, _depGraph.layout === k, () => {
+        if (_depGraph.layout === k) return;
+        _depGraph.layout = k;
+        depGraphSyncURL();
+        renderDepGraph(_depGraph.imports, _depGraph.dependents, _depGraph.center);
+      }))));
+  }
 
   // Node size. "uniform" first, because it is the default and because a reader
   // who has sized the graph by something needs a way back that is not a reload.
   const sizePills = [contractPill('uniform', !_depGraph.metric, () => {
     if (!_depGraph.metric) return;
     _depGraph.metric = null;
+    depGraphSyncURL();
     reloadDepGraph();
   })];
   for (const k of Object.keys(CONTRACT_METRICS)) {
     sizePills.push(contractPill(CONTRACT_METRICS[k].label, _depGraph.metric === k, () => {
       if (_depGraph.metric === k) return;
       _depGraph.metric = k;
+      depGraphSyncURL();
       reloadDepGraph();
     }));
   }
@@ -15138,6 +15780,7 @@ function depGraphControls() {
       contractPill(k, _depGraph.scale === k, () => {
         if (_depGraph.scale === k) return;
         _depGraph.scale = k;
+        depGraphSyncURL();
         renderDepGraph(_depGraph.imports, _depGraph.dependents, _depGraph.center);
       }))));
   }
@@ -15152,6 +15795,7 @@ function depGraphControls() {
       contractPill(w, _depGraph.period === w, () => {
         if (_depGraph.period === w) return;
         _depGraph.period = w;
+        depGraphSyncURL();
         reloadDepGraph();
       }))));
   }
@@ -15161,6 +15805,7 @@ function depGraphControls() {
   // there because somebody called it, so the filter has nothing left to remove.
   if (_depGraph.links === 'imports') {
     bar.appendChild(contractControlGroup('active', activityPills(_depGraph, () => {
+      depGraphSyncURL();
       reloadDepGraph();
     }, { offLabel: 'off' })));
   }
@@ -15260,12 +15905,11 @@ async function reloadDepGraph() {
 // one realm's dependencies that hides the realm because nobody called it today
 // is answering a question nobody asked.
 //
-// Direction matters here in a way it does not on the contracts map. The
-// `imports` half is stored as "pkg imports each of these"; the `dependents`
-// half comes from the reverse query and is stored as "each of these imports
-// pkg", so the closure has to walk it the other way round or it would keep
-// everything that depends on an active package rather than everything an
-// active package depends on.
+// Direction matters here in a way it does not on the contracts map: the
+// closure has to walk "what this depends on", not "what depends on this", or
+// it would keep everything downstream of an active package rather than
+// everything an active package stands on. Both halves of the graph are built
+// source-imports-target above, so the links can be walked as they are.
 function filterDepGraphNodes(nodes, links, centerPath) {
   if (!_depGraph.window || !_depGraph.active) return null;
   const kept = new Set([centerPath]);
@@ -15273,10 +15917,180 @@ function filterDepGraphNodes(nodes, links, centerPath) {
     if (_depGraph.active.has(id)) kept.add(id);
   }
   if (!_depGraph.deps) return kept;
-  const importEdges = links.map(l => l.type === 'dependent'
-    ? { source: l.target, target: l.source }
-    : { source: l.source, target: l.target });
-  return expandThroughImports(kept, importEdges);
+  return expandThroughImports(kept, links);
+}
+
+// --- The funnel ------------------------------------------------------------
+//
+// A dependency graph has a direction, and a force simulation throws it away:
+// the physics settles wherever it settles, and "who uses me" ends up wherever
+// there was room. The funnel puts the direction on the y axis and never moves
+// it. Every arrow points down, and down means "imports": the packages above
+// the centre import it, the centre imports the row below it, and so on to the
+// bottom of the tree.
+//
+// That is also why the two halves are asked for at different depths, which is
+// not an asymmetry for its own sake. Downward is unbounded because an import
+// closure is what a package is: everything below runs when it runs. Upward is
+// one hop because the second hop is a fact about somebody else (see
+// GetReverseGraph in pkg/store/packages.go).
+
+// Green above, because "who uses me" is a different kind of fact from "what I
+// stand on" and position alone is not enough when the reader has panned. Not
+// taken from DEPTH_COLORS: every one of those means a distance in the
+// downward tree, and reusing one would say this row is three hops away.
+const FUNNEL_UP_COLOR = '#98c379';
+// The row for nodes the two passes never reached. Under the activity filter a
+// package can survive while every path from it to the centre does not, and
+// calling that "four levels down" would be inventing a distance. Grey, in a
+// row of its own, and the legend says what it is.
+const FUNNEL_ORPHAN = 9999;
+const FUNNEL_ORPHAN_COLOR = '#888';
+function funnelColor(d) {
+  if (d.level === FUNNEL_ORPHAN) return FUNNEL_ORPHAN_COLOR;
+  if (d.level < 0) return FUNNEL_UP_COLOR;
+  return depthColor(Math.max(0, d.level));
+}
+
+// depFunnelLevels: which row each node belongs in, as a signed distance from
+// the centre. Negative is above (it imports the centre, directly or through
+// another package above), positive is below (the centre imports it).
+//
+// Two directed breadth-first passes over the same edges, because the graph is
+// directed and the undirected BFS the force view uses for its colours cannot
+// tell the two sides apart. The downward pass runs first and wins every tie: a
+// package the centre genuinely depends on belongs under it, and a node placed
+// in two rows would be drawn twice.
+function depFunnelLevels(nodeArr, links, centerPath) {
+  const outgoing = new Map(), incoming = new Map();
+  for (const l of links) {
+    const src = typeof l.source === 'object' ? l.source.id : l.source;
+    const tgt = typeof l.target === 'object' ? l.target.id : l.target;
+    if (!outgoing.has(src)) outgoing.set(src, []);
+    if (!incoming.has(tgt)) incoming.set(tgt, []);
+    outgoing.get(src).push(tgt);
+    incoming.get(tgt).push(src);
+  }
+
+  const level = new Map([[centerPath, 0]]);
+  const walk = (adj, step) => {
+    let frontier = [centerPath];
+    while (frontier.length) {
+      const next = [];
+      for (const id of frontier) {
+        for (const nb of (adj.get(id) || [])) {
+          if (level.has(nb)) continue;
+          level.set(nb, level.get(id) + step);
+          next.push(nb);
+        }
+      }
+      frontier = next;
+    }
+  };
+  walk(outgoing, 1);
+  walk(incoming, -1);
+
+  // Anything neither pass reached is not connected to the centre through the
+  // edges that survived the activity filter. It still gets drawn, in a row of
+  // its own under the tree, rather than silently sharing the centre's row and
+  // claiming a relationship it does not have.
+  for (const n of nodeArr) {
+    if (!level.has(n.id)) level.set(n.id, FUNNEL_ORPHAN);
+  }
+  return level;
+}
+
+// layoutFunnel writes x and y onto every node and returns the height the rows
+// actually needed.
+//
+// Rows wrap. p/nt/ufmt/v0 has 131 direct dependents on mainnet, and 131 nodes
+// on one line 800px wide are six pixels apart: unreadable, and unlabelled,
+// because the label pass drops everything that collides. A row that does not
+// fit is laid out as several lines at the same level instead, which keeps the
+// row's meaning ("these all import the centre") while giving each node the
+// width it needs.
+function layoutFunnel(nodeArr, links, centerPath, width, nodeSize) {
+  const level = depFunnelLevels(nodeArr, links, centerPath);
+  for (const n of nodeArr) n.level = level.get(n.id);
+
+  const rows = new Map();
+  for (const n of nodeArr) {
+    if (!rows.has(n.level)) rows.set(n.level, []);
+    rows.get(n.level).push(n);
+  }
+  const levels = Array.from(rows.keys()).sort((a, b) => a - b);
+
+  // Neighbours in the adjacent row, for the ordering pass below.
+  const neighbours = new Map();
+  const note = (a, b) => {
+    if (!neighbours.has(a)) neighbours.set(a, []);
+    neighbours.get(a).push(b);
+  };
+  for (const l of links) {
+    const src = typeof l.source === 'object' ? l.source.id : l.source;
+    const tgt = typeof l.target === 'object' ? l.target.id : l.target;
+    note(src, tgt);
+    note(tgt, src);
+  }
+
+  // Order each row by where its neighbours sit in the row nearer the centre,
+  // working outward in both directions. One barycentre sweep, not the repeated
+  // ones a full Sugiyama does: this graph is two or three rows deep in almost
+  // every case, and the second sweep has nothing left to improve.
+  const placed = new Map(); // id -> its index in its own row
+  const orderRow = (lvl, towards) => {
+    const row = rows.get(lvl);
+    row.sort((a, b) => {
+      const ba = barycentre(a), bb = barycentre(b);
+      return ba - bb || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    });
+    row.forEach((n, i) => placed.set(n.id, i));
+    function barycentre(n) {
+      const xs = [];
+      for (const nb of (neighbours.get(n.id) || [])) {
+        const lv = level.get(nb);
+        if (lv === towards && placed.has(nb)) xs.push(placed.get(nb));
+      }
+      // No placed neighbour means nothing is pulling this node either way, so
+      // it sorts to the middle rather than to the left edge, where a run of
+      // unattached nodes would otherwise pile up.
+      if (!xs.length) return (rows.get(towards) || []).length / 2;
+      return xs.reduce((a, b) => a + b, 0) / xs.length;
+    }
+  };
+  if (rows.has(0)) { rows.get(0).forEach((n, i) => placed.set(n.id, i)); }
+  for (const lvl of levels.filter(l => l > 0).sort((a, b) => a - b)) orderRow(lvl, lvl - 1);
+  for (const lvl of levels.filter(l => l < 0).sort((a, b) => b - a)) orderRow(lvl, lvl + 1);
+
+  // MIN_CELL is set by the labels, not by the dots. A funnel label is centred
+  // under its node at a constant 10px, and a package's last two path segments
+  // run to sixty pixels or more, so a pitch narrower than this puts every
+  // label over its neighbour and the declutter pass answers by dropping half
+  // the row. Wrapping one more line is the cheaper trade.
+  const PAD_X = 36, PAD_Y = 28, ROW_GAP = 36, LINE_GAP = 26, MIN_CELL = 66;
+  const usable = Math.max(120, width - 2 * PAD_X);
+  let y = PAD_Y;
+  for (const lvl of levels) {
+    const row = rows.get(lvl);
+    const r = Math.max(...row.map(nodeSize));
+    const cell = Math.max(MIN_CELL, 2 * r + 12);
+    const perLine = Math.max(1, Math.floor(usable / cell));
+    const lineH = 2 * r + LINE_GAP;
+    for (let i = 0; i < row.length; i++) {
+      const lineIdx = Math.floor(i / perLine);
+      const inLine = i % perLine;
+      const lineLen = Math.min(perLine, row.length - lineIdx * perLine);
+      // Each line is centred on its own width rather than stretched to the
+      // full one, so the last, shorter line of a wrapped row sits under the
+      // others instead of being spread thin across the whole canvas.
+      const x0 = width / 2 - (lineLen - 1) * cell / 2;
+      row[i].x = x0 + inLine * cell;
+      row[i].y = y + lineIdx * lineH + lineH / 2;
+    }
+    const lines = Math.ceil(row.length / perLine);
+    y += lines * lineH + ROW_GAP;
+  }
+  return { height: Math.ceil(y + PAD_Y - ROW_GAP), levels, rows };
 }
 
 function renderDepGraph(imports, dependents, centerPath) {
@@ -15307,11 +16121,18 @@ function renderDepGraph(imports, dependents, centerPath) {
         links.push({ source: pkg, target: dep, type: 'imports' });
       }
     }
+    // Every edge points the same way: source imports target. The reverse
+    // endpoint answers `{imported: [importers]}`, so this half is flipped on
+    // the way in rather than drawn as it arrives. Unflipped, an arrow from the
+    // centre to a dependent read "the centre imports this", which is the exact
+    // opposite of what that edge says, and the two halves of one picture
+    // asserted opposite meanings for the same arrowhead. filterDepGraphNodes
+    // used to undo it locally; now nothing has to.
     for (const [pkg, deps] of Object.entries(dependents || {})) {
       if (!nodes.has(pkg)) nodes.set(pkg, { id: pkg, group: 'dependent', depth: 999 });
       for (const dep of deps || []) {
         if (!nodes.has(dep)) nodes.set(dep, { id: dep, group: 'dependent', depth: 999 });
-        links.push({ source: pkg, target: dep, type: 'dependent' });
+        links.push({ source: dep, target: pkg, type: 'dependent' });
       }
     }
   }
@@ -15427,8 +16248,10 @@ function renderDepGraph(imports, dependents, centerPath) {
   }
 
   const width = container.clientWidth || 800;
-  const height = Math.max(600, window.innerHeight - 300);
-  container.style.minHeight = height + 'px';
+  // Mutable, because the funnel decides its own height: a package with 131
+  // dependents needs the rows it needs, and clipping them to the viewport
+  // would hide the row the reader opened the tab for.
+  let height = Math.max(600, window.innerHeight - 300);
 
   // Node size, by the same rule and the same formula as the contracts map.
   //
@@ -15464,11 +16287,47 @@ function renderDepGraph(imports, dependents, centerPath) {
   };
   const maxNodeSize = Math.max(...nodeArr.map(nodeSize));
 
+  // Which engine positions the nodes. The funnel needs a direction, and shared
+  // callers have none: "the same addresses called both" is symmetric, so there
+  // is no up and no down to lay out. Caller mode is force, always, and the
+  // layout pills say so by not being there.
+  const funnel = _depGraph.layout === 'funnel' && !callerMode;
+  let funnelLevels = null;
+  if (funnel) {
+    const laid = layoutFunnel(nodeArr, links, centerPath, width, nodeSize);
+    funnelLevels = laid.levels;
+    // The funnel is exactly as tall as its rows, and the 600px floor does not
+    // apply to it. That floor exists to stop a force simulation settling in a
+    // letterbox; a deterministic layout has no such problem, and honouring it
+    // put r/hub/core's four-row picture at the top of an 1,100px box with 800
+    // pixels of nothing under it. A graph that needs more than the viewport
+    // gets more than the viewport, and the page scrolls.
+    height = Math.max(240, laid.height);
+  }
+  container.style.minHeight = height + 'px';
+
   // Legend
   const legend = el('div', { style: { display: 'flex', gap: '16px', flexWrap: 'wrap', padding: '8px 12px', fontSize: '12px', color: 'var(--fg2)', alignItems: 'center' } });
-  for (let i = 0; i <= Math.min(maxDepth, DEPTH_COLORS.length - 1); i++) {
-    const dot = el('span', { style: { display: 'inline-block', width: '10px', height: '10px', borderRadius: '50%', background: depthColor(i), marginRight: '4px' } });
-    legend.appendChild(el('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '2px' } }, dot, i === 0 ? 'center' : 'depth ' + i));
+  const legendDot = (color, label) => {
+    const dot = el('span', { style: { display: 'inline-block', width: '10px', height: '10px', borderRadius: '50%', background: color, marginRight: '4px' } });
+    legend.appendChild(el('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '2px' } }, dot, label));
+  };
+  if (funnel) {
+    // Named by their relationship, not by a hop count, because that is what
+    // the rows mean here and a reader should not have to work out that "depth
+    // 1" above the centre and "depth 1" below it are opposite facts.
+    if (funnelLevels.some(l => l < 0)) legendDot(FUNNEL_UP_COLOR, 'imports this');
+    legendDot(depthColor(0), 'this package');
+    for (const lvl of funnelLevels.filter(l => l > 0 && l !== FUNNEL_ORPHAN)) {
+      legendDot(depthColor(lvl), lvl === 1 ? 'imported by it' : lvl + ' levels down');
+    }
+    if (funnelLevels.includes(FUNNEL_ORPHAN)) {
+      legendDot(FUNNEL_ORPHAN_COLOR, 'no path to it from here');
+    }
+  } else {
+    for (let i = 0; i <= Math.min(maxDepth, DEPTH_COLORS.length - 1); i++) {
+      legendDot(depthColor(i), i === 0 ? 'center' : 'depth ' + i);
+    }
   }
   // Shape legend
   legend.appendChild(el('span', { style: { marginLeft: '12px', borderLeft: '1px solid var(--border)', paddingLeft: '12px' } }));
@@ -15515,12 +16374,27 @@ function renderDepGraph(imports, dependents, centerPath) {
   //
   // Caller mode draws no arrow. "The same addresses called both" is symmetric,
   // and an arrowhead would assert a direction the data does not have.
+  //
+  // Keyed by colour rather than by depth, because the funnel colours a node by
+  // which side of the centre it is on and an arrow has to match the line it
+  // ends. A marker per depth cannot express "green", and an arrowhead in the
+  // wrong colour on a coloured line reads as a different kind of edge.
+  const nodeColor = funnel ? funnelColor : (d => depthColor(d.depth));
+  // A link takes the colour of what it points at: in the funnel that is always
+  // the row below, so a line leaving the green row is the colour of the thing
+  // being imported, which is the fact the edge states.
+  const linkColor = funnel ? (d => funnelColor(d.target)) : (d => depthColor(d.depth));
+  const markerId = new Map();
   const defs = svg.append('defs');
-  for (let i = 0; i <= maxDepth + 1; i++) {
-    defs.append('marker').attr('id', 'arrow-d' + i).attr('viewBox', '0 -5 10 10')
+  const arrowFor = (color) => {
+    if (markerId.has(color)) return markerId.get(color);
+    const id = 'arrow-' + markerId.size;
+    markerId.set(color, id);
+    defs.append('marker').attr('id', id).attr('viewBox', '0 -5 10 10')
       .attr('refX', 10).attr('refY', 0).attr('markerWidth', 6).attr('markerHeight', 6).attr('orient', 'auto')
-      .append('path').attr('d', 'M0,-5L10,0L0,5').attr('fill', depthColor(i));
-  }
+      .append('path').attr('d', 'M0,-5L10,0L0,5').attr('fill', color);
+    return id;
+  };
   // How far short of the target centre a line has to stop: its radius, plus the
   // arrowhead's own length where there is one (markerWidth 6 over a 10-unit
   // viewBox).
@@ -15528,20 +16402,33 @@ function renderDepGraph(imports, dependents, centerPath) {
   const headRoom = callerMode ? 0 : ARROW_LEN;
   const maxWeight = Math.max(1, d3.max(links, l => l.weight || 0) || 1);
 
-  const sim = d3.forceSimulation(nodeArr)
-    .force('link', d3.forceLink(links).id(d => d.id).distance(100))
-    .force('charge', d3.forceManyBody().strength(-250))
-    .force('center', d3.forceCenter(width / 2, height / 2))
-    // The collision radius tracked the old fixed node size. Sized nodes overlap
-    // without this, and the largest ones swallow their neighbours whole.
-    .force('collision', d3.forceCollide().radius(d => Math.max(35, nodeSize(d) + 12)));
-  // A graph of forty bubbles at forty pixels needs more room between them than
-  // one of forty dots, or the link lengths alone decide the layout and the
-  // sizing reads as crowding.
-  if (metricSpec) sim.force('link').distance(Math.max(100, maxNodeSize * 3));
+  // In force mode d3.forceLink rewrites every link's source and target from an
+  // id to the node object it names. The funnel has no simulation to do that,
+  // and trimmed() below reads d.source.x, so it is done here instead: one
+  // resolution step, whichever engine is about to draw.
+  let sim = null;
+  if (funnel) {
+    const byId = new Map(nodeArr.map(n => [n.id, n]));
+    for (const l of links) {
+      if (typeof l.source === 'string') l.source = byId.get(l.source);
+      if (typeof l.target === 'string') l.target = byId.get(l.target);
+    }
+  } else {
+    sim = d3.forceSimulation(nodeArr)
+      .force('link', d3.forceLink(links).id(d => d.id).distance(100))
+      .force('charge', d3.forceManyBody().strength(-250))
+      .force('center', d3.forceCenter(width / 2, height / 2))
+      // The collision radius tracked the old fixed node size. Sized nodes overlap
+      // without this, and the largest ones swallow their neighbours whole.
+      .force('collision', d3.forceCollide().radius(d => Math.max(35, nodeSize(d) + 12)));
+    // A graph of forty bubbles at forty pixels needs more room between them than
+    // one of forty dots, or the link lengths alone decide the layout and the
+    // sizing reads as crowding.
+    if (metricSpec) sim.force('link').distance(Math.max(100, maxNodeSize * 3));
+  }
 
   const linkEl = zoomG.append('g').selectAll('line').data(links).join('line')
-    .attr('stroke', d => depthColor(d.depth))
+    .attr('stroke', linkColor)
     .attr('stroke-opacity', 0.7)
     // In caller mode the weight is the number of addresses the two contracts
     // have in common, which is the whole quantity that mode is about: drawing
@@ -15550,21 +16437,26 @@ function renderDepGraph(imports, dependents, centerPath) {
     .attr('stroke-width', d => callerMode
       ? 1 + 5 * Math.sqrt((d.weight || 0) / maxWeight)
       : 1.5)
-    .attr('marker-end', d => callerMode ? null : 'url(#arrow-d' + d.depth + ')');
+    .attr('marker-end', d => callerMode ? null : 'url(#' + arrowFor(linkColor(d)) + ')');
 
   // Nodes: circle for p/, diamond for r/
   const nodeG = zoomG.append('g').selectAll('g').data(nodeArr).join('g')
     .style('cursor', 'pointer')
-    .on('click', (e, d) => navigate('/realm/' + d.id.replace('gno.land/', '')))
-    .call(d3.drag()
+    .on('click', (e, d) => navigate(depGraphHref(d.id)));
+  // Dragging is a simulation control: it pins a node and lets the physics
+  // re-settle around it. In the funnel the position is the answer, so a node
+  // the reader could drag out of its row would be saying something false.
+  if (sim) {
+    nodeG.call(d3.drag()
       .on('start', (e, d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
       .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; })
       .on('end', (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }));
+  }
 
   // Circle for packages
   nodeG.filter(d => !d.isRealm).append('circle')
     .attr('r', d => nodeSize(d))
-    .attr('fill', d => depthColor(d.depth))
+    .attr('fill', nodeColor)
     .attr('stroke', '#000').attr('stroke-width', 1);
 
   // Diamond for realms. Scaled by 1.28 against the circle so the two read as
@@ -15573,7 +16465,7 @@ function renderDepGraph(imports, dependents, centerPath) {
   // alone makes every realm look smaller than a package holding the same value.
   nodeG.filter(d => d.isRealm).append('polygon')
     .attr('points', d => { const s = nodeSize(d) * 1.28; return `0,${-s} ${s},0 0,${s} ${-s},0`; })
-    .attr('fill', d => depthColor(d.depth))
+    .attr('fill', nodeColor)
     .attr('stroke', '#000').attr('stroke-width', 1);
 
   // What a node is worth, on hover, because the size is a comparison and the
@@ -15582,6 +16474,10 @@ function renderDepGraph(imports, dependents, centerPath) {
   // title attribute cannot execute any of it.
   nodeG.append('title').text(d => {
     const lines = [d.id];
+    if (funnel && d.level === FUNNEL_ORPHAN) lines.push('no path to this package through the edges shown');
+    else if (funnel && d.level < 0) lines.push('imports this package');
+    else if (funnel && d.level === 1) lines.push('imported by this package');
+    else if (funnel && d.level > 1) lines.push('imported ' + d.level + ' levels down');
     if (metricSpec) lines.push(metricSpec.label + ': ' + fmtMetric(metricSpec, metricOf(d)));
     if (callerMode && d.depth > 0) {
       lines.push(fmtNum(d.shared) + ' of my ' + fmtNum((_depGraph.partners || {}).callers || 0)
@@ -15623,9 +16519,15 @@ function renderDepGraph(imports, dependents, centerPath) {
     }
   }
 
+  // Beside the node in the force view, centred under it in the funnel. A row
+  // layout puts the next node exactly where a right-hand label wants to be, so
+  // every label landed on its neighbour and the declutter pass answered by
+  // dropping half of each row. Under the node the two never compete, and a row
+  // of twenty keeps twenty names.
   const labelEl = svg.append('g').attr('pointer-events', 'none')
     .selectAll('text').data(nodeArr).join('text')
     .text(d => d.id.split('/').slice(-2).join('/'))
+    .attr('text-anchor', funnel ? 'middle' : 'start')
     .attr('font-size', LABEL_FONT).attr('fill', '#ccc');
 
   // The order the greedy pass considers labels in, which is the order that
@@ -15650,7 +16552,14 @@ function renderDepGraph(imports, dependents, centerPath) {
       // size, but the thing they sit beside is both sized by the metric and
       // scaled by the zoom. A fixed 14px put every label inside its own bubble
       // as soon as anything was sized.
-      const x = t.applyX(d.x) + nodeSize(d) * t.k + 6, y = t.applyY(d.y) + 4;
+      // A realm is drawn as a diamond at 1.28x the circle's radius, so its
+      // label has to clear that and not the radius: the centre node's name
+      // landed inside its own diamond otherwise, which is the one label on the
+      // graph that is never dropped and so never hidden.
+      const shape = nodeSize(d) * (d.isRealm ? 1.28 : 1) * t.k;
+      const beside = funnel ? 0 : shape + 6;
+      const below = funnel ? shape + LABEL_FONT + 2 : 4;
+      const x = t.applyX(d.x) + beside, y = t.applyY(d.y) + below;
       node.setAttribute('x', x);
       node.setAttribute('y', y);
 
@@ -15667,7 +16576,9 @@ function renderDepGraph(imports, dependents, centerPath) {
       // The box the text actually occupies, not just its baseline: two labels
       // one pixel apart vertically overlap on screen, and a grid keyed on the
       // baseline row alone puts them in different rows and lets both through.
-      const left = x, right = x + node.textContent.length * LABEL_FONT * LABEL_EM;
+      // Centred text grows both ways from x, so the box is not anchored at it.
+      const textW = node.textContent.length * LABEL_FONT * LABEL_EM;
+      const left = funnel ? x - textW / 2 : x, right = left + textW;
       const top = y - LABEL_FONT, bottom = y + 2;
 
       const cells = [];
@@ -15719,7 +16630,7 @@ function renderDepGraph(imports, dependents, centerPath) {
     };
   }
 
-  sim.on('tick', () => {
+  function paint() {
     linkEl.each(function (d) {
       const t = trimmed(d);
       this.setAttribute('x1', t.x1); this.setAttribute('y1', t.y1);
@@ -15727,7 +16638,13 @@ function renderDepGraph(imports, dependents, centerPath) {
     });
     nodeG.attr('transform', d => 'translate(' + d.x + ',' + d.y + ')');
     placeLabels();
-  });
+  }
+
+  // The funnel is laid out in one pass and never moves, so it paints once.
+  // Zooming still repositions the labels, which live outside the zoom group at
+  // a constant screen size, and zoom.labels above already does that.
+  if (sim) sim.on('tick', paint);
+  else paint();
 }
 
 // --- Search ---
@@ -15787,22 +16704,57 @@ document.getElementById('search-input').addEventListener('input', function() {
 
   searchTimeout = setTimeout(async () => {
     try {
-      // Assets come from their own endpoint rather than being folded into
-      // /api/search: that one answers with packages, and a realm issuing six
-      // tokens collapses to one package row, which is the confusion the
-      // per-asset page exists to undo. Optional, so an old backend that has
-      // no such route still answers with packages.
-      // Symbols come from their own endpoint for the same reason assets do:
-      // /api/search answers with packages and every caller treats it as an
-      // array. Optional in the same way, so an older backend that has no such
-      // route still answers with packages.
-      const [data, assets, symbols] = await Promise.all([
+      // Four endpoints rather than one, because /api/search answers with a flat
+      // array of packages and every caller reads it as one. A user is not a
+      // package (67 of mainnet's 78 registrations have never deployed
+      // anything), and a realm issuing six tokens collapses to a single package
+      // row, which is the confusion the per-asset page exists to undo. Each of
+      // the three extras is optional, so an older backend that has none of
+      // those routes still answers with packages.
+      const [data, users, assets, symbols] = await Promise.all([
         api('search?q=' + encodeURIComponent(q)),
+        api('users/search?q=' + encodeURIComponent(q)).catch(() => null),
         api('assets/search?q=' + encodeURIComponent(q)).catch(() => null),
         api('symbols/search?q=' + encodeURIComponent(q) + '&limit=8').catch(() => null),
       ]);
       if (gen !== _searchGen) return;
       loading.remove();
+
+      // The order of the groups below is deliberate, and is the answer to a
+      // real complaint: typing "moul" used to lead with the MOULTEST token.
+      // Users, then assets, then realms, then symbols, then packages. It runs
+      // from "who" through "what can I hold" and "what can I open" down to
+      // "what can I import", which is the order the questions are asked in.
+
+      // Users first. A short query is most often a name, and this is the only
+      // group whose answer is a person rather than a path.
+      const people = (users && users.users) || [];
+      if (people.length) {
+        results.appendChild(el('div', { className: 'search-section-label' }, 'users'));
+        for (const u of people) {
+          const bits = [];
+          // The curated label, only when it says something the name does not:
+          // for a namespace the two are usually the same word twice.
+          if (u.label && u.label.replace(/^@/, '') !== u.name) bits.push(u.label);
+          bits.push(shortAddr(u.address));
+          // The package count separates the project a reader meant from a
+          // namesake. Shown when there is one, left off when there is not,
+          // rather than printed as a zero: 67 of mainnet's 78 users have
+          // deployed nothing, and a column of "0 packages" says nothing.
+          if (u.packages) bits.push(u.packages + ' package' + (u.packages === 1 ? '' : 's'));
+          // An alias and a tombstone are both real answers and both have to say
+          // so. r/sys/users keeps an old name resolvable on purpose, so
+          // "this resolves, but not to what you think" is exactly what a reader
+          // searching a previous handle needs to be told.
+          if (u.alias) bits.push('previous name');
+          if (u.deleted) bits.push('deleted');
+          results.appendChild(searchResultRow('', 'user', '@' + u.name, bits.join(' · '),
+            () => {
+              results.classList.remove('open');
+              navigate('/address/' + u.address + netSuffix(u.network || getNetwork()));
+            }));
+        }
+      }
 
       const tokens = (assets && assets.assets) || [];
       if (tokens.length) {
@@ -15814,9 +16766,30 @@ document.getElementById('search-input').addEventListener('input', function() {
         }
       }
 
-      // Symbols before packages. Somebody typing a CamelCase identifier wants
-      // the declaration, not the four paths whose text happens to contain it,
-      // and a package match for a symbol query is the weaker answer of the two.
+      // Realms and packages are two groups, not one list with two badges. A
+      // realm is something a reader can open and use; a package is a library it
+      // imports. They arrived interleaved by deploy height, so the realm
+      // somebody typed the name of could sit below four of its own libraries.
+      // The server caps each kind separately (searchKindLimit) so neither can
+      // crowd the other out of the response.
+      const rows = data || [];
+      const realms = rows.filter(r => r.is_realm);
+      const pkgs = rows.filter(r => !r.is_realm);
+      const pkgRow = r => searchResultRow(r.is_realm ? 'realm' : 'pkg', r.is_realm ? 'realm' : 'package',
+        pathParts(r.path), 'by ' + shortAddr(r.creator) + (r.status === 'inert' ? ' · parked' : ''),
+        () => { results.classList.remove('open'); navigate('/realm/' + r.path.replace('gno.land/', '')); });
+      if (realms.length) {
+        results.appendChild(el('div', { className: 'search-section-label' }, 'realms'));
+        for (const r of realms) results.appendChild(pkgRow(r));
+      }
+
+      // Symbols above packages, which is where they were before the user group
+      // existed and where moul put them back. The argument is about these two
+      // specifically: somebody typing a CamelCase identifier wants the
+      // declaration, not the four paths whose text happens to contain it, and a
+      // package match for a symbol query is the weaker answer of the two. It
+      // does not reach past packages, because a realm and an asset are things a
+      // reader opens rather than imports.
       const syms = (symbols && symbols.symbols) || [];
       if (syms.length) {
         results.appendChild(el('div', { className: 'search-section-label' }, 'symbols'));
@@ -15834,17 +16807,13 @@ document.getElementById('search-input').addEventListener('input', function() {
         }
       }
 
-      if (!data || !data.length) {
-        if (!direct.length && !tokens.length && !syms.length) {
-          results.appendChild(el('div', { style: { padding: '10px 12px' } }, 'no results'));
-        }
-        return;
+      if (pkgs.length) {
+        results.appendChild(el('div', { className: 'search-section-label' }, 'packages'));
+        for (const r of pkgs) results.appendChild(pkgRow(r));
       }
-      results.appendChild(el('div', { className: 'search-section-label' }, 'packages'));
-      for (const r of data) {
-        results.appendChild(searchResultRow(r.is_realm ? 'realm' : 'pkg', r.is_realm ? 'realm' : 'package',
-          pathParts(r.path), 'by ' + shortAddr(r.creator) + (r.status === 'inert' ? ' · parked' : ''),
-          () => { results.classList.remove('open'); navigate('/realm/' + r.path.replace('gno.land/', '')); }));
+
+      if (!direct.length && !people.length && !tokens.length && !syms.length && !rows.length) {
+        results.appendChild(el('div', { style: { padding: '10px 12px' } }, 'no results'));
       }
     } catch (err) {
       if (gen !== _searchGen) return;
@@ -18665,7 +19634,25 @@ function contractHover(sel, tip, get) {
     .on('mouseleave', () => tip.hide());
 }
 
-function contractOpen(d) { navigate('/realm/' + d.path.replace('gno.land/', '')); }
+// Clicking a contract on the map opens its own graph, drawn the way the map
+// was drawing it. The map's metric, scale, link mode and window are the same
+// four controls the deps tab has, so the handoff is a rename and not a
+// translation, and the reader keeps reading the same picture one level down.
+//
+// `none` is the one value that does not carry: the map can switch its edges
+// off to show the clusters alone, and a dependency graph with no edges is a
+// blank tab. It lands on imports, which is what the deps tab is for.
+function contractOpen(d) {
+  const q = new URLSearchParams();
+  const net = getNetwork();
+  if (net && net !== 'all') q.set('network', net);
+  q.set('tab', 'deps');
+  if (_contracts.edges === 'callers') q.set('glinks', 'callers');
+  if (_contracts.metric) q.set('gsize', _contracts.metric);
+  if (_contracts.scale === 'log') q.set('gscale', 'log');
+  if (_contracts.window && _contracts.window !== 'all') q.set('gperiod', _contracts.window);
+  navigate('/realm/' + d.path.replace('gno.land/', '') + '?' + q.toString());
+}
 
 // contractEdgePath draws a link as a curve that starts and ends on the two
 // bubbles' borders rather than at their centres.

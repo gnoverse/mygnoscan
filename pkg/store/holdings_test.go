@@ -107,7 +107,7 @@ func TestHolderTransfersSeesBothDirections(t *testing.T) {
 		{Token: tok, From: "g1funder", To: "g1other", Value: 70, BlockHeight: 30},
 	})
 
-	got, err := db.HolderTransfers("alpha", "g1realm", 50)
+	got, err := db.HolderTransfers("alpha", "g1realm", 50, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,5 +135,109 @@ func TestEarliestTokenTransfer(t *testing.T) {
 	})
 	if got := db.EarliestTokenTransfer("alpha"); got != "2026-01-01T00:00:00Z" {
 		t.Errorf("got %q, want the oldest row rather than the first inserted", got)
+	}
+}
+
+// Paging the GRC20 table, and the count that makes a full page readable.
+//
+// Without the count, "500 rows" and "500 rows of 4,000" look identical, which is
+// the whole reason this pair exists: r/gnoswap/pool and r/gnoswap/router both
+// sat exactly on the old cap with nothing on the page saying so.
+func TestHolderTransfersPages(t *testing.T) {
+	db := NewTestDB(t)
+	const tok = "gno.land/r/x/coin.COIN.0000000"
+	xs := make([]TokenTransfer, 0, 6)
+	for i := 0; i < 6; i++ {
+		xs = append(xs, TokenTransfer{
+			Token: tok, From: "g1funder", To: "g1realm", Value: 10, BlockHeight: 10 + i*10,
+		})
+	}
+	// One leg the address is not on, and one on another chain: neither may
+	// reach the count or the page.
+	xs = append(xs, TokenTransfer{Token: tok, From: "g1funder", To: "g1other", Value: 10, BlockHeight: 99})
+	seedTransfers(t, db, "alpha", xs)
+	seedTransfers(t, db, "beta", []TokenTransfer{
+		{Token: tok, From: "g1funder", To: "g1realm", Value: 10, BlockHeight: 5},
+	})
+
+	total, err := db.HolderTransferCount("alpha", "g1realm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 6 {
+		t.Fatalf("count = %d, want 6: the stranger's leg and the other chain's must not be in it", total)
+	}
+
+	tests := []struct {
+		name          string
+		limit, offset int
+		wantHeights   []int
+	}{
+		{"whole history", 50, 0, []int{60, 50, 40, 30, 20, 10}},
+		{"first page", 2, 0, []int{60, 50}},
+		{"second page resumes where the first stopped", 2, 2, []int{40, 30}},
+		{"last page is short", 2, 5, []int{10}},
+		{"offset at the end", 2, 6, nil},
+		{"offset past the end", 2, 99, nil},
+		{"a zero limit asks for nothing", 0, 0, nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := db.HolderTransfers("alpha", "g1realm", tt.limit, tt.offset)
+			if err != nil {
+				t.Fatalf("HolderTransfers: %v", err)
+			}
+			if got == nil {
+				t.Fatal("page is nil, which marshals as null instead of []")
+			}
+			if len(got) != len(tt.wantHeights) {
+				t.Fatalf("got %d rows, want %d: %+v", len(got), len(tt.wantHeights), got)
+			}
+			for i, h := range tt.wantHeights {
+				if got[i].BlockHeight != h {
+					t.Errorf("row %d is height %d, want %d", i, got[i].BlockHeight, h)
+				}
+			}
+		})
+	}
+}
+
+// Paging covers every row exactly once, including when a whole page shares one
+// block height.
+//
+// ⚠️ This does **not** prove the ORDER BY tiebreak is load-bearing: checked
+// 2026-09-25, the test still passes with `ORDER BY block_height DESC` alone,
+// because SQLite happens to return these rows in a stable order anyway. That is
+// an implementation detail and not a guarantee, which is why the tiebreak is
+// there, but do not read a green run here as evidence it is doing work. What
+// this pins is the weaker and still worth-having property in the name.
+func TestHolderTransfersPagesCoverEveryRowOnce(t *testing.T) {
+	db := NewTestDB(t)
+	const tok = "gno.land/r/x/coin.COIN.0000000"
+	legs := make([]TokenTransfer, 0, 8)
+	for i := 0; i < 8; i++ {
+		legs = append(legs, TokenTransfer{
+			Token: tok, From: "g1funder", To: "g1realm", Value: int64(i + 1), BlockHeight: 42,
+		})
+	}
+	seedTransfers(t, db, "alpha", legs)
+
+	seen := map[string]bool{}
+	for offset := 0; offset < 8; offset += 3 {
+		page, err := db.HolderTransfers("alpha", "g1realm", 3, offset)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range page {
+			key := row.TxHash
+			if seen[key] {
+				t.Fatalf("row %s came back on two pages, so another was skipped", key)
+			}
+			seen[key] = true
+		}
+	}
+	if len(seen) != 8 {
+		t.Errorf("walked %d distinct rows across the pages, want 8", len(seen))
 	}
 }

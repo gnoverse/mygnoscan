@@ -1,0 +1,444 @@
+package httpapi
+
+import (
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/moul/mygnoscan/pkg/store"
+)
+
+// The layering is the design, so these are the tests that matter: which source
+// wins for which field, what removes an entry, and what the ranking does when
+// the two halves of the list are scored in incomparable units.
+
+func TestFirstSentence(t *testing.T) {
+	for _, tt := range []struct {
+		name, in, want string
+	}{
+		{
+			name: "cuts at the sentence, not at a character count",
+			in:   "The official blog, rendered on chain. Posts are published by an admin.",
+			want: "The official blog, rendered on chain.",
+		},
+		{
+			name: "a one-sentence doc survives whole",
+			in:   "A central place for all gno.land faucets.",
+			want: "A central place for all gno.land faucets.",
+		},
+		{
+			name: "newlines and runs of spaces collapse",
+			in:   "Package blog is\n   the official blog. And more.",
+			want: "Package blog is the official blog.",
+		},
+		{
+			name: "a doc with no sentence end is trimmed with an ellipsis rather than mid-word rubbish",
+			in:   "x" + repeat("y", 400),
+			want: "x" + repeat("y", 179) + "…",
+		},
+		{name: "empty stays empty", in: "   ", want: ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := firstSentence(tt.in); got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func repeat(s string, n int) string {
+	out := make([]byte, 0, n)
+	for i := 0; i < n; i++ {
+		out = append(out, s[0])
+	}
+	return string(out)
+}
+
+// Two live deployments of the same idea is the normal state of a chain nobody
+// can delete from. Ranking them as peers sends people to last year's version
+// with a call count that makes it look current.
+func TestCollapseSupersededFoldsTheOlderGeneration(t *testing.T) {
+	v1 := &AppCard{Path: "gno.land/r/x/kourt", Name: "Kourt", Calls: 900}
+	v3 := &AppCard{Path: "gno.land/r/x/kourtv3", Name: "Kourt v3", Calls: 10,
+		Supersedes: []string{"gno.land/r/x/kourt"}}
+	other := &AppCard{Path: "gno.land/r/x/other", Name: "Other"}
+
+	// The newer card first, which is the order that broke it: folding while
+	// building the output mutates a card already copied into the result, so the
+	// fold vanished for every chain whose newer generation outranked its
+	// predecessor. On mainnet that was bubblerumble and gnomi/pad, while Kourt
+	// worked because it happened to rank the other way.
+	got := collapseSuperseded([]*AppCard{v3, v1, other})
+
+	if len(got) != 2 {
+		t.Fatalf("got %d cards, want the older generation folded away: %+v", len(got), got)
+	}
+	var kourt *AppCard
+	for i := range got {
+		if got[i].Name == "Kourt v3" {
+			kourt = got[i]
+		}
+		if got[i].Name == "Kourt" {
+			t.Error("the superseded generation is still ranked as a peer")
+		}
+	}
+	if kourt == nil || len(kourt.Previous) != 1 || kourt.Previous[0].Name != "Kourt" {
+		t.Fatalf("the old one was dropped rather than carried: %+v", kourt)
+	}
+	// Carried, not deleted: it is still on the chain and somebody may hold a
+	// position in it, so a hub that pretended it was gone would be lying about
+	// state a reader can check.
+	if kourt.Previous[0].Calls != 900 {
+		t.Error("the folded card lost its figures")
+	}
+}
+
+// A three-generation chain must stay flat: a reader wants "and the ones
+// before", not a tree.
+func TestCollapseDoesNotNest(t *testing.T) {
+	v1 := &AppCard{Path: "gno.land/r/x/a", Name: "A"}
+	v2 := &AppCard{Path: "gno.land/r/x/b", Name: "B", Supersedes: []string{"gno.land/r/x/a"}}
+	v3 := &AppCard{Path: "gno.land/r/x/c", Name: "C", Supersedes: []string{"gno.land/r/x/b"}}
+
+	got := collapseSuperseded([]*AppCard{v3, v2, v1})
+
+	if len(got) != 1 || got[0].Name != "C" {
+		t.Fatalf("got %+v, want only the newest", got)
+	}
+	for _, p := range got[0].Previous {
+		if len(p.Previous) != 0 {
+			t.Errorf("%s carries its own Previous, so the page would nest", p.Name)
+		}
+	}
+}
+
+// The ranking exists because the two halves of this list are scored in
+// incomparable units: a realm has callers, and a browser extension never will.
+func TestRankApps(t *testing.T) {
+	busy := &AppCard{Name: "busy realm", Via: viaDiscovered, Score: 500}
+	quiet := &AppCard{Name: "quiet realm", Via: viaDiscovered, Score: 11}
+	wallet := &AppCard{Name: "a wallet", Via: viaCommunity}
+	listed := &AppCard{Name: "listed, unused", Via: viaPinned}
+
+	cards := []*AppCard{quiet, wallet, busy, listed}
+	rankApps(cards)
+
+	got := []string{}
+	for _, c := range cards {
+		got = append(got, c.Name)
+	}
+	want := []string{"busy realm", "a wallet", "listed, unused", "quiet realm"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("order = %v, want %v", got, want)
+		}
+	}
+	// The claim, spelled out: a realm people genuinely use beats anything a
+	// human merely listed, and a listed entry beats a realm nobody opens.
+	//
+	// Floored rather than promoted, which is a correction. Ranking listed
+	// entries to the top put Boards2, which nobody had called, above the
+	// busiest realm on the chain. Being listed means included despite having no
+	// metrics; it does not mean important.
+}
+
+// The whole stack, through the handler: which layer wins for which field.
+//
+// A name a human wrote, a name the community wrote and a name the realm's own
+// source carries are three different claims. The page shows which is which, so
+// the order they override in is load-bearing rather than cosmetic.
+func TestAppsHubLayersTheSources(t *testing.T) {
+	api, _ := newTestAPI(t)
+
+	var resp appsHubResponse
+	getJSON(t, api.HandleAppsHub, "/api/apps?network=alpha", &resp)
+
+	if len(resp.Apps) == 0 {
+		t.Fatal("no apps assembled")
+	}
+	by := map[string]AppCard{}
+	for _, a := range resp.Apps {
+		if a.Path != "" {
+			by[a.Path] = a
+		}
+	}
+
+	// In apps.json, so this repo's own sentence wins over everything.
+	blog, ok := by["gno.land/r/gnoland/blog"]
+	if !ok {
+		t.Fatal("the blog is not in the assembled list")
+	}
+	if blog.NameFrom != fromCurated || blog.Name != "gno.land blog" {
+		t.Errorf("blog name = %q from %q, want the curated one", blog.Name, blog.NameFrom)
+	}
+	if blog.DescriptionFrom != fromCurated {
+		t.Errorf("blog description is from %q, want curated to win", blog.DescriptionFrom)
+	}
+
+	// Every card says where each field came from, because a reader who cannot
+	// tell a vouched-for sentence from a generated one has to trust both.
+	for _, a := range resp.Apps {
+		switch a.NameFrom {
+		case fromCurated, fromCommunity, fromChain, fromPath:
+		default:
+			t.Errorf("%s has name_from %q", a.Name, a.NameFrom)
+		}
+		if a.Description != "" {
+			switch a.DescriptionFrom {
+			case fromCurated, fromCommunity, fromChain, fromReadme:
+			default:
+				t.Errorf("%s has a description from %q", a.Name, a.DescriptionFrom)
+			}
+		}
+		switch a.Via {
+		case viaDiscovered, viaPinned, viaCommunity:
+		default:
+			t.Errorf("%s got here via %q", a.Name, a.Via)
+		}
+	}
+
+	// The community list supplies what is not on a chain at all, which is most
+	// of what it holds and all of what an indexer is blind to.
+	offChain := 0
+	for _, a := range resp.Apps {
+		if a.Path == "" {
+			offChain++
+			if a.Website == "" {
+				t.Errorf("%s is off chain with nowhere to go", a.Name)
+			}
+		}
+	}
+	if offChain == 0 {
+		t.Error("no off-chain apps reached the list, so the community layer is not wired")
+	}
+}
+
+// Without a network there is nothing to rank and nothing honest to count, and
+// the off-chain half is still worth serving: someone asking whether gno.land
+// has a wallet should not have to pick a chain first, and the wallet is not on
+// one anyway.
+func TestAppsHubWithoutANetworkKeepsTheOffChainHalf(t *testing.T) {
+	api, _ := newTestAPI(t)
+
+	var resp appsHubResponse
+	getJSON(t, api.HandleAppsHub, "/api/apps", &resp)
+
+	if resp.Discovered != 0 {
+		t.Errorf("discovered %d apps with no chain selected", resp.Discovered)
+	}
+	if resp.OffChain == 0 || len(resp.Apps) == 0 {
+		t.Fatal("the off-chain apps went away with the network")
+	}
+	for _, a := range resp.Apps {
+		if a.CallsWindow != 0 || a.Score != 0 {
+			t.Errorf("%s carries chain figures with no chain selected", a.Name)
+		}
+	}
+}
+
+// The skip list is applied *and* served. A page that quietly dropped an entry
+// would be indistinguishable from one that lost it, and an unexplained removal
+// is indistinguishable from censorship.
+func TestAppsHubServesItsOwnSkipList(t *testing.T) {
+	api, _ := newTestAPI(t)
+
+	var resp appsHubResponse
+	getJSON(t, api.HandleAppsHub, "/api/apps?network=alpha", &resp)
+
+	if resp.Moderation == nil {
+		t.Fatal("the skip list is not served, so the page cannot show it")
+	}
+	skipped := map[string]bool{}
+	for _, s := range resp.Moderation {
+		if s.Why == "" {
+			t.Errorf("%s is skipped with no reason", s.Path)
+		}
+		skipped[s.Path] = true
+	}
+	for _, a := range resp.Apps {
+		if a.Path != "" && skipped[a.Path] {
+			t.Errorf("%s is on the skip list and in the grid", a.Path)
+		}
+	}
+}
+
+// The derived name is allowed to be poor. It is not allowed to be ambiguous:
+// the last segment alone produced `position`, `staker`, `gns` and two separate
+// cards both called `staker` on mainnet, which tells a reader nothing and tells
+// them it twice.
+func TestNameFromPath(t *testing.T) {
+	for _, tt := range []struct {
+		in, want, why string
+	}{
+		{"gno.land/r/gnoswap/v1/position", "gnoswap/position",
+			"a version names a generation, never a project"},
+		{"gno.land/r/gnoswap/v1/staker", "gnoswap/staker",
+			"and the namespace is what tells two stakers apart"},
+		{"gno.land/r/gnoland/blog", "gnoland/blog", "the ordinary case"},
+		{"gno.land/r/moul/config/v0", "moul/config", "trailing version dropped"},
+		{"gno.land/r/g1leu8d2vsplhehcfkjg50mwgdpxdkt8tztu95wr/kourtv3", "kourtv3",
+			"40 characters of address is noise to a reader"},
+		{"gno.land/r/demo/v0", "demo",
+			"a generation is not a name; two generations of one realm collapse here and supersedes tells them apart"},
+		{"gno.land/r/x/v1", "x", "and the namespace survives alone"},
+		{"gno.land/r/a/b/c/d", "c/d", "two segments is the most a card has room for"},
+	} {
+		t.Run(tt.in, func(t *testing.T) {
+			if got := nameFromPath(tt.in); got != tt.want {
+				t.Errorf("got %q, want %q (%s)", got, tt.want, tt.why)
+			}
+		})
+	}
+}
+
+// A four-generation chain must land on the generation that survived, not on the
+// one that merely replaced this one.
+//
+// bubblerumble is the case: 4 replaces 3, and 3 replaces 2 and 1. Hanging 1 and
+// 2 off card 3 hangs them off a card that is not in the output, so two
+// generations disappear from a page whose whole promise about the old ones is
+// that it does not pretend they are gone.
+func TestCollapseFollowsTheChainToTheSurvivor(t *testing.T) {
+	v1 := &AppCard{Path: "gno.land/r/x/br", Name: "1"}
+	v2 := &AppCard{Path: "gno.land/r/x/br2", Name: "2"}
+	v3 := &AppCard{Path: "gno.land/r/x/br3", Name: "3",
+		Supersedes: []string{"gno.land/r/x/br", "gno.land/r/x/br2"}}
+	v4 := &AppCard{Path: "gno.land/r/x/br4", Name: "4", Supersedes: []string{"gno.land/r/x/br3"}}
+
+	got := collapseSuperseded([]*AppCard{v1, v2, v3, v4})
+
+	if len(got) != 1 || got[0].Name != "4" {
+		t.Fatalf("got %d cards, want only the newest: %+v", len(got), got)
+	}
+	names := map[string]bool{}
+	for _, p := range got[0].Previous {
+		names[p.Name] = true
+	}
+	for _, want := range []string{"1", "2", "3"} {
+		if !names[want] {
+			t.Errorf("generation %s vanished instead of folding into the survivor", want)
+		}
+	}
+}
+
+// One app deployed as several realms is still one app.
+//
+// GnoSwap is the worked example: a router, a token, positions, a staker, an NFT
+// and a governance staker, all busy, all current, all one DEX, and discovery
+// ranked six of them as peers under names taken from their paths.
+func TestFoldCoveredMakesOneCardOfOneApp(t *testing.T) {
+	head := &AppCard{Path: "gno.land/r/swap/router", Name: "Swap", Covers: []string{"gno.land/r/swap/*"}}
+	part := &AppCard{Path: "gno.land/r/swap/staker", Name: "swap/staker"}
+	deep := &AppCard{Path: "gno.land/r/swap/gov/staker", Name: "gov/staker"}
+	other := &AppCard{Path: "gno.land/r/swapper/thing", Name: "not it"}
+
+	got := foldCovered([]*AppCard{head, part, deep, other})
+
+	if len(got) != 2 {
+		t.Fatalf("got %d cards, want the parts folded: %+v", len(got), got)
+	}
+	if got[0] != head {
+		t.Fatalf("the covering card is gone: %+v", got)
+	}
+	if len(head.Parts) != 2 {
+		t.Fatalf("head carries %d parts, want both realms under the prefix", len(head.Parts))
+	}
+	// A prefix must not eat a path that merely starts with the same letters:
+	// gno.land/r/swapper is a different namespace and a different project.
+	for _, c := range got {
+		if c.Name == "not it" {
+			return
+		}
+	}
+	t.Error("a realm in a neighbouring namespace was folded in by a prefix match")
+}
+
+// A card that covers is never itself a part, or two apps claiming each other
+// would fold the page flat.
+func TestFoldCoveredNeverFoldsACoveringCard(t *testing.T) {
+	a := &AppCard{Path: "gno.land/r/x/a", Name: "A", Covers: []string{"gno.land/r/x/*"}}
+	b := &AppCard{Path: "gno.land/r/x/b", Name: "B", Covers: []string{"gno.land/r/x/*"}}
+
+	got := foldCovered([]*AppCard{a, b})
+
+	if len(got) != 2 {
+		t.Fatalf("got %d cards, want both: %+v", len(got), got)
+	}
+}
+
+// The community list and this directory can spell the same app two ways, and
+// nothing joined them: awesome-gno lists `Gnoswap` with a website and no realm,
+// this repo curates `GnoSwap` at a realm path, and the hub drew the DEX twice,
+// once with its call count and once with none.
+func TestNormalizeAppName(t *testing.T) {
+	for _, tt := range []struct{ a, b string }{
+		{"GnoSwap", "Gnoswap"},
+		{"meme.land", "Meme Land"},
+		{"Gno Studio Connect", "gno-studio-connect"},
+	} {
+		if normalizeAppName(tt.a) != normalizeAppName(tt.b) {
+			t.Errorf("%q and %q do not match, so the hub would draw both", tt.a, tt.b)
+		}
+	}
+	if normalizeAppName("GnoScan") == normalizeAppName("mygnoscan") {
+		t.Error("two different explorers were merged into one card")
+	}
+}
+
+// A superseded generation is the same app at an earlier date, so its traffic is
+// the app's traffic. bubblerumble4 shipped with 348 calls beside the 4,160 on
+// the pools it replaced, and a card reporting only the new realm said the game
+// was three days old and barely played.
+func TestRefoldStatsCountsEveryRealmTheCardFolded(t *testing.T) {
+	api, db := newTestAPI(t)
+	when := time.Now().UTC().Format("2006-01-02T15:04:05Z")
+	seed := func(path string, callers ...string) {
+		for i, c := range callers {
+			if err := db.InsertCall("alpha", fmt.Sprintf("tx-%s-%d", path, i), 100+i, 0, when,
+				c, path, "Bid", true); err != nil {
+				t.Fatalf("InsertCall: %v", err)
+			}
+		}
+	}
+	// Two generations and one shared player, which is the case that decides
+	// whether callers may be added: they may not.
+	seed("gno.land/r/x/game4", "g1alice", "g1bob")
+	seed("gno.land/r/x/game3", "g1alice", "g1carol", "g1dave")
+
+	newer := &AppCard{Path: "gno.land/r/x/game4", Name: "Game"}
+	newer.Previous = append(newer.Previous, AppCard{Path: "gno.land/r/x/game3", Name: "game3", Calls: 3})
+
+	api.refoldStats([]*AppCard{newer}, "alpha", "")
+
+	if newer.Calls != 5 {
+		t.Errorf("calls = %d, want 5: the app's, not the newest realm's", newer.Calls)
+	}
+	// Four distinct people, not 2+3: alice played both generations, and adding
+	// the counts would claim a reach the game does not have.
+	if newer.Callers != 4 {
+		t.Errorf("callers = %d, want 4 distinct across both generations", newer.Callers)
+	}
+	if newer.FoldedRealms != 2 {
+		t.Errorf("folded_realms = %d, want the card plus the generation it replaced", newer.FoldedRealms)
+	}
+	if newer.Score != 4*store.ScoreCallerWeight+5*store.ScoreCallWeight {
+		t.Errorf("score = %d, not recomputed from the folded figures", newer.Score)
+	}
+	// The generation it replaced keeps its own figures for the tooltip.
+	if newer.Previous[0].Calls != 3 {
+		t.Error("the folded generation lost its own numbers")
+	}
+}
+
+// A card that folded nothing is left alone: its figures are already its own,
+// and re-reading them would be a query per card for no answer.
+func TestRefoldStatsLeavesAnUnfoldedCardAlone(t *testing.T) {
+	api, _ := newTestAPI(t)
+	plain := &AppCard{Path: "gno.land/r/x/plain", Name: "Plain", Calls: 3, Score: 9}
+
+	api.refoldStats([]*AppCard{plain}, "alpha", "30d")
+
+	if plain.Calls != 3 || plain.Score != 9 || plain.FoldedRealms != 0 {
+		t.Errorf("an unfolded card was rewritten: %+v", plain)
+	}
+}
