@@ -14743,13 +14743,17 @@ function renderRealmDefi(into, d, path) {
     if (title) cell.title = title;
     stats.appendChild(cell);
   };
-  // An empty balance string is a failed RPC read, not a zero balance, and
-  // rendering it as "0 GNOT" would be the site asserting something it does not
-  // know.
-  stat('held', d.balance ? fmtBalanceStr(d.balance) : unknownEl(),
+  // balance_known, not emptiness. An empty coin string is how the chain says
+  // "this account holds nothing", which is the common case for a realm whose
+  // money is all in GRC20, and reading it as a failed RPC call made the page
+  // say the chain was unreadable when it had answered fine. "unknown" is now
+  // reserved for a read that did not happen, because rendering a failed read as
+  // "0 GNOT" would be the site asserting something it does not know.
+  stat('held', d.balance_known ? fmtBalanceStr(d.balance || '0ugnot') : unknownEl(),
     'the realm’s own account: ' + d.address);
   if (d.storage_deposit_address) {
-    stat('storage deposit', d.storage_balance ? fmtBalanceStr(d.storage_balance) : unknownEl(),
+    stat('storage deposit',
+      d.storage_balance_known ? fmtBalanceStr(d.storage_balance || '0ugnot') : unknownEl(),
       'locked against this package’s bytes, refunded when they are freed: ' + d.storage_deposit_address);
   }
   stat('transfers', fmtNum(d.flows_total || 0), 'bank transfers touching either account');
@@ -14763,7 +14767,7 @@ function renderRealmDefi(into, d, path) {
   // complete; the two differing is a fact worth seeing, not one to paper over.
   const note = el('div', { className: 'detail-chart-note', style: { marginBottom: '16px' } });
   const gap = live - (d.derived_ugnot || 0);
-  if (!d.balance) {
+  if (!d.balance_known) {
     note.textContent = 'the chain could not be read for a live balance, so the figures below are the reconstruction alone: '
       + fmtGnotAmount(d.derived_ugnot || 0) + ' over ' + fmtNum(d.flows_total || 0) + ' transfers.';
   } else if (gap === 0) {
