@@ -448,25 +448,30 @@ collection and the storage deposit both go through `SendCoinsUnrestricted`, whic
 emits nothing, so the same sum for a user account is short by its gas spend.
 Neither touches a realm's banker, which is why the realm case is exact.
 
-### The flow history is derived per request, and it is the expensive one
+### The flow history reads the local ledger
 
-Every other realm tab answers from SQLite in milliseconds. This one has no local
-table: it walks the tx-indexer for the package's entire transfer history on every
-cold read, which measured 2.0s and 2.6s against production on a realm with 3,104
-legs (2026-09-22). The response cache hides that from everyone but the first
-reader after an entry expires, and `flows_offset` does **not** make the next page
-cheaper: each page re-derives the whole history and then cuts a different slice
-out of it.
+`/api/realm/defi` used to walk the tx-indexer for a package's entire transfer
+history on every cold read, which measured 2.0s and 2.6s on a realm with 3,104
+legs and, more tellingly, **2.1 to 2.4 seconds on three realms with none at
+all**: the cost was the round trip plus resolving a chain-wide event filter, not
+the payload, so no response cache could reach it (ADR 0043). It now reads
+`coin_transfers` below.
 
-The walk itself is paginated over the block-height cursor, so `ElementCap` is no
-longer a ceiling on how far back a realm's history can reach. `truncated` now
-means only that the realm went past `coinFlowMaxTransactions` (50,000
-transactions), not that the indexer refused.
+Every figure but the table itself is a SQL aggregate over the whole set:
+`derived_ugnot`, `flows_total`, and the `counterparties` collapse. Only
+`flows[]` is paged, on `flows_limit` (default 500, capped at 5000, `0` for a
+totals-only read) and `flows_offset`, and the offset comes back clamped.
 
-The fix for the cost is a local `coin_transfers` table written by the syncer,
-the way `token_transfers` already is for GRC20. **That table now exists and is
-being filled** (see below); this endpoint has not been switched over to read it
-yet, so the cost above is still what a cold request pays.
+`truncated` kept its name and changed meaning with the source. It used to mean
+the indexer capped the query; it now means this chain's coin-ledger backfill has
+not finished, which answers the same reader question: may the reconstruction be
+short of what the chain reports?
+
+⚠️ **A package with no storage-deposit account must not have `''` spliced into
+the account predicate.** `from_addr` and `to_addr` default to `''` for the
+chain's own end of a leg, so `IN (addr, '')` matches every mint and genesis
+allocation on the chain and attributes them to that package.
+`TestRealmCoinIgnoresAnEmptyDepositAddress` holds the line.
 
 ### The native coin ledger
 

@@ -5,6 +5,7 @@
 // outcome of a sync. The schema is never restated here — the binary owns it, and
 // duplicating it in JavaScript would let the two drift silently.
 import { DatabaseSync } from 'node:sqlite';
+import { TAB_TRANSFERS } from './fake-indexer.mjs';
 
 export const NETWORKS = ['alpha', 'beta'];
 
@@ -236,7 +237,7 @@ const SCHEMA_TIMEOUT_MS = 30_000;
 const SEEDED_TABLES = [
   'bank_sends', 'calls', 'dependencies', 'msg_runs', 'package_files',
   'packages', 'package_submissions', 'storage_events', 'token_transfers',
-  'transactions', 'users',
+  'transactions', 'users', 'coin_transfers',
 ];
 
 // waitForSchema blocks until the binary has created the tables seed() writes.
@@ -502,6 +503,27 @@ export function seed(dbPath) {
     grc20('grc20-in-2', 0, GRC20_TOKEN, GRC20_FUNDER, HUB_ADDRESS, 250000, 4102);
     grc20('grc20-out', 0, GRC20_TOKEN, HUB_ADDRESS, GRC20_FUNDER, 150000, 4103);
     grc20('grc20-mint-hub', 0, GRC20_TOKEN, '', HUB_ADDRESS, 100000, 4104);
+
+    // The native coin ledger, seeded from the same legs the fake indexer
+    // serves.
+    //
+    // ⚠️ These two have to agree. /api/realm/defi used to derive its whole
+    // answer from a live indexer walk and now reads coin_transfers, so the
+    // indexer fixture alone leaves the native half of the tab permanently empty
+    // while every assertion about it still runs. One source, written twice,
+    // deliberately: TAB_TRANSFERS is the indexer's copy and this is the
+    // syncer's, and in production the syncer builds the second from the first.
+    const coin = db.prepare(`INSERT OR REPLACE INTO coin_transfers
+      (network, tx_hash, event_idx, from_addr, to_addr, coins, ugnot, block_height, block_time)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    TAB_TRANSFERS.forEach((t, i) => {
+      coin.run('alpha', `transfer-${i}`, 0, t.from, t.to,
+        `${t.amount}ugnot`, t.amount, t.height, blockTime(t.height));
+    });
+    // The backfill marker, so the response does not report a complete history
+    // as possibly-short. Its absence is what `truncated` means now.
+    db.prepare(`INSERT OR REPLACE INTO sync_state (key, value) VALUES (?, ?)`)
+      .run('coin_backfill_done:alpha', '1');
 
     // --- the recent tail, stamped against the wall clock ---------------------
     //

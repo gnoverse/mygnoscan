@@ -14667,6 +14667,7 @@ function loadRealmDefi(path, detail, gen) {
       'balances are denominated per chain — select a specific network to see them'));
     return;
   }
+  _defiTableRows = DEFI_TABLE_ROWS;
   skeletonBlock(into);
   (async () => {
     let d;
@@ -14689,6 +14690,26 @@ function loadRealmDefi(path, detail, gen) {
 // means every realm on mainnet today arrives whole in the first request, and
 // only a realm past 5,000 transfer legs ever sees the pager below.
 const DEFI_FLOWS_PAGE = 5000;
+
+// DEFI_TABLE_ROWS is how many of those legs the table *draws*.
+//
+// Separate from the fetch on purpose. Everything a reader reads off this tab
+// except the table itself is computed over every leg, server-side: the balance,
+// the reconstruction, the curve, the counterparty collapse. The table is the one
+// part nobody reads end to end and the only part that costs a DOM node per row.
+//
+// Measured 2026-09-23 on r/g1leu8.../bubblerumble3 at 4,252 legs: 589,923 DOM
+// nodes for the defi tab against 375,138 for the storage tab on the same realm,
+// and it scales linearly with a realm that grew 1,200 legs in a day. Drawing 250
+// and offering the rest costs no correctness, which is the whole reason it is
+// safe to do.
+const DEFI_TABLE_ROWS = 250;
+
+// How many rows the table is currently drawing, reset every time the tab is
+// opened for a different render. Module-level rather than threaded through,
+// because "show more" is a property of this one view rather than of the data,
+// and reopening the tab should start it short again.
+let _defiTableRows = DEFI_TABLE_ROWS;
 
 function defiPath(path, offset) {
   return 'realm/defi/' + path.replace('gno.land/', '')
@@ -14814,7 +14835,8 @@ function renderRealmDefi(into, d, path) {
       el('th', {}, 'tx'), el('th', {}, 'account'), el('th', {}, 'counterparty'),
       el('th', {}, 'amount'), el('th', {}, 'block'))));
     const body = el('tbody');
-    for (const f of flows) {
+    const drawn = flows.slice(0, _defiTableRows);
+    for (const f of drawn) {
       body.appendChild(el('tr', {},
         el('td', {}, txLink(f.tx_hash, f.block_height, null, { showBlock: false })),
         el('td', {}, badge(f.account === 'banker' ? 'realm' : 'pkg', f.account)),
@@ -14827,13 +14849,38 @@ function renderRealmDefi(into, d, path) {
     }
     tbl.appendChild(body);
     into.appendChild(tbl);
-    if (d.flows_total > flows.length) {
+    if (drawn.length < flows.length) {
+      // Held in hand already, so this one is a redraw and not a fetch.
+      into.appendChild(defiShowMoreEl(into, d, path, drawn.length, flows.length));
+    } else if (d.flows_total > flows.length) {
       into.appendChild(defiFlowsPagerEl(into, d, path, flows));
     }
   } else {
     into.appendChild(el('div', { style: { color: 'var(--fg2)', padding: '12px 0' } },
       'no coin has ever moved through this realm’s account'));
   }
+}
+
+// defiShowMoreEl draws more of what is already loaded.
+//
+// The distinction from defiFlowsPagerEl below matters to a reader: that one goes
+// back to the server for legs it does not have, this one only unfolds rows the
+// page is already holding, so it is instant and cannot fail. Saying "draw" and
+// not "load" is what keeps the two from reading as the same button.
+function defiShowMoreEl(into, d, path, shown, held) {
+  const more = Math.min(held - shown, DEFI_TABLE_ROWS);
+  const wrap = el('div', { className: 'detail-chart-note' });
+  wrap.appendChild(el('span', {},
+    'drawing the ' + fmtNum(shown) + ' most recent of ' + fmtNum(d.flows_total)
+    + '. The balance, the curve and the counterparties above are computed over all of them. '));
+  const btn = el('button', { className: 'pager-btn', style: { marginLeft: '8px' } },
+    'draw ' + fmtNum(more) + ' more');
+  btn.onclick = () => {
+    _defiTableRows += DEFI_TABLE_ROWS;
+    renderRealmDefi(clear('tab-defi'), d, path);
+  };
+  wrap.appendChild(btn);
+  return wrap;
 }
 
 // defiFlowsPagerEl says how much of the history is on screen, and loads the rest.
