@@ -2712,3 +2712,46 @@ func mustStore(t *testing.T, db *DB, network, hash string, idx int, path string,
 		t.Fatalf("InsertStorageEvent: %v", err)
 	}
 }
+
+// Search returns the same PackageInfo the listing does, so every count on it
+// has to be selected. unique_users was not, and a field that is never assigned
+// does not read as absent: it reads as a confident 0, which is how the search
+// box claimed a realm with 479 callers had none (moul/gno-meta#382).
+func TestSearchFillsUniqueUsers(t *testing.T) {
+	db := NewTestDB(t)
+
+	if err := db.UpsertPackage("gnoland1", "gno.land/r/demo/busy", "busy", "g1creator", "TX1", 10, "", true, 1); err != nil {
+		t.Fatalf("seed package: %v", err)
+	}
+	// Three calls, two distinct callers: unique_users is 2, calls is 3, and the
+	// two must not be confused for each other.
+	MustCall(t, db, "gnoland1", "TXa", 11, time.Now().UTC(), "g1alice", "gno.land/r/demo/busy", "Fn")
+	MustCall(t, db, "gnoland1", "TXb", 12, time.Now().UTC(), "g1alice", "gno.land/r/demo/busy", "Fn")
+	MustCall(t, db, "gnoland1", "TXc", 13, time.Now().UTC(), "g1bob", "gno.land/r/demo/busy", "Fn")
+
+	rows, err := db.Search("gnoland1", "busy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("search returned %d rows, want 1", len(rows))
+	}
+	if rows[0].Calls != 3 {
+		t.Errorf("calls = %d, want 3", rows[0].Calls)
+	}
+	if rows[0].UniqueUsers != 2 {
+		t.Errorf("unique_users = %d, want 2 (a distinct count, and never 0 for a called realm)", rows[0].UniqueUsers)
+	}
+
+	// And the listing agrees, since they are the same definition.
+	list, err := db.ListPackages("gnoland1", PackageFilter{}, 10, 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range list {
+		if p.Path == "gno.land/r/demo/busy" && p.UniqueUsers != rows[0].UniqueUsers {
+			t.Errorf("listing says %d unique users, search says %d: one definition, two answers",
+				p.UniqueUsers, rows[0].UniqueUsers)
+		}
+	}
+}
