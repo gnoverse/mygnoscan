@@ -34,6 +34,11 @@ func (d *DB) SetSyncState(key, value string) error {
 
 // NetworkScopedTables lists every table whose rows belong to a single network.
 
+// Adding a table here is a three-place change, and the other two are in other
+// packages. SeedNetwork (fixtures.go) must seed exactly one row in it, because
+// pkg/syncer's chain-reset tests count rows against len(NetworkScopedTables)
+// and read a shortfall as a reset that failed to delete something. `go test
+// ./pkg/store/` will not catch it: the failure is four tests in pkg/syncer.
 var NetworkScopedTables = []string{
 	"packages",
 	"package_files",
@@ -71,6 +76,12 @@ var NetworkScopedTables = []string{
 	// it, in DeleteNetworkData: a cursor above the new chain's tip would mark
 	// the history closed before any of it had been read.
 	"coin_transfers",
+	// first_seen is a rollup of the tables above, in the same class as
+	// caller_edges (963617b): a chain whose block-1 fingerprint changed has a
+	// new set of participants, and keeping the old chain's first-appearance
+	// dates would make every one of them look like a returning actor and the
+	// "new this week" feed permanently empty.
+	"first_seen",
 }
 
 // DeleteNetworkData removes every row belonging to a network, in one transaction.
