@@ -71,6 +71,12 @@ var NetworkScopedTables = []string{
 	// it, in DeleteNetworkData: a cursor above the new chain's tip would mark
 	// the history closed before any of it had been read.
 	"coin_transfers",
+	// first_seen is a rollup of the tables above, in the same class as
+	// caller_edges (963617b): a chain whose block-1 fingerprint changed has a
+	// new set of participants, and keeping the old chain's first-appearance
+	// dates would make every one of them look like a returning actor and the
+	// "new this week" feed permanently empty.
+	"first_seen",
 }
 
 // DeleteNetworkData removes every row belonging to a network, in one transaction.

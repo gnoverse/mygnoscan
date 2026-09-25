@@ -523,6 +523,27 @@ func initSchema(db *sql.DB) error {
 			PRIMARY KEY (network, caller, pkg_path, day)
 		);
 
+		-- The first time a subject was ever seen on this chain, by kind.
+		--
+		-- Replaces three separate GROUP BY ... HAVING scans over calls and
+		-- package_submissions with one range scan, which is what makes "new
+		-- this week" answerable on every request rather than on a timer. It is
+		-- the slowest-growing table here: one row per participant, ever, about
+		-- 450 on mainnet today against 20,000-odd calls.
+		--
+		-- WITHOUT ROWID because every access is by the full primary key and the
+		-- row is smaller than the rowid index that would otherwise shadow it.
+		CREATE TABLE IF NOT EXISTS first_seen (
+			network TEXT    NOT NULL,
+			kind    TEXT    NOT NULL,   -- address | deployer | package_called
+			subject TEXT    NOT NULL,
+			at      TEXT    NOT NULL,
+			height  INTEGER NOT NULL,
+			PRIMARY KEY (network, kind, subject)
+		) WITHOUT ROWID;
+
+		CREATE INDEX IF NOT EXISTS idx_first_seen_at ON first_seen(network, kind, at);
+
 		CREATE TABLE IF NOT EXISTS package_files (
 			network TEXT NOT NULL DEFAULT 'gnoland1',
 			package_path TEXT NOT NULL,

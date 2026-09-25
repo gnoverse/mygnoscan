@@ -234,6 +234,13 @@ func run() error {
 				log.Printf("rollups: %v", err)
 				return
 			}
+			// Separate call rather than folded into RefreshRollups: this one is
+			// an incremental upsert that can only move a row earlier, so a
+			// failure here costs freshness and never correctness, and it should
+			// not take the gas aggregates down with it.
+			if err := db.RefreshFirstSeen(); err != nil {
+				log.Printf("first_seen: %v", err)
+			}
 			log.Printf("rollups refreshed in %s", time.Since(start).Round(time.Millisecond))
 		}
 		// Wait out the startup ANALYZE before the first build. Both take the
