@@ -388,3 +388,124 @@ func (in PackageRejected) Emit() (Facts, Layers) {
 			"The code stayed parked rather than going live. Submitting a changed version under the same path is allowed."},
 	}
 }
+
+// ProposalOpened is a GovDAO proposal being created.
+type ProposalOpened struct {
+	ID         int
+	Title      string
+	ActorLabel string // "@aeddi", or empty
+	Actor      string // the address, for layer 1
+	Height     int64
+}
+
+// Emit returns the facts and the three layers for a proposal.opened event.
+func (in ProposalOpened) Emit() (Facts, Layers) {
+	who := in.ActorLabel
+	if who == "" {
+		who = "Somebody"
+	}
+	facts := Facts{
+		"proposal_id": in.ID,
+		"title":       in.Title,
+		"actor_label": in.ActorLabel,
+	}
+
+	// The title goes in layer 2 when it fits and is dropped when it does not.
+	//
+	// Real mainnet titles run 20 to 53 characters (measured 2026-09-25 over the
+	// five proposals there), so with an ordinary handle the full line is about
+	// 82 and fits. A long handle and a long title together do not, and the
+	// budget is not negotiable: it is the card's headline row. Dropping the
+	// title is the right thing to drop, because layers 1 and 3 both still carry
+	// it, and a truncated title is a title that says something else.
+	means := fmt.Sprintf("%s opened proposal %d, %s.", who, in.ID, in.Title)
+	if len(means) > MaxMeans {
+		means = fmt.Sprintf("%s opened proposal %d.", who, in.ID)
+	}
+
+	return facts, Layers{
+		What:  Layer{fmt.Sprintf("ProposalCreated recorded proposal %d by %s at block %d.", in.ID, in.Actor, in.Height)},
+		Means: Layer{means},
+		Matters: Layer{fmt.Sprintf(
+			"GovDAO members can vote on it. Its subject is %s.", in.Title)},
+	}
+}
+
+// ProposalClosed is a proposal reaching a verdict, with execution folded in.
+//
+// One kind rather than two, because on mainnet proposal 7 was created at
+// 10:25:07 and executed at 10:25:23: sixteen seconds apart is one event to a
+// reader, and two rows about it is the failure this page exists to avoid.
+type ProposalClosed struct {
+	ID       int
+	Title    string
+	Outcome  string // "passed" or "rejected"
+	YesPct   int
+	Executed bool
+	Height   int64
+}
+
+// Emit returns the facts and the three layers for a proposal.closed event.
+func (in ProposalClosed) Emit() (Facts, Layers) {
+	facts := Facts{
+		"proposal_id": in.ID,
+		"title":       in.Title,
+		"outcome":     in.Outcome,
+		"yes_pct":     in.YesPct,
+		"executed":    in.Executed,
+	}
+
+	tail := "."
+	if in.Executed {
+		tail = ", and was executed."
+	}
+	means := fmt.Sprintf("Proposal %d %s with %d%% yes%s", in.ID, in.Outcome, in.YesPct, tail)
+
+	matters := fmt.Sprintf("The vote is settled at %d%% yes. Its subject was %s.", in.YesPct, in.Title)
+	if in.Executed {
+		matters = fmt.Sprintf("The change is already in effect, not merely agreed. Its subject was %s.", in.Title)
+	}
+
+	return facts, Layers{
+		What: Layer{fmt.Sprintf("Proposal %d closed %s at block %d, with %d%% yes.",
+			in.ID, in.Outcome, in.Height, in.YesPct)},
+		Means:   Layer{means},
+		Matters: Layer{matters},
+	}
+}
+
+// TransferLargeThresholdGNOT is the cutoff for showing a bank transfer.
+//
+// Not a guess: from 1,005 sampled BankMsgSend amounts (design §5.3), 100,000
+// GNOT is the 99th-percentile-and-up band, 0.7% of sends, which over mainnet's
+// 3,856 sends is roughly 27 events in nine days. Three a day is a rate a person
+// can read; the p90 of 10,000 GNOT would be ten times that and stop being news.
+const TransferLargeThresholdGNOT = 100_000
+
+// TransferLarge is a bank transfer above the threshold.
+type TransferLarge struct {
+	GNOT   int64
+	From   string
+	To     string
+	Height int64
+}
+
+// Emit returns the facts and the three layers for a transfer.large event.
+func (in TransferLarge) Emit() (Facts, Layers) {
+	facts := Facts{
+		"gnot":           in.GNOT,
+		"threshold_gnot": TransferLargeThresholdGNOT,
+		// parties licenses the word "two". A BankMsgSend has exactly one sender
+		// and one recipient, so the count is a fact rather than a flourish, and
+		// without it the gate rejects the sentence for asserting a figure.
+		"parties": 2,
+	}
+	return facts, Layers{
+		What: Layer{fmt.Sprintf("BankMsgSend moved %d GNOT from %s to %s at block %d.",
+			in.GNOT, in.From, in.To, in.Height)},
+		Means: Layer{fmt.Sprintf("%d GNOT moved between two accounts.", in.GNOT)},
+		Matters: Layer{fmt.Sprintf(
+			"Transfers are listed here from %d GNOT upward, which is why this one appears. Neither end is a realm.",
+			TransferLargeThresholdGNOT)},
+	}
+}
