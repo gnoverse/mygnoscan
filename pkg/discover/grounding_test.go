@@ -282,3 +282,48 @@ func TestDeclaredConversions(t *testing.T) {
 		})
 	}
 }
+
+// A name with digits in it is an entity, not a figure.
+//
+// Mainnet has nym-polux007 and nym-thegnomic001 today, and before
+// maskNamedEntities the scanner pulled "007" out of the middle of the word and
+// reported "the number 007 is in the text and in no fact", because
+// groundedNumbers only ever collects numeric fact values. That false positive
+// blocked the namespace.registered kind outright: every rendering of it names
+// the name.
+func TestANameWithDigitsIsNotAFigure(t *testing.T) {
+	facts := Facts{"name": "nym-polux007", "address": "g1l0tdzdyxsayestm8lu95xehgtc0s825pxu583g"}
+	l := Layers{
+		What:    Layer{"r/sys/namereg recorded the name nym-polux007."},
+		Means:   Layer{"@nym-polux007 claimed their name on chain."},
+		Matters: Layer{"Packages published by that address can live under nym-polux007 from now on."},
+	}
+	if v := Ground(facts, l, nil); len(v) > 0 {
+		for _, one := range v {
+			t.Errorf("a name the facts contain verbatim was rejected: %s", one.Error())
+		}
+	}
+}
+
+// The masking must not become a way to smuggle a figure in. A string fact whose
+// whole value is digits is a number written as a string, and masking it would
+// let a template state any figure it liked by putting it in a string field
+// first.
+func TestMaskingDoesNotLaunderAFigure(t *testing.T) {
+	facts := Facts{"looks_like_a_name": "999"}
+	l := Layers{
+		What:    Layer{"something happened."},
+		Means:   Layer{"999 things happened."},
+		Matters: Layer{"That is a lot of things."},
+	}
+	v := Ground(facts, l, nil)
+	found := false
+	for _, one := range v {
+		if one.Check == "G1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("a digits-only string fact laundered a number past G1")
+	}
+}

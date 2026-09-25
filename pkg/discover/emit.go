@@ -237,3 +237,154 @@ func spellSmall(n int) string {
 	}
 	return fmt.Sprintf("%d", n)
 }
+
+// The kinds below were written after the four above, and they are a step down
+// in confidence, stated here rather than in a commit message.
+//
+// Layer 2 is the spec's own line from the vocabulary table (§5.1), so the
+// sentence a reader meets first is decided, not invented. Layer 1 is mechanical:
+// it is the indexed fact in its own terms. **Layer 3 is drafted**, because
+// §10.1 works only four kinds and these are not among them, so the "why it
+// matters" line follows the pattern of the four that were approved rather than
+// a rule. Every one satisfies the grounding gate, which is a floor and not a
+// substitute for someone reading them.
+//
+// Three v1 kinds are deliberately absent: proposal.opened, proposal.closed and
+// transfer.large. The first two cannot keep layer 2 inside 90 characters while
+// carrying a proposal title, which is a real editorial decision about what to
+// drop; the third needs a "large" threshold, and a cutoff that decides what a
+// reader is shown is a judgement rather than a constant to guess at.
+
+// PackageFirstCall is the first successful call a package ever received, which
+// is a different event from its deployment and usually much later.
+type PackageFirstCall struct {
+	Path   string
+	Ref    string // r/gnoswap/router, the short form a reader recognises
+	Caller string
+	Height int64
+	// External is true when the caller is not the package's creator. A first
+	// call by anyone is news on a young chain; a first call by a stranger is a
+	// different kind of news, and the flag lets the filter separate them
+	// without doubling the vocabulary.
+	External bool
+}
+
+// Emit returns the facts and the three layers for a package.first_call event.
+func (in PackageFirstCall) Emit() (Facts, Layers) {
+	_, name := splitPath(in.Path)
+	facts := Facts{
+		"package_name": name,
+		"package_ref":  in.Ref,
+		"external":     in.External,
+		// first_ever is what licenses the word "first" in layer 2. G3 refuses
+		// the claim without it, which is the gate working: "for the first time"
+		// is a rank, and a rank has to come from somewhere.
+		"first_ever": true,
+	}
+	matters := "A deployed package that nobody has called is just stored code. Somebody has started running this one."
+	if in.External {
+		matters = "A deployed package that nobody has called is just stored code. Somebody other than its author has started running this one."
+	}
+	return facts, Layers{
+		What:    Layer{fmt.Sprintf("The first successful call to %s was at block %d, by %s.", in.Path, in.Height, in.Caller)},
+		Means:   Layer{fmt.Sprintf("Somebody used %s for the first time.", in.Ref)},
+		Matters: Layer{matters},
+	}
+}
+
+// PackageSpike is a package taking far more calls in a day than it usually does.
+type PackageSpike struct {
+	Ref            string
+	Day            string
+	Calls          int
+	Callers        int
+	BaselineMedian int
+	Ratio          float64
+}
+
+// Emit returns the facts and the three layers for a package.spike event.
+func (in PackageSpike) Emit() (Facts, Layers) {
+	facts := Facts{
+		"package_ref":     in.Ref,
+		"day":             in.Day,
+		"calls":           in.Calls,
+		"callers":         in.Callers,
+		"baseline_median": in.BaselineMedian,
+		"ratio":           in.Ratio,
+	}
+	return facts, Layers{
+		What: Layer{fmt.Sprintf("%s took %d calls on %s from %d callers, against a 7-day median of %d.",
+			in.Ref, in.Calls, in.Day, in.Callers, in.BaselineMedian)},
+		Means: Layer{fmt.Sprintf("%s took %dx its usual daily calls, from %d different people.",
+			in.Ref, int(math.Round(in.Ratio)), in.Callers)},
+		Matters: Layer{fmt.Sprintf(
+			"A normal day there is about %d calls. %d people in one day is not one script running twice.",
+			in.BaselineMedian, in.Callers)},
+	}
+}
+
+// NamespaceRegistered is an address claiming a name through r/sys/namereg.
+type NamespaceRegistered struct {
+	Name    string
+	Address string
+	Height  int64
+}
+
+// Emit returns the facts and the three layers for a namespace.registered event.
+func (in NamespaceRegistered) Emit() (Facts, Layers) {
+	facts := Facts{
+		"name":        in.Name,
+		"actor_label": "@" + in.Name,
+		"address":     in.Address,
+	}
+	return facts, Layers{
+		What:  Layer{fmt.Sprintf("r/sys/namereg recorded the name %s for %s at block %d.", in.Name, in.Address, in.Height)},
+		Means: Layer{fmt.Sprintf("@%s claimed their name on chain.", in.Name)},
+		Matters: Layer{fmt.Sprintf(
+			"Packages published by that address can live under %s from now on, and the name is theirs alone.", in.Name)},
+	}
+}
+
+// ValidatorRegistered is an address registering as a candidate validator.
+type ValidatorRegistered struct {
+	Moniker string
+	Address string
+	Height  int64
+}
+
+// Emit returns the facts and the three layers for a validator.registered event.
+func (in ValidatorRegistered) Emit() (Facts, Layers) {
+	facts := Facts{
+		"moniker": in.Moniker,
+		"address": in.Address,
+	}
+	return facts, Layers{
+		What:  Layer{fmt.Sprintf("valoper registered %s for %s at block %d.", in.Moniker, in.Address, in.Height)},
+		Means: Layer{fmt.Sprintf("%s registered as a validator.", in.Moniker)},
+		Matters: Layer{
+			"Registering is not the same as validating: it puts them forward, and the chain decides separately whether they produce blocks."},
+	}
+}
+
+// PackageRejected is an approver refusing a parked package.
+type PackageRejected struct {
+	Path   string
+	Ref    string
+	Actor  string // the approver's address
+	Height int64
+}
+
+// Emit returns the facts and the three layers for a package.rejected event.
+func (in PackageRejected) Emit() (Facts, Layers) {
+	_, name := splitPath(in.Path)
+	facts := Facts{
+		"package_name": name,
+		"package_ref":  in.Ref,
+	}
+	return facts, Layers{
+		What:  Layer{fmt.Sprintf("MsgRejectPackage refused %s at block %d, by %s.", in.Path, in.Height, in.Actor)},
+		Means: Layer{fmt.Sprintf("A package approver turned down %s.", in.Ref)},
+		Matters: Layer{
+			"The code stayed parked rather than going live. Submitting a changed version under the same path is allowed."},
+	}
+}

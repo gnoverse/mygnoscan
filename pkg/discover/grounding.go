@@ -145,6 +145,29 @@ func checkBudgets(l Layers) []Violation {
 // rendered through a declared conversion. Nothing else. This is the check that
 // catches a template reading the wrong field, and a model inventing a figure.
 
+// maskNamedEntities blanks out string facts before the number scan.
+//
+// Names on this chain contain digits: mainnet has nym-polux007 and
+// nym-thegnomic001 today. Without this, "@nym-polux007 claimed their name"
+// reports "the number 007 is in the text and in no fact", because the scanner
+// pulls 007 out of the middle of a word and groundedNumbers only ever collects
+// numeric fact *values*. That is a false positive on an entity the facts do
+// contain, verbatim, and it blocks the namespace.registered kind outright.
+//
+// Only strings carrying a non-digit are masked. A fact whose whole value is
+// digits is a figure written as a string, and masking it would let a template
+// state any number it liked by first putting it in a string field.
+func maskNamedEntities(facts Facts, text string) string {
+	for _, raw := range facts {
+		s, ok := raw.(string)
+		if !ok || s == "" || !strings.ContainsFunc(s, func(r rune) bool { return r < '0' || r > '9' }) {
+			continue
+		}
+		text = strings.ReplaceAll(text, s, " ")
+	}
+	return text
+}
+
 var numberToken = regexp.MustCompile(`\d[\d,\x{202f}\x{00a0} ]*(?:\.\d+)?`)
 
 var smallWords = map[string]float64{
@@ -160,7 +183,7 @@ func checkNumbers(facts Facts, field, text string) []Violation {
 	allowed := groundedNumbers(facts)
 	var out []Violation
 
-	for _, tok := range numberToken.FindAllString(text, -1) {
+	for _, tok := range numberToken.FindAllString(maskNamedEntities(facts, text), -1) {
 		v, ok := parseNumber(tok)
 		if !ok {
 			continue
