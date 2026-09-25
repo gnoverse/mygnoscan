@@ -84,10 +84,13 @@ func TestTrimFields_StripsEveryOptionalGroupFromEverySet(t *testing.T) {
 	for _, tc := range selectionSets() {
 		t.Run(tc.name, func(t *testing.T) {
 			// A chain that defines none of the optional types
+			// Keyed through typeSupportKey, not by bare type name: support is
+			// cached per endpoint, because a pool's members can run different
+			// schemas. With no URL configured the endpoint is the empty string.
 			c := &Client{typeSupport: map[string]bool{
-				inertProbeType:    false,
-				sessionProbeType:  false,
-				transferProbeType: false,
+				typeSupportKey("", inertProbeType):    false,
+				typeSupportKey("", sessionProbeType):  false,
+				typeSupportKey("", transferProbeType): false,
 			}}
 
 			trimmed := c.trimFields(context.Background(), tc.fields)
@@ -127,5 +130,42 @@ func TestSelectionSets_RenderWithoutALeftoverVerb(t *testing.T) {
 			end := min(i+24, len(tc.fields))
 			t.Errorf("rendered set carries a percent at offset %d: %q", i, tc.fields[i:end])
 		})
+	}
+}
+
+// A pool's members can run different schemas, and mainnet's two do:
+// indexer.gno.land does not define MsgCreateSession, indexer.onbloc.xyz does.
+//
+// Caching one answer for the whole pool means the field set gets trimmed for
+// one member and sent to the other, and that failure is silent rather than
+// loud: the message comes back with its real __typename and no fields at all,
+// because the fragment that would have selected them was stripped and the
+// UnexpectedMessage fragment no longer matches. It dropped ten session grants
+// on mainnet on 2026-09-25 while every log line said the sweep was healthy.
+func TestTypeSupportIsCachedPerEndpointNotPerPool(t *testing.T) {
+	const (
+		bare  = "https://indexer.bare.example/graphql/query"
+		rich  = "https://indexer.rich.example/graphql/query"
+		aType = "MsgCreateSession"
+	)
+	c := &Client{
+		urls: []string{bare, rich},
+		typeSupport: map[string]bool{
+			typeSupportKey(bare, aType): false,
+			typeSupportKey(rich, aType): true,
+		},
+	}
+
+	// Selecting the bare endpoint: the fragments must go.
+	c.active = 0
+	if c.supportsType(context.Background(), aType) {
+		t.Error("the bare endpoint reported support it does not have")
+	}
+
+	// Rotating to the rich one must change the answer, not reuse the first.
+	c.active = 1
+	if !c.supportsType(context.Background(), aType) {
+		t.Error("the rich endpoint inherited the bare endpoint's cached answer, " +
+			"so its typed fragments would be stripped and its grants arrive empty")
 	}
 }
