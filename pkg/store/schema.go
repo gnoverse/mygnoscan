@@ -1101,6 +1101,34 @@ func initSchema(db *sql.DB) error {
 
 		-- The ranking query: one network, a day range, summed per path.
 		CREATE INDEX IF NOT EXISTS idx_realm_views_day ON realm_views(network, day);
+		-- One row per (address, achievement) the address has ever unlocked, with
+		-- the block that first unlocked it. See pkg/achievements for the catalog
+		-- and the query behind each slug.
+		--
+		-- Derived data, rebuilt wholesale per network by RefreshAchievements on
+		-- a timer, for the same reason as the gas rollups above: every query is
+		-- a GROUP BY over a whole history table, none can be maintained
+		-- incrementally without being exactly right across re-syncs, backfills
+		-- and chain resets, and a periodic recompute is idempotent by
+		-- construction.
+		--
+		-- The slug is stored rather than an id. A slug is the badge's identity
+		-- everywhere else too (the URL, the API, the catalog), and an integer
+		-- key would add a second identity that has to agree with the first.
+		CREATE TABLE IF NOT EXISTS achievements (
+			network      TEXT NOT NULL,
+			address      TEXT NOT NULL,
+			slug         TEXT NOT NULL,
+			block_height INTEGER NOT NULL DEFAULT 0,
+			block_time   TEXT NOT NULL DEFAULT '',
+			tx_hash      TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY (network, address, slug)
+		) WITHOUT ROWID;
+
+		-- "Who has this badge, earliest first" is the directory's filter and the
+		-- leaderboard behind each badge. The primary key leads with the address,
+		-- so without this every such read scans the network's whole set.
+		CREATE INDEX IF NOT EXISTS idx_achievements_slug ON achievements(network, slug, block_height);
 
 		-- Both directions, because a leg is read from whichever end asked. Height
 		-- descending is in the index rather than left to a sort: the page reads

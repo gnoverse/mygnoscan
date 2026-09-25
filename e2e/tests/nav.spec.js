@@ -47,8 +47,13 @@ test('every page in a section carries the section strip', async ({ page }) => {
     ['/txs', 'txs', ['blocks', 'events', 'validators', 'sanity']],
     ['/validators', 'validators', ['blocks', 'txs', 'events', 'sanity']],
     ['/sanity', 'sanity', ['blocks', 'txs', 'events', 'validators']],
-    ['/defi', 'overview', ['accounts', 'coins', 'grc20']],
-    ['/accounts', 'accounts', ['overview', 'coins', 'grc20']],
+    ['/defi', 'overview', ['coins', 'grc20']],
+    // accounts and sessions moved into the directory section but kept their
+    // own paths, so their strip is the directory's and not defi's.
+    ['/accounts', 'accounts', ['overview', 'people', 'sessions', 'teams']],
+    ['/directory', 'overview', ['people', 'accounts', 'sessions', 'teams']],
+    ['/directory/people', 'people', ['overview', 'accounts', 'sessions', 'teams']],
+    ['/directory/teams', 'teams', ['overview', 'people', 'accounts', 'sessions']],
     ['/', 'overview', ['analytics', 'dashboards']],
   ]) {
     await page.goto(path);

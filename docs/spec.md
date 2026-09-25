@@ -64,6 +64,19 @@ fall back to computing live before the first build rather than reporting zero.
 | `bank_top_rollup` | one row per `(network, leaderboard, address)` | the transfer leaderboards, truncated per leaderboard |
 | `active_addr_rollup` | one row per `(network, hour, kind, address)` | how many distinct addresses were active per bucket |
 
+The `achievements` table is the same idea with a different shape: one row per
+`(network, address, slug)`, holding the block that first earned that badge. The
+catalog is `pkg/achievements` and every entry is a single `GROUP BY` over one of
+the history tables above, none of which can be maintained incrementally without
+being exactly right across a re-sync, a backfill or a chain reset. It is rebuilt
+wholesale per network on its own, slower timer (`-achievement-interval`, ten
+minutes by default) because a badge is a fact about the past and nobody watches
+one arrive.
+
+| table | grain | answers |
+|---|---|---|
+| `achievements` | one row per `(network, address, slug)` | what an address has done on chain, and when it first did it |
+
 `active_addr_rollup` stores tuples rather than counts because counts cannot be
 re-aggregated: an address active on three days of a week is one weekly active
 address, not three. The hourly grain is finer than any bucket served, so every
@@ -153,6 +166,8 @@ deliberately not reading.
 | everywhere | `network`, and `embed=1` |
 | any table of 8 rows or more | `f.<table>`, `s.<table>` (add `:desc` for descending) |
 | `/packages`, `/accounts` | `pv`, `av` |
+| `/directory/people` | `q`, `has` (comma-separated, an AND), `sort`, `named` |
+| address detail | `tab` (`achievements`) |
 | `/dashboards` | `section`, `window` |
 | `/txs` | `type`, `status`, `page` |
 | `/blocks` | `txs` |

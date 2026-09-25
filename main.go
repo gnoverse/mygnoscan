@@ -68,6 +68,11 @@ func run() error {
 		// sooner than a production chain does.
 		symbolIndexEvery = flag.Duration("symbol-index-interval", symbolIndexInterval,
 			"how often to re-index package symbols; the staleness check is one query, so this is cheap")
+		// Same knob and the same reason as the one above: the badge table is
+		// rebuilt from a fixture that is written after the binary starts, and a
+		// test suite cannot wait ten minutes for the next pass.
+		achievementEvery = flag.Duration("achievement-interval", store.AchievementInterval,
+			"how often to rebuild the achievement table from indexed history")
 		// The MCP endpoint carries no authentication, because the data is a
 		// public chain and an API key would make it useless to the agents it
 		// exists for. Per-IP limits are what make that safe, so they are
@@ -258,6 +263,37 @@ func run() error {
 				return
 			case <-ticker.C:
 				refresh()
+			}
+		}
+	}()
+
+	// Achievements: who has done what on chain, precomputed the same way and
+	// for the same reason as the rollups above.
+	//
+	// On its own, slower timer. Every definition in pkg/achievements is a
+	// GROUP BY over a whole history table, so the pass is in the same cost
+	// class as the rollups, and a badge is a fact about the past that nobody
+	// is watching arrive. Starts after the rollups have had the write lock
+	// rather than racing them for it.
+	go func() {
+		db.WaitBackground()
+		pass := func() {
+			start := time.Now()
+			if err := db.RefreshAchievements(); err != nil {
+				log.Printf("achievements: %v", err)
+				return
+			}
+			log.Printf("achievements refreshed in %s", time.Since(start).Round(time.Millisecond))
+		}
+		pass()
+		ticker := time.NewTicker(*achievementEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				pass()
 			}
 		}
 	}()

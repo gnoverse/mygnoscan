@@ -74,13 +74,20 @@ snapshot. No gno dependency: the `@type` discriminators are enough.
 banker and its storage deposit). Both are pure functions of the path, so nothing
 on chain stores them and no indexer can look them up.
 
+**`pkg/achievements`** — the catalog of deeds an address can have done on chain:
+a slug, what it means, how a reader earns it, and the one query that decides who
+has it. Data, not code: no imports, no database handle, and the queries are
+strings that `pkg/store` runs per network. Kept out of `pkg/store` so that adding
+a badge is an edit to a list rather than to the query layer, and so the wording a
+page renders has exactly one home.
+
 **`pkg/registry`** — the curated data no chain can supply: address labels, token
 metadata, the apps directory. Three JSON files embedded at build time, so adding
 an entry is a pull request against a file rather than an edit to the frontend.
 
 **`pkg/store`** — schema, startup migrations, and every query, split by domain:
 `schema.go`, then `packages.go`, `accounts.go`, `transactions.go`,
-`analytics.go`, `rollups.go`, `storage.go`.
+`analytics.go`, `rollups.go`, `storage.go`, `achievements.go`.
 
 **`pkg/httpapi`** — HTTP handlers, split the same way (`api_packages.go`,
 `api_accounts.go`, `api_analytics.go`, `api_chain.go`). Most read SQLite; some
