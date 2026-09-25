@@ -420,6 +420,37 @@ tr.total-row { border-top: 2px solid var(--border); }
 tr.total-row td { font-weight: bold; color: var(--accent); }
 .block-ctx { color: var(--fg2); font-size: 12px; }
 .section-sub { color: var(--fg2); font-size: 12px; margin: -4px 0 10px; max-width: 70ch; }
+/* Achievements: the badge grid, the filter chips, and the strip of emoji that
+   stands in for the grid inside a table row. Cards rather than a table because
+   the `how` line is the payload and a table column would truncate it. */
+.ach-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 8px; margin-bottom: 18px; }
+.ach { display: flex; gap: 10px; background: var(--bg2); border: 1px solid var(--border); border-radius: 4px;
+       padding: 10px 11px; align-items: flex-start; }
+.ach-emoji { font-size: 22px; line-height: 1.1; flex: 0 0 auto; filter: none; }
+.ach-body { min-width: 0; }
+.ach-name { font-weight: bold; font-size: 13px; }
+.ach-what { color: var(--fg2); font-size: 11.5px; margin-top: 2px; }
+.ach-how { color: var(--fg2); font-size: 11.5px; margin-top: 6px; border-left: 2px solid var(--border); padding-left: 8px; }
+.ach-how code { font-size: 11px; word-break: break-all; }
+.ach-meta { font-size: 11px; color: var(--fg2); margin-top: 6px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+/* Locked is dimmed, not hidden: the locked half is the half that teaches, and a
+   grid of only what somebody already did is a trophy case. */
+.ach-locked { opacity: 0.55; }
+.ach-locked .ach-emoji { filter: grayscale(1); }
+.ach-got { color: var(--green); font-weight: bold; }
+.ach-chips { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0 12px; }
+.ach-chip { cursor: pointer; padding: 3px 9px; border-radius: 999px; font-size: 11.5px; color: var(--fg2);
+            border: 1px solid var(--border); background: transparent; white-space: nowrap; }
+.ach-chip:hover { color: var(--fg); border-color: var(--fg2); }
+.ach-chip.on { color: var(--bg); background: var(--accent); border-color: var(--accent); font-weight: 600; }
+.badge-strip { font-size: 13px; letter-spacing: 1px; word-break: keep-all; }
+.badge-strip span { cursor: default; }
+.ach-ways { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; margin: 14px 0 22px; }
+.ach-way { display: block; background: var(--bg2); border: 1px solid var(--border); border-radius: 4px;
+           padding: 11px 12px; text-decoration: none; }
+.ach-way:hover { border-color: var(--accent); text-decoration: none; }
+.ach-way b { display: block; color: var(--accent); font-size: 13px; }
+.ach-way span { display: block; color: var(--fg2); font-size: 11.5px; margin-top: 3px; }
 .table-filter-note { color: var(--fg2); font-size: 11px; margin: 4px 0 8px; }
 .table-filter-note a { color: var(--accent); }
 .table-export { display: flex; gap: 6px; align-items: center; margin: 4px 0 8px; }
@@ -886,6 +917,7 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
 <symbol id="i-list" viewBox="0 0 16 16"><path d="M5.8 4h7.8"/><path d="M5.8 8h7.8"/><path d="M5.8 12h7.8"/><path d="M2.6 4h.01"/><path d="M2.6 8h.01"/><path d="M2.6 12h.01"/></symbol>
 <symbol id="i-pulse" viewBox="0 0 16 16"><path d="M1.6 8h2.9l1.7-3.5 3.2 7.3 1.6-3.8h3.4"/></symbol>
 <symbol id="i-swap" viewBox="0 0 16 16"><path d="M2.6 5.6h9.2"/><path d="m9.4 3.2 2.4 2.4-2.4 2.4"/><path d="M13.4 10.4H4.2"/><path d="m6.6 8-2.4 2.4 2.4 2.4"/></symbol>
+<symbol id="i-users" viewBox="0 0 16 16"><circle cx="6" cy="5.4" r="2.4"/><path d="M1.8 13.4a4.2 4.2 0 0 1 8.4 0"/><circle cx="11.9" cy="6.1" r="1.8"/><path d="M11.9 9.5a3.4 3.4 0 0 1 2.9 1.7"/></symbol>
 <symbol id="i-message" viewBox="0 0 16 16"><path d="M13.6 9.6a1.6 1.6 0 0 1-1.6 1.6H5.2L2.4 14V4a1.6 1.6 0 0 1 1.6-1.6h8A1.6 1.6 0 0 1 13.6 4z"/></symbol>
 </defs></svg>
 <aside class="rail">
@@ -930,12 +962,19 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
         </div>
       </div>
       <div class="nav-group">
-        <a onclick="navigate('/defi')" id="nav-defi" title="the money side: accounts, coins, grc20"><svg aria-hidden="true"><use href="#i-coin"/></svg><span class="rail-label">defi</span></a>
+        <a onclick="navigate('/defi')" id="nav-defi" title="the money side: coins and grc20"><svg aria-hidden="true"><use href="#i-coin"/></svg><span class="rail-label">defi</span></a>
         <div class="nav-kids">
-          <a onclick="navigate('/accounts')" id="nav-accounts" title="accounts, balances and the rich list"><span class="rail-label">accounts</span></a>
-          <a onclick="navigate('/sessions')" id="nav-sessions" title="delegated signing keys: who lets what sign for them"><span class="rail-label">sessions</span></a>
           <a onclick="navigate('/coins')" id="nav-coins" title="native ugnot: transfers, volume, who moves it"><span class="rail-label">coins</span></a>
           <a onclick="navigate('/grc20')" id="nav-grc20" title="grc20 assets, supply and holders"><span class="rail-label">grc20</span></a>
+        </div>
+      </div>
+      <div class="nav-group">
+        <a onclick="navigate('/directory')" id="nav-directory" title="who is on this chain: people, accounts, sessions, teams"><svg aria-hidden="true"><use href="#i-users"/></svg><span class="rail-label">directory</span></a>
+        <div class="nav-kids">
+          <a onclick="navigate('/directory/people')" id="nav-people" title="find people by what they have done on chain"><span class="rail-label">people</span></a>
+          <a onclick="navigate('/accounts')" id="nav-accounts" title="accounts, balances and the rich list"><span class="rail-label">accounts</span></a>
+          <a onclick="navigate('/sessions')" id="nav-sessions" title="delegated signing keys: who lets what sign for them"><span class="rail-label">sessions</span></a>
+          <a onclick="navigate('/directory/teams')" id="nav-teams" title="teams and organisations"><span class="rail-label">teams</span></a>
         </div>
       </div>
       <div class="nav-group">
@@ -1124,6 +1163,9 @@ circle[data-hl].hl-active { stroke: #4ecdc4; stroke-width: 3; stroke-opacity: 1;
   <div class="view" id="view-analytics"><main><div id="analytics-content"></div></main></div>
   <div class="view" id="view-params"><main><div id="params-content"></div></main></div>
   <div class="view" id="view-sessions"><main><div id="sessions-content"></div></main></div>
+  <div class="view" id="view-directory"><main><div id="directory-content"></div></main></div>
+  <div class="view" id="view-people"><main><div id="people-content"></div></main></div>
+  <div class="view" id="view-teams"><main><div id="teams-content"></div></main></div>
   <div class="view" id="view-glossary"><main><div id="glossary-content"></div></main></div>
   <div class="view" id="view-sanity"><main><div id="sanity-content"></div></main></div>
   <div class="view" id="view-contracts"><main><div id="contracts-content"></div></main></div>
@@ -3307,10 +3349,19 @@ const NAV = [
     { id: 'sanity', label: 'sanity', path: '/sanity' },
   ] },
   { id: 'defi', label: 'defi', path: '/defi', own: 'overview', children: [
-    { id: 'accounts', label: 'accounts', path: '/accounts' },
-    { id: 'sessions', label: 'sessions', path: '/sessions' },
     { id: 'coins', label: 'coins', path: '/coins' },
     { id: 'grc20', label: 'grc20', path: '/grc20' },
+  ] },
+  // accounts and sessions keep the paths they shipped with rather than moving
+  // under /directory/. A section is a grouping in the rail, not a URL prefix
+  // (storage sits under gas at /storage for the same reason), and rewriting
+  // two of the most-linked paths on the site would break every bookmark and
+  // every link in an issue for no gain a reader can see.
+  { id: 'directory', label: 'directory', path: '/directory', own: 'overview', children: [
+    { id: 'people', label: 'people', path: '/directory/people' },
+    { id: 'accounts', label: 'accounts', path: '/accounts' },
+    { id: 'sessions', label: 'sessions', path: '/sessions' },
+    { id: 'teams', label: 'teams', path: '/directory/teams' },
   ] },
   { id: 'gas', label: 'gas', path: '/gas', own: 'summary', children: [
     { id: 'gas-realms', label: 'by realm', path: '/gas/realms' },
@@ -3454,6 +3505,12 @@ function route() {
   else if (path === '/blocks') { view = 'blocks'; }
   else if (path === '/accounts') { view = 'accounts'; }
   else if (path === '/sessions') { view = 'sessions'; }
+  // The directory groups people, accounts, sessions and teams in the rail.
+  // /accounts and /sessions keep their own top-level paths: see the comment on
+  // the NAV entry.
+  else if (path === '/directory') { view = 'directory'; }
+  else if (path === '/directory/people') { view = 'people'; }
+  else if (path === '/directory/teams') { view = 'teams'; }
   else if (path === '/defi') { view = 'defi'; }
   else if (path === '/coins') { view = 'coins'; }
   // /tokens was this page's URL when it was one page carrying both the bank
@@ -3558,12 +3615,15 @@ function route() {
     case 'dashboards': loadDashboards(); break;
     case 'params': loadParams(); break;
     case 'sessions': loadSessions(); break;
+    case 'directory': loadDirectory(); break;
+    case 'people': loadPeople(); break;
+    case 'teams': loadTeams(); break;
     case 'glossary': loadGlossary(); break;
     case 'sanity': loadSanity(); break;
     case 'block-detail': loadBlockDetail(data); break;
     case 'realm-detail': loadRealmDetail(data, urlTab); break;
     case 'tx-detail': loadTxDetail(data); break;
-    case 'address-detail': loadAddressDetail(data); break;
+    case 'address-detail': loadAddressDetail(data, urlTab); break;
   }
 }
 
@@ -7881,6 +7941,352 @@ async function loadSessions() {
   } catch (err) {
     failBlock(container, err, loadSessions);
   }
+}
+
+
+// --- Directory: who is on this chain, and what they have done ----------------
+//
+// The rest of this explorer answers questions about code and coins. This
+// section answers them about people, and the thing that makes that possible is
+// the achievement catalog: a fixed list of deeds, each one a query over indexed
+// history, each one saying in a line what earns it.
+//
+// The catalog is the feature, not the decoration. gno.land has a long list of
+// capabilities nobody discovers by reading a table of transactions — that you
+// can wrap ugnot, that a realm can import another realm's package, that an
+// account can delegate a scoped signing key and take it back. A badge names the
+// capability; the `how` line under it is the one command that earns it. The
+// locked half of somebody's grid is therefore the half worth drawing, which is
+// why nothing here hides it.
+//
+// Served from /api/achievements (the catalog with holder counts),
+// /api/directory/people (the searchable roster) and
+// /api/address/<addr>/achievements (one address against the whole catalog).
+
+// achCard draws one badge. Shared by the catalog on /directory, the grid on an
+// address page and the tooltip strip in the people table, so the wording is
+// written once and cannot drift between three copies of it.
+//
+// `state` is 'unlocked', 'locked' or 'catalog'. The three differ only in what
+// goes under the name: when it was earned, how to earn it, or how many people
+// have it.
+function achCard(a, state, extra) {
+  const card = el('div', { className: 'ach' + (state === 'locked' ? ' ach-locked' : '') });
+  card.appendChild(el('div', { className: 'ach-emoji' }, a.emoji || '•'));
+  const body = el('div', { className: 'ach-body' });
+  body.appendChild(el('div', { className: 'ach-name' }, a.name));
+  body.appendChild(el('div', { className: 'ach-what' }, a.what));
+  if (state !== 'unlocked' && a.how) {
+    body.appendChild(el('div', { className: 'ach-how' }, a.how));
+  }
+  const meta = el('div', { className: 'ach-meta' });
+  if (extra) meta.appendChild(extra);
+  // Not for a live badge: it holds nobody in the table by construction, and a
+  // "0 addresses" line beside it would read as "nobody has ever done this".
+  if (typeof a.holders === 'number' && !a.live) {
+    const n = el('span', {}, fmtNum(a.holders) + (a.holders === 1 ? ' address' : ' addresses'));
+    n.title = 'how many addresses on this chain hold this badge';
+    meta.appendChild(n);
+  }
+  if (a.live) {
+    // Said out loud rather than left as an absence. This badge is read from the
+    // chain on the address's own page and cannot be listed or filtered, and a
+    // reader who filters for it and gets nothing deserves the reason.
+    const live = el('span', { style: { color: 'var(--fg2)' } }, 'live read, not indexed');
+    live.title = 'a session signs as its master, so nothing in the index records which key signed. '
+      + 'this one is read from the chain on an address page only, and only while the grant still exists.';
+    meta.appendChild(live);
+  }
+  if (meta.childNodes.length) body.appendChild(meta);
+  card.appendChild(body);
+  return card;
+}
+
+// badgeStrip is the same information as a grid, folded into one table cell:
+// the emoji in catalog order, each one titled with what it means. Capped,
+// because a row is not a grid and the count beside it carries the rest.
+function badgeStrip(slugs, catalog, cap) {
+  const strip = el('span', { className: 'badge-strip' });
+  const byslug = catalog || {};
+  const ordered = (slugs || []).slice().sort((a, b) => (byslug[a]?.order ?? 999) - (byslug[b]?.order ?? 999));
+  for (const slug of ordered.slice(0, cap || 12)) {
+    const def = byslug[slug];
+    const sp = el('span', {}, def ? (def.emoji || '•') : '•');
+    sp.title = def ? def.name + ' — ' + def.what : slug;
+    strip.appendChild(sp);
+  }
+  if (ordered.length > (cap || 12)) strip.append(' +' + (ordered.length - (cap || 12)));
+  return strip;
+}
+
+// catalogIndex turns the /api/achievements payload into slug -> def, keeping
+// the catalog's own order as `order` so a strip of emoji reads in the same
+// sequence everywhere.
+function catalogIndex(list) {
+  const out = {};
+  (list || []).forEach((a, i) => { out[a.slug] = Object.assign({ order: i }, a); });
+  return out;
+}
+
+function computedNote(at) {
+  if (!at) return el('span', {});
+  const wrap = el('span', {}, 'badges rebuilt ');
+  wrap.appendChild(timeEl(at));
+  wrap.append('. they are a fact about the past, so they are recomputed on a timer rather than read live.');
+  return wrap;
+}
+
+async function loadDirectory() {
+  const container = clear('directory-content');
+  skeletonBlock(container);
+  try {
+    await apiSWR('achievements', (data) => renderDirectory(container, data));
+  } catch (err) {
+    failBlock(container, err, loadDirectory);
+  }
+}
+
+function renderDirectory(container, data) {
+  container.textContent = '';
+  container.appendChild(el('h1', {}, 'directory'));
+  container.appendChild(el('div', { className: 'section-sub' },
+    'who is on this chain. accounts and sessions are the raw rosters; people is the searchable one, '
+    + 'built from the achievement catalog below.'));
+
+  const ways = el('div', { className: 'ach-ways' });
+  const way = (path, title, sub) => {
+    const a = el('a', { className: 'ach-way', href: path }, el('b', {}, title), el('span', {}, sub));
+    a.addEventListener('click', (e) => { e.preventDefault(); navigate(path); });
+    ways.appendChild(a);
+  };
+  way('/directory/people', 'people', 'search by what someone has actually done');
+  way('/accounts', 'accounts', 'activity, balances and how many there are');
+  way('/sessions', 'sessions', 'delegated signing keys, and who granted them');
+  way('/directory/teams', 'teams', 'coming soon');
+  container.appendChild(ways);
+
+  const list = data.achievements || [];
+  container.appendChild(el('div', { className: 'section-title' }, 'achievements (' + list.length + ')'));
+  container.appendChild(el('div', { className: 'section-sub' },
+    'every badge is one query over indexed chain history, awarded the first time an address does the thing. '
+    + 'the line under a badge you do not have is how to earn it. click one to see who has.'));
+
+  for (const g of (data.groups || [])) {
+    const inGroup = list.filter(a => a.group === g.group);
+    if (!inGroup.length) continue;
+    container.appendChild(el('div', { className: 'section-title', style: { marginTop: '6px', fontSize: '12px' } }, g.label));
+    const grid = el('div', { className: 'ach-grid' });
+    for (const a of inGroup) {
+      const link = el('a', { href: '/directory/people?has=' + a.slug + '&sort=oldest' }, 'who has it →');
+      link.addEventListener('click', (e) => { e.preventDefault(); navigate('/directory/people?has=' + a.slug + '&sort=oldest'); });
+      grid.appendChild(achCard(a, 'catalog', a.live ? null : link));
+    }
+    container.appendChild(grid);
+  }
+
+  container.appendChild(el('div', { className: 'section-sub', style: { marginTop: '4px' } }, computedNote(data.computed_at)));
+}
+
+// --- People: the searchable roster ------------------------------------------
+//
+// Every filter is in the URL, the way the rest of this site's controls are: a
+// narrowed list is what the reader is looking at, so it has to be the thing
+// they can copy to somebody else.
+
+const PEOPLE_SORTS = [
+  { id: 'badges', label: 'most badges' },
+  { id: 'recent', label: 'most recent' },
+  { id: 'oldest', label: 'earliest here' },
+];
+
+function peopleFilters() {
+  const has = (urlParam('has') || '').split(',').map(s => s.trim()).filter(Boolean);
+  return {
+    q: urlParam('q') || '',
+    has,
+    sort: PEOPLE_SORTS.some(s => s.id === urlParam('sort')) ? urlParam('sort') : 'badges',
+    named: urlParam('named') === '1',
+  };
+}
+
+function peopleQueryString(f) {
+  const p = new URLSearchParams();
+  if (f.q) p.set('q', f.q);
+  if (f.has.length) p.set('has', f.has.join(','));
+  if (f.sort && f.sort !== 'badges') p.set('sort', f.sort);
+  if (f.named) p.set('named', '1');
+  p.set('limit', '100');
+  return p.toString();
+}
+
+// Writes the filters back to the browser's URL and reloads the list. Separate
+// from peopleQueryString because the two sets differ on purpose: `limit` is a
+// fetch detail and has no business in a link somebody shares.
+function setPeopleFilters(f) {
+  urlSetParams({
+    q: f.q || '',
+    has: f.has.length ? f.has.join(',') : '',
+    sort: f.sort === 'badges' ? '' : f.sort,
+    named: f.named ? '1' : '',
+  });
+  loadPeople();
+}
+
+async function loadPeople() {
+  const container = clear('people-content');
+  skeletonBlock(container);
+  const f = peopleFilters();
+  try {
+    await apiSWR(['achievements', 'directory/people?' + peopleQueryString(f)],
+      ([cat, data]) => renderPeople(container, cat, data, f));
+  } catch (err) {
+    failBlock(container, err, loadPeople);
+  }
+}
+
+function renderPeople(container, cat, data, f) {
+  container.textContent = '';
+  const byslug = catalogIndex(cat.achievements);
+
+  container.appendChild(el('h1', {}, 'people'));
+  container.appendChild(el('div', { className: 'section-sub' },
+    'everyone this index has seen act on chain, ranked by how much of the catalog they have covered. '
+    + 'filter by what someone has done, not by who they say they are.'));
+
+  // Search box and the two toggles, above the chips: the chips are the long
+  // control and the text box is the one people reach for first.
+  const bar = el('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', margin: '10px 0' } });
+  const input = el('input', {
+    type: 'search', placeholder: 'name or address…', value: f.q,
+    style: { padding: '6px 9px', minWidth: '220px' },
+  });
+  // Committed on Enter or blur rather than per keystroke: each change is a
+  // round trip to a query that groups the whole achievement table, and a
+  // request per character would queue behind itself.
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') setPeopleFilters(Object.assign({}, f, { q: input.value.trim() })); });
+  input.addEventListener('change', () => setPeopleFilters(Object.assign({}, f, { q: input.value.trim() })));
+  bar.appendChild(input);
+
+  const sortSel = el('select', { style: { padding: '6px' } });
+  for (const s of PEOPLE_SORTS) sortSel.appendChild(el('option', { value: s.id }, s.label));
+  sortSel.value = f.sort;
+  sortSel.addEventListener('change', () => setPeopleFilters(Object.assign({}, f, { sort: sortSel.value })));
+  bar.appendChild(sortSel);
+
+  const named = el('label', { style: { fontSize: '12px', color: 'var(--fg2)', display: 'inline-flex', gap: '5px', alignItems: 'center' } });
+  const namedBox = el('input', { type: 'checkbox' });
+  namedBox.checked = f.named;
+  namedBox.addEventListener('change', () => setPeopleFilters(Object.assign({}, f, { named: namedBox.checked })));
+  named.appendChild(namedBox);
+  named.append('registered names only');
+  bar.appendChild(named);
+  container.appendChild(bar);
+
+  // The chips. Every badge the index can filter on, grouped, with the ones
+  // already chosen lit. Clicking toggles rather than replaces, because
+  // narrowing is what the control is for.
+  const chips = el('div', { className: 'ach-chips' });
+  for (const a of (cat.achievements || [])) {
+    if (a.live) continue; // cannot be filtered on: see achCard
+    const on = f.has.includes(a.slug);
+    const chip = el('button', { className: 'ach-chip' + (on ? ' on' : ''), type: 'button' }, (a.emoji || '') + ' ' + a.name);
+    chip.title = a.what + (a.holders ? ' — ' + fmtNum(a.holders) + ' hold it' : '');
+    chip.addEventListener('click', () => {
+      const next = on ? f.has.filter(s => s !== a.slug) : f.has.concat([a.slug]);
+      setPeopleFilters(Object.assign({}, f, { has: next }));
+    });
+    chips.appendChild(chip);
+  }
+  container.appendChild(chips);
+
+  if (f.has.length) {
+    const clearBtn = el('button', { className: 'ach-chip', type: 'button' }, 'clear ' + f.has.length + ' filter' + (f.has.length === 1 ? '' : 's'));
+    clearBtn.addEventListener('click', () => setPeopleFilters(Object.assign({}, f, { has: [] })));
+    container.appendChild(el('div', { style: { marginBottom: '10px' } }, clearBtn));
+  }
+
+  const people = data.people || [];
+  const heading = f.has.length
+    ? fmtNum(data.total) + ' hold all ' + f.has.length + ' selected badge' + (f.has.length === 1 ? '' : 's')
+    : fmtNum(data.total) + ' addresses';
+  container.appendChild(el('div', { className: 'section-title' }, heading));
+
+  if (!people.length) {
+    container.appendChild(el('div', { style: { color: 'var(--fg2)', padding: '12px 0' } },
+      f.has.length ? 'nobody holds every one of those yet. drop a filter to widen it.'
+                   : 'nothing indexed yet: the badges are rebuilt on a timer shortly after startup.'));
+    return;
+  }
+
+  const tbl = el('table');
+  tbl.appendChild(el('thead', {}, el('tr', {},
+    el('th', {}, '#'), el('th', {}, 'who'), el('th', {}, 'badges'), el('th', {}, 'earned'),
+    el('th', {}, 'first'), el('th', {}, 'last'))));
+  const tbody = el('tbody');
+  people.forEach((p, i) => {
+    // addrLink already draws the identicon and resolves the registered name,
+    // so neither is repeated here: the registry it reads is the same users
+    // table the `name` field comes from, and doing both printed the name twice
+    // and the picture twice.
+    const who = el('td', {}, addrLink(p.address, p.network || data.network));
+    // blockWithAge unconditionally, never behind a truthiness check on the
+    // height: genesis is block 0, and a third of mainnet's user registrations
+    // live there. `p.first_height ? …` would blank exactly those rows.
+    tbody.appendChild(el('tr', {},
+      el('td', { style: { color: 'var(--fg2)' } }, String(i + 1)),
+      who,
+      el('td', {}, badgeStrip(p.badges, byslug, 14)),
+      el('td', {}, fmtNum(p.count) + ' / ' + fmtNum((cat.achievements || []).length)),
+      el('td', {}, blockWithAge(p.first_height, p.first_time, data.network)),
+      el('td', {}, blockWithAge(p.last_height, p.last_time, data.network))));
+  });
+  tbl.appendChild(tbody);
+  container.appendChild(tbl);
+
+  if (data.total > people.length) {
+    container.appendChild(el('div', { className: 'section-sub', style: { marginTop: '8px' } },
+      'showing the first ' + fmtNum(people.length) + ' of ' + fmtNum(data.total) + '. narrow with a badge or a name.'));
+  }
+  container.appendChild(el('div', { className: 'section-sub' }, computedNote(data.computed_at)));
+}
+
+// --- Teams ------------------------------------------------------------------
+//
+// A placeholder on purpose, and one that says what it is waiting on rather than
+// only that it is coming. A team is not a fact the chain records: an address
+// belongs to an org because a human says so, and nothing in the index can
+// derive that. So this page ships empty and honest rather than guessing from
+// namespaces, which would put every r/demo/* deploy under one imaginary team.
+function loadTeams() {
+  const container = clear('teams-content');
+  container.appendChild(el('h1', {}, 'teams'));
+  container.appendChild(el('div', { className: 'section-sub' }, 'coming soon.'));
+
+  const card = el('div', { className: 'card', style: { maxWidth: '70ch' } });
+  card.appendChild(el('div', { className: 'section-title' }, 'what this will be'));
+  const ul = el('ul', { style: { color: 'var(--fg2)', fontSize: '12.5px', lineHeight: '1.7', paddingLeft: '18px', margin: 0 } });
+  for (const line of [
+    'the orgs building on gno.land, each with the addresses and namespaces that belong to it',
+    'what a team has shipped: realms, packages, and who imports them',
+    'the same achievement grid as a person, summed over everybody in the team',
+    'multisigs and shared treasuries, tied to the team that signs for them',
+  ]) ul.appendChild(el('li', {}, line));
+  card.appendChild(ul);
+  card.appendChild(el('div', { className: 'section-sub', style: { marginTop: '10px', marginBottom: 0 } },
+    'blocked on the one thing the chain does not record: membership. an address belongs to an org '
+    + 'because a person says so, so this page needs a curated roster rather than a query, and it ships '
+    + 'when that roster exists. guessing it from namespaces would file every r/demo deploy under one '
+    + 'team that does not exist.'));
+  container.appendChild(card);
+
+  container.appendChild(el('div', { className: 'section-sub', style: { marginTop: '14px' } },
+    el('span', {}, 'until then: '),
+    (() => {
+      const a = el('a', { href: '/directory/people' }, 'people');
+      a.addEventListener('click', (e) => { e.preventDefault(); navigate('/directory/people'); });
+      return a;
+    })(),
+    el('span', {}, ' finds individuals by what they have built.')));
 }
 
 async function loadGlossary() {
@@ -13409,7 +13815,7 @@ function renderSessions(container, sessions) {
   container.appendChild(tbl);
 }
 
-async function loadAddressDetail(addr) {
+async function loadAddressDetail(addr, urlTab) {
   const container = clear('address-detail-content');
   skeletonBlock(container);
   try {
@@ -13466,6 +13872,11 @@ async function loadAddressDetail(addr) {
       // is a key that signs under another account" look identical otherwise,
       // and only one of them means the page is empty for a reason.
       renderSessionIdentity(container, identityData, addr);
+      // Who else can sign for this account, before anything about what it did.
+      // Identity, not activity, which is why it sits above the tab strip: it
+      // changes how every row under it should be read, and a reader on the
+      // achievements tab needs it as much as one reading the transactions.
+      renderSessions(container, sessionsData);
       // Stats bar
       const txs = data.transactions || [];
       const pkgs = data.packages || [];
@@ -13496,6 +13907,54 @@ async function loadAddressDetail(addr) {
         statsBar.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'sessions'), el('span', { className: 'value' }, fmtNum(sessionCount))));
       }
       container.appendChild(statsBar);
+
+      // Two panes from here down.
+      //
+      // Activity is everything this page has always shown; achievements is the
+      // same address read against the catalog in pkg/achievements. A tab rather
+      // than another section at the bottom, because both are long and a reader
+      // arrives wanting exactly one of them — and because the catalog's value is
+      // the *locked* half, which nobody scrolls a 50-row transaction table to
+      // reach.
+      //
+      // Rebuilt on every render pass, which apiSWR runs twice: the panes and
+      // their contents are created fresh here, so nothing from the cached pass
+      // survives into the fresh one to be duplicated.
+      const addrTabs = el('div', { className: 'tabs' });
+      const paneActivity = el('div');
+      const paneAch = el('div', { style: { display: 'none' } });
+      // Read from the URL, not from the `urlTab` route() captured, because
+      // apiSWR paints twice: a reader who switches to achievements during the
+      // cached pass would be thrown back to activity when the fresh one lands.
+      // The tab click writes the URL, so the URL is the state that survives.
+      const activeTab = (urlParam('tab') || urlTab) === 'achievements' ? 'achievements' : 'activity';
+      let achLoaded = false;
+      const mkTab = (id, label, iconName) => {
+        const t = el('div', { className: 'tab' + (id === activeTab ? ' active' : '') });
+        t.appendChild(icon(iconName));
+        t.append(label);
+        t.addEventListener('click', () => {
+          addrTabs.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+          t.classList.add('active');
+          paneActivity.style.display = id === 'activity' ? '' : 'none';
+          paneAch.style.display = id === 'achievements' ? '' : 'none';
+          // In the URL like every other tab on this site, so a reload and a
+          // shared link both land on the pane the sender was looking at.
+          urlSetParam('tab', id === 'activity' ? '' : id);
+          if (id === 'achievements' && !achLoaded) { achLoaded = true; loadAddressAchievements(addr, paneAch); }
+        });
+        addrTabs.appendChild(t);
+        return t;
+      };
+      mkTab('activity', 'activity', 'pulse');
+      mkTab('achievements', 'achievements', 'list');
+      container.appendChild(addrTabs);
+      paneActivity.style.display = activeTab === 'activity' ? '' : 'none';
+      paneAch.style.display = activeTab === 'achievements' ? '' : 'none';
+      container.appendChild(paneActivity);
+      container.appendChild(paneAch);
+      if (activeTab === 'achievements') { achLoaded = true; loadAddressAchievements(addr, paneAch); }
+      const body = paneActivity;
       // Analyse the page's rows.
       //
       // These come from storage as flat {type, caller, detail} rather than from
@@ -13553,11 +14012,7 @@ async function loadAddressDetail(addr) {
         extraStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'gas used'), el('span', { className: 'value' }, fmtNum(totalGasUsed))));
         extraStats.appendChild(el('div', { className: 'stat' }, el('span', { className: 'label' }, 'gas fees'), el('span', { className: 'value' }, fmtNum(Math.floor(totalGasFee / 1000000 * 100) / 100) + ' GNOT')));
       }
-      if (hasExtra) container.appendChild(extraStats);
-      // Who else can sign for this account, before anything about what it did.
-      // The tables below are all activity; this is identity, and it changes how
-      // every row under it should be read.
-      renderSessions(container, sessionsData);
+      if (hasExtra) body.appendChild(extraStats);
       // What this account does, over time, split by message kind.
       //
       // The three tables below rank *who* and *what*; none of them says when,
@@ -13580,7 +14035,7 @@ async function loadAddressDetail(addr) {
           acctNote.push('this page only, of ' + fmtNum(data.total) + ' in all');
         }
         if (acctBuckets.dropped) acctNote.push(fmtNum(acctBuckets.dropped) + ' with no block time, not plotted');
-        detailChart(container, _detailCharts, {
+        detailChart(body, _detailCharts, {
           title: 'activity, per ' + acctBuckets.unit,
           note: acctNote.join(' \u00b7 '),
           data: {
@@ -13602,7 +14057,7 @@ async function loadAddressDetail(addr) {
       // Top receivers (if >1 with multiple txs)
       const topSentTo = Object.entries(sentTo).sort((a, b) => b[1] - a[1]);
       if (topSentTo.length > 0 && topSentTo[0][1] > 1) {
-        container.appendChild(el('div', { className: 'section-title', style: { marginTop: '16px' } }, 'top receivers'));
+        body.appendChild(el('div', { className: 'section-title', style: { marginTop: '16px' } }, 'top receivers'));
         const stbl = el('table');
         stbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'address'), el('th', {}, 'txs'))));
         const sbody = el('tbody');
@@ -13610,12 +14065,12 @@ async function loadAddressDetail(addr) {
           if (c < 2) break;
           sbody.appendChild(el('tr', {}, el('td', {}, addrLinkFull(a)), el('td', {}, fmtNum(c))));
         }
-        stbl.appendChild(sbody); container.appendChild(stbl);
+        stbl.appendChild(sbody); body.appendChild(stbl);
       }
       // Top senders (if >1 with multiple txs)
       const topRecvFrom = Object.entries(recvFrom).sort((a, b) => b[1] - a[1]);
       if (topRecvFrom.length > 0 && topRecvFrom[0][1] > 1) {
-        container.appendChild(el('div', { className: 'section-title', style: { marginTop: '16px' } }, 'top senders'));
+        body.appendChild(el('div', { className: 'section-title', style: { marginTop: '16px' } }, 'top senders'));
         const rtbl = el('table');
         rtbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'address'), el('th', {}, 'txs'))));
         const rbody = el('tbody');
@@ -13623,12 +14078,12 @@ async function loadAddressDetail(addr) {
           if (c < 2) break;
           rbody.appendChild(el('tr', {}, el('td', {}, addrLinkFull(a)), el('td', {}, fmtNum(c))));
         }
-        rtbl.appendChild(rbody); container.appendChild(rtbl);
+        rtbl.appendChild(rbody); body.appendChild(rtbl);
       }
       // Top called realms (if any calls)
       const topCalled = Object.entries(calledRealms).sort((a, b) => b[1] - a[1]);
       if (topCalled.length > 0) {
-        container.appendChild(el('div', { className: 'section-title', style: { marginTop: '16px' } }, 'top called realms'));
+        body.appendChild(el('div', { className: 'section-title', style: { marginTop: '16px' } }, 'top called realms'));
         const ctbl = el('table');
         ctbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'realm::func'), el('th', {}, 'calls'))));
         const cbody = el('tbody');
@@ -13639,11 +14094,11 @@ async function loadAddressDetail(addr) {
           if (parts[1]) td.append('::' + parts[1]);
           cbody.appendChild(el('tr', {}, td, el('td', {}, fmtNum(c))));
         }
-        ctbl.appendChild(cbody); container.appendChild(ctbl);
+        ctbl.appendChild(cbody); body.appendChild(ctbl);
       }
       // Deployed packages
       if (pkgs.length) {
-        container.appendChild(el('div', { className: 'section-title' }, 'deployed packages (' + pkgs.length + ')'));
+        body.appendChild(el('div', { className: 'section-title' }, 'deployed packages (' + pkgs.length + ')'));
         const ptbl = el('table');
         for (const p of pkgs) {
           const pathTd = el('td', {}, realmPathEl(p.path, p.network));
@@ -13652,13 +14107,13 @@ async function loadAddressDetail(addr) {
           if (dParked) { pathTd.appendChild(document.createTextNode(' ')); pathTd.appendChild(dParked); }
           ptbl.appendChild(el('tr', {}, pathTd, el('td', {}, p.is_realm ? 'realm' : 'package')));
         }
-        container.appendChild(ptbl);
+        body.appendChild(ptbl);
       }
       // Transactions
       const shown = data.total > txs.length
         ? 'transactions (' + fmtNum(txs.length) + ' of ' + fmtNum(data.total) + ' most recent)'
         : 'transactions (' + fmtNum(txs.length) + ')';
-      container.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, shown));
+      body.appendChild(el('div', { className: 'section-title', style: { marginTop: '24px' } }, shown));
       const tbl = el('table');
       tbl.appendChild(el('thead', {}, el('tr', {}, el('th', {}, 'tx'), el('th', {}, 'type'), el('th', {}, 'detail'), el('th', {}, 'status'), el('th', {}, 'when'))));
       const tbody = el('tbody');
@@ -13674,11 +14129,93 @@ async function loadAddressDetail(addr) {
           el('td', { style: { color: 'var(--fg2)', fontSize: '12px' } }, when)
         ));
       }
-      tbl.appendChild(tbody); container.appendChild(tbl);
+      tbl.appendChild(tbody); body.appendChild(tbl);
 
-      if (!txs.length) container.appendChild(el('div', { style: { color: 'var(--fg2)', padding: '12px 0' } }, 'no transactions found for this address'));
+      if (!txs.length) body.appendChild(el('div', { style: { color: 'var(--fg2)', padding: '12px 0' } }, 'no transactions found for this address'));
     });
   } catch (err) { container.textContent = ''; container.appendChild(el('p', { style: { color: 'var(--red)' } }, 'Error: ' + err.message)); }
+}
+
+
+// The achievements pane on an address page: the whole catalog, with this
+// address's half of it filled in.
+//
+// Drawn as one grid per group, unlocked first within each, so the shape of what
+// somebody has done is readable at a glance and the rest reads as a to-do list
+// rather than as a wall of grey. Every unlocked badge links to the transaction
+// that earned it, because a badge nobody can click through to is a claim.
+async function loadAddressAchievements(addr, pane) {
+  pane.textContent = '';
+  skeletonBlock(pane);
+  try {
+    await apiSWR('address/' + addr + '/achievements', (data) => renderAddressAchievements(pane, data));
+  } catch (err) {
+    failBlock(pane, err, () => loadAddressAchievements(addr, pane));
+  }
+}
+
+function renderAddressAchievements(pane, data) {
+  pane.textContent = '';
+  const list = data.achievements || [];
+  const earned = data.earned || 0;
+
+  const bar = el('div', { className: 'stats-bar' });
+  bar.appendChild(el('div', { className: 'stat' },
+    el('span', { className: 'label' }, 'earned'),
+    el('span', { className: 'value' }, fmtNum(earned) + ' / ' + fmtNum(data.total || list.length))));
+  const done = list.filter(a => a.unlocked);
+  if (done.length) {
+    const first = done.reduce((a, b) => ((a.block_height || Infinity) <= (b.block_height || Infinity) ? a : b));
+    if (first.block_height) {
+      const st = el('div', { className: 'stat' }, el('span', { className: 'label' }, 'first badge'));
+      const v = el('span', { className: 'value' });
+      v.appendChild(blockWithAge(first.block_height, first.block_time, data.network));
+      st.appendChild(v);
+      st.title = first.name;
+      bar.appendChild(st);
+    }
+  }
+  pane.appendChild(bar);
+
+  pane.appendChild(el('div', { className: 'section-sub', style: { marginTop: '12px' } },
+    'what this address has done on chain, against the whole catalog. '
+    + 'the greyed ones are not a score: each carries the one command that earns it, which is the point of the list.'));
+
+  // Bucketed by group in the order the payload lists them, which is the
+  // catalog's own order — so this page and /directory agree about the sequence
+  // without either of them holding it. Within a bucket, earned first: the sort
+  // is not over the whole list, because a comparator that treats two groups as
+  // equal is inconsistent and free to interleave them.
+  const buckets = [];
+  const byGroup = {};
+  for (const a of list) {
+    if (!byGroup[a.group]) { byGroup[a.group] = { group: a.group, label: a.group_label, items: [] }; buckets.push(byGroup[a.group]); }
+    byGroup[a.group].items.push(a);
+  }
+  for (const b of buckets) {
+    const n = b.items.filter(x => x.unlocked).length;
+    pane.appendChild(el('div', { className: 'section-title', style: { marginTop: '6px', fontSize: '12px' } },
+      b.label + ' (' + n + '/' + b.items.length + ')'));
+    const grid = el('div', { className: 'ach-grid' });
+    for (const a of b.items.filter(x => x.unlocked).concat(b.items.filter(x => !x.unlocked))) {
+      grid.appendChild(achCard(a, a.unlocked ? 'unlocked' : 'locked', achEarnedMeta(a, data.network)));
+    }
+    pane.appendChild(grid);
+  }
+
+  pane.appendChild(el('div', { className: 'section-sub', style: { marginTop: '4px' } }, computedNote(data.computed_at)));
+}
+
+// achEarnedMeta is the "when, and which transaction" line under an unlocked
+// badge. Null when locked, so achCard shows the `how` line instead.
+function achEarnedMeta(a, network) {
+  if (!a.unlocked) return null;
+  if (!a.block_height) return el('span', { className: 'ach-got' }, '✓ earned');
+  const wrap = el('span', { style: { display: 'inline-flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } },
+    el('span', { className: 'ach-got' }, '✓'));
+  wrap.appendChild(blockWithAge(a.block_height, a.block_time, network));
+  if (a.tx_hash) wrap.appendChild(txLink(a.tx_hash, a.block_height, network));
+  return wrap;
 }
 
 function truncatedText(text) {

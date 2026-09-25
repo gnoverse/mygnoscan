@@ -80,6 +80,9 @@ export default async function globalSetup() {
     // runs at startup finds an empty corpus. Production waits ten minutes for
     // the next one; the suite cannot.
     '-symbol-index-interval', '1s',
+    // Same reason: the badge table is rebuilt from indexed history, and the
+    // history arrives after the binary has already run its startup pass.
+    '-achievement-interval', '1s',
     // No cache warmer, for the same reason one line up, and it is the reason
     // rather than a convenience: the warmer re-requests the landing endpoints
     // and stores what it gets, and here it would run before seed() has written

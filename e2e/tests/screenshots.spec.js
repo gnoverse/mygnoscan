@@ -50,6 +50,13 @@ const PAGES = [
   ['transactions', '/txs'],
   ['blocks', '/blocks'],
   ['accounts', '/accounts'],
+  // The directory section: the catalog, the roster, the roster narrowed to one
+  // badge (the state a reviewer cannot otherwise see, since the default page is
+  // unfiltered), and the placeholder.
+  ['directory', '/directory'],
+  ['directory-people', '/directory/people'],
+  ['directory-people-filtered', '/directory/people?has=first-realm&sort=oldest'],
+  ['directory-teams', '/directory/teams'],
   ['defi', '/defi'],
   ['coins', '/coins'],
   ['grc20', '/grc20'],
@@ -101,6 +108,7 @@ const PAGES = [
   ['realm-calls', `/realm/${HUB_ROUTE}?network=alpha&tab=calls`],
   ['realm-events', `/realm/${HUB_ROUTE}?network=alpha&tab=events`],
   ['address-detail', `/address/${BUSY_CALLER}`],
+  ['address-achievements', `/address/${BUSY_CALLER}?tab=achievements`],
 ];
 
 test.describe('screenshots', () => {

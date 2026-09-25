@@ -844,6 +844,30 @@ labels this figure "recent" for the same reason.
 | `GET /api/sessions` | delegation chain-wide: `stats` (grants, and the live/expired/revoked partition, counted against one instant so they always sum), `realms` ranked by distinct delegating accounts rather than grant count, and the grant log, newest first. `scanned` reports how far the historical sweep has got, so a partial index says so instead of presenting itself as the whole chain |
 | `GET /api/accounts` | most active accounts. `limit` (default 100, max 500), `offset`, and `sort` = `calls`, `deploys`, `runs`, `sends` or total activity. One row per `(address, network)`: the same key on two chains is two different actors, and each row carries its `network` |
 
+## Directory and achievements
+
+An achievement is a deed an address has done on chain, decided by one query over
+indexed history. The catalog lives in `pkg/achievements`; the table behind it is
+rebuilt wholesale on a timer (`-achievement-interval`, ten minutes by default),
+so every response carries `computed_at` rather than implying a live read.
+
+| endpoint | description |
+|---|---|
+| `GET /api/achievements` | the whole catalog, with `holders` per badge on the selected network, and `groups` in display order. Each entry carries `what` (the fact that unlocked it) and `how` (what somebody without it would do to earn it), which is the payload the pages render rather than wording of their own |
+| `GET /api/achievements/{slug}` | one badge, and who holds it, earliest unlock first. `limit` (default 100, max 500), `offset`. `404` on a slug that is not in the catalog |
+| `GET /api/address/{addr}/achievements` | one address against the **whole** catalog: every entry, with `unlocked` and the block and transaction that first earned it. The locked entries are returned deliberately, because their `how` line is what the page is for |
+| `GET /api/directory/people` | every address holding at least one badge, ranked. `q` matches a registered name or an address prefix; `has` is repeatable and also accepts a comma-separated list, and is an **AND**; `named=1` restricts to addresses in the user registry; `sort` = `badges` (default), `recent`, `oldest`; `limit` (default 50, max 200), `offset`. An unknown slug in `has` is a `400`, not an empty list: those are different answers |
+
+One badge, `session-used`, carries no query and is marked `live` in the catalog.
+A session signs as its **master**, so `calls`, `msg_runs` and `bank_sends` all
+record the master's address and no index can say which key signed; the only
+surviving trace is the `Sequence` on a live grant, which
+`auth/accounts/{master}/sessions` returns. So it is awarded on
+`/api/address/{addr}/achievements` from that live read, only while the grant
+still exists, and it can neither be listed nor filtered on. Indexing it needs
+`MsgCreateSession` modelled in the tx-indexer, or the signer recorded alongside
+the caller.
+
 ## Validators
 
 | endpoint | description |
