@@ -26,6 +26,20 @@ import (
 // nowhere. The chain will not close the loop either: auth/accounts/<session>
 // returns null. Only the grant transaction ties key to account.
 
+// sessionBackfillBatch is how many blocks one pass sweeps.
+//
+// Twenty times backfillTxBatch, because the cost model changed: that constant
+// sizes a per-height fan-out, where the batch is also the request count. This
+// sweep issues ONE range query per batch, so the batch size no longer sets the
+// load, and 100 blocks per 30-second pass meant 25 hours to cross mainnet.
+//
+// Sized against the element cap rather than under it. A range this wide will
+// sometimes exceed the resolver's row limit; fetchSessionRange halves until it
+// fits, which costs a handful of extra requests and self-tunes to whatever the
+// chain's density actually is, instead of guessing a number that is wrong on
+// both a quiet chain and a busy one.
+const sessionBackfillBatch = 2000
+
 // sessionRawGrant is the JSON inside UnexpectedMessage.raw for
 // auth/create_session. Field names are the struct tags in
 // tm2/pkg/sdk/auth/msgs.go; the shapes are what mainnet actually returns.
@@ -217,7 +231,7 @@ func (s *Syncer) backfillSessions(ctx context.Context) {
 		log.Printf("[%s] session backfill pin: %v", s.networkID, err)
 	}
 
-	from, to, more, err := s.db.SessionBackfillRange(s.networkID, backfillTxBatch)
+	from, to, more, err := s.db.SessionBackfillRange(s.networkID, sessionBackfillBatch)
 	if err != nil {
 		log.Printf("[%s] session backfill: %v", s.networkID, err)
 		return
