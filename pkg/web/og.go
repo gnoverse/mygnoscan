@@ -139,7 +139,16 @@ func networkParam(r *http.Request) string {
 		return ""
 	}
 	for _, c := range n {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+		// Named rather than negated inline: QF1001 fires on a negated binary
+		// expression whichever way it is written, so !(a && b) && !(c && d)
+		// and !(a || b || c) are both flagged and "applying De Morgan's law"
+		// only moves the complaint. Negating a single identifier ends it, and
+		// the accept set reads as a list, which is what it is.
+		allowed := c >= 'a' && c <= 'z' ||
+			c >= 'A' && c <= 'Z' ||
+			c >= '0' && c <= '9' ||
+			c == '-' || c == '_'
+		if !allowed {
 			return ""
 		}
 	}

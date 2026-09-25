@@ -281,6 +281,9 @@ func TestNetworkParamAcceptSet(t *testing.T) {
 			return ""
 		}
 		for _, c := range n {
+			//nolint:staticcheck // QF1001: this is deliberately the pre-rewrite
+			// condition, verbatim. Simplifying it here would make the test
+			// compare the new implementation against itself.
 			if !(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') && !(c >= '0' && c <= '9') && c != '-' && c != '_' {
 				return ""
 			}
