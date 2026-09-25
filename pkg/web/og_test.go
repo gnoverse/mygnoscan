@@ -268,3 +268,43 @@ func TestRealmCanonicalURLIsEncodedNotJustEscaped(t *testing.T) {
 		t.Fatalf("og:url does not parse: %v", err)
 	}
 }
+
+// networkParam constrains a value this server then puts into a query string it
+// builds, so its accept set is security-relevant and worth pinning rather than
+// reading. The condition was rewritten under De Morgan's law to satisfy
+// staticcheck QF1001; this asserts the rewrite accepts and rejects exactly what
+// the original did, since "it lints clean now" is not the property that matters.
+func TestNetworkParamAcceptSet(t *testing.T) {
+	// The original condition, verbatim, before QF1001 was applied.
+	original := func(n string) string {
+		if n == "" || len(n) > 32 {
+			return ""
+		}
+		for _, c := range n {
+			if !(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') && !(c >= '0' && c <= '9') && c != '-' && c != '_' {
+				return ""
+			}
+		}
+		return n
+	}
+
+	cases := []string{
+		"", "mainnet", "pearl", "test-13", "gnoland_1", "ABC", "a1-B_2",
+		"z", "Z", "0", "9", "-", "_",
+		// the boundary characters on either side of each accepted range
+		"`", "{", "@", "[", "/", ":",
+		// the ones that would matter if any of them got through
+		"a b", "a&b", "a?b", "a#b", "a/b", "a%2e", "a\"b", "a'b", "a<b",
+		"../etc", "main net", "main\tnet", "main\nnet", "aéb", "你好",
+		// length boundary: 32 accepted, 33 refused
+		"abcdefghijklmnopqrstuvwxyz012345",
+		"abcdefghijklmnopqrstuvwxyz0123456",
+	}
+	for _, in := range cases {
+		got := networkParam(&http.Request{URL: &url.URL{RawQuery: "network=" + url.QueryEscape(in)}})
+		want := original(in)
+		if got != want {
+			t.Errorf("networkParam(%q) = %q, the pre-rewrite condition gives %q", in, got, want)
+		}
+	}
+}
