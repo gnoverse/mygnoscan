@@ -1382,6 +1382,35 @@ func (c *Client) GetBlock(ctx context.Context, height int) (*Block, error) {
 // GetTransactionsByRealm fetches calls to a specific realm function.
 
 // GetTransactionsByBlock fetches transactions in a specific block.
+// GetTransactionsInRange fetches every transaction in [from, to) in ONE query.
+//
+// The alternative, a GetTransactionsByBlock per height, is what the session
+// sweep did first and it does not scale: 100 requests per 100-block batch, on
+// top of normal sync catch-up, is exactly the traffic an indexer rate-limits.
+// Measured on mainnet 2026-09-25, the sweep managed 303 blocks of 306,501 in a
+// quarter of an hour because most passes ended in a 403.
+//
+// The caller MUST handle ErrQueryTooLarge by splitting the range. The resolver
+// caps how many rows it will return and reports the cap as an error alongside
+// the partial page, so treating that as success would silently skip whichever
+// blocks fell past the cap, which for this caller means losing grants with no
+// sign anything went wrong.
+func (c *Client) GetTransactionsInRange(ctx context.Context, from, to int) ([]Transaction, error) {
+	var result struct {
+		GetTransactions []Transaction `json:"getTransactions"`
+	}
+	// gt/lt, not gte/lte: FilterInt defines only the exclusive pair, so the
+	// bounds are widened by one either side to express a half-open range.
+	q := fmt.Sprintf(`{
+		getTransactions(
+			where: { block_height: { gt: %d, lt: %d } }
+			order: { heightAndIndex: ASC }
+		) { %s }
+	}`, from-1, to, c.lightFields(ctx))
+	err := c.query(ctx, q, nil, &result)
+	return result.GetTransactions, err
+}
+
 func (c *Client) GetTransactionsByBlock(ctx context.Context, height int) ([]Transaction, error) {
 	var result struct {
 		GetTransactions []Transaction `json:"getTransactions"`

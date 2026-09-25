@@ -1,6 +1,7 @@
 package syncer
 
 import (
+	"context"
 	"testing"
 
 	"github.com/moul/mygnoscan/pkg/indexer"
@@ -82,5 +83,44 @@ func TestDecodeSessionRawRejects(t *testing.T) {
 func TestAddressFromShortKeyIsEmpty(t *testing.T) {
 	if got := indexer.AddressFromPubKey([]byte{2, 147, 52}); got != "" {
 		t.Errorf("AddressFromPubKey(3 bytes) = %q, want empty", got)
+	}
+}
+
+// The element cap is the dangerous failure here: the resolver returns the rows
+// it had alongside the error, so a caller that treats the partial page as
+// success silently skips whatever fell past the cap. For this sweep that means
+// losing grants with nothing to show anything went wrong.
+//
+// fetchSessionRange must split instead, and the floor it reports must never
+// claim coverage it does not have.
+func TestFetchSessionRangeSplitsOnTheElementCap(t *testing.T) {
+	s, fake, _ := newTestSyncer(t, "mainnet")
+	fake.SeedChain(1, 200)
+
+	// Small enough that a 100-block range trips it and the halves do not.
+	fake.CapAt = 2
+
+	txs, floor := s.fetchSessionRange(context.Background(), 100, 200)
+	if floor > 100 {
+		t.Errorf("floor = %d, want <= 100: splitting should still cover the range", floor)
+	}
+	if len(txs) == 0 {
+		t.Error("split returned no transactions at all")
+	}
+}
+
+// A range that cannot be answered at all leaves the floor at `to`, which is how
+// the caller knows to leave the cursor alone and retry rather than skip ahead.
+func TestFetchSessionRangeReportsNoCoverageOnFailure(t *testing.T) {
+	s, fake, _ := newTestSyncer(t, "mainnet")
+	fake.SeedChain(1, 200)
+	fake.GQLError = "boom"
+
+	txs, floor := s.fetchSessionRange(context.Background(), 100, 200)
+	if floor != 200 {
+		t.Errorf("floor = %d, want 200: a failed range must claim no coverage", floor)
+	}
+	if len(txs) != 0 {
+		t.Errorf("got %d transactions from a failed range", len(txs))
 	}
 }
